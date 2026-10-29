@@ -1,0 +1,5 @@
+{"id":"2861fec7","role":"user","paths":[],"sourceDigest":"8b159e16da567a5db064063c9069c4d9cfd93bec63e56f114b370c13fbe8bd9a"}
+如果要在
+关联工作路径：/Users/run.mao/workpace/amagi-codebox
+中实现呢？并且目前还需要支持同步轮换pi的OAuth的需求（因为需要通过：pi-black在pi中使用claude订阅，本地路径如图所示）
+能否结合该项目中的provider center实现我的需求？

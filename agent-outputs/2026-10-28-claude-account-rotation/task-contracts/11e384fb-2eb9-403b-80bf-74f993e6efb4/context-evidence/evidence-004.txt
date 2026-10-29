@@ -1,0 +1,193 @@
+{"id":"59c3f8db","role":"toolResult","toolCallId":"call_1e3e58c2236a4963bd9bacfd","paths":[],"sourceDigest":"3106cd26cdb450b5b4249507c86ff0027c0e59a4b57eeecc18a27729b0c9edd2"}
+工具 bash {"command":"ls /Users/run.mao/workpace/amagi-codebox; echo ===; cat /Users/run.mao/workpace/amagi-codebox/README.md 2>/dev/null | head -80"}
+agent-outputs
+app_ai_proxy_browser_test.go
+app_ai_proxy_test.go
+app_ai_proxy.go
+app_codex_config_test.go
+app_config_portable_test.go
+app_config_portable.go
+app_control_holds_test.go
+app_drvfs_advisory.go
+app_envcheck_test.go
+app_modality_probe.go
+app_open_external_url_test.go
+app_persistence_test.go
+app_pi_advisor.go
+app_private_file_test.go
+app_quota_probe_test.go
+app_quota_probe.go
+app_remoteclient_test.go
+app_remoteclient.go
+app_system_proxy_test.go
+app_system_proxy.go
+app_terminal_windows_test.go
+app_test.go
+app_update_provider_test.go
+app_webui_remove_test.go
+app_wsl_plugins_test.go
+app_wsl_plugins.go
+app_wsl_skills_test.go
+app_wsl_supply_core_test.go
+app_wsl_supply_s4_test.go
+app_wsl_supply_s4.go
+app_wsl_supply_test.go
+app_wsl_supply.go
+app.go
+bind_failclosed_test.go
+bind_list.go
+bind_manifest_test.go
+build
+build.bat
+build.sh
+CHANGELOG.md
+CLAUDE.md
+clear_stopped_failclosed_test.go
+clear_stopped_manager_failure_test.go
+clear_stopped_manager_sync_test.go
+cmd
+control_wiring.go
+demo
+desktop_ledger_destroy_test.go
+docs
+durable_ownership_r10_test.go
+durable_ownership_r9_test.go
+e2e
+external_headroom_lease_test.go
+external_recovery_test.go
+frontend
+go.mod
+go.sum
+headroom_facade.go
+headroom_wsl_gate_test.go
+headroom_wsl_gate.go
+internal
+launch_admission_test.go
+launch_executor.go
+launch_planner_executor_test.go
+launch_planner_pi_omp_harness_sync_test.go
+launch_planner.go
+launch_webui_plane_test.go
+launch_workdir_test.go
+launch_workdir.go
+launch_wsl_activation_test.go
+launch_wsl_parity_test.go
+launch_wsl_review_fixes_test.go
+launch_wsl_shared_test.go
+LICENSE
+main_bindings_mode_off.go
+main_bindings_mode.go
+main_test.go
+main.go
+mobile
+node_modules
+package-lock.json
+package.json
+pi_login_browser_darwin_test.go
+pi_login_desktop_test.go
+pi_login_launch_darwin_test.go
+pi_login_launch_test.go
+pi_login_launch.go
+pi_login_wsl_test.go
+pi_wsl_provider_build_windows_test.go
+playwright.config.ts
+provider_harness_sync_test.go
+provider_harness_sync.go
+raw_port_gap_test.go
+README.md
+remote_launch_settings_harness_sync_test.go
+remote_production_transaction_test.go
+remote_security_migration_gate_test.go
+remote_security_migration_gate.go
+remote_session_authority_test.go
+remote_startup_selfheal_test.go
+shared_coordinator_test.go
+shutdown_persistence_stop_gate_test.go
+test-results
+THIRD_PARTY_LICENSES.md
+tray_icon_nonwindows.go
+tray_icon_windows.go
+vendor
+wails.json
+wsl_s2_remote_test.go
+===
+<div align="center">
+
+# Amagi CodeBox
+
+版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)。
+
+**管理 Claude Code / OpenCode / Codex / Pi / Oh My Pi 多服务提供商配置的跨平台桌面应用**
+
+[![Version](https://img.shields.io/badge/version-1.3.102-blue)](https://github.com/runrunrain/amagi-codebox)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)](https://go.dev)
+[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)
+[![Wails](https://img.shields.io/badge/Wails-v2.11.0-4342ea?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjguOSAxMjguOSI+PGNpcmNsZSBjeD0iNjQuNSIgY3k9IjY0LjUiIHI9IjY0LjUiIGZpbGw9IiM0MzQyZWEiLz48cGF0aCBkPSJNNjQuNSAzMmMxNy43IDAgMzIgMTQuMyAzMiA0NHMtMTQuMyA0NC0zMiA0NC0zMi0xNC4zLTMyLTQ0IDE0LjMtNDQgMzItNDR6IiBmaWxsPSIjZmZmIi8+PC9zdmc+)](https://wails.io)
+
+[快速开始](#快速开始) | [核心架构](#核心架构) | [远程控制](#远程控制) | [文档](#文档) | [贡献](#贡献)
+
+</div>
+
+---
+
+## 功能特性
+
+- **跨平台支持**：Windows 10/11 和 macOS 原生支持
+- **多应用管理**：Claude Code、OpenCode、Codex、Pi、Oh My Pi (omp) 五种应用统一管理
+- **多服务提供商**：Anthropic、OpenAI、GLM、MiniMax、Kimi 等，支持自定义添加
+- **AI 代理分流**：独立页面只读同步 v2rayN 节点，按服务编辑、添加与排序域名规则，分别选择代理节点或直连，CodeBox 新会话自动接入（[使用说明](docs/developer/ai-proxy-routing.md)）
+- **预设配置管理**：每个提供商支持多套预设，可配置模型、温度、思考模式等
+- **视觉/视频模型标记与导出**：终端预设可标记 vision / video 能力与优先级，并导出 `~/.agents/amagi-media-models.json` 供 `amagi-media-understanding` 等 Agent skill 消费（契约见 [docs/vision-export-contract.md](docs/vision-export-contract.md)）
+- **API 密钥安全存储**：Windows DPAPI / macOS Keychain 加密存储
+- **五引擎插件管理**：管理 Claude Code、OpenCode、Codex、Pi、Oh My Pi 插件，支持安装/卸载/更新
+- **内嵌终端**：xterm.js + ConPTY/macOS PTY，多 Tab 并发运行
+- **AI 辅助 Git（GitAssist）**：对会话工作区做状态查询、分支切换、AI 总结变更生成提交信息并提交/推送
+- **用量统计（Usage）**：本地 SQLite 记录各会话 token 用量与费用（`usage.db`），支持自定义定价
+- **Agent Profiles**：预定义 Agent 环境档案（`agent-profiles.json`），一键应用到会话
+- **皮肤（Skins）**：本地图片皮肤库与 `/skins/` 只读资源服务
+- **远程控制**：HTTP API + WebSocket 终端桥接，支持移动端控制；同时支持作为 Remote Client 反向连接其他 CodeBox 实例
+- **自动更新**：GitHub Releases 检测，支持 Windows 和 macOS 一键下载安装
+- **环境检测与一键修复**：CLI 工具安装状态检测、问题诊断、一键修复（修复 PATH、安装工具、安装 Node.js）；Windows 下支持 WSL 发行版内 CLI 安装辅助
+- **CLI 工具**：独立命令行工具（`cmd/codebox`），支持无头模式操作
+- **单实例保护**：使用操作系统机制防止多实例运行
+- **系统托盘驻留**：最小化到托盘，右键菜单退出
+
+---
+
+## 快速开始
+
+### 下载安装
+
+从 [GitHub Releases](https://github.com/runrunrain/amagi-codebox/releases) 下载对应平台的发行包。
+
+- **Windows**：解压后运行 `amagi-codebox.exe`
+- **macOS**：解压后拖入「应用程序」，首次运行若被 Gatekeeper 拦截，前往「系统设置 > 隐私与安全性」点击「仍要打开」
+
+应用启动后在 `~/.amagi-codebox/` 生成配置目录，单实例保护会阻止重复启动，关闭窗口可驻留系统托盘。
+
+### 运行环境
+
+| 用途 | 要求 |
+|------|------|
+| 运行（Windows） | Windows 10 1903+ |
+| 运行（macOS） | macOS 10.15+ |
+| 自行构建 | Go 1.25+、Node.js 20+、Wails CLI v2 |
+
+### 构建命令
+
+```bash
+# 安装 Wails CLI（首次）
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+wails dev     # 开发模式（热重载）
+wails build   # 生产构建，产物在 build/bin/
+```
+
+一键构建脚本：`./build.sh`（macOS/Linux）、`build.bat`（Windows），会依次构建桌面前端、移动端前端与桌面主二进制，并通过 git tag / `wails.json` 注入版本号。
+
+---
+
+## 核心架构
+
+Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译为**单一二进制**，前端产物由 `//go:embed` 嵌入。

@@ -1,0 +1,63 @@
+{"id":"8bf95f0f","role":"toolResult","toolCallId":"call_d8fd7e69fc154eff93105874","paths":[],"sourceDigest":"fabd5cdfa7f9a46a98de549d399231818376c9037fba10d7f6f12e574fa4f928"}
+工具 bash {"command":"grep -rn \"OAuth\\|oauth\" frontend/src/views/Providers*.vue frontend/src/views/*.ts 2>/dev/null | head -12; echo === CHANGELOG 近期 ===; head -60 CHANGELOG.md"}
+=== CHANGELOG 近期 ===
+# Changelog
+
+本项目所有值得记录的变更都会维护在此文档中。
+
+格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
+
+## [Unreleased]
+
+## [1.3.120] - 2026-10-24
+
+### Added
+- Pi Agent 配置新增 CodeMode 卡片：模型自行选择或适用时优先考虑，以及脚本可覆盖的输出/时限默认值。无需角色、只读或 scope 授权开关；保存沿用原配置校验和原子落盘，保留其他字段与旧配置。
+
+## [1.3.119] - 2026-10-24
+
+### Added
+- Pi Agent 配置新增「执行中咨询」：可选 pi 内模型或本机 Codex；默认新建并自动续接自有咨询会话，另可指定已有聊天及只读检测共享连接。接通角色、Leader 开关、预算、前后端校验及保存回读；保留其他配置字段。
+
+## [1.3.118] - 2026-10-20
+
+### Fixed
+
+- **OpenCode 会话启动配置校验失败**：托管模型只配置上下文窗口或最大输出 token 时，不再生成缺少必填字段的 `limit` 对象；仅在两项均有效时输出完整限制，否则交由 OpenCode 使用模型默认值，显式 `maxTokens` 选项仍保留。新版启动时会重新同步托管提供商，修正历史版本生成的不完整配置。
+- 新增回归测试，覆盖上下文单独设置、输出单独设置、完整设置、均未设置及非正值边界。
+
+## [1.3.117] - 2026-10-20
+
+### Fixed
+
+- **环境检测 npm 通道前缀对齐（多 node 环境下 Pi 等工具“更新多次失败”修复）**：多 node 并存（fnm + ~/.local/node 平行副本）时，npm 全局安装/更新命令可能与检测到的工具分属不同前缀——resolver controlled candidates 把 ~/.local/bin 排首位解析到平行 node 的 npm，且 npm-cli.js 的 `#!/usr/bin/env node` shebang 在增强 PATH 上被平行 node 抢先，npm 按 process.execPath 推导全局前缀后 `install -g` 落入平行前缀，检测侧版本不变导致更新复检 "version unchanged" 恒失败（实测：Pi 1.1.0→1.3.0 更新每次都装进 ~/.local/node，fnm 侧永远 1.1.0）。修复三件套：①`npmPrefixFromInstalledPath` 从检测到的工具路径推导所属 npm 全局前缀（Unix `<prefix>/lib/node_modules`、Windows `<prefix>/node_modules`，取最外层，嵌套包内 node_modules 不干扰）；②`resolveCommandNPMPathForTool` 让 OpenCode/Codex/Pi/OMP/Claude 的 npm 安装/更新命令优先使用工具所在前缀自己的 npm（Homebrew/Native 安装不受影响，仍走自更新通道）；③`installCommand.pathPrefixDirs` + `prependPATHEntries` 在执行 npm 命令时把前缀 bin 目录前置子进程 PATH，保证 shebang node 与 npm 同前缀、`npm -g` 写回同一位置。
+
+（验证记录：GUI 模拟 PATH 端到端复现 Pi 1.1.0→1.3.0 更新成功且入口路径不变（修复前同场景恒失败）；新增单测覆盖前缀推导/前缀对齐/Homebrew 守卫/PATH 注入；envcheck 包回归除 2 个预存环境穿透失败（干净 HEAD 基线同样失败，与本修复无关）外全过；app 层 envcheck 测试全过；清理误装平行副本）
+
+## [1.3.116] - 2026-10-18
+
+### Added
+
+- **环境检测与五 Agent 管理链路修复（检测/安装/卸载/依赖/PATH 全闭环）**：①PATH 修复可验证且幂等——写入 shell 配置（Windows 为用户 PATH）排除 resolver 诊断标签、规范化目录去重，成功后同步 CodeBox 当前进程并自动复检，外部终端重启要求独立说明；②OpenCode/Codex/Pi/OMP 通用异步卸载——复用 `RunEnvFixAction` 新增 `uninstall_tool` 动作（无新增 Wails 绑定），npm 包/前缀归属（shim 只认普通小文件中的 npm 执行行+完整包路径边界、64KiB 读取上限）与 Homebrew formula 映射（以已验证 prefix 提取 Cellar/opt 相对段）核实后才执行，未知来源/另一 Node 前缀/自定义安装拒绝自动删除并说明；③检测语义修正——checker npm fallback 候选存在但版本探测失败时保留 Installed/路径/错误不再改判 missing（PATH 未命中≠未安装），检测失败与版本未知分开、安装健康与确知最新分开、查询失败不等于最新。
+
+### Fixed
+
+- **管理操作结果语义与 UI 状态**：依赖安装失败/未确认不再伪成功；安装/卸载以实际复检终态而非受理结果或 exit=0 定谳（卸载经 Lstat 确认原入口不存在，空路径/I/O 错误/残留入口不作成功证据）；UI 顶层与问题内修复入口、正确传 Claude method、尊重 canInstall、提示类动作本地处理不提交后台；全局写忙碌防重入、变更后确定性复检；异步受理状态独立于快照观察——无 ID 卸载受理按请求时间匹配并排除容错窗内旧槽、容错预算改为连续失配窗口（长安装不消耗）、过期快照不覆盖后到新状态、组件卸载后不再重建轮询、异步横幅仅由匹配 tracker 事件发布（旧成功槽不冒充他工具终态）、快照短时失败继续轮询持续无法确认显示「状态未知」。
+- **前序改动并入本版**：通用设置五引擎默认设置重构为 `useDefaultEngineSettings` composable（引擎选项补齐 Pi/OMP）；usage 定价种子按 2026-10-17 官方页核对——新增 Claude 5.5/5.1 家族（Opus/Sonnet/Haiku/Fable/Mythos）、Sonnet 5 原定 9 月涨价已取消注记、全部条目带来源标注；用量统计图表默认视图改为「用量分布（按模型）」。
+
+（验证记录：agent-outputs/workflow/20261017-envcheck-repair/；全仓 go test/vet、envcheck+platform -race、Windows 目标交叉编译、前端 34 文件 327 测试+构建、15 场景真实组件 smoke 全部通过；diting full 首审 2 Major 红绿关闭，增量复审 PASS）
+
+## [1.3.115] - 2026-10-17
+
+### Added
+
+- **WSL 供给事务闭环与全链路安全收口（G0 平台原语 + G1 供给事务 + Windows 真机验证）**：①G0 平台私有化/原子原语——EnsurePrivateFile/EnsurePrivateDir（POSIX chmod 0600/0700；Windows owner-only DACL，真机 ACL round-trip/owner 规范化/收紧保字节验证）、MoveNoReplace 文件/目录 no-replace 原子发布（分 OS 原生实现；9P UNC 冲突归类保留原始错误，单环境结论不泛化）；②G1 供给事务核心——意图日志（intent）+ 目标内私有暂存 + no-replace 发布 + 前像 CAS + 备份/补偿 + 中断自愈 reconcile（目录单元四态收敛、A2 摘要 pending 持久化、TargetCLI 作用域键、submitDirUnit move 前复验）；③敏感凭据遗留评估与撤回确认（legacy assess + managed-copy 权限探测 fail-closed，状态未确认严格拦截共享视觉清单消费）；④launcher WSL 路径模型配置构建/写入失败硬阻断启动、会话工作目录按目标形态定谳；headroom NAT 网络模式启动闸门；piplugin 两侧操作重放宿主锚点校验门禁；opencode 附加层 MCP 覆盖许可与目标发行版代际强绑定（同名重装或代际未知拒绝生效）；⑤Windows 真机实证——platform 45 用例（symlink 特权真实创建非跳过、UNC 16 写者并发 10 轮仅 1 成功且源与字节保留）、wslsupply 230 用例、真实 WSL E2E 6/6（staging 隔离/models/skills/S4 导入/目标解析，distro 内 stat 验证 700/600，无 /tmp 残留）。
+
+### Fixed
+
+- intent 私有位校验在 Windows 宿主恒失败（Mode().Perm() 恒 0666）→ 改走平台原语；no-replace 冲突分类死分支（生产 os.ErrExist 从未命中 publish-conflict，commit/skills_submit/coordinator 4 处统一判定，真实并发用例暴露）；Windows 盘根相对链接目标（\abs 形态）误归 non-regular-entry → 按宿主原生分隔符判定归 absolute-link；4 处测试夹具 POSIX 权限假设改为探测权威面表达（断言强度不降，无 skip）。
+
+（验证记录：agent-outputs/workflow/wsl-goal-closure/windows-*-real-*.log；一致性修正 12 项先红后绿；发布门禁全仓 vet/test + Windows 交叉编译 + 前端构建 exit 0）
+
+## [1.3.114] - 2026-10-17
+

@@ -1,0 +1,42 @@
+{"id":"5dd5324a","role":"user","paths":[],"sourceDigest":"89530a21ae634cc055124bbf2fa27fc50cff87a066dffc6b0c6ddfea3b825d3d"}
+[task_submit 完成 luban/f24eb8fd] 状态: done｜任务: 「# Phase 1a 实现：internal/claudeaccounts 领域包（Claude」
+全部完成。终稿：
+
+## ACHIEVEMENT:
+
+- **验收 1｜`go vet ./internal/claudeaccounts` 干净** → exit=0（仅 C 层 SecKeychain 系统级弃用警告，与 internal/secrets 现状一致）→ ✅
+- **验收 2｜`go test ./internal/claudeaccounts -count=1` 全绿** → `ok 2.076s`，62 个测试全 PASS（§10.1 五组矩阵正向+配对负向，故障注入全精确步骤）→ ✅
+- **验收 3｜`go test -race ./internal/claudeaccounts` 全绿** → `ok 1.925s` → ✅
+- **验收 4｜`go build ./...` 不破坏其他包** → exit=0；另验证 `go test ./internal/...`（46 包 ok）+ `go test .`（根包 ok）+ windows/linux/darwin-nocgo 三平台编译通过 → ✅（worktree 补齐 frontend/mobile dist 构建产物，见报告环境备注）
+- **验收 5｜不变量对照表** → 报告「不变量对照表」节，§1.3 八条逐条映射文件：行号 → ✅
+- **交付物 1｜worktree 改动** → `internal/claudeaccounts/`（33 文件 6115 行）+ CHANGELOG [Unreleased]；按 [amagi worktree] 机器注入段**未 commit**，改动留工作区供 Leader 汇总（与任务书正文提交指示冲突，按较新注入段执行并已在报告声明）→ ✅
+- **交付物 2｜实现报告** → `/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/phase1a-report.md`（完成清单/不变量对照/真实输出摘要/1b 接口清单/遗留项）→ ✅
+
+**关键偏差声明**：任务书「产物落位」机器注入段解析到 amagi-pi（无 go.mod/internal/，非 Go 仓库，上一单正因此取消）；按冻结正文以 amagi-codebox 为目标仓库执行，报告含完整依据，若 outputs[] 校验失败请 Leader 修正声明路径。
+
+**未覆盖项**（发布门，均已在设计标注【待实测】）：profile 响应字段契约、CC 刷新协议常量与 claudeAiOauth 字段名（已用 adapterVersion 门保守拒绝，不猜常量）、Pi 兼容锁与安装版本竞争测试、真机 Keychain locator/授权弹窗行为。
+
+**建议下一步**：Leader 审查 worktree diff 后合并；1b 接线任务可直接消费报告中的接口清单（MutationGate/QuiescenceChecker 需 1b 提供真实实现）。
+
+<!--AMAGI:DONE-->
+
+[产物摘要] 改动范围供抽查，非验收替代
+路径基准：worktree /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation（分支 amagi/claude-account-rotation）
+• 净变化（vs 任务启动快照）：新增 1 · 修改 1 · 删除 0；登记命中 1，窗口内未归因 1，↔sib 0，⚠ext 0
+  声明写面 vs 实测：登记 46 处（仓库内 40 · 仓库外 6）→ 命中 1；未命中 39（内容未变或被 git 忽略不可见）
+  未归因/仅兄弟登记的变化不能视为本任务独立产出。
+  基线已有 1 处未提交改动（已入启动快照基准，不计入净变化）；diff 段仍为 vs HEAD 口径。
+• diff（任务写面登记 40 处，登记覆盖有限；相对 HEAD（含派发前已有改动），净增量见净变化段）：1 file changed, 4 insertions(+)
+• 未跟踪新文件 1 处（git status ?? 条目 ∩ 本任务写面登记；共享树其余未跟踪改动不列入）:
+[采集详情] /Users/run.mao/.pi/agent/amagi/artifacts/f24eb8fd-7d23-45a0-80ca-0043113e4eb3/evidence.md（按需 read；检查日志仍由回执引用）
+
+[worktree amagi/claude-account-rotation] /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation（base 06344145）
+依赖复用（portable）: node_modules → 外部符号链接已接入/保留（tool-enforced 按真实落点校验写入；guarded shell 非沙箱）
+净增量（相对检出基线 06344145，含树内提交）:
+CHANGELOG.md | 4 ++++
+ 1 file changed, 4 insertions(+)
+未跟踪新文件(2): amagi-task/, internal/claudeaccounts/
+[worktree 未提交] 树内未提交 47 个路径，未自动删除——处置（回流/合并/显式丢弃）前请勿删除工作树。
+[lease] 所有权已释放（任务 done），目录保留供 Leader 检查；回收走既有 worktree 清理语义（脏树 fail-closed，不自动删树）；集成责任在 Leader（审查 diff 后合并）。
+[内核视图 v1] taskId=f24eb8fd stateSeq=9 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-90000914-0553-419b-a499-b98eb20d8a68(incomplete/unreviewed) missing=[artifact-integrity:/Users/run.mao/workpace/amagi-pi/internal/claudeaccounts:missing,artifact-integrity:/Users/run.mao/workpace/amagi-pi/agent-outputs/2026-10-28-claude-account-rotation/phase1a-report.md:missing] 可waive=[artifact-integrity:/Users/run.mao/workpace/amagi-pi/internal/claudeaccounts:missing,artifact-integrity:/Users/run.mao/workpace/amagi-pi/agent-outputs/2026-10-28-claude-account-rotation/phase1a-report.md:missing]（accept 的 waivedCheckIds 取自此集合，按接受决策裁剪）（sync 返回与后台完成通知同版内核投影，K5a）
+[子任务用量] 入 214.8k 出 157.5k 缓存读 16270.3k 缓存写 0 调用 108

@@ -1,0 +1,73 @@
+{"id":"3b97036b","role":"user","paths":[],"sourceDigest":"77834d0bd5560cabf9535bbcafb1fcd25c304d586a45e8017b5989953ed11224"}
+[task_submit 完成 luban/a7fe40a3] 状态: done｜任务: 「# Phase 1 修复批次：diting full 审核 15 findings 全量修复（C」
+ACHIEVEMENT:
+
+- **验收｜逐条修复 F01-F15（含四项测试有效性）** → 15/15 全部按 diting 最小修复实施，无静默跳过；finding→修复→锚点→测试映射表见报告 §对照表 → ✅
+- **验收｜`go vet ./...` 干净** → exit 0（仅 C 层 SecKeychain 系统级弃用警告，与 internal/secrets 基线一致）→ ✅
+- **验收｜`go test ./...` 全绿（48 包）** → exit 0，48 包 ok、0 FAIL → ✅
+- **验收｜`go test -race ./internal/claudeaccounts ./internal/remote`** → ok（1.9s / 32.5s）→ ✅
+- **验收｜前端 test + build** → 40 文件 / 397 用例全绿（新增 SSR 组件 4 + store 3）；`vue-tsc` 零错误 exit 0 → ✅
+- **交付物 1｜worktree 改动** → 31 修改 + 3 新测试文件（+816/−115）+ CHANGELOG；按 [amagi worktree] 注入段**未 commit**（与任务书正文冲突按较新注入段执行，1a/1b/1c 同例，报告已声明）→ ✅
+- **交付物 2｜报告双落盘** → 主树 `/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/phase1-fix-report.md` + worktree 机器声明路径同内容副本 → ✅
+- **附带** → 三平台交叉编译（win/linux/darwin-nocgo）exit 0；tmp 调试产物已清理
+
+**关键实施说明**（详见报告）：F11 生产 C 分支无法免触真实 Keychain 单测（对齐 fake 语义+代码级修复，真机属发布门）；F08 用 vue 自带 server-renderer SSR 渲染真实组件验证模板分支（vitest 接入既有 devDependency，零新增依赖）；wailsjs 新字段按生成器格式手写待再生收敛。
+
+**建议下一步**：diting 按原编号增量复审（F01/F03/F05/F06 为时序敏感项，建议优先复核屏障测试）；Leader 审查 worktree diff 后合并。
+
+<!--AMAGI:DONE-->
+
+📋 证据（自动采集·摘要）
+• 测试 go test ./... → unavailable（未取得可用检查事实）（0.0s）
+  检查 chk-auto-baseline-test-219da303（未重复执行）
+  写面感知基线选择：写面感知回退全量：scripts.test 无声明/不可读——无法安全构造子集命令，保守全量；own 责任测试 89 项按发现全集推导（不收窄宇宙，供豁免守卫）；执行入口：go test ./...（来源：go.mod，探测——项目未声明 verification.testCommand；guarded 入口/资源预算须在 amagi.json 声明）；资源环境：未声明（宿主 NODE_OPTIONS 等不 …（节选，详情见采集归档）
+[linked worktree] cwd=/Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation 为链接工作树（主仓库 /Users/run.mao/workpace/amagi-codebox）；diff/status 仅覆盖本工作树检出，不含主检出与其他 worktree
+[产物摘要] 改动范围供抽查，非验收替代
+路径基准：worktree /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation（分支 amagi/claude-account-rotation）
+• 净变化（vs 任务启动快照）：新增 3 · 修改 31 · 删除 0；登记命中 34，窗口内未归因 0，↔sib 0，⚠ext 0
+  声明写面 vs 实测：登记 56 处（仓库内 40 · 仓库外 16）→ 命中 34；未命中 6（内容未变或被 git 忽略不可见）
+  基线已有 2 处未提交改动（已入启动快照基准，不计入净变化）；diff 段仍为 vs HEAD 口径。
+• diff（任务写面登记 40 处，登记覆盖有限；相对 HEAD（含派发前已有改动），净增量见净变化段）：31 files changed, 816 insertions(+), 115 deletions(-)
+• 未跟踪新文件 4 处（git status ?? 条目 ∩ 本任务写面登记；共享树其余未跟踪改动不列入）:
+[采集详情] /Users/run.mao/.pi/agent/amagi/artifacts/a7fe40a3-561c-42a6-820c-afdafc686f96/evidence.md（按需 read；检查日志仍由回执引用）
+
+[worktree amagi/claude-account-rotation · 复用] /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation（base 3acbc904）
+依赖复用（portable）: frontend/node_modules、node_modules → 外部符号链接已接入/保留（tool-enforced 按真实落点校验写入；guarded shell 非沙箱）
+净增量（相对检出基线 3acbc904，含树内提交）:
+CHANGELOG.md                                       |   4 +
+ app.go                                             |  18 ++-
+ claude_accounts_facade.go                          | 146 ++++++++++++++++---
+ claude_accounts_facade_test.go                     | 102 ++++++++++---
+ claude_accounts_launch.go                          | 158 +++++++++++++++++++--
+ claude_accounts_launch_test.go                     |  38 ++++-
+ external_headroom_lease_test.go                    |   1 +
+ external_recovery_test.go                          |   2 +
+ .../src/__tests__/stores/claudeAccounts.test.ts    |   4 +-
+ .../components/provider/ClaudeAccountsSection.vue  |   9 +-
+ frontend/src/stores/claudeAccounts.ts              |  10 ++
+ frontend/vitest.config.ts                          |   7 +-
+ frontend/wailsjs/go/models.ts                      |   3 +
+ internal/claudeaccounts/fakes_test.go              |   6 +
+ internal/claudeaccounts/harvest.go                 |  49 ++++++-
+ internal/claudeaccounts/lock.go                    |  11 ++
+ internal/claudeaccounts/nativecc_darwin.go         |  13 +-
+ internal/claudeaccounts/oauth.go                   |  36 +++++
+ internal/claudeaccounts/patch_test.go              |  12 +-
+ internal/claudeaccounts/poolstore_test.go          |  39 +++--
+ internal/claudeaccounts/service.go                 |  49 ++++++-
+ internal/claudeaccounts/service_swap_test.go       |   3 +
+ internal/claudeaccounts/swap.go                    |  52 +++++--
+ internal/claudeaccounts/types.go                   |   4 +
+ internal/launcher/network_env_test.go              |   2 +-
+ internal/launcher/service.go                       |  29 +++-
+ internal/launcher/service_test.go                  |   2 +-
+ internal/remote/remote_session_adapter.go          |  51 +++++++
+ .../remote/shared_coordinator_credentials_test.go  |  38 +++++
+ launch_planner.go                                  |   6 +
+ pi_login_launch.go                                 |  27 ++--
+ 31 files changed, 816 insertions(+), 115 deletions(-)
+未跟踪新文件(5): agent-outputs/2026-10-28-claude-account-rotation/, amagi-task/, claude_accounts_fix_test.go, frontend/src/__tests__/components/provider/claudeAccountsFix.test.ts, internal/claudeaccounts/phase1_fix_test.go
+[worktree 未提交] 树内未提交 96 个路径，未自动删除——处置（回流/合并/显式丢弃）前请勿删除工作树。
+[lease] 所有权已释放（任务 done），目录保留供 Leader 检查；回收走既有 worktree 清理语义（脏树 fail-closed，不自动删树）；集成责任在 Leader（审查 diff 后合并）。
+[内核视图 v1] taskId=a7fe40a3 stateSeq=9 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-a685d306-0085-432d-aa3a-d8c0163f0fe7(incomplete/unreviewed) missing=[chk-auto-baseline-test-219da303] 可waive=[chk-auto-baseline-test-219da303,chk-report-unsafe-rollback_agent-outputs_2026-10-28--5f22ca99]（accept 的 waivedCheckIds 取自此集合，按接受决策裁剪）（sync 返回与后台完成通知同版内核投影，K5a）
+[子任务用量] 入 274.2k 出 119.7k 缓存读 36775.0k 缓存写 0 调用 182

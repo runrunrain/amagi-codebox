@@ -1,0 +1,27 @@
+{"id":"adb80208","role":"user","paths":[],"sourceDigest":"4622a9a29c3678beff7b14000f83f856304e15f2d21ee23479b4b4b272f1d894"}
+[task_submit 完成 fuxi/eb340968] 状态: done｜任务: 「# 任务：Claude 订阅双账号轮换 — amagi-codebox 技术设计方案（伏羲·设计」
+设计已落盘：
+`/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/design.md`
+
+关键结论：pi-black 注册时缓存账号身份，不能把凭据写入成功等同于运行中会话已换号。方案采用退出后安全切换，自动轮换遇占用则等待。
+
+ACHIEVEMENT:
+- 数据、事务恢复、额度、自动策略、UI 接口 → 文档 §2–7 → 完成。
+- 源码核实与复用边界 → §1、§6.3 行号锚点 → 完成。
+- 三阶段验收、隔离测试、后续实测步骤 → §9–10 → 完成。
+- 风险、迁移回滚、自检 → §8、§11 → 完成；未执行命令或修改实现。
+
+上游：当前任务书、Leader 调整 #1及内联用户要求，无独立上游设计 artifact。
+
+待验证：profile/usage 协议、Claude grant 刷新契约与真实客户端行为；均已明确列为发布前验证项。
+<!--AMAGI:DONE-->
+
+[产物摘要] 改动范围供抽查，非验收替代
+路径基准：主仓 /Users/run.mao/workpace/amagi-pi
+• 净变化（vs 任务启动快照）：新增 0 · 修改 0 · 删除 0；登记命中 0，窗口内未归因 0，↔sib 0，⚠ext 0
+  声明写面 vs 实测：登记 1 处（仓库内 0 · 仓库外 1）→ 命中 0；未命中 0（内容未变或被 git 忽略不可见）
+  基线已有 29 处未提交改动（已入启动快照基准，不计入净变化）；diff 段仍为 vs HEAD 口径。
+• diff（任务写面登记 0 处，登记覆盖有限；相对 HEAD（含派发前已有改动），净增量见净变化段）：无 tracked 改动
+[采集详情] /Users/run.mao/.pi/agent/amagi/artifacts/eb340968-e671-4000-9e2c-057a5de0d2fc/evidence.md（按需 read；检查日志仍由回执引用）
+[内核视图 v1] taskId=eb340968 stateSeq=9 revision=0 execution=done settlement=ready acceptance=unreviewed 承诺=tool-enforced receipt=receipt-ed0b1b44-8c7d-4698-ae69-d08d7581b826(ready/unreviewed)（sync 返回与后台完成通知同版内核投影，K5a）
+[子任务用量] 入 283.4k 出 21.3k 缓存读 1885.8k 缓存写 0 调用 23

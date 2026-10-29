@@ -1,0 +1,77 @@
+{"id":"5e6623d1","role":"toolResult","toolCallId":"call_02827005688142108137fc94","paths":["/Users/run.mao/.pi/agent/skills/amagi-media-understanding/SKILL.md"],"sourceDigest":"1b9fb11209975ed787cb523edaec01a6a8e829aabc5b6c0b23759fda6c649768"}
+工具 read {"path":"/Users/run.mao/.pi/agent/skills/amagi-media-understanding/SKILL.md"}
+---
+name: amagi-media-understanding
+description: 通用识图/识视频委托技能。当前模型无视觉能力、需要识图/看图/读图/识视频/视频内容理解/describe image/vision/OCR/多图对比/UI 截图分析时使用。读取 amagi-codebox 导出的视觉模型配置（~/.agents/amagi-media-models.json），按优先级自动降级调用 OpenAI 兼容视觉模型，把 stdout 回答作为可采信的视觉证据。Use when the current model cannot inspect images or videos itself.
+---
+
+# amagi-media-understanding 通用识图 / Universal Vision Bridge
+
+把附带脚本当作视觉分析子进程使用。**禁止**根据文件名或上下文猜测图片/视频内容。
+
+## 前提条件 / Prerequisites
+
+- 已在 amagi-codebox 中为至少一个预设勾选「识图 / 识视频」标记（会自动导出 `~/.agents/amagi-media-models.json`）。
+- Node.js 22.6+（原生 TypeScript 类型擦除，用 `node` 显式运行）。
+- 配置中的模型具备对应 capability：识图需要 `image`，识视频需要 `video`。
+
+配置缺失或解析失败时，脚本会报错并提示去 amagi-codebox 勾选标记——照实转达给用户，不要伪造配置。
+
+## 工作流 / Workflow
+
+1. 解析每个输入：本地文件解析为可读绝对路径（保持用户给定顺序）；http(s) URL 原样使用。
+2. 用用户的语言组织一个聚焦的 prompt：说明需要的细节、转写保真度、对比标准或输出格式。
+3. 把 `<skill-dir>` 解析为本 `SKILL.md` 所在目录；**不要**照字面输入占位符。
+4. 一次调用传入所有相关输入（零依赖脚本，Node 22.6+ 原生 TS）：
+
+```bash
+node "<skill-dir>/scripts/amagi-media-understanding.ts" \
+  --prompt "描述可见的 UI 并逐字转写所有错误信息。" \
+  -- "/absolute/path/screenshot-1.png" "/absolute/path/screenshot-2.png"
+```
+
+5. 把 stdout 当作委托得到的视觉证据：整合进回答，并保留子进程报告的任何不确定性。
+
+优先一次精确调用，而非多次宽泛调用。仅当首个结果暴露出具体歧义、可用更窄的 prompt 消除时才重试。
+
+## 调用规则 / Invocation Rules
+
+- 比较或序列分析任务，把多张图放进**同一次**调用。
+- 需要精确文字时要求逐字转写。
+- 跨图归因重要时，在 prompt 中用参数顺序指代图片（「第一张图」「第二张图」）。
+- 所有路径加引号，并在输入路径前使用 `--` 分隔。
+- 除非用户另行要求，不修改、缩放或转码原始输入。
+- `--mode image|video` 可按扩展名自动推断；混合输入或扩展名缺失时显式指定。
+- `--model <id或model名>` 显式指定模型（不降级）；缺省按 `priority` 升序构建候选链，失败自动降级。
+- `--list` 列出配置中的模型（脱敏，不显示 api_key），用于先确认可用模型。
+- 脚本每 15 秒向 stderr 打一次进度，默认 180s 超时（低于常见的 10 分钟父工具上限）；用 `--timeout <秒>` 覆盖，`0` 禁用。
+- 代理自动继承 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，无需额外配置。
+- 视频单文件 ≤8MB，超限脚本会报错；需要分析更长视频时，先让用户裁剪或用其他工具抽帧后再走识图模式。
+- 超时不构成视觉证据；照实报告，不要猜测内容。
+- **不掩盖脚本失败。** 配置缺失、文件不可读、鉴权失败、模型不可用、空响应都要如实报告（脚本会列出每个候选模型的错误摘要），禁止编造视觉细节。
+
+## 复核三重判定 / Review Triple-Check（下「未修复/重叠/误写」类结论前必走）
+
+整图缩略复核对**小字与连线落点判读系统性不可靠**（实战 3 起误报：折线终点实际落在失败框内被报「未匹配」、紧贴框缘的箭头起点被报「从外框引出」、连读文字被报叠字——全部被像素级放大推翻；会话后段建立三重判定后同类误报归零）。复核/验收类任务下否定性结论前，必须依次完成：
+
+1. **整图缩略初筛**：只标记可疑点，不下结论。
+2. **局部 4 倍裁剪放大终审**：对每个可疑区域用 PIL crop+resize（或等价工具）生成局部放大图后再判读。
+3. **源文件坐标取证**：与源文件（SVG 的 text/rect/path、HTML 元素位置）坐标比对——落点/对齐/重叠类质疑以坐标证据为准，不以目测为准。
+
+缩略图上 `<15px` 文字与 `30px` 级连线落点的目测判读一律不可信；跳过 2/3 两步直接下否定结论＝大概率误报。正例形态：「4 倍放大确认 (416,506) 按 rect 框位 (488~552) 落在失败框内」——结论中必须出现坐标级证据。
+
+## 可选 prompt 文件 / Optional Prompt File
+
+指令较长或含大量引号时，写入一个已有文本文件后运行：
+
+```bash
+node "<skill-dir>/scripts/amagi-media-understanding.ts" \
+  --prompt-file "/absolute/path/question.txt" \
+  -- "/absolute/path/image.png"
+```
+
+`--prompt` 与 `--prompt-file` 二选一。
+
+## 配置文件格式 / Config Format
+
+脚本消费 amagi-codebox 导出的 JSON 配置，字段定义见 [references/config-format.md](references/config-format.md)。可用环境变量 `AMAGI_MEDIA_MODELS` 覆盖配置路径。

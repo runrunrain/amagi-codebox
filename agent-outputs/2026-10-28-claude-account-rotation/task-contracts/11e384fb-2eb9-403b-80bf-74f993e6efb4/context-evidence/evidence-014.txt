@@ -1,0 +1,55 @@
+{"id":"02c6fafd","role":"toolResult","toolCallId":"call_18f800ac9a0d4323a1b55483","paths":["/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/phase1a-report.md"],"sourceDigest":"bd6814a1d53ea03a7522a72b3bcff4fea1e9ba326613a4f8586510e16bd546fb"}
+工具 read {"path":"/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/phase1a-report.md","offset":81}
+
+## 给 1b 接线任务的接口清单
+
+```go
+// 构造（全部依赖注入；路径/后端不得默认触碰真实凭据）
+claudeaccounts.NewService(claudeaccounts.Deps{
+    Pool: claudeaccounts.NewKeychainPoolStore(),          // 生产 Keychain
+    Native: claudeaccounts.NewCombinedNativeStore(
+        claudeaccounts.NewFileCredentialStore(paths, nil), // paths 可用 DefaultFileCredentialPaths()
+        claudeaccounts.NewClaudeKeychainAccess()),
+    LockPath: lockPath,      // DefaultPoolLockPath()
+    PiAuthPath: paths.PiAuthPath,
+    Gate: gateImpl,          // 需 1b 提供：SharedServiceClaudeCredentials admission
+    Quiescence: quiescenceImpl, // 需 1b 提供：进程观察器
+    Identity: claudeaccounts.NewHTTPIdentityProvider(client),
+    HTTPClient: claudeaccounts.NewConstrainedHTTPClient(nil),
+})
+
+// 公共 API
+CaptureFirstAccount(ctx, alias, expectedRevision) (AccountDTO, error)
+BeginEnrollment(ctx, expectedRevision) (enrollmentID, error)
+CaptureEnrolledAccount(ctx, enrollmentID, alias, expectedRevision) (AccountDTO, error)
+CancelEnrollment(ctx, expectedRevision) error
+HarvestActive(ctx, expectedRevision) (AccountDTO, error)
+Swap(ctx, SwapRequest{TargetID, Reason(manual), ExpectedGeneration, ManualRespectSeconds}) (SwapResult, error)
+ReconcileExistingTransaction(ctx) (ReconcileOutcome, error)   // 无 gate：混合态返回 roll-forward-pending
+RecoverAtStartup(ctx) (ReconcileOutcome, error)               // 带 gate 恢复（启动时调用）
+InspectNativeState(ctx) (*NativeStateReport, error)           // 零写入分类
+AdoptCurrentLogin(ctx, expectedRevision) (AccountDTO, error)  // 外部换号显式采用
+RefreshStandbyGrant(ctx, accountID, GrantPi|GrantClaude) error
+RemoveAccount / RenameAccount(ctx, id[, alias], expectedRevision)
+LoadPool(ctx) / ListAccounts(ctx)
+
+// 需 1b 实现的注入接口
+type MutationGate interface{ Acquire(ctx, why) (release func(), err error) }
+type QuiescenceChecker interface{ Check(ctx) error }   // 返回 *Error（SESSIONS_ACTIVE/EXTERNAL_SESSION_UNCERTAIN）
+
+// 值对象（接 AppConfig.ClaudeAccountRotation，JSON claude_account_rotation）
+DefaultRotationConfig() / (*ClaudeAccountRotationConfig).Validate() / IsZero()/EffectiveEnabled()
+```
+
+## 遗留项与风险（发布门，design §8/§10.2）
+
+1. 【待实测】profile 端点响应字段契约（accountUuid/organizationUuid/seatTier 命名）——解析失败返回 IDENTITY_UNVERIFIED，真机验证前不得开放生产 capture。
+2. 【待实测】Claude Code 刷新协议（client_id/scope/expiresAt 单位）与 Keychain `claudeAiOauth` 内 token 字段名（accessToken/refreshToken/expiresAt）——CC 刷新与 CC grant 过期判定分别由协议门与「字段缺失视为未过期」保守处理。
+3. 【待实测】Pi proper-lockfile 兼容锁与 Pi 安装版本的竞争（当前实现 mkdir+mtime 形态，v1 不清理未知锁 → busy）。
+4. GC 前置：`.claude.json` oauthAccount 的 emailAddress 字段名为展示用途（邮箱仅展示不作主键），真机核对。
+5. Keychain locator SecItemCopyMatching 枚举会触发系统授权弹窗（预期行为，服务保持 busy）。
+6. 上游设计已知限制沿用：运行中会话热切不承诺（pi-black 身份缓存）；本包不做 lease 接线，swap 的会话门禁依赖 1b 注入的 Gate/Quiescence 生效。
+
+## 回滚方式
+
+删除 `internal/claudeaccounts/` 目录 + 还原 CHANGELOG.md [Unreleased] 段即可；无共享契约改动、无 go.mod 变更、无迁移。

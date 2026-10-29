@@ -1,0 +1,24 @@
+{"id":"9eba8817","role":"assistant","paths":[],"sourceDigest":"c3186e54675767711d4dc94e5d4b1a00a1bfc702614225ffd9f0433f7c2cd9e6"}
+## Phase 1 Gate 进行中
+
+| 步骤 | 状态 | 结果 |
+|---|---|---|
+| Phase 1c 前端 | ✅ 已验收 | `3acbc90`（9 文件 +2986 行，59 新测试） |
+| 集成验证 | ✅ 通过 | go 48 包全绿 + 前端 390 全绿 + 双端构建 exit 0 |
+| **diting full 审核** | 🔄 执行中 | 阶段 diff 63 文件 +12369 行，7 个攻击面 |
+
+## diting 的重点攻击面（按风险排序）
+
+1. **共享 lease 集成**——Headroom drain 限定是否被破坏、admission 生命周期（早释放/泄漏/代际竞态）、absent 路径零回归、blocked 堵截漏网入口
+2. **事务恢复**——§4.5 决策表逐行一致性、未知投影不盲覆盖、RefreshIntent 不伪报成功
+3. **敏感边界**——token/hash/完整邮箱进日志·DTO·事件·前端 store 的任何路径
+4. **facade 安全**——requestId 幂等、automatic reason 不可伪造、raw 服务不入 Bind
+5. **原生文件纪律**——字段级 patch 非拥有字段保留、原子写五步
+6. **前端状态机** + **7. 测试有效性**（防恒真断言）
+
+## 审核后的两条分支
+
+- **VERDICT: PASS** → Phase 1 收口：合并 worktree 分支回主树（与 piAdvisor 在途改动无文件冲突），然后拆 Phase 2（额度探测）任务书
+- **VERDICT: FIX** → 按 findings 分流：小问题我直修，跨文件问题合并一个修复批次回派 luban，修复后增量复审一次
+
+Phase 1 交付后你将获得的能力：**双账号录入（一次性）→ 一键切换（Claude Code + pi 双端凭据同步换）→ 池损坏/会话占用的安全语义**。自动轮换在 Phase 3。等 diting 报告即可。

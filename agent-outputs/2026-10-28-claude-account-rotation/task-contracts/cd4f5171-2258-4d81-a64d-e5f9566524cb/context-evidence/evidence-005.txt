@@ -1,0 +1,45 @@
+{"id":"fb695d0d","role":"assistant","paths":[],"sourceDigest":"7a8d81db030b8300717f73ff11bb7966e87ca24b4f7f9128c2b275c399911287"}
+调查完毕。图片没有传到我这边（这条消息里没有附件），所以「pi-black」我只能从本机配置反查——**`~/.pi/agent/models.json` 的 23 个 provider、`auth.json` 的 7 个条目、CodeBox `models.json` 的全部 provider 里都没有 "pi-black" 落地痕迹**，这个后面需要你确认。先给结论和设计。
+
+---
+
+## 结论：可行，provider center 是正确挂载点，但要补 4 块拼图
+
+### 项目里已有的可复用基建（比想象中多）
+
+| 基建 | 位置 | 对轮换方案的意义 |
+|---|---|---|
+| **Keychain/DPAPI 凭据库** | `internal/secrets`（service=`amagi-codebox.providers`） | 账号池的存储载体，直接可存两套 OAuth 凭据 |
+| **额度探测框架** | `app_quota_probe.go` + `internal/config/quota_probe.go` | 家族判别+单飞+冷却+缓存已就绪，**Codex 订阅 5h/周窗口已是先例**——照葫芦画瓢加 `claude-sub` 家族 |
+| **pi 登录卡片** | `internal/piconfig/login.go` + `pi_login_presets` | 已能发现/展示 auth.json 的 `anthropic` OAuth 条目（你现在的 Opus-5-5/Sonnet-5-5 预设就是它） |
+| **auth.json 双向同步** | `launcher.SyncWSLPiLoginAuth`（SHA-256+mtime、新者为准） | 证明「换入换出 auth.json + 防刷新竞争」的工程先例，macOS 侧轮换可复用同一套判定 |
+| **共享服务 lease** | `SharedServiceCoordinator`（headroom 8787/8788 已用） | 轮换与「会话启动中」的互斥门禁已有现成机制 |
+| **本地代理子进程模型** | `internal/headroom`（loopback、进程监管、端口管理） | 若走网关路线，进程管理范式直接照抄 |
+
+### 缺的 4 块（这就是要开发的）
+
+1. **Claude 订阅账号池**：provider center 目前 OAuth 模式（`AuthTypeOAuth`）语义是「透传本机唯一登录」——launcher 直接清空所有 `ANTHROPIC_*` env 让 Claude Code 用原生凭据。没有多账号概念。
+2. **凭据换入换出原语**：macOS 上 Claude Code 的 OAuth 在 Keychain（`Claude Code-credentials`，已确认你机器上存在）；pi 的在 `~/.pi/agent/auth.json` 的 `anthropic` 条目，且 **pi 自己会刷新 token 并回写**。切换 = 双写，换出前必须先把磁盘上被刷新过的新 token 回收进池（否则下次切回用旧 refresh token 就作废了）。
+3. **claude-sub 用量家族**：用 OAuth token 探测 5h/周窗口（aswap 已实证该 API 存在且响应头带 rate-limit 判定）。
+4. **轮换引擎**：阈值触发 + 冷却/迟滞 + 手动切换尊重（aswap 的行为设计值得整段抄）。
+
+### 两条实现路线
+
+**路线 A：账号池 + 热切换**（推荐先做，≈ cc-switch v4.0.21 + aswap 的合体）
+- Provider center 新增「Claude 订阅账号」卡片组：每账号一条 Keychain 记录（Claude Code 凭据 JSON + pi auth.json anthropic 条目各一份）
+- 切换动作 = 原子双写（Keychain + auth.json），换出侧先做 mtime/SHA 回收
+- pi 侧联动对你**零额外配置**：pi 登录卡片发现的 `anthropic` 条目永远是「当前活动账号」，你现有的 pi-login 预设不用动
+- 自动轮换复用 quota probe 冷却 + SharedServiceCoordinator lease
+
+**路线 B：本地统一网关**（终态，工程量大）
+- headroom 式本地 anthropic 兼容代理持有双账号池，按余量/429 自动 failover；Claude Code 和 pi 都指 `http://127.0.0.1:PORT`
+- 运行中会话即时生效、零文件替换，**而且这大概率就是 "pi-black" 该有的形态**——一个指向本地网关的 pi provider 卡片
+- 代价：网关要代管 OAuth 刷新与流式转发，灰色程度与 aswap 同级
+
+### 三个必须先回答的问题
+
+1. **"pi-black" 是什么？** 图片没收到。是你在 pi 里已建/打算建的 provider 名？指向本地代理还是远端（`anthropic-relay` → `47.103.109.56:8081` 是它吗）？还是第二台机器？
+2. **运行中会话的热切语义需实测**：pi 的 token 解析时机（每请求重读 vs 启动载入内存）我没法从 dist 完全确认，Claude Code 同理。保守承诺是「新会话生效」，实测后才知道运行中会话能否原地切换（aswap 声称 Claude Code 可以）。
+3. **WSL 要不要覆盖？** 现有 `SyncWSLPiLoginAuth` 是 Windows↔distro 双向，加了轮换就变三方竞争，复杂度上一个台阶。建议 v1 明确只做 macOS 本机。
+
+把 pi-black 的截图重发一下，我可以把路线 A 的任务书直接拆出来派给 luban。

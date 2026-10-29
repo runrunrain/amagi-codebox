@@ -1,0 +1,62 @@
+{"id":"15aca6ee","role":"user","paths":[],"sourceDigest":"f804d8ccc708ca6e3dde766be280215de09b1a8bc61bdaebe512eb033979bbf0"}
+[task_submit 完成 luban/11e384fb] 状态: done｜任务: 「# Phase 1b 实现：lease 接线 + App facade + 配置持久化 + 启动」
+## ACHIEVEMENT:
+
+- **验收｜`go vet ./...` 干净 + `go build ./...` 通过** → 两者 exit 0（worktree 根实测）→ ✅
+- **验收｜`go test ./internal/remote ./internal/launchplan ./internal/launcher ./internal/config .` 全绿** → 全 ok（remote 27.4s / launchplan 1.8s / launcher 2.5s / config 2.4s / 根包 10.3s）→ ✅
+- **验收｜`go test -race ./internal/remote ./internal/claudeaccounts` 全绿** → ok（32.5s / 2.2s）→ ✅
+- **验收｜全量 `go test ./...` 无回归** → **48 包全 ok、0 FAIL**（1a 基线 46 包）；另 windows/linux/darwin-nocgo 三平台编译通过 → ✅
+- **验收｜设计 §6.3 接入表逐行有 文件：行号 落点** → 报告「§6.3 接入表逐行对照」7 行全覆盖（kind 枚举/coordinator 白名单+drain 限定/Claude+Pi 桌面 admission+复核+提升/planner 纯读 admission/adapter kind 映射+代际复核/executor 边界经注入实现/R3 环境边界）→ ✅
+- **验收｜§7.2 facade 方法逐个有测试锚点** → 10 方法（claude_accounts_facade.go:291-625）× 9 项 facade 测试逐一锚定（requestId 幂等/冲突、lease 下 SESSIONS_ACTIVE、inspect 零写、敏感扫描）→ ✅
+- **验收｜启动时序（needs-reconcile 关闭入口、恢复后放行）** → `TestLaunchSession/LaunchPiSession_BlockedWhilePoolNeedsReconcile` + `TestLaunchEntries_ReopenAfterRecovery` 真实入口验证 → ✅
+- **交付物 1｜worktree 改动（代码+测试+CHANGELOG+wailsjs）** → 16 修改 + 5 新增（22 项新测试）；按 [amagi worktree] 注入段未 commit，留工作区供 Leader 汇总 → ✅
+- **交付物 2｜报告** → `agent-outputs/2026-10-28-claude-account-rotation/phase1b-report.md`（worktree 内，按任务书机器注入段声明路径；含接入点对照表、1c 接口清单、验证输出、遗留项）→ ✅
+
+**偏差声明（均有依据，报告内详述）**：①bind_list.go 未加绑定对象——设计 §7.2 规定 facade 挂 App、raw 服务不入 Bind，已改为 bind_manifest_test.go 分类断言登记 8 个 mutation；②wailsjs 为按生成器格式手写（wails CLI 不可得+无网络），已过 `vue-tsc --noEmit` 类型闸门，1c 首次 wails build 再生即收敛。
+
+**未覆盖/风险**：真机发布门沿用 1a（profile/CC 刷新契约/Keychain locator 待实测）；进程观察器保守匹配可能误命中（方向安全）；外部终端用户 shell 内变量不可控（lease+观察器兜底）。
+
+**建议下一步**：Leader 审查 worktree diff（新增 claude_accounts_*.go ×4 + coordinator/config 测试 ×2 + 修改 16 文件）后合并；1c 可直接消费报告 §四 的绑定/事件/错误码清单。
+
+<!--AMAGI:DONE-->
+
+📋 证据（自动采集·摘要）
+• 测试 go test ./... → unavailable（未取得可用检查事实）（0.0s）
+  检查 chk-auto-baseline-test-fddb427d（未重复执行）
+  写面感知基线选择：写面感知回退全量：scripts.test 无声明/不可读——无法安全构造子集命令，保守全量；own 责任测试 87 项按发现全集推导（不收窄宇宙，供豁免守卫）；执行入口：go test ./...（来源：go.mod，探测——项目未声明 verification.testCommand；guarded 入口/资源预算须在 amagi.json 声明）；资源环境：未声明（宿主 NODE_OPTIONS 等不 …（节选，详情见采集归档）
+[linked worktree] cwd=/Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation 为链接工作树（主仓库 /Users/run.mao/workpace/amagi-codebox）；diff/status 仅覆盖本工作树检出，不含主检出与其他 worktree
+[产物摘要] 改动范围供抽查，非验收替代
+路径基准：worktree /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation（分支 amagi/claude-account-rotation）
+• 净变化（vs 任务启动快照）：新增 7 · 修改 16 · 删除 0；登记命中 19，窗口内未归因 4，↔sib 0，⚠ext 0
+  声明写面 vs 实测：登记 30 处（仓库内 20 · 仓库外 10）→ 命中 19；未命中 1（内容未变或被 git 忽略不可见）
+  未归因/仅兄弟登记的变化不能视为本任务独立产出。
+  基线已有 1 处未提交改动（已入启动快照基准，不计入净变化）；diff 段仍为 vs HEAD 口径。
+• diff（任务写面登记 20 处，登记覆盖有限；相对 HEAD（含派发前已有改动），净增量见净变化段）：13 files changed, 430 insertions(+), 25 deletions(-)
+• 未跟踪新文件 7 处（git status ?? 条目 ∩ 本任务写面登记；共享树其余未跟踪改动不列入）:
+[采集详情] /Users/run.mao/.pi/agent/amagi/artifacts/11e384fb-2eb9-403b-80bf-74f993e6efb4/evidence.md（按需 read；检查日志仍由回执引用）
+
+[worktree amagi/claude-account-rotation · 复用] /Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation（base 73cff33c）
+依赖复用（portable）: node_modules → 外部符号链接已接入/保留（tool-enforced 按真实落点校验写入；guarded shell 非沙箱）
+净增量（相对检出基线 73cff33c，含树内提交）:
+CHANGELOG.md                              |   1 +
+ app.go                                    | 188 +++++++++++++++++++++--
+ bind_manifest_test.go                     |  27 +++-
+ control_wiring.go                         |  28 +++-
+ frontend/wailsjs/go/main/App.d.ts         |  20 +++
+ frontend/wailsjs/go/main/App.js           |  40 +++++
+ frontend/wailsjs/go/models.ts             | 240 ++++++++++++++++++++++++++++++
+ headroom_facade.go                        |   9 ++
+ internal/config/service.go                |  58 +++++++-
+ internal/config/types.go                  |   8 +-
+ internal/launchplan/types.go              |   3 +
+ internal/remote/control_types.go          |   5 +
+ internal/remote/remote_session_adapter.go |  44 ++++++
+ internal/remote/shared_coordinator.go     |  20 ++-
+ launch_planner.go                         |  39 ++++-
+ pi_login_launch.go                        |  25 +++-
+ 16 files changed, 730 insertions(+), 25 deletions(-)
+未跟踪新文件(8): agent-outputs/2026-10-28-claude-account-rotation/, amagi-task/, claude_accounts_facade.go, claude_accounts_facade_test.go, claude_accounts_launch.go, claude_accounts_launch_test.go, internal/config/rotation_config_test.go, internal/remote/shared_coordinator_credentials_test.go
+[worktree 未提交] 树内未提交 50 个路径，未自动删除——处置（回流/合并/显式丢弃）前请勿删除工作树。
+[lease] 所有权已释放（任务 done），目录保留供 Leader 检查；回收走既有 worktree 清理语义（脏树 fail-closed，不自动删树）；集成责任在 Leader（审查 diff 后合并）。
+[内核视图 v1] taskId=11e384fb stateSeq=9 revision=0 execution=done settlement=incomplete acceptance=unreviewed 承诺=guarded receipt=receipt-7540ae00-be88-43c7-825b-b0e98fff84c6(incomplete/unreviewed) missing=[chk-auto-baseline-test-fddb427d] 可waive=[chk-auto-baseline-test-fddb427d]（accept 的 waivedCheckIds 取自此集合，按接受决策裁剪）（sync 返回与后台完成通知同版内核投影，K5a）
+[子任务用量] 入 286.1k 出 131.4k 缓存读 42155.1k 缓存写 0 调用 201

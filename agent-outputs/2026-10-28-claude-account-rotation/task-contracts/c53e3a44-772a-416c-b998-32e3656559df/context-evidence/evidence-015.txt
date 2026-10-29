@@ -1,0 +1,220 @@
+{"id":"16bc5f12","role":"toolResult","toolCallId":"call_f25abdc2ac184c06ad1e4081","paths":["/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/phase1-diting-review.md"],"sourceDigest":"0fcf6090946b14112ceffda43cc8080beb74d654d1bd0c5a98de5a43e3368109"}
+工具 read {"path":"/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/phase1-diting-review.md"}
+# Phase 1 Gate 独立审核（diting · full）
+
+## 结论与范围
+
+**FIX：12 Major、3 Minor。** 不建议把当前隔离实现作为 Phase 1 通过；先修复门禁交接和恢复状态，再验收账号切换。
+
+- 唯一设计基线：同目录 `design.md`（全文读取，§1.3/§3.3/§4/§6.3/§7.2 对照）。
+- 审核主体：同目录 `phase1-full.diff`（全文 13252 行已读取），基线 `0634414` → `3acbc90419de82560e78c1d0fc5c0709f2a0a0f6`，63 文件、+12369/-25。
+- 交叉输入：同目录 `phase1a-report.md`、`phase1b-report.md`、`phase1c-report.md`。报告是声明，不代替源码/执行事实。
+- 源码路径基准（以下定位均相对此目录）：`/Users/run.mao/workpace/amagi-codebox/.amagi-worktrees/claude-account-rotation/`。
+- `git diff 0634414..3acbc90 --no-ext-diff | shasum -a 256` 与输入 diff 的 SHA-256 一致：`ff94a4108ea51e8535d6990bac4a993d3dcf9487de034571c94d865e7db65570`。工作树 tracked 文件无改动；两个既有未跟踪报告/任务目录未触碰。
+- 以下反例除特别注明外，均为**静态实际调用路径证实，未另写复现程序**；不是声称已在真机触发。遵守只读审核，不写修复、不编写项目测试、不接触真实凭据。
+
+## Findings
+
+### F01｜Major｜mutation 释放与门禁缓存刷新之间能启动半切换会话
+
+**定位**：`claude_accounts_launch.go:79-104,206-241,274-292`；`claude_accounts_facade.go:240-241,397-404`；`internal/claudeaccounts/swap.go:73-104`。
+
+**触发**：已管理池发生部分写入失败且 journal 保留。Service 返回前释放 mutation admission；App 仅在 Service 返回之后调用 `refreshClaudeAccountsCache`。在两者之间插入桌面 launch（或 remote admission 检查）。另一种入口是 launch 已读出 managed，尚未取得 admission 时 mutation 完成。
+
+**实际影响/证据**：launch 只读旧缓存，无 journal、旧 generation；coordinator 只知道 mutation 已释放，不知道池已 blocked。`beginClaudeCredentialsClaim` 取 admission 后不重读 ready；外部 recheck 和 embedded 提升只比同一缓存的 generation。失败事务通常不增加 generation，因此三者均可能放行混合认证。首次 capture/BeginEnrollment 也有 absent/managed→新状态的类似交接窗口。remote 在 absent 时构建的不含凭据 admission 的旧计划，还能绕过仅在 admission 循环中的 freshness 检查（`internal/remote/remote_session_adapter.go:553-590`）；executor 没有独立的凭据 ready 校验。
+
+**最小修复**：在 mutation 释放之前发布权威 ready/blocked/generation；launch 取得 claim 后再次校验同一权威状态。对 absent→managed 的旧计划、无凭据 admission 的受影响计划也在执行边界校验，不只检查已有 kind。用精确屏障覆盖「失败留 journal→释放→launch→缓存刷新」及「absent 计划→首次 capture→执行」。
+
+### F02｜Major｜首次启用前已运行的 CodeBox 会话被静止检查豁免
+
+**定位**：`claude_accounts_launch.go:208-209,367-421,428-430`；`internal/claudeaccounts/service.go:464-474`。
+
+**触发**：无池时启动 Claude/Pi（不持凭据 lease），保持运行，再首次 capture / begin enrollment / swap。
+
+**实际影响/证据**：Quiescence 把 `Sessions.List()` 的所有 PID 及后代标为 attributed，并无条件跳过这些消费进程。它假定 coordinator 已有对应 lease，但 absent 时从未创建该 lease。于是 mutation gate 没有用户、观察器也跳过已有会话，能在旧 Pi/Claude 仍运行时启用管理并继续换号。UI 的“请先退出”不能代替后端 enforcement；这直接违反 §1.3-7 和 §4.3 的所有消费进程静止条件。
+
+**最小修复**：启用/恢复时纳入先前已运行的受影响会话；静止检查不能仅凭“属于 CodeBox”豁免，必须证明对应进程树已结束或持有会阻止 mutation 的有效 lease。正式测试从 absent 的真实启动状态进入 capture，而非预置 managed cache。
+
+### F03｜Major｜journal revision 从未用于最终复核，二次 harvest 的 before 也未更新
+
+**定位**：`internal/claudeaccounts/swap.go:107-131,149-151,170-190,226-255`。
+
+**触发 A**：最终一次 source read 后、取得 Pi 短锁前，原生槽位刷新为 A′。**触发 B**：第一次 harvest 后到 `current2` 之间发生刷新，代码进入第二次 harvest；随后第一处写入失败或进程崩溃。
+
+**实际影响/证据**：A 中 `ExpectedRevisions` 只被存储/赋值，取得原生锁后没有任何比较即 Patch，覆盖未回收的新 token。B 中第二次 harvest 的 OwnedProjections 返回值被 `_` 丢弃，`journal.Before` 仍用第一次的 `sourceOwned`，而 `ExpectedRevisions` 已是新版；原生 A′ 对 before/after 均 unknown，原本应全 before 的可恢复事务被卡死。不是要求 hash 充当全局 CAS，而是设计已要求的最后复核和 before 一致性根本缺失。
+
+**最小修复**：在短提交锁内复核当前整文件/受管 revision；漂移则退出/重采集，不能直接写。每次重新 harvest 必须同步替换 sourceOwned/sourceRevs，journal 的 before 和 expected 必须来自同一次快照。
+
+### F04｜Major｜取消录入会清除唯一恢复标记并错误重开启动入口
+
+**定位**：`internal/claudeaccounts/service.go:435-460`；`claude_accounts_launch.go:98-104`；`claude_accounts_facade_test.go:322-359`。
+
+**触发**：开始录入 B 后，原生已是 B 或 CC/Pi 混对，capture 失败，然后取消录入。
+
+**实际影响/证据**：CancelEnrollment 不取 mutation gate、不检查 native，无条件清 transaction；policy 随即回 managed。池仍显示 active=A，实际可消费 B 或混合认证，且 UI 不进入 needs-reconcile。§4.1 明确要求漂移时保持 needs-reconcile。现有 `TestFacade_BeginEnrollmentAndCaptureFlow` 恰好用原生 B+capture 失败触发此场景，却断言取消后无 journal、policy=managed；本轮复跑该测试仍绿，说明它锁定了错误行为。
+
+**最小修复**：取消走 mutation/静止门，读取并分类当前投影；仅证明仍与活动源一致时清除 enrollment，变化/无法验证时保留可人工恢复的状态与证据。修正相反的测试断言。
+
+### F05｜Major｜换入目标只检查旧身份证据，刷新后的双 grant 未验证
+
+**定位**：`internal/claudeaccounts/harvest.go:128-175`；`internal/claudeaccounts/service_swap_test.go:155-185`。
+
+**触发**：目标 standby 自录入后已被撤销/失效，或 Pi grant 刷新后需证明新 token 身份。
+
+**实际影响/证据**：ensureTargetReady 仅比较 capture 时的 UUID 字符串并检查存储的 health，整个函数不调用 IdentityProvider。即使刚刷新出新 token，也直接写入生产槽位并宣布切换完成；未过期但已撤销的 token 同样会被当 ready。设计 §4.4 明确“准备目标…验证目标双端身份”。现有 expired-target 测试没有给 `pi-a-fresh` 建立任何 profile 映射仍成功，直接证明此门不存在（本轮领域测试复跑通过）。
+
+**最小修复**：刷新存池后、原生写入前分别验证目标两 grant，与目标身份/组织及目标本地 identity 配对；失败不写原生。增加刷新后 identity 不可验证/不一致和未过期已撤销的反例。
+
+### F06｜Major｜恢复未完成也返回 done；restore-source 全 before 会留下 journal
+
+**定位**：`claude_accounts_facade.go:254-258,541-579`；`internal/claudeaccounts/reconcile.go:352-360`；`internal/claudeaccounts/swap.go:60-68`。
+
+**触发 A**：journal 存在，complete-target 遇到运行 lease 或外部进程。**触发 B**：崩溃于 prepared 后、第一处写入前，原生仍全 before，点击 restore-source。
+
+**实际影响/证据**：A 中 RecoverAtStartup 返回 `roll-forward-pending + ReasonCode` 且 err=nil；facade 丢弃 outcome，通用 runner 标 `done/commit/changed=true`，UI 宣告恢复成功但 journal 和阻塞仍在。B 中 target=source=当前 active，Swap 在 reconcile 之前命中 no-op 返回，同样 done，但 journal 未清、入口永远仍 blocked。`complete-target`/`restore-source` 还都没有实际验证传入的 expectedRevision（参数仅进入 digest），陈旧恢复命令可作用于已变化的事务。
+
+**最小修复**：恢复动作消费 outcome，pending 映射 blocked 而非 done；done 必须以动作结果、journal 已清、三处一致为依据。先处理未结事务再允许 no-op；在同一锁内校验 expectedRevision 和所选 journal。
+
+### F07｜Major｜remote/restart 与外部 Claude 路径漏掉受管身份环境边界
+
+**定位**：`launch_planner.go:309-358`；`pi_login_launch.go:362,394-425`；`app.go:2724,2838-2841`；`internal/launcher/service.go:110-144,263`。
+
+**触发**：受管理池中选择 B，通过 remote create/restart 启动，并继承 `CLAUDE_CODE_ACCOUNT_UUID=A`、`CLAUDE_CODE_DEVICE_ID`、`CLAUDE_CONFIG_DIR` 或 `CLAUDE_CODE_OAUTH_TOKEN`；或通过桌面外部终端路径启动 Claude。
+
+**实际影响/证据**：身份清理函数唯一 Claude 调用在 embedded 分支。Claude planner 仅增加 admission，从未调用该清理；Pi login planner 调 `piLoginEnvOverrides` / `piLoginReAnchorSpec` 时未传新增 extra keys。外部 Claude 直接 `external.LaunchGuarded`，没有 managed extra env 输入；旧 ComputeEnvOverrides 只清 ANTHROPIC_API_KEY/AUTH_TOKEN/BASE_URL，不清上述变量。lease 能防换号，不能修正启动时已错误的身份/根/认证，报告 1b §一“R3 ✅”不成立。此为代码中确定的路径遗漏，不依赖真机 profile 协议。
+
+**最小修复**：复用一个受管执行边界到桌面 embedded/external、remote create/restart 的 Claude/Pi；必要时拒绝不能证明 canonical 身份的启动。将身份清理置于 shell 初始化之后，不能用观察器代替。以真实计划/最终命令断言这些键不可能覆盖身份。
+
+### F08｜Major｜首次录入、第二账号核对和恢复的异步失败在界面被隐藏
+
+**定位**：`frontend/src/components/provider/ClaudeAccountsSection.vue:36-124,242-244,399-405,444-454`。
+
+**触发**：首次 capture 返回 operationId 后最终 IDENTITY_MISMATCH/IDENTITY_UNVERIFIED；或 enrollment capture 失败；或 recovery operation 失败且池仍 needs-reconcile。
+
+**实际影响/证据**：异步错误只进入 `store.operation`；`errorText` 虽计算了它，但 operation/error 横幅只在最后的 managed/error `<template v-else>` 内。absent、enrolling、needs-reconcile 分支全不渲染；这些错误又不是同步 throw，因此 action catch/toast 不触发。尤其“两端不是同一账号不入池且必须明确指出”的主路径，用户只看到原来的向导和“正在核对”提交提示，看不到失败原因。phase1c 声称组件反馈完整，实际纯 view/store 测试没覆盖模板分支。
+
+**最小修复**：把 operation 过程/失败反馈提到各状态共用区域，或逐分支渲染；以真实组件交互验证 absent/enrolling/reconcile 的异步错误，而不只测试文案函数。
+
+### F09｜Major｜重启/刷新后无法继续持久化 enrollment
+
+**定位**：`claude_accounts_facade.go:96-108,317-325`；`frontend/src/stores/claudeAccounts.ts:71,126-139,247-259,264-271`；`ClaudeAccountsSection.vue:422`。
+
+**触发**：BeginEnrollment 已持久化，主上在原生两端登录 B，然后刷新 Wails 页面或重启 CodeBox。
+
+**实际影响/证据**：enrollmentId 只在前端内存保存；GetClaudeAccounts 只返回 state=enrolling，不返回可续接 ID。重建 store 后 enrollment=null，向导默认 login，而“下一步”函数要求 enrollment 非 null，点击也不推进；即使直接调 captureEnrolled 也抛“尚未开始录入”。后端却要求精确匹配 TxnID 才能保存 B。安全退出依赖有缺陷的 cancel 路径（F04），正常录入不能续接。
+
+**最小修复**：安全 DTO 返回持久化 enrollment 的 ID/阶段，刷新重建向导；后端仍校验 revision/TxnID。不把所有池秘密放进 DTO。覆盖开始录入→重建 App/store→继续保存。
+
+### F10｜Major｜已存在账号池被删除时被当作从未启用，保护静默消失
+
+**定位**：`internal/claudeaccounts/poolstore_keychain_darwin.go:92-95`；`claude_accounts_launch.go:93-94,546-555`。
+
+**触发**：管理已经启用，Keychain 账号池项被外部删除；随后 UI refresh，或应用重启。
+
+**实际影响/证据**：errSecItemNotFound 一律返回 nil,nil，无历史存在性标记；刷新覆盖缓存为 nil，launch policy=absent，账号 UI 也变未录入。§3.3 要求已创建池的 missing 必须区别从未创建，停管告警，不能默默重新生成空池。此路径还能使再次 capture 按空池执行，丢失对旧池/事务的认知。该结论来自明确 missing 分支，不是对 Keychain 弹窗行为的推测。
+
+**最小修复**：维护不含秘密的“曾初始化”标记/可校验存在性记录；missing 报 POOL_MISSING 并 fail closed，恢复/重建须显式确认，不覆盖原生。区分本运行周期和重启后的缺失。
+
+### F11｜Major｜Claude 原生项消失后会 Add 重建，违背 ACL/缺项停止契约
+
+**定位**：`internal/claudeaccounts/nativecc_darwin.go:69-85`。
+
+**触发**：已定位/读取原生项后，它在 update 再次 find 前被删除（外部登出、删除或竞争）。
+
+**实际影响/证据**：C `amagi_cc_update` 的 errSecItemNotFound 分支调用 `SecKeychainAddGenericPassword`，把新 token 写入新项而不是停止。新项没有原项 ACL，且静默重建已消失的原生登录；与 §3.1/§4.4 明确“更新现有 item、不得删后重建、缺失 blocked”及本文件注释相反。fakeKeychain 的 UpdateItem 缺项返回错误，未仿真这个真实 C 分支，所以 fake 测试全绿不能支持生产声明。
+
+**最小修复**：原生 update 的 missing 只返回稳定错误，禁止 Add fallback。池首次创建与原生 credential update 不是同一权限语义；两套 API 必须分开。
+
+### F12｜Major｜进程观察器漏掉 Pi 官方 RPC 入口的进程标题
+
+**定位**：`claude_accounts_launch.go:334-352,405-415`。
+
+**触发**：CodeBox 外存在使用 canonical agent root 的 Pi RPC 进程，系统进程表显示其标题 `pi-rpc`；此时尝试切换。
+
+**实际影响/证据**：观察器逐字段 basename 只能匹配精确 `pi/claude`（及 exe），`pi-rpc` 不匹配，Check 返回 nil。为排除“正常入口会改标题所以实际仍是 pi”的反证，本轮只读核对实际安装源码：`/Users/run.mao/.local/share/fnm/node-versions/v24.21.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/rpc-entry.js:5-10` 明确设置 `process.title = APP_NAME + '-rpc'` 并运行 `main(['--mode','rpc',...])`；该安装 `dist/config.js:471` 默认 APP_NAME 为 pi。未执行真实 RPC，也未读取用户认证。这个入口并不是非相关 Node 程序，却会从扫描中漏掉；其仍存活时原生刷新/身份缓存风险没有被阻止，违反 §4.3 的相关消费者静止条件。1b 报告“宁可误报不漏报”不成立。
+
+**最小修复**：识别官方 RPC/可配置名称及可验证 executable/script/package 路径；相关但无法确认的启动形式返回 uncertain。以官方入口的进程表 fixture 覆盖，不只用 `/bin/pi`。保留人工使用约束，不宣称 ps 可阻止随后外部启动。
+
+### F13｜Minor｜Pi 刷新重建条目，丢失原有未知字段
+
+**定位**：`internal/claudeaccounts/harvest.go:327-332`；`internal/claudeaccounts/oauth.go:111-125`。
+
+**触发**：池内 Pi anthropic 条目含当前版本未知的扩展字段，换入前发生 refresh。
+
+**实际影响/证据**：BuildPiAnthropicEntry 从零只构造 type/access/refresh/expires，整体替换旧条目；与 §3.1 的未知字段保留契约不符。已证明字段丢失，尚无证据断言这些未知字段在当前 Pi 有关键运行语义，故不升级 Major。
+
+**最小修复**：在原 anthropic JSON 上字段级更新已拥有的 token/expiry，保留其余字段；加入含扩展字段的 refresh 用例。
+
+### F14｜Minor｜RemoveAccount 忽略 expectedRevision
+
+**定位**：`internal/claudeaccounts/harvest.go:357-385`。
+
+**触发**：UI 持有 revision=N 的列表，另一操作更新账号快照/别名后，以旧 revision 提交删除该 standby。
+
+**实际影响/证据**：参数完全未参与校验，删除仍成功；与同类 Rename/Capture 的乐观锁语义及 §7.2 接口不一致。当前不删除活动账号，不直接写原生，影响限于保存的 standby 数据。
+
+**最小修复**：锁内、删除前检查 pool.Revision；补 stale revision 零删除负向用例。
+
+### F15｜Minor｜operation 缓存淘汰仍会删除运行中操作
+
+**定位**：`claude_accounts_facade.go:167-187`。
+
+**触发**：缓存超过 128，最旧 victim 尚未关闭 done（可经多个后台请求排队触发）。
+
+**实际影响/证据**：select 的 default 将 victim 追加队尾后 `break` 仅退出 select，仍继续执行下面 delete(op) 和 request 索引删除。于是运行中 operation 查询变 NOT_FOUND，相同 requestId 不再返回原操作，破坏所声明的幂等/在途不淘汰规则。达到阈值后可复核；本轮未作压力运行，且 generation 校验仍限制重复 swap 的写入，故按局部边界 Minor。
+
+**最小修复**：仅删除已完成 victim，正确跳过运行中项，并对全为运行中的情况限制入队/显式 busy，防无限循环或无界缓存。
+
+## 覆盖与无额外 finding 的攻击面
+
+| 攻击面 | 已核内容与证据 | 结论/保留 |
+|---|---|---|
+| 共享 kind / Headroom drain | `shared_coordinator.go:38-50,190-224,299-325`，凭据 kind 追加保留旧值；drain 仍用 Headroom 判据；本轮 `TestCredentialsKind*` 通过 | **该分面未见问题**；不等同整个 launch 集成通过（F01/F02） |
+| admission→lease / exact ownership | 桌面 `control_wiring.go:138-211` 在 PTY 前提升；remote create/restart 传递 sharedAdmissions、沿用 exact owner/runEpoch 转移；v1 route `session_routes_v1.go:101-107` 进入同一 adapter | 持有期间同 kind mutation 的互斥有效；状态交接和 absent 旧计划有 F01。未穷举所有 OS 进程树退出行为 |
+| absent 兼容 | nil service/unsupported/nil pool 均短路；旧 enum 不变；原 piLogin helper 未传 extra 参数时保留原行为 | 静态未见纯 absent 下新环境改写；初始化过渡/误判 absent 见 F01/F02/F10 |
+| 恢复分类表 | `reconcile.go:111-172` before 清、after 提交、mixed 门禁后补写、unknown 保留 journal 停写；原生读取错误不创建空 JSON | 分类核心路径存在；落地状态/最后 revision/取消/恢复反馈见 F03/F04/F06 |
+| RefreshIntent | `harvest.go:228-319` 先存 intent 后请求，响应丢失保留 uncertain；`reconcile.go:333-345` 重启转健康度；测试 response-lost/save-failed 通过 | **未见伪报 refresh 成功的额外路径**；CC 协议/真机竞争属发布门 |
+| 敏感边界 | `types.go:375-399`、facade DTO/事件投影；HTTP 错误不带 body，固定 origin/10s/64KiB/拒 redirect；敏感扫描测试本轮通过 | **未见 token/hash/完整身份快照经这些已查出口泄漏**；不声称已扫描实际机器日志 |
+| facade 权限 | `bind_list.go:16-40` 未绑定 raw Service/PoolStore/NativeStore；Switch reason 固定 manual；inspect 调只读领域入口；同参数在正常缓存内复用 operation | **这些约束未见问题**；恢复结果与幂等淘汰分别见 F06/F15 |
+| 字段 patch / 原子写 | `nativefiles.go:101-212`、`nativefile.go:140-202` sjson 局部修改，临时0600→write→sync→close→rename→目录sync；不 chmod HOME；Renamed 事实测试；patch 测试断言非拥有字段 Raw 保留 | **无额外局部 patch finding**；不代表跨写者原子性（F03）；原生 C 项 missing 行为见 F11；刷新重建条目见 F13 |
+| 前端 pending / 额度 | store 占用错误保留意图，新 requestId+新 generation 重试；组件额度仅后续版本占位；16 码中文映射测试全过；不渲染虚构额度 | **这些局部语义未见问题**；异步错误可见性/持久化续接见 F08/F09 |
+| 一致性/性能/维护 | service mutex+flock 串行，网络有界；不引新依赖；配置指针 Get 深拷贝、Validate 拒未知策略，导出类型无本机池字段 | 未见本轮范围内需额外报告的性能问题；并发覆盖不能由 race 全绿代替时序正确性 |
+
+## 测试有效性与验证可信度
+
+所有本轮命令 cwd 均为上述 worktree，均 exit=0：
+
+1. `go test ./internal/claudeaccounts -count=1` → `ok 2.052s`。
+2. `go test . -run 'TestFacade_|TestClaudeCredentials|TestQuiescence|TestLaunchSession_Blocked|TestLaunchPiSession_Blocked' -count=1` → `ok 1.865s`。
+3. `go test ./internal/remote -run TestCredentialsKind -count=1` → `ok 0.568s`。
+4. `npm --prefix frontend run test -- claudeAccounts` → 3 文件、59 用例通过。
+5. Git diff/hash/status 取证 → 目标 commit/diff 一致，无 tracked 项目修改。
+
+**证据标准**：本轮确实复跑了隔离真实项目入口；没有重跑 Leader 声明的全量 vet/build/race/390 前端测试，后者只作为上游信息，不记为本轮验证。没有写新测试或复现脚本。静态反例可按编号的输入/时序在正式修复测试中复核；本轮不声称动态复现了各 finding。
+
+关键测试缺口不是“缺测试即缺陷”，而是路径证据反向证实：
+- F04 的既有测试明确断言取消漂移后放行，是错误正向期望。
+- F05 的 expired-target 测试允许 profile 完全不认识的新 token，仍断言切换成功。
+- `TestCrossProcessLockConcurrentSingleWinner` 实际只断言 total≥1，不能支撑报告“并发只有一个赢家”；其余测试有真实双持锁互斥断言，不能因此推断 flock 坏了。
+- `TestReadStableRejectsDirectory` 用尚不存在的 subdir，实际测 missing，不是目录；故障注入覆盖 create/sync/close/rename/dir-sync，不是报告所称每一处 write/chmod 步骤。
+- 前端测试是 api/store/view 模型层，未 mount `.vue`；因此无法验证 F08 的分支可见性，也不能把 vue-tsc/build 当作交互验收。
+- fakeKeychain missing 语义与生产 C update 分歧（F11），fake proper-lock 互斥也不能证明与安装版本兼容。
+
+## 最小修复批次建议
+
+1. **安全门禁批**：F01/F02/F03/F04/F10/F11/F12。先收敛权威状态发布、已运行消费者、最后 revision 检查、取消与 missing；禁止未完成期间启动。
+2. **事务验收批**：F05/F06，附 F13/F14。目标双端验证、恢复动作/outcome/revision、no-op 与未结 journal 的顺序；保留未知字段。
+3. **启动一致性批**：F07。所有真实入口同一身份边界；重点测 remote/restart 和外部终端，不只测 helper。
+4. **UI/operation 批**：F08/F09/F15。可见错误、重启续接、缓存幂等，再补真实 Wails/组件交互证据。
+
+批次仅为回派建议，本审核未实施。每批修复后按原编号复核，再复跑相关行为与共享启动回归。
+
+## 盲区、发布门与回滚
+
+- 未接触真实账号、Keychain、HOME 认证文件；未运行真实 CLI、发 profile/refresh/usage 请求。
+- Keychain 弹窗与 locator 真机结果、profile 响应契约、CC refresh 常量/时间单位、Pi proper-lockfile 竞争、pi-black 真实请求身份、进程树退出/外部窗口失联，仍为设计 §10.2/§10.3 发布门，**未因这些未知项本身扣分**。F10/F11 是确定的代码分支，不是要求先有真机实验才能指出的协议未知。
+- 视觉审美未审；前端本轮仅逻辑/模板路径审核，不是截图或浏览器交互签收。没有宣布本机生产可用。
+- 上游曾手写 Wails 绑定，违反设计的再生要求，但报告已显式披露；本轮未发现签名不一致，不仅凭过程偏差新增阻断 finding。仍需具备 CLI 的环境再生比较。
+- 本轮仅写本报告；回滚审核产物只需由 Leader 删除此报告，不涉及项目代码、配置、池或原生凭据。不得用代码回退/旧备份回灌 refresh token 代替事务恢复。
+
+VERDICT: FIX

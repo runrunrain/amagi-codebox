@@ -1,0 +1,2 @@
+{"id":"79ab2013","role":"user","paths":[],"sourceDigest":"a5729c9f60415ab9c4eb0da3c9f1f670a79d517d5cc203817fda327a7cd61633"}
+提供必要信息让fuxi设计方案后实现

@@ -1,0 +1,5 @@
+{"id":"c7129548","role":"user","paths":[],"sourceDigest":"1dac648d3fe43f150b6927c6d674786598e81db3bc6c7e58f7890acec03b782d"}
+关联工作路径：/Users/run.mao/workpace/amagi-pi
+关联工作路径：/Users/run.mao/workpace/amagi-codebox
+我如果有两个claude订阅账号，有没有办法让我在不反复登出旧账号登入新账号的情况下，在一个账号用完时使用另一个账号，轮询使用的方案
+联网查询是否有好的解决方案，要最近两月内的

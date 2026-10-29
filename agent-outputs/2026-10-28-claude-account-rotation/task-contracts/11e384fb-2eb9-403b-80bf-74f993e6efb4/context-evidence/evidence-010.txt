@@ -1,0 +1,32 @@
+{"id":"7a70ba49","role":"toolResult","toolCallId":"call_aba04a80e8e64f6bbe8d8106","paths":["/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/design.md"],"sourceDigest":"8dde8760400af50fcff2721d7e06ec991f4f3f08b42967654b26c0cd1150ed92"}
+工具 read {"path":"/Users/run.mao/workpace/amagi-codebox/agent-outputs/2026-10-28-claude-account-rotation/design.md","offset":458}
+4. 用真实客户端自然过期或测试账户授权流程验证两份 refresh；不手工改真实 expires 诱导刷新。对 standby 的每个 grant 测一次“刷新→安全存池→切入→原生请求成功→原生刷新后 harvest”。核实 CC/Pi 从未互用同一 token 对象。
+5. 手动切 A→B，记录 operation 阶段、activeGeneration、各投影匹配布尔；从 CodeBox 分别启动新 Claude/Pi 会话，发送无工具副作用的短请求。对照客户端账号信息和只输出账号匹配布尔的请求诊断；HTTP 成功本身不能证明用了 B。
+6. 退出会话、harvest B、切回 A，重复。确认 `.claude.json` 项目历史、Pi 其他认证及全部登录预设不变；不输出这些文件全文。
+7. 针对 usage 发一次查询，对照官方客户端同一时段用量及 reset，验证 5h/周字段、百分比单位、null 规则、scope。无法验证的窗口不能用于自动决策。
+8. 关闭 CodeBox 后重新打开，验证池恢复、无默认自动换号；移除测试池前先完成最终 harvest，并保持希望使用的账号处于原生槽位。
+
+### 10.3 运行中会话语义试验（明确与生产安全模式隔离）
+
+生产 facade 必须拒绝带 lease 的切换。为查明热切行为，使用隔离账户/测试 HOME/专用 Keychain 的诊断 harness，不能开放一个生产“force”按钮。若无法隔离 Claude Code 的 Keychain locator，停止此实验，不在主上主登录上冒险。
+
+1. A 同时启动长期 Claude 会话 C1、Pi 会话 P1；先各做一次短请求，记录 token 的临时内部指纹和账号匹配布尔，不落明文。会话停在输入等待态，不能在有工具副作用时试验。
+2. 诊断 harness 在没有刷新请求在飞时切到 B。分别向 C1/P1 再发短请求，记录实际授权账号与 pi-black 请求身份是否一致。预测：P1 可能继续使用注册时的 A identity；token 是否仍 A 不能由代码片段直接推断。
+3. 新启 C2/P2，确认 B token+B identity；若新会话仍为 A，排查环境 `CLAUDE_CONFIG_DIR/CLAUDE_CODE_*`、实际 executable/root 和扩展加载位置。
+4. 仅在隔离环境让 C1/P1 达到自然 refresh 时点，观察是否重读 B、继续刷新 A，或将 A' 写回 B 槽位。同时检查其他 Pi provider 条目是否被旧整文件写回覆盖。任一晚写即证明运行期热切不安全。
+5. 分别验证 Pi 原生锁与拟实现兼容锁的相互排斥：原生刷新持锁时 CodeBox 必须 busy；CodeBox 持锁时 Pi 不得写；崩溃后的锁处理不抢走活跃锁。Claude 锁协议单独记录，不由 Pi 结果类推。
+6. 合格判据若要升级热切能力：两个客户端每个后续请求均为 B token+B identity；旧请求只在切换前完成；没有 A' 晚写、没有其他字段丢失；多次交叉并发和刷新也成立。仅一轮短请求成功不足以放行。当前实现不等待热切试验通过，始终保留退出后切换语义。
+
+### 10.4 交互验收
+
+后续用真实 Wails 或既有 Go bridge 验证：空池→录入→A/B 卡片→busy→退出→成功→额度失败保留旧值→自动 pending→恢复。截图需实际打开检查，按钮/阶段反馈与后端事实一致。由视觉审核方判断布局、对比度和文案拥挤，本设计未做视觉裁决。
+
+## 11. 迁移、回滚与本轮自检
+
+旧 models.json 无 `claude_account_rotation` 时关闭；启动不主动扫描并捕获真实 Keychain、不自动导入当前账号。主上首次点击录入才请求凭据访问。旧 Provider 和 Pi preset 零迁移。旧 CodeBox 可能重写未知配置字段，因此降级前先关闭自动并退出相关会话；新版本重新启动也不能信任遗失的 enabled/确认状态。
+
+功能回滚步骤：关闭自动 → 等待/恢复未结事务 → 退出受影响进程 → harvest 当前有效 grant → 明确选择希望保留的原生账号 → 停止管理。保留账号池便于重新启用，删除需主上单独确认。不得从旧备份恢复 refresh token，也不得覆盖整个 `.claude.json`/auth.json。代码回退与账号数据删除是两件事；回退代码不会撤销已发生的 OAuth 服务器轮转。
+
+本轮仅新增本设计文档；回滚本轮交付只需删除该文档，不涉及运行配置或凭据。没有写 metadata 或额外产物。
+
+设计自检：任务要求的数据模型、切换伪码与恢复、额度协议候选、自动策略、启动互斥、Provider center 接口、风险、阶段验收、隔离测试和后续真机步骤均已给出；源码锚点来自本轮实际读取。未完整读取整个仓库，也未独立复核外部工具的网络材料。协议端点/CC refresh/运行会话行为仍列为发布门，不冒充已验证事实。最大的剩余限制是没有跨应用统一事务或请求级暂停协议；可证明能力是受管理安全时点的双端同步切换。

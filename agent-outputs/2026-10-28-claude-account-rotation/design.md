@@ -1,0 +1,487 @@
+# Claude 订阅账号轮换：CodeBox 实现设计
+
+CodeBox 的服务提供商中心增加本机 Claude 订阅账号池。每个账号保存 Claude Code、Pi 各自的 OAuth grant，以及 Claude Code 身份字段；切换时先回收活动账号的新凭据，再联动更新原生存储。提供商名和 Pi 登录预设保持不变。
+
+**交付边界：先实现无须重新登录的安全切换，自动策略复用同一个切换原语。已有会话必须退出后切换，新会话读取目标账号。运行中无缝热切不纳入当前可保证能力。** 这不是单纯的保守措辞：当前 pi-black 在 provider 注册时捕获一次身份 Promise，文件变化不等于请求身份随之变化。自动轮换遇到会话占用时显示“待切换”，不杀会话、不伪报成功；若产品要求在原会话内立即续用 B，需要另行批准 pi-black/宿主协作改造。
+
+本文为设计产物。源码读取已完成；没有访问真实凭据、执行命令、发起网络请求、修改实现、运行测试或实测换号。下文测试和真机操作均为后续实施验收步骤。
+
+## 1. 约束、来源与源码核实
+
+### 1.1 输入与适用范围
+
+- 上游输入：当前《Claude 订阅双账号轮换 — amagi-codebox 技术设计方案》任务书及 Leader 调整 #1。无独立需求分析 artifact。
+- 用户原始要求的归档：`/Users/run.mao/workpace/amagi-pi/amagi-task/eb340968-e671-4000-9e2c-057a5de0d2fc/context-evidence/evidence-001.txt`、`evidence-004.txt`、`evidence-010.txt`、`evidence-012.txt`；使用任务内完整内联内容，未回读这些归档文件。
+- 项目根：`/Users/run.mao/workpace/amagi-codebox`。以下 CodeBox 源码锚点均相对此根。
+- pi-black 根：`/Users/run.mao/.pi/agent/git/github.com/paoloanzn/pi-black`。
+- Pi 安装根：`/Users/run.mao/.local/share/fnm/node-versions/v24.21.0/installation/lib/node_modules/@earendil-works/pi-coding-agent`。只读取代码，不读取该安装之外的用户认证文件。
+- 目标环境采用任务书给定的 macOS arm64、CodeBox v1.3.120、两个自有 Claude 订阅账号。Windows、Linux、WSL、多机迁移和独立账号并行隔离均不在本次范围。
+- 外部参考按任务书采信：cc-switch v4.0.21 的卡片交互；aswap 的预防性阈值、冷却、迟滞、手动尊重期及失效隔离。不把其“同款凭据锁”“运行中原地切换”直接视为 CodeBox 已有能力，也不由其存在推断服务条款允许。
+- 仓库规范实际读取 `CLAUDE.md` 和 `docs/developer/testing.md`。`AGENTS.md` 读取返回 ENOENT，未发现该文件；不影响使用已有规范。
+
+### 1.2 关键证据与对任务书的限定
+
+| 证据 | 核实结果 | 对设计的影响 |
+|---|---|---|
+| `internal/secrets/store_darwin_cgo.go:12-78,94-106,140-180`；`internal/secrets/service.go:13-43,88-110` | macOS 底层可读、更新、删除 generic password；现有 service/account 固定为 `amagi-codebox.providers` / `desktop-app`，上层缓存是 provider→API key 整张表 | 复用 Security.framework 访问原语，不能向现有 provider 密钥表塞整份 OAuth 池 |
+| `internal/config/types.go:386-432,450-500,960-963` | Provider 为 API 格式/认证设置；AppConfig 有专用 Pi 预设、额度缓存；OAuth 由 Anthropic auth_key 判定 | 账号不是新 Provider；账号 ID 不进入 provider 名或模型名 |
+| `internal/config/quota_probe.go:147-216,919-990` | `DetectQuotaFamily` 按 URL；记录器不要求真实 provider 存在，error 不覆盖历史 ok | Claude 订阅按账号显式路由，复用记录器；自动决策必须另看最近尝试状态 |
+| `app_quota_probe.go:28-79,96-120,235-295` | 单飞按名称；自动探测仅启动后延迟 30 秒一次，成功冷却 10 分钟，无持续轮询 | Phase 3 需要可取消的专用循环；不能声称现有额度 goroutine 已是轮询器 |
+| `internal/launcher/wsl_pi_login_sync.go:10-30,107-110,231-269` | SHA-256 相等零写；mtime 辅助决定两个副本的新陈；存在权限/取消门 | 可借用比较思路，不能把 mtime+hash 当互斥锁或服务器 token 代次 |
+| `headroom_facade.go:3-9,36-44`；`internal/remote/shared_coordinator.go:162-175,288-325,462-530` | mutation admission 覆盖检查至 I/O；launch admission 当前仅允许两个 Headroom kind | 必须新增凭据依赖 kind 并补入口；单独调用现有 mutation 门不够 |
+| `internal/launcher/service.go:118-147` | OAuth 清理 BASE_URL/API_KEY/AUTH_TOKEN，不等于清理所有 `ANTHROPIC_*`；后续仍设置模型变量 | 保留现有模型配置；补认证/身份覆盖检查，不粗暴删除所有 Anthropic 变量 |
+| `internal/piconfig/login.go:14-22,34-72,84-100`；`docs/developer/pi-login-providers.md:14-28` | 登录发现只解码 type；标准 agent root 固定；卡片不携带账号邮箱/账号 UUID | 登录卡片和 preset ID 无须迁移，但卡片不会自动成为账号身份或额度展示 |
+| `pi-black/extensions/pi-black.ts:16-24`；`pi-black/src/anthropic-provider.ts:16-48` | 注册时执行一次 `discoverClaudeCodeIdentity()`，闭包复用同一 Promise | 已启动 Pi 的身份有缓存，不承诺写文件后的热切 |
+| `pi-black/src/claude-code-protocol.ts:12,162-203` | 版本常量 2.1.280；身份来自环境优先，其次 `.claude.json`；校验 userID 和 accountUuid | 新进程也可能被环境覆盖，须在最终启动边界清理/拒绝覆盖 |
+| Pi 安装根 `dist/core/auth-storage.js:44-159` | Pi 使用 proper-lockfile，realpath=false；存在同步锁和 30 秒 stale 的异步锁；写文件本身不是 temp+rename | CodeBox 自己的 mutex、flock 和原子 rename 均不会自动协调 Pi 刷新 |
+| `launch_executor.go:593-643` | 已有 temp→sync→rename→目录 sync，返回 Replaced 事实 | 复用写入语义；不能照搬对父目录 chmod 的行为到用户 HOME |
+| `bind_list.go:16-40`；`bind_manifest_test.go:14-18,95` | Bind 真正列表在 bind_list.go；App facade 可达，原始 mutation 服务不得暴露 | 新接口加 App facade 与绑定门禁，不将账号服务或 raw Keychain API 加入 Bind |
+
+### 1.3 不变量
+
+1. 同一时刻只有一个全局活动账号；A/B 各有独立的 Claude Code grant、Pi grant。两份 token 不互抄，不靠 access token 文本判断账号相同。
+2. “已切换”只在目标三处投影回读一致且持久化提交成功后出现。部分写入、身份不明、恢复失败均关闭受影响启动入口。
+3. 换出前读取活动槽位的最新值。池中旧快照永不无条件覆盖活动刷新结果。
+4. `.claude.json` 只改 `oauthAccount`、`userID`；Pi auth 只改 `anthropic`。其他字段、其他 provider 的值保持不变。
+5. token、完整身份快照、凭据 hash、HTTP 原始响应、恢复前后镜像不进入 models.json、日志、Wails、导出文件、剪贴板。
+6. 不将“已用 100%”、额度 API 的 HTTP 429、推理请求 429、OAuth invalid_grant 混为同一事件。
+7. 自动、手动、恢复用同一事务原语和门禁；任何模式都不能绕过运行会话 lease。
+8. 不重放失败的用户推理请求、不自动开付费 extra usage、不自动登出、不修改 pi-black 源码。
+
+## 2. 组件与取舍
+
+服务提供商中心 → App 账号 facade → `internal/claudeaccounts.Service` → Keychain 账号池 / 原生凭据适配器。
+
+App 同时向服务注入共享 lease、标准路径、固定端点 HTTP client、时钟、进程观察器。额度探测函数仍放 `internal/config`，只接收调用方解析好的 access token，保持不依赖 secrets。自动引擎归账号领域，使用同一服务，不直接写文件。
+
+| 决策 | 选择与原因 | 代价、备选与可逆性 |
+|---|---|---|
+| 池存储 | 新 Keychain service `amagi-codebox.claude-accounts`，account `desktop-app`，单个 JSON envelope | 与 provider key 缓存、导出隔离；新增小型私有 store 接口。复用现有 service 换 account 名也可，但现有构造器固定常量，收益小；不选 models.json 明文凭据。删除账号池不改变当前原生登录 |
+| 切换一致性 | 持久化 journal + 外部写入者静止条件 + 字段级更新 + 回读 | 三个后端无法提供跨资源原子事务。恢复流程有成本，但可以证伪；不使用“连续三次写成功就算原子”的假设 |
+| 会话处理 | 运行期 lease 持有到进程树结束；忙则待切换 | 不能保证忙碌会话内自动续用 B；避免 A token/B identity 混用。要改为热切需独立版本化协作契约 |
+| 共享协调 | 扩展现有 coordinator 的 kind，沿用 admission/lease/代际释放 | 不另造会话计数器；Headroom drain 仍只覆盖 Headroom |
+| 额度缓存 | `provider_quota["claude-sub/"+localAccountId]` | 同时复用单飞/缓存形状。Provider 名禁 `/`（`internal/config/service.go:794-801`），不会碰撞真实 Provider；不新增假 Provider |
+| 自动生命周期 | CodeBox 启动后一个可取消 goroutine，退出即停 | 现有一次性 quota 启动器不够；不新增 LaunchAgent/cron/后台 daemon，CodeBox 关闭时不自动轮换 |
+| 刷新职责 | 活动 grant 归原生客户端；非活动池 grant 由受控适配器独占刷新 | 需要维护小型版本化 OAuth 协议；只保存 token 而不处理长期闲置过期，会让自动轮换失去意义 |
+
+新增 `internal/claudeaccounts` 的理由是现有 Provider、SecretsService、只读 Pi 登录发现都没有跨文件事务、账号身份校验或恢复责任。它不复制提供商 CRUD、不重新实现会话生命周期、不实现新的 OAuth 登录 UI。
+
+## 3. 数据模型与存储契约
+
+### 3.1 Keychain 私有 envelope
+
+以下为字段规格，不是可直接替代真实数据的 fixture。时间统一 RFC3339Nano；原生 expires 字段维持各自单位。`localAccountId` 由 `crypto/rand` 生成 UUID，独立于邮箱和服务端 UUID。
+
+```text
+AccountPool {
+  schemaVersion: 1
+  revision: uint64
+  activeAccountId: local UUID | null
+  activeGeneration: uint64
+  accounts: map[local UUID] AccountSnapshot
+  transaction: SwapJournal | EnrollmentJournal | null
+  refreshIntent: RefreshIntent | null
+  lastSwitch: {at, sourceAccountId, targetAccountId, reason} | null
+  manualRespectUntil: time | null
+}
+AccountSnapshot {
+  id, alias, createdAt, updatedAt
+  identity: {accountUuid, organizationUuid, email, seatTier}
+  claude: {rawCredentialItem, oauthProjection, storeLocator, expiresAt,
+           adapterVersion, observedAt, revisionFingerprint}
+  claudeIdentity: {oauthAccount: raw JSON object, userID: string}
+  pi: {anthropic: raw JSON object, adapterVersion, observedAt,
+       sourceMtimeNs, revisionFingerprint}
+  identityEvidence: {ccAccountUuid, piAccountUuid, checkedAt, adapterVersion}
+  health: {claudeGrant, piGrant, identityStatus, reasonCode}
+}
+```
+
+- `rawCredentialItem` 只用于审计/恢复所需的安全镜像；实际应用通过明确的 OAuth 投影修改。已知 `claudeAiOauth` 结构为待验证的适配器契约，不能把未经解码的任意 Keychain 项直接复制到生产。
+- Keychain locator 必须精确标识 service + account；任务书只给 service 名 `Claude Code-credentials`。实现先查唯一匹配项并记录 account。零项报缺失、多项报歧义，禁止更新第一个模糊结果、枚举整库或删除后重建以绕过 ACL。
+- `claudeIdentity.oauthAccount` 完整保存其现有字段，包括任务书所述 23 字段；不以当前认识的少数字段重建。`userID` 按原值保存，不用 UUID/邮箱生成。installation ID 不必随账号不同而不同。
+- Pi `anthropic` 保留未知字段，必须满足 type=oauth、非空 access/refresh、有限数值 expires。账号池内不得复制 Pi 其他 provider 条目。
+- Claude Keychain 未知顶层兄弟字段保留在当前项中；若无法判明其归属、可能携带另一份账号认证，适配器返回 `UNSUPPORTED_CREDENTIAL_SCHEMA`，不做跨账号复制。Phase 1 真机契约验证后才能开放对应结构。
+- 健康度按 grant 分开：`ready / expired / needs-login / refresh-uncertain / quarantined`；完整账号只有两个 grant 及身份都通过才能进入自动候选。
+- `storeLocator`、完整邮箱、accountUuid、organizationUuid、身份证据和 revisionFingerprint 都留在 Keychain。UI 返回邮箱仅用于本机显示，默认遮罩；日志最多用本机账号 ID。
+
+### 3.2 models.json 的非敏感部分
+
+新增可选 `AppConfig.ClaudeAccountRotation *ClaudeAccountRotationConfig`（JSON `claude_account_rotation`）：
+
+```text
+{ schema_version: 1, enabled: false, strategy: "best",
+  threshold_percent: 90, cooldown_seconds: 300,
+  hysteresis_points: 10, manual_respect_seconds: 3600,
+  acknowledged_risk_version: string | null }
+```
+
+Phase 3 UI 先只开放启停；高级数值使用以上常量默认值。后端即使前端不显示也须验证区间：threshold 80..99、hysteresis 5..30、cooldown 300..3600、respect 0..86400；未知 strategy 拒绝，不能默默回退。旧配置无字段视为关闭。
+
+额度缓存：`ProviderQuotaEntry.Provider = "claude-sub/" + localAccountId`，Family=`claude-sub`、Source=`claude-oauth-usage`。缓存不含邮箱或服务端身份。与其他 provider 的同名、重命名、删除无关系；删除池账号同时清理该精确缓存 key，失败只形成可清理的孤立缓存，不可复活账号。启动按池成员过滤展示。
+
+复用 `RecordProviderQuota`，新增安全常量、解析器和 App 订阅分支，不修改 URL 判别器使 `api.anthropic.com` 的 API key 被误认为订阅。池元数据通过账号 DTO 展示，不进入 `Models`、`PiLoginPresets` 或 `ExportConfig`。配置导入/导出明确排除本机账号设置、风险确认及该前缀额度缓存；导入不删除本机池。
+
+`ConfigService` 负责模型配置所有写入，账号服务不自行解析写回 models.json。新增字段参与加载、保存和深拷贝；`GetConfig()` 当前仅拷贝 Models（`internal/config/service.go:755-769`），新指针/集合必须显式复制，不能把内部可变状态透出。缓存保存失败不得影响已提交的原生账号切换，只返回独立警告。
+
+### 3.3 journal 与敏感边界
+
+`SwapJournal` 放在同一个 Keychain envelope：`txnId/sourceId/targetId/fromGeneration/phase/beforeOwnedProjections/afterOwnedProjections/appliedMask/expectedRevisions/startedAt`。只保存本事务拥有的投影，不把完整 `.claude.json` 历史和其他 Pi token 拷贝进 journal。单个 envelope 更新用于同时提交“活动账号 + 代际 + journal 清除”，消除分散元数据提交的额外窗口。
+
+池和恢复日志的写入结果必须回读验证 revision；同进程串行 + 本机跨进程互斥锁保护 read-modify-write。锁文件在 `~/.amagi-codebox/claude-accounts.lock`，不含秘密，macOS 使用已有系统调用能力，不引库；该锁仅约束 CodeBox，不冒充原生刷新锁。异常退出依赖 OS 释放锁，不靠 PID 文件猜占用。
+
+Keychain locked、denied、missing、corrupt 分开返回。已有池被删除不自动生成空池然后覆盖原生认证：保持原生文件不动、停用轮换、告警“账号池不可用”。从未创建过池则正常未启用。测试实现通过私有 `PoolStore`/`NativeCredentialStore` 接口注入，绝不实例化真实 Keychain backend。
+
+## 4. 授权录入、回收与切换
+
+### 4.1 首次添加 A/B 的交互
+
+首次需要分别在两个原生客户端登录每个账号一次；本功能省去的是后续反复登录。
+
+1. 两端已登录 A → 退出消费进程 → “保存当前双端登录”。capture 校验后把 A 加入池并设为活动账号。
+2. 点击“添加另一个账号”：BeginEnrollment 先 harvest A 并持久化，再进入 `enrolling` 状态。暂停自动和普通受影响启动。
+3. 向导指导主上在原生 Claude Code、Pi 中分别登录 B；CodeBox 不接收密码、验证码，不代理浏览器 OAuth。登录用的进程是 enrollment 唯一例外，不得同时用于推理。
+4. 关闭登录进程后点击“核对并保存”。capture 两个 grant 的身份；不一致则指出“Claude Code 与 Pi 不是同一账号”，不入池、不宣布 B 活动。
+5. 通过则一次保存 B 快照、active=B、generation+1、清除 enrollment。可立即按标准 swap 切回 A，无须再登录。
+
+不能先让主上登录 B，再尝试从已被覆盖的槽位回收 A。已有同 accountUuid+organizationUuid 的账号执行“更新登录”，沿用 local ID；同邮箱不同组织不可自动合并。取消 enrollment 后若原生槽位变化，不恢复旧 token 覆盖新值，保持 `needs-reconcile`，让主上选择保存当前完整配对或安全恢复已有账号。
+
+### 4.2 身份校验
+
+本地 `oauthAccount` 不能证明 Pi token 也属 A。两个独立 grant 必须分别查询身份后，与 `.claude.json` 的 accountUuid 比较；邮箱只展示，不能作主键。建议协议适配器调用 `GET https://api.anthropic.com/api/oauth/profile`，Bearer access token，`anthropic-beta: oauth-2025-04-20`，只解析账号 UUID、组织 UUID 和套餐提示。
+
+**【待实测】该 profile 端点、beta 头、响应字段、两个 grant 的 scope/组织可见性尚未在本任务中验证。** Phase 1 真实放行前必须完成 §10 的契约试验；解析失败/无权限时返回 `IDENTITY_UNVERIFIED`，不得用用户勾选“同一账号”代替证明。若此端点在当前客户端不可用，Leader 需确认可验证的官方客户端身份来源后再开通 capture，不能自行猜字段上线。
+
+### 4.3 新陈判定与写竞争
+
+`ReadStable` 采用 lstat→读取→stat→hash→再次读取受管投影；拒绝符号链接、非普通文件、非法 JSON，有限重试 3 次。不记录 hash 到普通日志。文件 revision 同时记录整文件 hash/mtime/inode 与受管字段 hash；hash 相等为无变化，mtime 只是辅助。Pi 文件 mtime 变化可能来自 Codex 等其他条目，不能据此认定 Anthropic grant 更新。
+
+harvest 优先使用经身份确认的活动原生值：受管投影发生变化则保存新值，即使 mtime 相等或倒退；若池中同一 grant 已由本服务刷新、原生仍是旧副本，不允许仅凭 mtime 反向覆盖。服务通过 active/standby 所有权规则避免这种双写，违反规则即冲突。expires 更晚也不是 refresh token 更新的充分证据。
+
+**比较、rename、Keychain update 都不是跨进程 CAS。** 典型反例：CodeBox 比较通过 → 原生客户端刷新写 A' → CodeBox rename B，A' 丢失。反向时序则旧客户端晚写 A' 覆盖 B。必须先使写入者静止，比较只负责发现额外漂移。
+
+安全模式的必要条件：
+- CodeBox 受影响进程的 pending/run lease 为零，且无未结清 external 进程树；取得 mutation admission 后禁止新启动。
+- 主上关闭 CodeBox 外的 Claude/Pi 进程、退出其他自动切号工具。观察器遇到不可分类进程、不可探明所有者、存活后代或扫描失败就返回 `EXTERNAL_SESSION_UNCERTAIN`，不自动切换。进程扫描只能辅助，无法阻止用户随后从外部启动。
+- Phase 1 手动确认外部已退出；Phase 3 自动模式要求本次 CodeBox 运行周期已进入“仅由 CodeBox 管理这份登录”的模式，且每次切换重新检查。重启后必须重新确认，不能长期沿用一次确认。这个使用约束必须显示，不能声称获得 OS 全局原子性。
+- Pi 有真实的 proper-lockfile 协议。可在短提交段采用兼容的 `.lock` 目录、mtime 更新与 release（realpath=false），但需与安装版本做竞争测试；不以 flock 替代。v1 不自动清理未知/过期原生锁：返回 busy 并引导退出原生进程。网络探测在拿原生写锁之前完成，锁内只做有界本地 I/O。
+- Claude Code 刷新锁的位置、持有范围和 Keychain 缓存未核实，v1 不宣称接入其锁。即使后续验证出锁协议，也不能因此跳过运行中 pi-black 身份缓存问题。
+
+### 4.4 算法伪码
+
+以下 Service 内部函数不暴露给 Wails。所有错误用稳定 reason code，不返回原始凭据、HTTP body 或带敏感参数的底层错误。
+
+```text
+capture(enrollmentId, alias, expectedPoolRevision):
+  串行操作锁；校验 enrollment/首次录入条件和 expectedRevision
+  取得共享凭据 mutation admission；确认所有消费进程结束
+  readStable 三处；校验 schema 与账号身份配对
+  网络身份校验结束后再 readStable；有变化则有限重试整个采集
+  构建 AccountSnapshot（各 grant 保留各自原始字段与时间单位）
+  PoolStore.Save：新增/更新账号 + active + generation + 清除 enrollment
+  回读池 revision；返回 credential-free AccountDTO
+  释放 admission（任何错误均不写原生槽位）
+
+harvest(activeId):
+  前置：持有串行锁、mutation admission、写入者静止条件
+  current = readStable(Keychain OAuth投影, Claude身份字段, Pi.anthropic)
+  校验 current 的账号属于 activeId；不是则返回 EXTERNAL_ACCOUNT_CHANGE
+  对每个 grant 独立比较；不拿 Pi 的 expires 与 CC 的 expires 互比
+  PoolStore.Save：更新 activeId 的受管投影/观测值，revision+1
+  池回读成功才允许继续；失败则零原生覆盖
+  return current
+
+swap(targetId, reason, expectedGeneration):
+  串行操作锁 + 跨进程 CodeBox 锁；检查池健康、schema、代际
+  同目标且三处确实匹配 → no-op（不能绕过漂移检查）
+  取得 SharedClaudeCredentials 的 mutation admission
+  校验静止条件；reconcileExistingTransaction() 必须先完成
+  source = harvest(activeId)
+  准备目标：独占刷新过期的 standby grants；验证目标双端身份
+  重新读取 source，若有刷新则重新 harvest；若变成别的账号则拒绝
+  持久化 journal(prepared, before=source, after=target)
+  获取可用的原生短写锁；最终复核整文件及投影 revision
+  patch CC Keychain OAuth投影；回读验证；持久化进度
+  patch .claude.json 的 oauthAccount 与 userID；回读验证；持久化进度
+  patch auth.json 的 anthropic；回读验证；持久化进度
+  再读三处，验证 after 投影一致、非拥有字段未损坏
+  PoolStore.Save：active=target, generation++, lastSwitch,
+                  manualRespectUntil(仅手动成功), 清除 journal
+  回读成功后释放 admission；发一个完成事件
+  任一步失败：进入 reconcile，不自动用 before 整体覆盖
+```
+
+`prepared` 后的取消必须留下可恢复 journal；不将“前端超时”解释为写入没发生。锁内不做长时 HTTP。Keychain 授权弹窗可能拖长操作，UI 可显示等待；不能绕过授权，服务保持 busy，后续入口不得并行写。
+
+文件更新用已有 `gjson/sjson` 做字段级 patch；同目录唯一临时文件 0600、写入、fsync、close、rename、父目录 fsync。不能对 HOME 做 chmod 0700；只有新建的专用子目录使用 0700。临时文件包含原文件其他凭据，失败必须清理，崩溃残留仅在确认属于本次事务后清理。记录 `renamed=true` 与目录 sync 失败的区别，恢复不得假定失败表示未改文件。Keychain 使用更新现有 item 的 API，原有 ACL 不应被 delete+add 替换。
+
+### 4.5 崩溃恢复与外部更改
+
+启动先加载池并完成恢复检查，再开放受影响启动；其他 API 工作流不必因账号池故障停用。journal 的 appliedMask 只是提示，实际位置以回读判定。
+
+| 三处受管投影观测 | reconcile 决定 |
+|---|---|
+| 全部等于 before | 判定尚未应用，清 journal；源仍活动；如果目标曾刷新，新目标快照保留 |
+| 全部等于 after | 完成 active/generation 提交；不重复写文件 |
+| 每一处都能确认为 before 或 after，但混合 | 在静止和锁条件重新成立后，默认 roll-forward 到 after；只补未完成投影 |
+| 任一投影既非 before 也非 after | 停止写入，`needs-reconcile`；保全当前值和已有 journal；不凭 mtime 猜账号、不回滚新的 token |
+| Keychain 缺失/拒绝访问、JSON 坏、文件缺失 | `blocked`，不创建空 JSON 覆盖；要求修复访问或重新登录 |
+| 原生全为某个已知账号，但没有 journal | 在两个 grant 身份验证后提示“外部换号”；经显式采用才更新 active，自动模式暂停 |
+
+当其他 Pi provider 或 `.claude.json` 的项目字段改变、受管投影仍可分类时，重新从最新整文件做 patch 保留这些内容，不使用 journal 中的整文件镜像。
+
+恢复到源账号是用户显式选择的另一笔切换：须验证源 grant、保全当前位置、按相同协议写入。不能把操作失败后的“撤销”实现为旧快照盲覆盖。若授权服务器已轮换 refresh token 而本机未能持久化新值，旧 token 可能永久失效；只能标记需重新授权，不承诺恢复凭据有效性。
+
+## 5. OAuth 刷新与额度探测
+
+### 5.1 grant 刷新所有权
+
+活动账号由 Claude Code、Pi 各自刷新原生槽位。CodeBox 对活动账号只用当前 access token 读 profile/usage，不在其进程存活时主动 refresh。401 时重读一次磁盘，若 token 已更新则重试一次；仍无效则告警，不能把它判成“额度已用尽”。
+
+非活动账号没有原生使用者，允许 CodeBox 轮换其池内 grant。Phase 1 换入前按需刷新两份 grant；Phase 2 额度查询仅按需刷新 Claude grant，Pi grant 留到换入前。刷新独占池操作；成功响应先持久化池，再允许使用新 token，不写活动槽位。
+
+已读取的 Pi OAuth 代码在安装根 `node_modules/@earendil-works/pi-ai/dist/auth/oauth/anthropic.js:10-24,239-272`：token URL=`https://platform.claude.com/v1/oauth/token`，POST JSON 包含 `grant_type=refresh_token/client_id/refresh_token`，Pi 保存 expires 为当前毫秒时间+expires_in×1000−5 分钟。实现以原生 adapterVersion 显式维护协议；不得从 models.json 配置任意刷新 URL，也不得复用 Pi 刷新结果去覆盖 Claude grant。
+
+Claude Code 对应 client_id、scope 和 expiresAt 单位 **【待实测】**，与 Pi 相同也要有独立证据。实现两个适配器共享固定 HTTP 传输与校验，不共享 grant。未知版本或未知 schema 禁止自动刷新；允许展示“兼容性待验证”，不能为演示而使用猜测常量。
+
+网络 refresh 是另一种不可回滚操作。先写 `RefreshIntent(accountId, grantKind, expectedRevision, requestId)` → POST → 校验结果 → 将新 grant 与清除 intent 一次存池。响应丢失、取消发生于发出请求后、保存失败或重启发现未结 intent，一律 `refresh-uncertain` 并退出自动候选。invalid_grant 进入 needs-login；网络错误不等于凭据死亡。不得用无限重试、fallback 到另一份 grant 或忽略保存失败掩盖风险。
+
+### 5.2 usage 协议与安全约束
+
+拟采用 `GET https://api.anthropic.com/api/oauth/usage`，使用该账号的 Claude Code grant access token，`Authorization: Bearer …`、`anthropic-beta: oauth-2025-04-20`、`Accept: application/json`。不用 Pi token 做 silent fallback，以免两个 scope 行为差异掩盖故障。
+
+**【待实测】本任务未发请求；端点、beta 值及真实响应结构须在 Phase 2 验收前用已同意的账号验证。** 候选响应结构：`five_hour`、`seven_day`、可选 `seven_day_opus` / `seven_day_sonnet` 对象，内含 `utilization`（0..100 的百分数）和 `resets_at`（RFC3339 或 null）。这不是已经得到的真实样本。
+
+生产端点固定 HTTPS 官方 origin；拒绝所有 redirect，不接受 provider baseURL、用户输入 URL 或镜像域。网络代理复用 CodeBox 的网络策略，但禁用请求头/响应体日志。每次 10 秒超时、最多 64 KiB 响应、严格有限数值/状态码校验；测试只通过注入 RoundTripper/httptest client 访问隔离服务器。
+
+| 响应 | 缓存/健康处理 | 自动策略 |
+|---|---|---|
+| 200 且有效窗口 | status=ok，落时间和窗口 | 可以参与决策 |
+| 200 缺必需窗口、字段类型错误或越界 | error，保留历史 ok，记录最近尝试失败 | 本次不可候选，不按缺省 0% |
+| 401 | 重读活动 token 或对 standby 按独占刷新流程处理一次 | 未恢复则 needs-login/暂停，非额度耗尽 |
+| 403 | `scope-or-policy-denied`，保留错误分类 | 不推断无套餐，不换另一 grant 偷试 |
+| 429 | `probe-rate-limited`；遵循 Retry-After | 这是查询接口限流，不能触发保护性切换 |
+| 5xx/超时/断网 | error；指数退避，上限 30 分钟 | 保留显示，不用陈旧成功值触发换号 |
+
+### 5.3 现有额度形状的映射
+
+- five_hour → `Kind=primary, WindowMin=300, Label="5h", UsedPercent=utilization`。
+- seven_day → `Kind=secondary, WindowMin=10080, Label="周"`。
+- 模型专属周限额 → `Kind="claude_opus_week"/"claude_sonnet_week", WindowMin=10080, Label="Opus·周"/"Sonnet·周"`。Kind 是 string，沿用同一结构；前端不得默认所有非 primary 都是同一个周窗口。
+- `ResetsAt` 转 Unix 秒；null 不造日期。`Remaining` 不填百分比冒充剩余 token/次数；进度条的剩余百分比用 `100-UsedPercent` 推导。
+- `Level` 取验证过的账号元数据，不从用量高低猜套餐。extra_usage 若存在，仅标记“额外付费额度不参与轮换”，不自动启用。
+- 未知窗口不自动当成可用额度；检测到新的限制字段时显示兼容性提示并退出自动候选，待适配后使用。
+
+`ProbeClaudeAccountQuota(id)` 是外部 facade；内部 `ProbeProviderQuota` 在结构化 `claude-sub/<UUID>` 分支验证池成员后调用。`probeAllQuotas` 将池账号加入集合，其他家族不变。`beginQuotaFlight` 复用相同 cache key；删除账号或更新 grant 时比较账号 revision，丢弃旧在飞结果，避免旧结果重新插入缓存。
+
+`RecordProviderQuota(error)` 会保留历史 ok；因此账号服务另维护内存 `lastAttempt{status,at,reason,retryAfter}`，DTO 同时带 `lastSuccess`、`lastAttempt`、`stale`。重启后所有历史缓存只能展示，首次新鲜探测成功前不得作为自动切换证据。候选决策基于本轮实际返回值，不读缓存的 status=ok 就直接切换。
+
+## 6. 自动轮换引擎
+
+### 6.1 生命周期与调度
+
+`Start(ctx)` 在 Config/Keychain/reconcile 完成后启动；`Stop()` 取消 timer 和网络请求并等待 goroutine 退出。关闭自动只停止未来决策，已进入 journal 的事务必须完成或保留恢复状态。startup 恢复永远早于自动探测。
+
+Phase 2 维持现有 30 秒首轮、10 分钟成功冷却和手动刷新。Phase 3 enabled 时由账号引擎接管 Claude 账号的节奏，通用一次性启动器跳过这些 key，避免双调度；单飞仍共用。
+
+- 低于 80%：每 5 分钟查询账号；活动账号任一适用窗口 ≥80%：活动账号每 1 分钟，候选每 5 分钟。
+- 准备切换前目标必须在 60 秒内探测成功，否则先探测；活动判据最多 120 秒旧。后台主动请求有最短 60 秒间隔，UI 连点合并，不以“手动”无限绕过 HTTP 429 退避。
+- 系统睡眠恢复后先重新观测，不补跑积压 tick、不按本机时间经过 reset 就自造 0%。每账号单飞；网络在池状态锁之外，返回按 revision 校验。
+- 活动 access 过期但会话仍在运行时，不擅自刷新；显示“等待原生客户端更新登录”。这可能延迟预防性决策，不能宣传轮询必定提前切换。
+
+### 6.2 best 策略与防振荡
+
+将每个账号的适用窗口集合定义为全局 5h、周及当前支持模型的专属窗口。没有精确模型范围时保守纳入所有已知专属窗口，避免换过去后另一端仍被限制。`U(a)=max(UsedPercent)`，`R(a)=100-U(a)`。
+
+候选须满足：两份 grant 可用、身份同账号、非隔离、usage 新鲜、所有适用窗口有效。优先选择 R 最大的账号；相同则按 local ID 稳定排序，不因列表顺序摆动。
+
+| 条件 | 行为 |
+|---|---|
+| U(active)<90 | 保持当前账号 |
+| U(active)≥90，目标 U≤80 且 R(target)−R(active)≥10 个百分点 | 提出预防性切换 |
+| 手动成功切换后 60 分钟 | 不做预防性切换，显示尊重期倒计时 |
+| 最近成功切换不足 5 分钟 | 不再次切换；包括保护性原因，防两边都耗尽时循环 |
+| 任一依赖 lease/pending admission 存在 | 记录待切换建议，不写任何原生认证；会话自然退出后重新评估，不能直接执行旧建议 |
+| 目标健康度未知、过期缓存、双方近限/耗尽 | 不切；显示原因和下一次真实查询时间 |
+| 活动已确认不可用，目标 U<95 且 R 优于当前至少 5 点 | 保护性候选，可绕过手动尊重期；不绕过 lease、5 分钟冷却和身份校验 |
+
+“已确认不可用”需要版本化的原生限额证据或用户手动确认；usage=100% 只构成高用量预防性候选。Phase 3 不解析终端文本猜 429，不默认发 1-token 计费探测；这是相对 aswap 的明确取舍：避免增加隐性消费和模型/协议耦合。将来增加探测要单独 opt-in，并区分推理限流、过载和套餐额度，当前不提供一个实际无效的开关。
+
+可使用本轮样本估算值得切换的持续时间：对同一 reset 窗口内至少两个间隔 1..10 分钟且使用量递增的活动样本，计算每窗口消耗速率 `v=(U2-U1)/Δminutes`。`runway(a)=min_w((100-U_a,w)/v_w)`，把活动工作负载速率投影到目标账号；这是估计，不是 SLA。样本可靠时目标须满足 `runway(target)≥2×runway(active)` 或 `runway(target)−runway(active)≥5min`。窗口 reset、模型集合变化、斜率不正时废弃估计，退回上表的百分点迟滞，不把未知当无限余量。
+
+v1 只做 best。consume-first 会主动改变账号且依赖工作负载预测，暂不开放；这样没有配套证据时不会为了“用完先重置窗口”额外换号。手动切换可以忽略额度评分，但不能绕过双端身份、事务和会话门。
+
+### 6.3 两端启动互斥与接入责任
+
+新增 `SharedServiceClaudeCredentials` / `launchplan.SharedClaudeCredentials`，资源是本机 canonical 认证槽位组合，不能用账号 ID 分成两把锁。指纹由 canonical 路径标识 + activeGeneration 生成，不含 token。活动 grant 刷新不改变 activeGeneration。
+
+必须同时修改以下真实消费者：
+
+| 接入位置 | 要做的事 |
+|---|---|
+| `internal/remote/control_types.go:381-386`、`internal/launchplan/types.go:56-60` | 增加凭据 kind；保持旧枚举值 |
+| `internal/remote/shared_coordinator.go:171-175` | 将 launch kind 白名单扩为凭据+Headroom；仍将卸载 drain 限定 Headroom；测试新 kind 的 admission/lease/closed 行为 |
+| `app.go:2441` 的 Claude 启动、`app.go:3555` 的 Pi 启动 | 在认证读取/配置与进程副作用之前取得 admission；在真正进程启动前复核 generation 与池 ready；成功转运行 lease，失败准确释放 |
+| `launch_planner.go:254`、`pi_login_launch.go:337-411` | 纯读计划增加凭据 admission 描述；禁止在 BuildPlan harvest/swap/refresh；实际副作用留到 executor/adapter |
+| `internal/remote/remote_session_adapter.go:545,560,771-780,1019,1122` | create/restart 的 kind 映射及 admission 传递、代际转移补齐；启动前代际变更返回重新规划，不带旧计划放行 |
+| `launch_executor.go:98-115` 与 PTY 前执行边界 | 校验持有匹配凭据 admission、ready、generation；不新增一个会写秘密的公开 effect DTO |
+| `headroom_facade.go:61-158` 的记账/转移惯例及已有 exit/shutdown 链 | 复用 exact owner/runEpoch 释放机制；凭据 lease 只在进程树确定结束后释放，外部窗口失联保持 busy |
+
+两端可能运行中 `/login`、`/model` 或启动子 agent；仅按启动时 provider 过滤不足以保护 auth.json。启用账号管理后，所有使用 canonical 路径的 CodeBox Claude/Pi 进程都保守持有凭据 lease，包括 Pi 起初用别的 provider 的会话。它们正常运行不受影响，只会阻止换号。独立 root 且能证明不读取 canonical 身份文件的进程可排除；判断不明即保守计入。OMP/其他工具如果也被配置读取这些槽位，按外部消费者处理，不宣称覆盖它们。
+
+Pi 已有 `PI_CODING_AGENT_DIR` 和 shell 后置重锚继续复用。受管理的 Anthropic 登录启动还要在最终 shell 后边界清除 `CLAUDE_CODE_DEVICE_ID`、`CLAUDE_CODE_ACCOUNT_UUID`，并禁止/清除将身份导向其他根的 `CLAUDE_CONFIG_DIR`；同样检查 Claude Code 的认证覆盖变量（含 `CLAUDE_CODE_OAUTH_TOKEN` 等版本相关入口）。不删除模型参数。自定义 HOME/启动脚本导致 canonical 身份路径不可证明时，拒绝受管理启动并给出具体变量名，不修改用户全局 shell 文件。凭据路径和身份路径须在真机验收中一起核对。
+
+## 7. Provider center 与 App 接口
+
+### 7.1 信息架构
+
+在 `frontend/src/components/provider/ProviderGrid.vue:15-53` 的 API/登录区旁新增独立“Claude 订阅账号”区。`ProviderCenterView.vue` 负责路由与页面组合，不为 A/B 创建两个 native provider。
+
+账号卡：别名、默认遮罩邮箱、套餐、5h/周余量与 reset 时间、专属窗口明细、当前活动标记、双端登录健康、最近查询时间。操作为“切换到此账号”“更新当前登录”“刷新额度”“移除保存的账号”。顶部有“保存当前双端登录”“添加另一个账号”、自动轮换开关、运行中依赖与暂停原因。
+
+现有 `登录认证 · Pi / anthropic` 卡片及其预设 CRUD 保持原样；在独立账号区说明“此池同步影响 Claude OAuth provider 与 Pi anthropic 登录卡”。切换成功后调用现有 `loadLoginProviders()` 刷新发现，预设 key 不变。OAuth provider 卡仍表示原生认证模式，不代表专属账号；“点击某账号后打开终端”使用全局活动账号，不能显示为隔离绑定。
+
+反馈状态统一：未录入、检查登录、等待 Keychain 授权、正在回收、正在切换、等待会话退出、成功、需恢复、需重新登录、查询失败但保留上次值。正在切换禁用重复操作；RPC 响应丢失用 operationId 查询，不因 toast 超时自动再发第二笔 swap。自动开启首次展示使用约束和风险确认；busy 时按钮说明原因，不提供“强制绕过”。
+
+移除活动账号必须先切换到另一个完整账号，或显式“停止管理并保留当前原生登录”；后者先 harvest、关闭自动、解除管理，不登出原生客户端。未清 journal 时禁止移除相关账号。
+
+视觉样式复用现有组件/token。本设计只给信息和交互契约，不代替视觉验收。
+
+### 7.2 facade 规格
+
+新增根文件 `claude_accounts_facade.go`，App 持有未导出的领域服务。`frontend/src/api/claudeAccounts.ts` 包装生成绑定；状态在独立 store/composable。Wails 绑定重新生成，禁止手改 `frontend/wailsjs`。
+
+| App 方法 | 输入 | 输出/语义 |
+|---|---|---|
+| GetClaudeAccounts | 无 | `PoolDTO{capability,state,revision,activeGeneration,activeId,accounts,operation,pauseReason}` |
+| BeginClaudeAccountEnrollment | expectedRevision | enrollmentId；先 harvest 现有账号 |
+| CaptureClaudeAccount | enrollmentId/首次录入标记、alias、expectedRevision | operationId；后端读取秘密，前端不传 token |
+| SwitchClaudeAccount | targetId、expectedGeneration、requestId | operationId；幂等请求，reason 固定 manual，前端不可伪造 automatic |
+| GetClaudeAccountOperation | operationId | stage/result/reasonCode；崩溃恢复中的 txnId 同时可查询 |
+| ProbeClaudeAccountQuota | accountId | lastSuccess/lastAttempt/stale；与通用 quota 单飞合并 |
+| SetClaudeAccountRotation | enabled、expectedRevision、riskAckVersion | 校验能力与本运行周期 managed-only 确认；不自动开始首笔 swap |
+| ReconcileClaudeAccounts | expectedRevision、action=inspect/complete-target/adopt-current/restore-source | inspect 零写；其余走 mutation 门，不允许任意路径/JSON 参数 |
+| RemoveClaudeAccount / RenameClaudeAccount | id、expectedRevision、alias（仅 rename） | 移除须满足上节限制；别名长度限制 1..64 |
+
+建议 operation 结构：`{id, kind, stage, state:running|done|blocked|error, changed, activeGeneration, code, warnings[]}`。重复 requestId 同参数返回原操作，不同参数报冲突。进程内结果缓存有界；进行中的事务由池 journal 持久化；重启后不可识别的已结束 requestId 返回“请重读当前状态”，不默默重放。
+
+固定错误码包括 `UNSUPPORTED_PLATFORM/POOL_LOCKED/POOL_MISSING/POOL_CORRUPT/REVISION_CONFLICT/IDENTITY_MISMATCH/IDENTITY_UNVERIFIED/SESSIONS_ACTIVE/EXTERNAL_SESSION_UNCERTAIN/NATIVE_LOCK_BUSY/EXTERNAL_ACCOUNT_CHANGE/NEEDS_RECONCILE/REFRESH_UNCERTAIN/NEEDS_LOGIN/UNSUPPORTED_CREDENTIAL_SCHEMA`。所有 raw 服务、PoolStore 与 NativeCredentialStore 不入 Bind；新增 facade mutation 在 `bind_manifest_test.go` 分类。
+
+长 I/O 使用后台 operation，事件只发 `operationId/stage/state/generation`，UI 再读安全 DTO。禁止事件中夹带完整邮箱、token、request body 或 hash。远程 API 不增加账号池读写入口；既有远程 create/restart 仍须受启动门保护。
+
+## 8. 风险、代价与发布门
+
+| 风险/未知 | 影响 | 判别与默认行为 |
+|---|---|---|
+| pi-black 身份启动缓存 | 热切可能 A 身份+B token | 源码已证明捕获方式；运行结果仍【待实测】；v1 要求重启会话 |
+| Pi/Claude 凭据缓存、刷新锁范围 | 晚写可覆盖新账号；旧 refresh 可失效 | §10 给专门试验；未知时保持无运行写者条件 |
+| profile/usage 私有端点变化 | 身份无法验证、额度不可读 | 版本化 adapter，失败明确展示；不向非官方域发送 token |
+| 非活动 grant 刷新中断 | refresh token 可能丢失且无法回滚 | RefreshIntent+quarantine；提示重新授权，不盲重试 |
+| Keychain 项被删除/锁定/ACL 拒绝 | 账号池或原生凭据不可访问 | 不回退明文；不删项重建绕过授权；暂停自动 |
+| 手工登录或其他切号工具 | 账号池与原生槽位分裂 | 指纹+身份发现漂移，暂停并显式 reconcile；禁同时运行 aswap/cc-switch 自动写入 |
+| 其他进程写相同文件 | hash 复核后仍可能竞争 | lease+原生锁可覆盖部分，外部全局原子性不成立；受管理使用约束明确可见 |
+| pi-black 2.1.280 协议耦合 | token 有效仍可能请求被拒 | 报告 Pi/扩展/协议版本；升级后重跑账号与请求兼容验收，不在 CodeBox 克隆 billing/cch 逻辑 |
+| ToS、服务风控和账号用途 | 第三方 OAuth/轮换可能违反服务约束或触发限制 | 不称“自有两个号一般没问题”；首次确认非官方机制及可能重新授权/限制风险，主上自行确认当时条款 |
+| WSL 三方刷新 | 宿主/发行版/池存在三写者 | v1 macOS only，Windows/WSL mutation 返回 unsupported；不修改现有未启用轮换的 WSL 同步 |
+
+风险确认不能替代身份校验和工程门禁。开发可以完成隔离实现，但 profile、两份 refresh 协议、Keychain locator、canonical 启动路径未验证时，不得默认开放自动模式或宣布生产可用。
+
+## 9. 分阶段实施与验收
+
+### Phase 1：录入与手动安全切换
+
+实现私有存储、身份 adapter、按需 standby refresh、capture/enrollment/harvest/swap/reconcile、凭据共享 kind 与所有启动入口接入、App facade、账号区。此阶段无 quota 网络轮询、无自动换号。
+
+验收清单：
+- A/B 分别录入，双端身份不一致被拒；A→B→A 后分别保留各自最新 CC/Pi grant。
+- 两个已有原生客户端关闭后，一键切换使新 Claude/Pi 会话都使用目标账号；不用再次登录；已有 Pi preset key 不变。
+- 在任一 pending/run lease、外部占用或未知锁存在时，原生写入计数为零。
+- 每个写入点崩溃都可按 before/after 分类恢复；外部未知刷新不被覆盖。
+- Keychain 禁止访问、缺项、多项、坏 JSON、取消、目录 fsync 失败有真实错误分支；原生其他字段不丢失。
+- 过期 standby grant 能在明确协议验收后独立刷新；响应丢失不伪报成功。
+- 正常 API provider、非 Anthropic Pi 登录、Headroom、现有登录预设与远程重启回归通过。
+- 通过 §10 的身份/刷新/新会话真机测试后才能称本机功能可用；只通过 fake Keychain 的结果记为隔离验证通过。
+
+### Phase 2：额度查询与显示
+
+增加 claude-sub/source、usage parser、账号 namespace 分支、查询与缓存状态分离、卡片窗口与时间显示。
+
+验收清单：
+- 两账号缓存 key 独立，值正确显示 5h/周/专属窗口；null、0%、100%、无 reset 都正确。
+- 同账号并发刷新只发一次网络请求；删除/更新后晚到结果不写回。
+- error 保留旧值但标记 stale；401/403/429 与额度耗尽不混淆；redirect 拒绝且不泄漏头。
+- 真实 usage 样本与客户端显示在允许的采样时间差内一致；人工对照误差和更新时间必须记录，不写“单测即证明真实额度正确”。
+- 额度页、Codex 本地订阅、既有所有额度家族不回归。
+
+### Phase 3：自动轮换
+
+增加生命周期、周期探测、best 纯决策函数、pending 状态、managed-only 本运行周期确认与自动开关。
+
+验收清单：
+- 假时钟覆盖 90% 阈值、80% 候选、10 点迟滞、5 分钟冷却、60 分钟尊重期、保护性例外和样本过期。
+- 目标 Pi grant 不可用、双方耗尽、查询 429、休眠恢复、时钟倒退均不误切。
+- 运行会话期间只显示待切；所有 lease 退出后重新探测/评估再切；新启动与 swap 竞态总有一方 busy，无部分认证可消费。
+- 停用/退出无 goroutine 泄漏；重启先恢复；没有新鲜结果不得用历史缓存自动切。
+- 主上真实 A/B 验收至少完成一次安全边界上的自动切换。测试阈值通过测试配置/隔离 harness 触发，不能为测试耗尽真实订阅、硬编码真实账号或降低生产安全门。
+
+每阶段都可停留交付：Phase 1 已满足免反复登录的一键切换；Phase 2 增加可见额度；Phase 3 增加安全时点自动选择。运行中原会话直接续用 B 仍属明确未覆盖项，不以“Phase 3 完成”代指热切完成。
+
+## 10. 测试策略与后续实测步骤
+
+### 10.1 隔离验证矩阵
+
+按 `docs/developer/testing.md:36-56,120-148` 放测试：领域 Go 测试与源码同包，根目录只测 facade/实际启动集成；前端 Vitest 在 `frontend/src/__tests__/`。不新增依赖或 DOM 测试库；状态/选择逻辑用现有 node 环境，交互走既有 E2E 能力。
+
+| 层级 | 正向证据 | 配对负向/对抗证据 |
+|---|---|---|
+| PoolStore/NativeStore | fake store 保存并回读完整双 grant 与身份 | locked/denied/missing/corrupt/多 locator；保存后读失败；不可通过默认构造器碰真实 Keychain |
+| 字段 patch | 临时 HOME 中只变指定键，非拥有字段语义和原字节片段保留 | 他人更新非拥有字段、重复键/坏 JSON、符号链接、目录替代文件、权限不安全 |
+| harvest | A 两端独立刷新后均入池再写 B | 同 mtime 不同 hash、仅其他 provider 更新、mtime 回退、账号身份变更、池保存失败原生零写 |
+| swap/reconcile | A→B→A；prepared/各写后/最终提交后重启恢复 | 注入每个 journal/write/fsync/readback 失败；未知 A' 不盲覆盖；context 取消不能抹除已写事实 |
+| OAuth/identity | httptest 合成同账号双 token profile、各自刷新 | A/B 混对、403 scope、invalid_grant、响应丢失、旋转后池保存失败、过期旧请求返回 |
+| lease | 桌面/remote/restart/external 均正确持有到进程树结束 | admission→spawn 之间插 swap、swap→read 之间插 launch、早释放、退出/代际转移竞态、Headroom drain 不误伤新 kind |
+| quota | 真实 parser 处理标注为合成的窗口 fixture，断言具体百分比/时间 | 缺字段/null/NaN/超范围/超体积、429 Retry-After、redirect、stale ok、未知窗口 |
+| engine | 假时钟驱动一次真实 service swap，断言最终安全槽位 | busy 仅 pending、不乒乓、尊重期边界、双方耗尽、过期缓存、关闭/重启 |
+| facade/前端 | 卡片操作到 App service、operation 最终成功、预设 ID 未变 | 前端禁用之外后端也拒绝强制请求、重复 requestId、迟到回包、错误原因可见、敏感字段序列化扫描 |
+
+测试临时目录必须通过依赖注入覆盖所有路径；只改 HOME 不足以隔离 macOS Keychain。fake 是存储边界测试替身，不能被写为真实登录证据。OAuth fixture 全用合成字符串，不保存真实 token。故障注入应控制精确步骤/屏障，避免用 sleep 猜并发次序。
+
+后续执行者建议先做 L2：`go test ./internal/claudeaccounts ./internal/config ./internal/remote ./internal/launcher`，`go test -race ./internal/claudeaccounts ./internal/remote`，`go test . -run 'TestClaudeAccount|TestBindManifest|TestPiLogin'`，`npm --prefix frontend run test -- claudeAccounts`，`npm --prefix frontend run build`。新增包/测试名由实施落定后以真实名称执行，不能把此处计划命令报告为已运行。因本设计会改共享 lease，发布前按仓库约定补 `go vet ./...`、`go test ./...`、完整前端测试，并做非 darwin unsupported 路径编译验证。
+
+### 10.2 Leader 后续真机验证：协议与新会话
+
+以下操作需要主上同意访问订阅与 Keychain；由 Leader 在实施后安排，本次未执行。优先独立 macOS 测试用户/专用 Keychain 和测试账号；使用主上账号时只保存安全快照，不导出 token，不抓带认证头的网络包。
+
+1. 记录 macOS、CodeBox、Claude Code、实际 Pi 可执行路径/版本、pi-black commit 与协议常量。确认无另一个自动切号工具，关闭所有相关进程。
+2. 两端登录 A，运行仅输出“字段名称/类型、账号匹配布尔、时间单位”的安全诊断，核实 CC item locator/schema。分别调用 profile，记录仅“同账号/同组织/错误码”，不记录原始 body。
+3. 两端独立正常请求一次，再结束进程。capture A；进入 enrollment，按相同步骤登录并 capture B。若任一 profile 无法证明同账号，停止，不进入 swap。
+4. 用真实客户端自然过期或测试账户授权流程验证两份 refresh；不手工改真实 expires 诱导刷新。对 standby 的每个 grant 测一次“刷新→安全存池→切入→原生请求成功→原生刷新后 harvest”。核实 CC/Pi 从未互用同一 token 对象。
+5. 手动切 A→B，记录 operation 阶段、activeGeneration、各投影匹配布尔；从 CodeBox 分别启动新 Claude/Pi 会话，发送无工具副作用的短请求。对照客户端账号信息和只输出账号匹配布尔的请求诊断；HTTP 成功本身不能证明用了 B。
+6. 退出会话、harvest B、切回 A，重复。确认 `.claude.json` 项目历史、Pi 其他认证及全部登录预设不变；不输出这些文件全文。
+7. 针对 usage 发一次查询，对照官方客户端同一时段用量及 reset，验证 5h/周字段、百分比单位、null 规则、scope。无法验证的窗口不能用于自动决策。
+8. 关闭 CodeBox 后重新打开，验证池恢复、无默认自动换号；移除测试池前先完成最终 harvest，并保持希望使用的账号处于原生槽位。
+
+### 10.3 运行中会话语义试验（明确与生产安全模式隔离）
+
+生产 facade 必须拒绝带 lease 的切换。为查明热切行为，使用隔离账户/测试 HOME/专用 Keychain 的诊断 harness，不能开放一个生产“force”按钮。若无法隔离 Claude Code 的 Keychain locator，停止此实验，不在主上主登录上冒险。
+
+1. A 同时启动长期 Claude 会话 C1、Pi 会话 P1；先各做一次短请求，记录 token 的临时内部指纹和账号匹配布尔，不落明文。会话停在输入等待态，不能在有工具副作用时试验。
+2. 诊断 harness 在没有刷新请求在飞时切到 B。分别向 C1/P1 再发短请求，记录实际授权账号与 pi-black 请求身份是否一致。预测：P1 可能继续使用注册时的 A identity；token 是否仍 A 不能由代码片段直接推断。
+3. 新启 C2/P2，确认 B token+B identity；若新会话仍为 A，排查环境 `CLAUDE_CONFIG_DIR/CLAUDE_CODE_*`、实际 executable/root 和扩展加载位置。
+4. 仅在隔离环境让 C1/P1 达到自然 refresh 时点，观察是否重读 B、继续刷新 A，或将 A' 写回 B 槽位。同时检查其他 Pi provider 条目是否被旧整文件写回覆盖。任一晚写即证明运行期热切不安全。
+5. 分别验证 Pi 原生锁与拟实现兼容锁的相互排斥：原生刷新持锁时 CodeBox 必须 busy；CodeBox 持锁时 Pi 不得写；崩溃后的锁处理不抢走活跃锁。Claude 锁协议单独记录，不由 Pi 结果类推。
+6. 合格判据若要升级热切能力：两个客户端每个后续请求均为 B token+B identity；旧请求只在切换前完成；没有 A' 晚写、没有其他字段丢失；多次交叉并发和刷新也成立。仅一轮短请求成功不足以放行。当前实现不等待热切试验通过，始终保留退出后切换语义。
+
+### 10.4 交互验收
+
+后续用真实 Wails 或既有 Go bridge 验证：空池→录入→A/B 卡片→busy→退出→成功→额度失败保留旧值→自动 pending→恢复。截图需实际打开检查，按钮/阶段反馈与后端事实一致。由视觉审核方判断布局、对比度和文案拥挤，本设计未做视觉裁决。
+
+## 11. 迁移、回滚与本轮自检
+
+旧 models.json 无 `claude_account_rotation` 时关闭；启动不主动扫描并捕获真实 Keychain、不自动导入当前账号。主上首次点击录入才请求凭据访问。旧 Provider 和 Pi preset 零迁移。旧 CodeBox 可能重写未知配置字段，因此降级前先关闭自动并退出相关会话；新版本重新启动也不能信任遗失的 enabled/确认状态。
+
+功能回滚步骤：关闭自动 → 等待/恢复未结事务 → 退出受影响进程 → harvest 当前有效 grant → 明确选择希望保留的原生账号 → 停止管理。保留账号池便于重新启用，删除需主上单独确认。不得从旧备份恢复 refresh token，也不得覆盖整个 `.claude.json`/auth.json。代码回退与账号数据删除是两件事；回退代码不会撤销已发生的 OAuth 服务器轮转。
+
+本轮仅新增本设计文档；回滚本轮交付只需删除该文档，不涉及运行配置或凭据。没有写 metadata 或额外产物。
+
+设计自检：任务要求的数据模型、切换伪码与恢复、额度协议候选、自动策略、启动互斥、Provider center 接口、风险、阶段验收、隔离测试和后续真机步骤均已给出；源码锚点来自本轮实际读取。未完整读取整个仓库，也未独立复核外部工具的网络材料。协议端点/CC refresh/运行会话行为仍列为发布门，不冒充已验证事实。最大的剩余限制是没有跨应用统一事务或请求级暂停协议；可证明能力是受管理安全时点的双端同步切换。

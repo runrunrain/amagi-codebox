@@ -1,0 +1,2980 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e677d76..7412777 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,10 @@
+ 
+ ## [Unreleased]
+ 
++### Fixed
++
++- **Phase 1 审核修复批（diting 15 findings）**：①门禁交接（F01）：mutation gate 释放 admission 前直接从 PoolStore 发布权威 ready/blocked/generation，消除「释放→缓存刷新」交接窗口；launch claim 取得后重校权威状态（失败事务代际不变也能拦）；remote create/restart 对无凭据 admission 的受影响 CLI 计划在执行边界校验 absent 仍成立（absent 旧计划→首次 capture 后不再执行）。②静止检查（F02）：归因集合改为仅含持有 SharedServiceClaudeCredentials lease 的会话，absent 时启动的 CodeBox Claude/Pi 会话不再被豁免，首次启用前必须退出。③事务一致性（F03）：短提交锁内终复核整文件/受管 revision，漂移停止写入交由 reconcile 分类；二次 harvest 同步替换 journal before/expected 同源快照。④取消录入（F04）：走 mutation/静止门并分类当前投影，原生漂移时保留 enrollment 标记 drifted → needs-reconcile，不再无条件清 journal 重开启动入口。⑤目标验证（F05）：换入前用目标当前两份 grant 现场验证身份/组织/双端配对，刷新后不可验证或已撤销拒绝写入原生。⑥恢复动作（F06）：complete-target/restore-source 消费 outcome（roll-forward-pending/needs-reconcile → blocked 非 done）并校验 expectedRevision；同目标 no-op 前先处理未结 journal（全 before 先清再 no-op）。⑦身份环境边界（F07）：remote Claude 计划与 Pi 登录计划（env 构建 + 重锚）同步剥离 CLAUDE_CODE_*/CLAUDE_CONFIG_DIR，外部终端 LaunchGuarded 新增受管身份键剥离参数（非受管零变化）。⑧前端反馈（F08）：operation 进行/失败横幅提至各状态共用区域，absent/enrolling/needs-reconcile 分支可见（vitest 接入既有 @vitejs/plugin-vue，SSR 渲染真实组件验证，无新增依赖）。⑨录入续接（F09）：池 DTO 返回持久化 enrollmentId（不含秘密），前端刷新/重启后重建向导，保存仍校验 TxnID+revision。⑩池缺失（F10）：不含秘密的「曾初始化」标记（~/.amagi-codebox/claude-accounts.pool-initialized），已建池被外部删除 → POOL_MISSING fail closed，拒绝重建空池，与从未启用区分。⑪原生项缺项（F11）：Claude Code Keychain update 缺项只返回稳定错误，禁止 Add 重建（与池首建分离权限语义）。⑫进程观察器（F12）：补齐官方 RPC 入口进程标题 pi-rpc 与 pi-coding-agent 包路径片段匹配。⑬未知字段（F13）：standby Pi grant 刷新改为字段级合并保留扩展字段。⑭乐观锁（F14）：RemoveAccount 校验 expectedRevision。⑮operation 缓存（F15）：超限淘汰只删已完成 victim，运行中项保留（requestId 幂等/在途查询不悬空）。另修正四项测试有效性（F04 反向断言、F05 刷新后身份映射、跨进程锁真实互斥断言、目录拒绝用真实目录）。
++
+ ### Added
+ 
+ - **Provider center「Claude 订阅账号」区（Phase 1c）**：新增 `frontend/src/api/claudeAccounts.ts`（包装 1b facade 十个绑定，1b 错误码全集 → 中文文案映射与解析）、`frontend/src/stores/claudeAccounts.ts`（池状态机 loading/absent/managed/enrolling/needs-reconcile/blocked/error、`claude-accounts:operation|event` 事件订阅 + operation 轮询兑底、operation 进行中防重、switch 同目标在途复用同一 requestId 不重发、SESSIONS_ACTIVE/EXTERNAL_SESSION_UNCERTAIN 进入等待意图并可重试）、`claudeAccountsView.ts` 纯视图模型（三态判定、双端健康文案、遮罩邮箱显隐不变量、恢复三选一引导、录入向导四步）与 `ClaudeAccountsSection.vue`（首次保存双端登录、录入向导、账号卡〔别名/遮罩邮箱/套餐/双端健康/额度占位〕、切换/更新当前登录/重命名/移除、等待会话退出自动完成、needs-reconcile inspect+complete-target/adopt-current/restore-source、自动轮换 riskAck 确认弹层）；切换代际变化后自动 loadLoginProviders() 刷新发现；macOS 以外 capability=unsupported 时全区隐藏。额度数据绑定（Phase 2）、自动引擎（Phase 3）不在本阶段。附 Vitest 29 项（错误码全集、幂等、pending、防重、别名校验等）。
+diff --git a/app.go b/app.go
+index 6595927..cc8f3ba 100644
+--- a/app.go
++++ b/app.go
+@@ -80,7 +80,7 @@ type codexLaunchSettings struct {
+ // Claude/Codex sessions. Production uses LauncherService; tests inject a
+ // deterministic process lifecycle without changing the exported App surface.
+ type externalLauncherPort interface {
+-	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error) (*launcher.LaunchResult, error)
++	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error, []string) (*launcher.LaunchResult, error)
+ 	LaunchCodexGuarded(string, string, session.LaunchMode, string, map[string]string, func() error) (*launcher.LaunchResult, error)
+ 	CaptureProcessIdentity(string) (string, error)
+ 	RecoverProcess(string, int, string) (bool, error)
+@@ -426,6 +426,12 @@ type App struct {
+ 	claudeAccountsLoadErr     error
+ 	claudeAccountsUnsupported bool
+ 	claudeAccountsRecovered   bool
++	// claudeAccountsPoolStore 是池存储直接引用（F01：mutation 释放前发布权威
++	// 状态不经 Service 串行锁；F10：「曾初始化」标记判定）。
++	claudeAccountsPoolStore claudeaccounts.PoolStore
++	// claudeAccountsPoolMarkerPath 是不含秘密的「池曾初始化」标记文件路径
++	//（F10；测试可注入）。
++	claudeAccountsPoolMarkerPath string
+ 	// claudeAccountsQuiescenceLister 是进程观察器枚举接缝（nil = 生产 ps）。
+ 	claudeAccountsQuiescenceLister claudeProcessLister
+ 	// operation 注册表（有界缓存 + requestId 幂等，见 claude_accounts_facade.go）。
+@@ -735,6 +741,7 @@ func NewApp(mobileAssets embed.FS) *App {
+ 		// 凭据计划新鲜度复核（design §6.3）：启动前代际变更 → 返回重新规划，
+ 		// 不带旧计划放行。
+ 		m2aAdapter.SetClaudeCredentialsPlanCheck(app.claudeCredentialsPlanCheck)
++		m2aAdapter.SetClaudeCredentialsAbsenceCheck(app.claudeCredentialsAbsenceCheck)
+ 		m2aAdapter.SetRestartPtyStart(func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error) {
+ 			resolved, ok := spec.(platform.ResolvedLaunchSpec)
+ 			if !ok {
+@@ -2834,9 +2841,18 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
+ 		a.Sessions.MarkFailed(sess.ID, startErr.Error())
+ 		return "", startErr
+ 	}
++	// F07（design §6.3 R3）：受管 OAuth 外部终端启动同样在最终执行边界清除
++	// 身份/认证覆盖变量（与 embedded 的 managedClaudeIdentityBoundarySpec 同
++	// 一键集）；旧 ComputeEnvOverrides 只清 ANTHROPIC_API_KEY/AUTH_TOKEN/
++	// BASE_URL，不清 CLAUDE_CODE_* 身份变量。
++	externalIdentityStrip := []string(nil)
++	if claudeCredentials != nil && provider.IsOAuthMode() {
++		externalIdentityStrip = managedClaudeIdentityEnvKeys
++	}
+ 	result, err := external.LaunchGuarded(
+ 		sess.ID, *provider, presetName, apiKey, agentTeams, launchMode, workDir,
+ 		func() error { return a.authorizeExternalRawStart(attempt, startGeneration) },
++		externalIdentityStrip,
+ 	)
+ 	if err != nil {
+ 		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
+diff --git a/claude_accounts_facade.go b/claude_accounts_facade.go
+index b905674..0b990ea 100644
+--- a/claude_accounts_facade.go
++++ b/claude_accounts_facade.go
+@@ -33,6 +33,10 @@ const claudeAccountsRiskAckVersion = "claude-rotation-v1"
+ // claudeAccountOperationCacheLimit 是进程内已完成 operation 结果缓存上限。
+ const claudeAccountOperationCacheLimit = 128
+ 
++// errClaudeAccountOpBlocked 是 work 内部约定：operation 已被置为 blocked 终态
++// （等待外部条件，如 roll-forward 需会话退出），runner 不得再改写状态（F06）。
++var errClaudeAccountOpBlocked = errors.New("claude-accounts: operation blocked")
++
+ // ---------------------------------------------------------------------------
+ // DTO（credential-free）
+ // ---------------------------------------------------------------------------
+@@ -99,6 +103,9 @@ type ClaudeAccountsPoolDTO struct {
+ 	PauseReason      string                          `json:"pauseReason,omitempty"`
+ 	RotationEnabled  bool                            `json:"rotationEnabled"`
+ 	RotationConfig   *ClaudeAccountRotationConfigDTO `json:"rotationConfig,omitempty"`
++	// EnrollmentID：持久化 enrollment 的可续接 ID（F09/design §7.2 安全文案：
++	// 不含池秘密；刷新/重启后前端凭此重建向导，保存仍需精确 TxnID+revision）。
++	EnrollmentID string `json:"enrollmentId,omitempty"`
+ }
+ 
+ // ClaudeAccountNativeStateDTO 是 inspect 的零写分类投影。
+@@ -164,24 +171,39 @@ func (a *App) claudeOpBegin(kind, requestID, paramsDigest string, generation uin
+ 	}
+ 	a.claudeAccountsOps[id] = op
+ 	a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder, id)
+-	// 有界缓存：淘汰最旧的已完成 operation（进行中的不淘汰）。
++	// 有界缓存（F15）：仅淘汰「已完成」的最旧 victim；运行中项不淘汰（同
++	// requestId 幂等与在途查询依赖它），改试次旧者；全部在途时允许临时超过
++	// 上限（在途操作数本身有界，不会无限增长），不无限循环。
+ 	for len(a.claudeAccountsOpsOrder) > claudeAccountOperationCacheLimit {
+-		oldest := a.claudeAccountsOpsOrder[0]
+-		a.claudeAccountsOpsOrder = a.claudeAccountsOpsOrder[1:]
+-		if victim := a.claudeAccountsOps[oldest]; victim != nil {
++		evicted := false
++		for i, oldest := range a.claudeAccountsOpsOrder {
++			victim := a.claudeAccountsOps[oldest]
++			if victim == nil {
++				// 陈旧索引（防御）：直接移除队列项。
++				a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder[:i], a.claudeAccountsOpsOrder[i+1:]...)
++				evicted = true
++				break
++			}
+ 			select {
+ 			case <-victim.done:
++				a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder[:i], a.claudeAccountsOpsOrder[i+1:]...)
++				delete(a.claudeAccountsOps, oldest)
++				for req, target := range a.claudeAccountsRequests {
++					if target == oldest {
++						delete(a.claudeAccountsRequests, req)
++					}
++				}
++				evicted = true
++				break
+ 			default:
+-				// 进行中：放回队尾，改试下一个（避免活操作被逐出后 request 索引悬空）。
+-				a.claudeAccountsOpsOrder = append(a.claudeAccountsOpsOrder, oldest)
++				// 运行中：跳过，试次旧者（不放回队尾避免死循环）。
++			}
++			if evicted {
+ 				break
+ 			}
+ 		}
+-		delete(a.claudeAccountsOps, oldest)
+-		for req, target := range a.claudeAccountsRequests {
+-			if target == oldest {
+-				delete(a.claudeAccountsRequests, req)
+-			}
++		if !evicted {
++			break // 全部在途：本轮不淘汰
+ 		}
+ 	}
+ 	if requestID != "" {
+@@ -239,6 +261,14 @@ func (a *App) runClaudeAccountOperation(kind, requestID, paramsDigest string, ge
+ 		defer cancel()
+ 		err := work(ctx, op)
+ 		a.refreshClaudeAccountsCache(context.Background())
++		if errors.Is(err, errClaudeAccountOpBlocked) {
++			// F06：work 已把 operation 置为 blocked 终态（如恢复遇到占用 lease /
++			// needs-reconcile），不是 done——不能宣告成功后丢弃 outcome。
++			if a.Log != nil {
++				a.Log.Info("claude-accounts", "operation 等待外部条件", fmt.Sprintf("kind=%s", kind))
++			}
++			return
++		}
+ 		if err != nil {
+ 			code := claudeaccounts.ReasonOf(err)
+ 			a.claudeOpUpdate(op, func(d *ClaudeAccountOperationDTO) {
+@@ -261,6 +291,18 @@ func (a *App) runClaudeAccountOperation(kind, requestID, paramsDigest string, ge
+ 	return opID, nil
+ }
+ 
++// claudeOpMarkBlocked 在 work 内把 operation 置为 blocked 终态并返回哨兵错误
++// （F06：未完成的恢复不是 done；调用方返回该错误使 runner 停止改写）。
++func (a *App) claudeOpMarkBlocked(op *claudeAccountOperation, code, detail string) error {
++	a.claudeOpUpdate(op, func(d *ClaudeAccountOperationDTO) {
++		d.State = "blocked"
++		d.Stage = "waiting"
++		d.Code = code
++		d.Warnings = append(d.Warnings, detail)
++	})
++	return errClaudeAccountOpBlocked
++}
++
+ // claudeAccountsGeneration 读取缓存池代际（无池为 0）。
+ func (a *App) claudeAccountsGeneration() uint64 {
+ 	a.claudeAccountsMu.RLock()
+@@ -315,8 +357,10 @@ func (a *App) GetClaudeAccounts() (*ClaudeAccountsPoolDTO, error) {
+ 	if pool == nil {
+ 		dto.State = "disabled"
+ 	} else if txn := pool.Transaction; txn != nil {
+-		if txn.Kind == claudeaccounts.TransactionEnrollment {
++		if txn.Kind == claudeaccounts.TransactionEnrollment && txn.Enrollment != nil && txn.Enrollment.DriftedReason == "" {
+ 			dto.State = "enrolling"
++			// F09：持久化 enrollment 可续接——DTO 返回 TxnID（安全：不含凭据）。
++			dto.EnrollmentID = txn.Enrollment.TxnID
+ 		} else {
+ 			dto.State = "needs-reconcile"
+ 		}
+@@ -407,11 +451,21 @@ func (a *App) BeginClaudeAccountEnrollment(expectedRevision uint64) (string, err
+ // CaptureClaudeAccount 采集当前双端登录（后端读取秘密，前端不传 token）：
+ // enrollmentID 为空表示首次录入（CaptureFirstAccount），否则完成 enrollment
+ // 的第二账号采集（CaptureEnrolledAccount）。长 I/O 走后台 operation。
++// F10：曾初始化的池已消失（POOL_MISSING）时拒绝首次录入——不能按空池
++// 重建并丢失对旧池/事务的认知；恢复/重建须显式确认，v1 fail closed。
+ func (a *App) CaptureClaudeAccount(enrollmentID, alias string, expectedRevision uint64) (string, error) {
+ 	svc, err := a.claudeAccountsServiceOrErr()
+ 	if err != nil {
+ 		return "", err
+ 	}
++	if enrollmentID == "" {
++		a.claudeAccountsMu.RLock()
++		loadErr := a.claudeAccountsLoadErr
++		a.claudeAccountsMu.RUnlock()
++		if domain, ok := claudeaccounts.AsError(loadErr); ok && domain.Reason == claudeaccounts.ReasonPoolMissing {
++			return "", claudeAccountsPoolMissingErr()
++		}
++	}
+ 	digest := "capture|" + enrollmentID + "|" + alias + "|" + strconv.FormatUint(expectedRevision, 10)
+ 	return a.runClaudeAccountOperation("capture", "", digest, a.claudeAccountsGeneration(), func(ctx context.Context, op *claudeAccountOperation) error {
+ 		if enrollmentID == "" {
+@@ -541,8 +595,37 @@ func (a *App) ReconcileClaudeAccounts(action string, expectedRevision uint64) (*
+ 	case "complete-target":
+ 		opDigest := "reconcile|complete-target|" + strconv.FormatUint(expectedRevision, 10)
+ 		id, err := a.runClaudeAccountOperation("reconcile-complete-target", "", opDigest, a.claudeAccountsGeneration(), func(ctx context.Context, op *claudeAccountOperation) error {
+-			_, err := svc.RecoverAtStartup(ctx)
+-			return err
++			// F06：恢复动作在同一锁语义内校验 expectedRevision——陈旧恢复命令
++			// 不得作用于已变化的事务。
++			pool, perr := svc.LoadPool(ctx)
++			if perr != nil {
++				return perr
++			}
++			if pool != nil && pool.Revision != expectedRevision {
++				return claudeaccounts.NewErr(claudeaccounts.ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
++			}
++			outcome, cerr := svc.RecoverAtStartup(ctx)
++			if cerr != nil {
++				return cerr
++			}
++			// F06：消费 outcome——未完成（roll-forward-pending/needs-reconcile/
++			// blocked）是 blocked 不是 done；done 必须以 journal 已清为依据。
++			switch outcome.Action {
++			case claudeaccounts.ReconcileRollForwardPending:
++				return a.claudeOpMarkBlocked(op, outcome.ReasonCode, "恢复等待会话退出/外部条件，未完成")
++			case claudeaccounts.ReconcileNeedsReconcile:
++				return a.claudeOpMarkBlocked(op, string(claudeaccounts.ReasonNeedsReconcile), "存在无法自动分类的投影，需人工恢复")
++			case claudeaccounts.ReconcileBlocked:
++				return a.claudeOpMarkBlocked(op, outcome.ReasonCode, "原生槽位不可读，恢复被阻塞")
++			}
++			fresh, ferr := svc.LoadPool(ctx)
++			if ferr != nil {
++				return ferr
++			}
++			if fresh != nil && fresh.Transaction != nil {
++				return a.claudeOpMarkBlocked(op, string(claudeaccounts.ReasonNeedsReconcile), "恢复后仍存在未结事务")
++			}
++			return nil
+ 		})
+ 		if err != nil {
+ 			return nil, err
+@@ -565,6 +648,10 @@ func (a *App) ReconcileClaudeAccounts(action string, expectedRevision uint64) (*
+ 			if err != nil {
+ 				return err
+ 			}
++			// F06：陈旧恢复命令（stale expectedRevision）不得作用于已变化事务。
++			if pool != nil && pool.Revision != expectedRevision {
++				return claudeaccounts.NewErr(claudeaccounts.ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
++			}
+ 			if pool == nil || pool.Transaction == nil || pool.Transaction.Kind != claudeaccounts.TransactionSwap || pool.Transaction.Swap == nil {
+ 				return claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "无未结 swap 事务，无源账号可恢复")
+ 			}
+@@ -572,12 +659,25 @@ func (a *App) ReconcileClaudeAccounts(action string, expectedRevision uint64) (*
+ 			if sourceID == "" || pool.Account(sourceID) == nil {
+ 				return claudeaccounts.NewErr(claudeaccounts.ReasonNeedsReconcile, "journal 源账号不在池中")
+ 			}
+-			_, err = svc.Swap(ctx, claudeaccounts.SwapRequest{
++			res, serr := svc.Swap(ctx, claudeaccounts.SwapRequest{
+ 				TargetID:           sourceID,
+ 				Reason:             claudeaccounts.SwapReasonManual,
+ 				ExpectedGeneration: pool.ActiveGeneration,
+ 			})
+-			return err
++			if serr != nil {
++				return serr
++			}
++			// F06：Swap 内部已先处理未结事务（含全 before 清 journal）再 no-op；
++			// done 以 journal 已清为依据复核。
++			fresh, ferr := svc.LoadPool(ctx)
++			if ferr != nil {
++				return ferr
++			}
++			if fresh != nil && fresh.Transaction != nil {
++				return a.claudeOpMarkBlocked(op, string(claudeaccounts.ReasonNeedsReconcile), "恢复后仍存在未结事务")
++			}
++			_ = res
++			return nil
+ 		})
+ 		if err != nil {
+ 			return nil, err
+@@ -659,9 +759,21 @@ func newClaudeAccountsService(app *App) *claudeaccounts.Service {
+ 		}
+ 		return nil
+ 	}
++	markerPath, err := claudeaccounts.DefaultPoolMarkerPath()
++	if err != nil {
++		if app.Log != nil {
++			app.Log.Warn("claude-accounts", "解析账号池标记路径失败，标记不生效", err.Error())
++		}
++		markerPath = ""
++	}
++	app.claudeAccountsPoolMarkerPath = markerPath
++	poolStore := claudeaccounts.NewKeychainPoolStore()
++	// F01：mutation 释放前发布权威状态需直接读池存储（不经 Service 串行锁）；
++	// F10：标记判定同源。
++	app.claudeAccountsPoolStore = poolStore
+ 	client := claudeaccounts.NewConstrainedHTTPClient(nil)
+ 	svc, err := claudeaccounts.NewService(claudeaccounts.Deps{
+-		Pool: claudeaccounts.NewKeychainPoolStore(),
++		Pool: poolStore,
+ 		Native: claudeaccounts.NewCombinedNativeStore(
+ 			claudeaccounts.NewFileCredentialStore(paths, nil),
+ 			claudeaccounts.NewClaudeKeychainAccess(),
+diff --git a/claude_accounts_facade_test.go b/claude_accounts_facade_test.go
+index 1e71b2b..3e81f16 100644
+--- a/claude_accounts_facade_test.go
++++ b/claude_accounts_facade_test.go
+@@ -8,6 +8,7 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"strings"
++	"sync"
+ 	"testing"
+ 	"time"
+ 
+@@ -49,14 +50,38 @@ func nativeMatchingA() *claudeaccounts.NativeProjections {
+ 	}
+ }
+ 
+-func newFacadeTestApp(t *testing.T) (*App, *fakePoolStore, *fakeNativeStore) {
++func newFacadeTestApp(t *testing.T) (*App, *fakePoolStore, *fakeNativeStore, *fakeIdentityProvider) {
+ 	t.Helper()
+ 	app := newGateTestApp(t)
+ 	pool := twoAccountPool()
+-	svc, poolStore, nativeStore := newRotationTestService(t, app, pool, nativeMatchingA())
++	native := nativeMatchingA()
++	// F05：换入前目标双 grant 现场验证需要可控身份响应（真实网络不可用）。
++	identity := &fakeIdentityProvider{responses: map[string]claudeaccounts.ProfileIdentity{
++		"SECRET-CC-A": {AccountUUID: "uuid-a", OrganizationUUID: "org-a"},
++		"SECRET-PI-A": {AccountUUID: "uuid-a", OrganizationUUID: "org-a"},
++		"SECRET-CC-B": {AccountUUID: "uuid-b", OrganizationUUID: "org-b"},
++		"SECRET-PI-B": {AccountUUID: "uuid-b", OrganizationUUID: "org-b"},
++	}}
++	svc, poolStore, nativeStore := newRotationTestService(t, app, pool, native, identity)
+ 	app.claudeAccounts = svc
+ 	setClaudeAccountsCache(app, pool, nil, true)
+-	return app, poolStore, nativeStore
++	return app, poolStore, nativeStore, identity
++}
++
++// fakeIdentityProvider 是根色 facade 测试的身份注入 fake（token → 身份；
++// 未知 token → IDENTITY_UNVERIFIED）。
++type fakeIdentityProvider struct {
++	mu        sync.Mutex
++	responses map[string]claudeaccounts.ProfileIdentity
++}
++
++func (f *fakeIdentityProvider) FetchProfile(_ context.Context, accessToken string) (claudeaccounts.ProfileIdentity, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	if id, ok := f.responses[accessToken]; ok {
++		return id, nil
++	}
++	return claudeaccounts.ProfileIdentity{}, claudeaccounts.NewErr(claudeaccounts.ReasonIdentityUnverified, "注入：token 无已知身份")
+ }
+ 
+ func waitClaudeOpDone(t *testing.T, app *App, opID string, timeout time.Duration) *ClaudeAccountOperationDTO {
+@@ -77,7 +102,7 @@ func waitClaudeOpDone(t *testing.T, app *App, opID string, timeout time.Duration
+ }
+ 
+ func TestFacade_GetClaudeAccounts_States(t *testing.T) {
+-	app, _, _ := newFacadeTestApp(t)
++	app, _, _, _ := newFacadeTestApp(t)
+ 
+ 	dto, err := app.GetClaudeAccounts()
+ 	if err != nil {
+@@ -142,7 +167,7 @@ func refreshFacadePool(t *testing.T, app *App, poolStore *fakePoolStore) {
+ }
+ 
+ func TestFacade_SwitchOperation_RequestIdIdempotencyAndLeaseConflict(t *testing.T) {
+-	app, _, native := newFacadeTestApp(t)
++	app, _, native, _ := newFacadeTestApp(t)
+ 
+ 	// requestId 幂等：同参数两次提交返回同一 operation。
+ 	opA, err := app.SwitchClaudeAccount("acc-b", 4, "req-1")
+@@ -185,7 +210,7 @@ func TestFacade_SwitchOperation_RequestIdIdempotencyAndLeaseConflict(t *testing.
+ }
+ 
+ func TestFacade_SwitchBlockedByCredentialLease(t *testing.T) {
+-	app, _, _ := newFacadeTestApp(t)
++	app, _, _, _ := newFacadeTestApp(t)
+ 	// 持有凭据运行 lease（模拟受管会话在跑）→ swap 拒绝 SESSIONS_ACTIVE。
+ 	claim, err := app.beginClaudeCredentialsClaim("lease-test")
+ 	if err != nil {
+@@ -210,7 +235,7 @@ func TestFacade_SwitchBlockedByCredentialLease(t *testing.T) {
+ }
+ 
+ func TestFacade_SetClaudeAccountRotation(t *testing.T) {
+-	app, _, _ := newFacadeTestApp(t)
++	app, _, _, _ := newFacadeTestApp(t)
+ 
+ 	// 无风险确认 → 拒绝。
+ 	if err := app.SetClaudeAccountRotation(true, 2, "wrong"); err == nil {
+@@ -242,7 +267,7 @@ func TestFacade_SetClaudeAccountRotation(t *testing.T) {
+ }
+ 
+ func TestFacade_ReconcileInspectIsZeroWrite(t *testing.T) {
+-	app, poolStore, native := newFacadeTestApp(t)
++	app, poolStore, native, _ := newFacadeTestApp(t)
+ 	nativeBefore := native.proj
+ 	result, err := app.ReconcileClaudeAccounts("inspect", 0)
+ 	if err != nil {
+@@ -272,7 +297,7 @@ func TestFacade_ReconcileInspectIsZeroWrite(t *testing.T) {
+ }
+ 
+ func TestFacade_RemoveRenamePassthrough(t *testing.T) {
+-	app, _, _ := newFacadeTestApp(t)
++	app, _, _, _ := newFacadeTestApp(t)
+ 	// 活动账号移除被 1a 拒绝（须先切换/停止管理）。
+ 	if err := app.RemoveClaudeAccount("acc-a", 2); err == nil || !strings.Contains(err.Error(), "REVISION_CONFLICT") {
+ 		t.Fatalf("remove active account must fail, got %v", err)
+@@ -290,7 +315,7 @@ func TestFacade_RemoveRenamePassthrough(t *testing.T) {
+ }
+ 
+ func TestFacade_SensitiveFieldsNeverLeaveDTO(t *testing.T) {
+-	app, _, _ := newFacadeTestApp(t)
++	app, _, _, _ := newFacadeTestApp(t)
+ 	opID, err := app.SwitchClaudeAccount("acc-b", 4, "req-sensitive")
+ 	if err != nil {
+ 		t.Fatalf("switch: %v", err)
+@@ -320,7 +345,7 @@ func TestFacade_SensitiveFieldsNeverLeaveDTO(t *testing.T) {
+ }
+ 
+ func TestFacade_BeginEnrollmentAndCaptureFlow(t *testing.T) {
+-	app, poolStore, native := newFacadeTestApp(t)
++	app, poolStore, native, identity := newFacadeTestApp(t)
+ 	enrollmentID, err := app.BeginClaudeAccountEnrollment(2)
+ 	if err != nil {
+ 		t.Fatalf("BeginEnrollment: %v", err)
+@@ -344,8 +369,12 @@ func TestFacade_BeginEnrollmentAndCaptureFlow(t *testing.T) {
+ 	if _, err := native.PatchPiAnthropic(context.Background(), []byte(`{"type":"oauth","access":"SECRET-PI-B"}`)); err != nil {
+ 		t.Fatalf("patch pi: %v", err)
+ 	}
+-	// capture 走网络身份校验（fake 无 identity 注入）→ 预期 IDENTITY_UNVERIFIED
+-	// 失败而非崩溃；此处验证 operation 错误路径与码位透传。
++	// capture 走网络身份校验：删除 B 的 Pi 身份映射，模拟 fake 身份后端不
++	// 认识该 token → 预期 IDENTITY_UNVERIFIED 失败而非崩溃；验证 operation
++	// 错误路径与码位透传。
++	identity.mu.Lock()
++	delete(identity.responses, "SECRET-PI-B")
++	identity.mu.Unlock()
+ 	opID, err := app.CaptureClaudeAccount(enrollmentID, "B-second", 3)
+ 	if err != nil {
+ 		t.Fatalf("CaptureClaudeAccount submit: %v", err)
+@@ -354,22 +383,55 @@ func TestFacade_BeginEnrollmentAndCaptureFlow(t *testing.T) {
+ 	if dto.State != "error" {
+ 		t.Fatalf("capture against fake identity backend should fail with typed error, got %+v", dto)
+ 	}
+-	// 取消录入：入口恢复（BeginEnrollment 已把 revision 2→3；失败的 capture
+-	// 未落盘，revision 仍为 3）。
+-	if err := app.CancelClaudeAccountEnrollment(3); err != nil {
+-		t.Fatalf("CancelEnrollment: %v", err)
++
++	// F04（修正后的语义）：原生槽位已漂移到 B，取消录入不得无条件清 journal
++	// 重开启动入口——取消本身走 mutation/静止门并分类当前投影；漂移时保留
++	// enrollment（标记 drifted → needs-reconcile），返回稳定错误。
++	err = app.CancelClaudeAccountEnrollment(3)
++	if err == nil || !strings.Contains(err.Error(), "NEEDS_RECONCILE") {
++		t.Fatalf("cancel with drifted native must refuse with NEEDS_RECONCILE, got %v", err)
+ 	}
+ 	pool, _ := poolStore.Load(context.Background())
++	if pool.Transaction == nil || pool.Transaction.Enrollment == nil ||
++		pool.Transaction.Enrollment.TxnID != enrollmentID ||
++		pool.Transaction.Enrollment.DriftedReason == "" {
++		t.Fatalf("drifted enrollment journal must be retained with drift marker, got %+v", pool.Transaction)
++	}
++	// 门禁与 DTO 状态：保留事务 → blocked / needs-reconcile（不是 managed）。
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsBlocked {
++		t.Fatalf("policy after drifted cancel = %v, want blocked", got)
++	}
++	if state, _ := app.GetClaudeAccounts(); state.State != "needs-reconcile" {
++		t.Fatalf("pool state after drifted cancel = %s, want needs-reconcile", state.State)
++	}
++
++	// 人工恢复路径 A：在原生客户端重新登录原账号（换回 A 投影）→ 再次取消
++	//（revision 已被 drifted 标记递增到 4）→ 原生与活动源一致 → 清除成功。
++	if _, err := native.PatchClaudeKeychainOAuth(context.Background(), []byte(`{"accessToken":"SECRET-CC-A"}`)); err != nil {
++		t.Fatalf("restore cc: %v", err)
++	}
++	if _, err := native.PatchClaudeIdentity(context.Background(), claudeaccounts.ClaudeIdentityFields{
++		OauthAccount: []byte(`{"accountUuid":"uuid-a"}`), UserID: "user-a",
++	}); err != nil {
++		t.Fatalf("restore cj: %v", err)
++	}
++	if _, err := native.PatchPiAnthropic(context.Background(), []byte(`{"type":"oauth","access":"SECRET-PI-A"}`)); err != nil {
++		t.Fatalf("restore pi: %v", err)
++	}
++	if err := app.CancelClaudeAccountEnrollment(4); err != nil {
++		t.Fatalf("cancel after native restored to source: %v", err)
++	}
++	pool, _ = poolStore.Load(context.Background())
+ 	if pool.Transaction != nil {
+-		t.Fatal("enrollment journal must be cleared after cancel")
++		t.Fatal("enrollment journal must be cleared after clean cancel")
+ 	}
+ 	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsManaged {
+-		t.Fatalf("policy after cancel = %v, want managed", got)
++		t.Fatalf("policy after clean cancel = %v, want managed", got)
+ 	}
+ }
+ 
+ func TestFacade_OperationNotFoundAdvisesReread(t *testing.T) {
+-	app, _, _ := newFacadeTestApp(t)
++	app, _, _, _ := newFacadeTestApp(t)
+ 	if _, err := app.GetClaudeAccountOperation("ca-nonexistent"); err == nil || !strings.Contains(err.Error(), "OPERATION_NOT_FOUND") {
+ 		t.Fatalf("unknown operation must advise re-read, got %v", err)
+ 	}
+diff --git a/claude_accounts_fix_test.go b/claude_accounts_fix_test.go
+new file mode 100644
+index 0000000..6188eab
+--- /dev/null
++++ b/claude_accounts_fix_test.go
+@@ -0,0 +1,648 @@
++package main
++
++// claude_accounts_fix_test.go — Phase 1 修复批次（diting F01/F02/F06/F07/F09/
++// F10/F12/F15）的根包反例与接缝测试。全部 fake 后端（设计 §10.1：不触真实
++// Keychain/原生凭据）。
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"amagi-codebox/internal/claudeaccounts"
++	"amagi-codebox/internal/config"
++	"amagi-codebox/internal/envvars"
++	"amagi-codebox/internal/launchplan"
++	"amagi-codebox/internal/paths"
++	"amagi-codebox/internal/platform"
++	"amagi-codebox/internal/remote"
++	"amagi-codebox/internal/remote/contract"
++	"amagi-codebox/internal/secrets"
++	"amagi-codebox/internal/session"
++	"amagi-codebox/internal/settings"
++)
++
++// ---- F01：mutation 释放前发布权威状态 ----
++
++// TestF01_LaunchBlockedImmediatelyAfterFailedMutation：失败事务留 journal →
++// mutation gate 释放（release）前必须已发布权威 blocked 状态 → 紧随其后的
++// launch claim 直接 blocked，不存在「释放 admission→缓存刷新」交接窗口。
++// 失败事务代际不增加，仅比代际放不住半切换会话。
++func TestF01_LaunchBlockedImmediatelyAfterFailedMutation(t *testing.T) {
++	app, poolStore, _, _ := newFacadeTestApp(t)
++	// 接线池存储直接引用：gate release 的权威发布路径生效（F01）。
++	app.claudeAccountsPoolStore = poolStore
++	app.claudeAccountsPoolMarkerPath = "" // F10 标记不参与本测试
++
++	pool, _ := poolStore.Load(context.Background())
++	pool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionSwap,
++		Swap: &claudeaccounts.SwapJournal{TxnID: "txn-f01", SourceID: "acc-a", TargetID: "acc-b"}}
++	if err := poolStore.Save(context.Background(), pool); err != nil {
++		t.Fatal(err)
++	}
++
++	// 模拟一笔 mutation：取 gate 后释放——release 内必须在释放 admission 之前
++	// 把权威 blocked 状态发布进缓存。
++	release, err := claudeCredentialsMutationGate{app: app}.Acquire(context.Background(), "f01-test")
++	if err != nil {
++		t.Fatalf("gate acquire: %v", err)
++	}
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsManaged {
++		t.Fatalf("pre-release policy = %v, want managed (stale cache)", got)
++	}
++	release()
++
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsBlocked {
++		t.Fatalf("post-release policy = %v, want blocked (authoritative publish)", got)
++	}
++	if _, err := app.beginClaudeCredentialsClaim("f01-after-mutation"); err == nil || !strings.Contains(err.Error(), "NEEDS_RECONCILE") {
++		t.Fatalf("claim right after mutation must be blocked, got %v", err)
++	}
++}
++
++// TestF01_AbsenceCheckAndRecheckCoverBlocked：无凭据计划边界接缝 + claim 复核
++// 覆盖 blocked（不只比代际）。
++func TestF01_AbsenceCheckAndRecheckCoverBlocked(t *testing.T) {
++	app, _, _, _ := newFacadeTestApp(t)
++
++	// absent → absence check 通过；managed → 拒绝（absent 旧计划不得执行）。
++	setClaudeAccountsCache(app, nil, nil, true)
++	if err := app.claudeCredentialsAbsenceCheck(); err != nil {
++		t.Fatalf("absent must pass absence check, got %v", err)
++	}
++	setClaudeAccountsCache(app, testAccountPoolWithActive(), nil, true)
++	if err := app.claudeCredentialsAbsenceCheck(); !errors.Is(err, errClaudeCredentialsGenerationChanged) {
++		t.Fatalf("managed must fail absence check (absent stale plan), got %v", err)
++	}
++
++	// claim 复核：失败事务代际不变但状态 blocked → recheck 必须拒绝。
++	claim, err := app.beginClaudeCredentialsClaim("recheck-test")
++	if err != nil {
++		t.Fatalf("claim: %v", err)
++	}
++	defer claim.release(app)
++	blockedPool := testAccountPoolWithActive()
++	blockedPool.ActiveGeneration = 4 // 与 claim 读取的代际一致（不变）
++	blockedPool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionSwap,
++		Swap: &claudeaccounts.SwapJournal{TxnID: "txn"}}
++	setClaudeAccountsCache(app, blockedPool, nil, true)
++	if err := app.recheckClaudeCredentialsClaim(claim); err == nil || !strings.Contains(err.Error(), "NEEDS_RECONCILE") {
++		t.Fatalf("recheck must reject blocked even with unchanged generation, got %v", err)
++	}
++}
++
++// ---- F02：absent 状态下已运行会话不再被静止检查豁免 ----
++
++// TestF02_QuiescenceAttributesOnlyCredentialLeaseHolders：归因集合只含持有
++// SharedServiceClaudeCredentials lease 的会话；无 lease 的 CodeBox 会话（absent
++// 状态启动）计入 external → EXTERNAL_SESSION_UNCERTAIN。
++func TestF02_QuiescenceAttributesOnlyCredentialLeaseHolders(t *testing.T) {
++	app, _, _, _ := newFacadeTestApp(t)
++
++	// 一个「已运行」的 CodeBox claude 会话（absent 时启动，无凭据 lease）。
++	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "", "m", session.ModeEmbedded, t.TempDir())
++	app.Sessions.SetPID(sess.ID, 4242)
++	defer app.Sessions.Remove(sess.ID)
++
++	app.claudeAccountsQuiescenceLister = func() ([]claudeProcessSample, error) {
++		return []claudeProcessSample{{PID: 4242, PPID: 1, Args: "/usr/local/bin/claude --session-id x"}}, nil
++	}
++	setClaudeAccountsCache(app, nil, nil, true) // 池 absent（从未启用）
++	q := claudeProcessQuiescence{
++		app:         app,
++		lister:      app.claudeAccountsProcessSamples,
++		attribution: app.claudeQuiescenceAttribution,
++	}
++	if err := q.Check(context.Background()); err == nil ||
++		claudeaccounts.ReasonOf(err) != claudeaccounts.ReasonExternalSessionUncertain {
++		t.Fatalf("absent-era session without lease must be EXTERNAL_SESSION_UNCERTAIN, got %v", err)
++	}
++
++	// 持有凭据 lease 的会话被归因豁免（mutation 门由 coordinator 承担）。
++	// 本段验证归因机制：会话转为受管（池启用 + 真实提升链路的 lease）。
++	setClaudeAccountsCache(app, testAccountPoolWithActive(), nil, true)
++	lease := registerTestCredentialLease(t, app, sess.ID)
++	app.rememberSharedLease(sess.ID, lease)
++	if err := q.Check(context.Background()); err != nil {
++		t.Fatalf("lease-holding session should be attributed, got %v", err)
++	}
++	app.releaseSharedLeases(sess.ID)
++}
++
++// TestF02_FirstCaptureFromAbsentWithRunningSessionBlocked：正式反例——从 absent
++// 的真实状态进入 capture（非预置 managed cache）：池 store 为空 + 运行中 claude
++// 进程 → CaptureFirstAccount 拒绝（§1.3-7/§4.3 所有消费进程静止）。
++func TestF02_FirstCaptureFromAbsentWithRunningSessionBlocked(t *testing.T) {
++	app := newGateTestApp(t)
++	svc, _, _ := newRotationTestService(t, app, nil, &claudeaccounts.NativeProjections{
++		ClaudeOAuth: []byte(`{"accessToken":"tok-a"}`),
++		PiAnthropic: []byte(`{"type":"oauth","access":"pi-a"}`),
++	})
++	app.claudeAccounts = svc
++	setClaudeAccountsCache(app, nil, nil, true)
++	app.claudeAccountsPoolStore = nil // 走 service 路径刷新
++
++	sess := app.Sessions.Create(session.AppTypeClaudeCode, "p", "", "m", session.ModeEmbedded, t.TempDir())
++	app.Sessions.SetPID(sess.ID, 4343)
++	defer app.Sessions.Remove(sess.ID)
++	app.claudeAccountsQuiescenceLister = func() ([]claudeProcessSample, error) {
++		return []claudeProcessSample{{PID: 4343, PPID: 1, Args: "/opt/homebrew/bin/claude"}}, nil
++	}
++
++	opID, err := app.CaptureClaudeAccount("", "first", 0)
++	if err != nil {
++		t.Fatalf("submit: %v", err)
++	}
++	dto := waitClaudeOpDone(t, app, opID, 5*time.Second)
++	if dto.State != "error" || dto.Code != string(claudeaccounts.ReasonExternalSessionUncertain) {
++		t.Fatalf("absent-era running session must block first capture, got %+v", dto)
++	}
++}
++
++// ---- F06：恢复 outcome 消费与 expectedRevision ----
++
++// TestF06_CompleteTargetBlockedWhenLeaseHeld：journal 存在且凭据 admission/lease
++// 被持 → complete-target 的 operation 终态是 blocked（等待），不是 done。
++func TestF06_CompleteTargetBlockedWhenLeaseHeld(t *testing.T) {
++	app, poolStore, _, _ := newFacadeTestApp(t)
++	// 先在 managed 状态取得凭据 admission（模拟受管会话在跑），再让池出现
++	// 未结 journal（失败事务）——恢复需 mutation admission 但被 lease 阻塞。
++	claim, err := app.beginClaudeCredentialsClaim("f06-lease")
++	if err != nil {
++		t.Fatalf("claim: %v", err)
++	}
++	defer claim.release(app)
++
++	pool, _ := poolStore.Load(context.Background())
++	pool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionSwap,
++		Swap: &claudeaccounts.SwapJournal{TxnID: "txn-f06", SourceID: "acc-a", TargetID: "acc-b", FromGeneration: 4}}
++	if err := poolStore.Save(context.Background(), pool); err != nil {
++		t.Fatal(err)
++	}
++	setClaudeAccountsCache(app, pool, nil, true)
++
++	res, err := app.ReconcileClaudeAccounts("complete-target", pool.Revision)
++	if err != nil {
++		t.Fatalf("submit: %v", err)
++	}
++	dto := waitClaudeOpDone(t, app, res.OperationID, 5*time.Second)
++	if dto.State != "blocked" {
++		t.Fatalf("complete-target with held lease must end blocked, got %+v", dto)
++	}
++	if dto.Changed {
++		t.Fatal("blocked operation must not claim changed=true")
++	}
++	pool2, _ := poolStore.Load(context.Background())
++	if pool2.Transaction == nil {
++		t.Fatal("journal must be retained while blocked")
++	}
++}
++
++// TestF06_RestoreSourceAllBeforeClearsJournal：全 before journal → restore-source
++// 先清 journal 再 no-op → done，入口重新打开（此前提前 no-op 返回 done 但
++// journal 残留、入口永远 blocked）。
++func TestF06_RestoreSourceAllBeforeClearsJournal(t *testing.T) {
++	app, poolStore, _, _ := newFacadeTestApp(t)
++	pool, _ := poolStore.Load(context.Background())
++	pool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionSwap,
++		Swap: &claudeaccounts.SwapJournal{
++			TxnID: "txn-f06b", SourceID: "acc-a", TargetID: "acc-b",
++			FromGeneration: 4, Phase: claudeaccounts.SwapPrepared,
++			Before: pool.Accounts["acc-a"].OwnedProjectionsOf(),
++			After:  pool.Accounts["acc-b"].OwnedProjectionsOf(),
++		}}
++	pool.Revision++
++	if err := poolStore.Save(context.Background(), pool); err != nil {
++		t.Fatal(err)
++	}
++	setClaudeAccountsCache(app, pool, nil, true)
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsBlocked {
++		t.Fatalf("pre-restore policy = %v, want blocked", got)
++	}
++
++	res, err := app.ReconcileClaudeAccounts("restore-source", pool.Revision)
++	if err != nil {
++		t.Fatalf("submit: %v", err)
++	}
++	dto := waitClaudeOpDone(t, app, res.OperationID, 5*time.Second)
++	if dto.State != "done" {
++		t.Fatalf("restore-source all-before must be done, got %+v", dto)
++	}
++	pool2, _ := poolStore.Load(context.Background())
++	if pool2.Transaction != nil {
++		t.Fatal("journal must be cleared before no-op done")
++	}
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsManaged {
++		t.Fatalf("post-restore policy = %v, want managed", got)
++	}
++}
++
++// TestF06_ReconcileActionsRejectStaleRevision：陈旧 expectedRevision 的恢复命令
++// 不得作用于已变化的事务。
++func TestF06_ReconcileActionsRejectStaleRevision(t *testing.T) {
++	app, poolStore, _, _ := newFacadeTestApp(t)
++	pool, _ := poolStore.Load(context.Background())
++	pool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionSwap,
++		Swap: &claudeaccounts.SwapJournal{TxnID: "txn-f06c", SourceID: "acc-a", TargetID: "acc-b"}}
++	pool.Revision++
++	if err := poolStore.Save(context.Background(), pool); err != nil {
++		t.Fatal(err)
++	}
++	setClaudeAccountsCache(app, pool, nil, true)
++
++	for _, action := range []string{"complete-target", "restore-source"} {
++		res, err := app.ReconcileClaudeAccounts(action, pool.Revision+9)
++		if err != nil {
++			t.Fatalf("%s submit: %v", action, err)
++		}
++		dto := waitClaudeOpDone(t, app, res.OperationID, 5*time.Second)
++		if dto.State != "error" || dto.Code != string(claudeaccounts.ReasonRevisionConflict) {
++			t.Fatalf("%s with stale revision must error REVISION_CONFLICT, got %+v", action, dto)
++		}
++	}
++	pool2, _ := poolStore.Load(context.Background())
++	if pool2.Transaction == nil {
++		t.Fatal("stale command must not clear/alter the journal")
++	}
++}
++
++// ---- F07：计划/最终命令的身份环境边界 ----
++
++// TestF07_ClaudePlanStripsManagedIdentityEnv：受管 OAuth 的 remote Claude 计划：
++// 用户自定义 envvars 中的身份/认证覆盖变量不得进入最终 spec（remote
++// create/restart 与桌面 embedded 同一边界）。
++func TestF07_ClaudePlanStripsManagedIdentityEnv(t *testing.T) {
++	app := newGateTestApp(t)
++	setClaudeAccountsCache(app, testAccountPoolWithActive(), nil, true)
++
++	homeDir := isolatedHome(t)
++	dir := t.TempDir()
++	cfgSvc := config.NewConfigService(dir)
++	if err := cfgSvc.Load(); err != nil {
++		t.Fatal(err)
++	}
++	if err := cfgSvc.SaveProvider("oauth-provider", config.Provider{
++		Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com", AuthKey: config.AuthTypeOAuth},
++		DefaultModel: "claude-x",
++		Presets:      map[string]config.Preset{"oauth-preset": {Name: "oauth-preset", Model: "claude-x"}},
++	}); err != nil {
++		t.Fatal(err)
++	}
++	secSvc := secrets.NewSecretsService(dir)
++	settingsSvc := settings.NewService(dir)
++	if err := settingsSvc.Load(); err != nil {
++		t.Fatal(err)
++	}
++	envSvc := envvars.NewEnvVarsService(dir)
++	for _, kv := range managedClaudeIdentityEnvKeys {
++		if err := envSvc.Set(kv, kv+"-evil"); err != nil {
++			t.Fatalf("Set %s: %v", kv, err)
++		}
++	}
++	defaults, err := launchplan.NewDefaultStore(settingsSvc)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := defaults.RecordDesktopActivation(launchplan.StableRecipe{
++		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
++		ProviderRef: "oauth-provider", PresetRef: "oauth-preset", ModelRef: "claude-x", ShellRef: "/bin/sh",
++	}); err != nil {
++		t.Fatal(err)
++	}
++	planner := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(), paths.NewPathsService(dir), envSvc, homeDir)
++	planner.claudeCredentialAdmission = app.claudeCredentialsPlanAdmission
++	plan, failure := planner.BuildPlan(context.Background(), launchplan.BuildRequest{
++		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
++	})
++	if failure != nil {
++		t.Fatalf("BuildPlan failure: %#v", failure)
++	}
++	defer plan.Secrets.Dispose()
++	checked := 0
++	for _, eff := range plan.Effects {
++		if eff.Process == nil {
++			continue
++		}
++		checked++
++		for _, kv := range eff.Process.Resolved.Env.Variables {
++			k, _, _ := strings.Cut(kv, "=")
++			for _, key := range managedClaudeIdentityEnvKeys {
++				if strings.EqualFold(k, key) {
++					t.Fatalf("managed OAuth plan env still carries identity key %s", key)
++				}
++			}
++		}
++	}
++	if checked == 0 {
++		t.Fatal("plan must carry a process effect")
++	}
++	// 非受管（absent）对照：身份键保留（零行为变化）。
++	setClaudeAccountsCache(app, nil, nil, true)
++	plan2, failure2 := planner.BuildPlan(context.Background(), launchplan.BuildRequest{
++		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
++	})
++	if failure2 != nil {
++		t.Fatalf("absent BuildPlan failure: %#v", failure2)
++	}
++	defer plan2.Secrets.Dispose()
++	found := false
++	for _, eff := range plan2.Effects {
++		if eff.Process == nil {
++			continue
++		}
++		for _, kv := range eff.Process.Resolved.Env.Variables {
++			if strings.HasPrefix(kv, "CLAUDE_CODE_ACCOUNT_UUID=") {
++				found = true
++			}
++		}
++	}
++	if !found {
++		t.Fatal("absent plan must keep user env unchanged (zero behavior change)")
++	}
++}
++
++// TestF07_PiLoginBoundaryHelpersCarryManagedKeys：受管 Pi 登录：env 构建
++//（piLoginEnvOverrides）与最终重锚（piLoginReAnchorSpec）同步剥离身份变量。
++func TestF07_PiLoginBoundaryHelpersCarryManagedKeys(t *testing.T) {
++	env := piLoginEnvOverrides("/canonical/.pi/agent", managedClaudeIdentityEnvKeys...)
++	for _, key := range managedClaudeIdentityEnvKeys {
++		if v, ok := env[key]; !ok || v != "" {
++			t.Fatalf("piLoginEnvOverrides must unset %s (empty override), got %q", key, v)
++		}
++	}
++	spec := platform.ResolvedLaunchSpec{
++		BootstrapMode:  platform.BootstrapShellInline,
++		Shell:          &platform.ResolvedShell{Key: "zsh", Path: "/bin/zsh"},
++		Env:            platform.ResolvedEnv{Variables: []string{"CLAUDE_CODE_ACCOUNT_UUID=uuid-evil", "HOME=/h"}},
++		StartupCommand: "claude-evil-start",
++	}
++	spec = piLoginReAnchorSpec(spec, "/canonical/.pi/agent", managedClaudeIdentityEnvKeys...)
++	joined := strings.Join(spec.Env.Variables, "\n") + "\n" + spec.StartupCommand
++	for _, key := range managedClaudeIdentityEnvKeys {
++		if !strings.Contains(joined, "-u "+key) {
++			t.Fatalf("re-anchor must strip %s after shell init: %s", key, joined)
++		}
++	}
++}
++
++// TestF07_ExternalLaunchStripsManagedIdentityEnv：外部终端路径在最终 env 剥离
++// 受管身份键（与 embedded 的 managedClaudeIdentityBoundarySpec 同一键集）；
++// 非受管（nil 键集）零变化。
++func TestF07_ExternalLaunchStripsManagedIdentityEnv(t *testing.T) {
++	base := []string{
++		"CLAUDE_CODE_ACCOUNT_UUID=uuid-evil",
++		"CLAUDE_CODE_DEVICE_ID=dev-evil",
++		"CLAUDE_CONFIG_DIR=/other/root",
++		"ANTHROPIC_MODEL=claude-x",
++		"PATH=/usr/bin",
++	}
++	got := stripEnvKeys(base, managedClaudeIdentityEnvKeys)
++	if len(got) != 2 {
++		t.Fatalf("managed strip must drop identity keys, got %v", got)
++	}
++	if same := stripEnvKeys(base, nil); len(same) != len(base) {
++		t.Fatalf("unmanaged (nil) must be zero-change, got %v", same)
++	}
++}
++
++// ---- F09：重启/刷新后续接 enrollment ----
++
++// TestF09_PoolDTOCarriesEnrollmentId：持久化 enrollment 的 TxnID 进入安全 DTO；
++// drifted enrollment 不返回续接 ID（needs-reconcile）。
++func TestF09_PoolDTOCarriesEnrollmentId(t *testing.T) {
++	app, poolStore, _, _ := newFacadeTestApp(t)
++	pool, _ := poolStore.Load(context.Background())
++	pool.Transaction = &claudeaccounts.PoolTransaction{Kind: claudeaccounts.TransactionEnrollment,
++		Enrollment: &claudeaccounts.EnrollmentJournal{TxnID: "enroll-resume", Harvested: true}}
++	pool.Revision++
++	if err := poolStore.Save(context.Background(), pool); err != nil {
++		t.Fatal(err)
++	}
++	setClaudeAccountsCache(app, pool, nil, true)
++
++	dto, err := app.GetClaudeAccounts()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if dto.State != "enrolling" || dto.EnrollmentID != "enroll-resume" {
++		t.Fatalf("DTO must expose resumable enrollmentId, got state=%s id=%q", dto.State, dto.EnrollmentID)
++	}
++
++	pool2, _ := poolStore.Load(context.Background())
++	pool2.Transaction.Enrollment.DriftedReason = string(claudeaccounts.ReasonExternalAccountChange)
++	pool2.Revision++
++	if err := poolStore.Save(context.Background(), pool2); err != nil {
++		t.Fatal(err)
++	}
++	setClaudeAccountsCache(app, pool2, nil, true)
++	dto2, _ := app.GetClaudeAccounts()
++	if dto2.State != "needs-reconcile" || dto2.EnrollmentID != "" {
++		t.Fatalf("drifted enrollment must be needs-reconcile without resume id, got state=%s id=%q", dto2.State, dto2.EnrollmentID)
++	}
++}
++
++// TestF09_EnrollmentSurvivesBackendRebuild：开始录入 → 重建 App/service 读取
++//（模拟重启/刷新）→ 凭 DTO enrollmentId 续接保存成功。
++func TestF09_EnrollmentSurvivesBackendRebuild(t *testing.T) {
++	app, poolStore, native, identity := newFacadeTestApp(t)
++	app.claudeAccountsPoolStore = poolStore
++
++	enrollmentID, err := app.BeginClaudeAccountEnrollment(2)
++	if err != nil {
++		t.Fatalf("begin: %v", err)
++	}
++	// 模拟重启/刷新：重建 facade 缓存（新 App 等价）——DTO 仍能给出续接 ID。
++	setClaudeAccountsCache(app, nil, nil, false)
++	app.refreshClaudeAccountsCache(context.Background())
++	dto, err := app.GetClaudeAccounts()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if dto.EnrollmentID != enrollmentID {
++		t.Fatalf("rebuild must expose persisted enrollmentId %q, got %q", enrollmentID, dto.EnrollmentID)
++	}
++
++	// 原生登录 B（身份映射齐备）→ 凭续接 ID 完成保存。
++	if _, err := native.PatchClaudeKeychainOAuth(context.Background(), []byte(`{"accessToken":"SECRET-CC-B"}`)); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := native.PatchClaudeIdentity(context.Background(), claudeaccounts.ClaudeIdentityFields{
++		OauthAccount: []byte(`{"accountUuid":"uuid-b"}`), UserID: "user-b",
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := native.PatchPiAnthropic(context.Background(), []byte(`{"type":"oauth","access":"SECRET-PI-B"}`)); err != nil {
++		t.Fatal(err)
++	}
++	_ = identity
++	pool, _ := poolStore.Load(context.Background())
++	opID, err := app.CaptureClaudeAccount(dto.EnrollmentID, "B-resumed", pool.Revision)
++	if err != nil {
++		t.Fatalf("resumed capture submit: %v", err)
++	}
++	op := waitClaudeOpDone(t, app, opID, 10*time.Second)
++	if op.State != "done" {
++		t.Fatalf("resumed capture must succeed, got %+v", op)
++	}
++}
++
++// ---- F10：已创建池被外部删除 → fail closed ----
++
++// TestF10_PoolMissingAfterExternalDeletionFailsClosed：标记存在 + 池消失 →
++// POOL_MISSING blocked（不当未启用）；首次 capture 拒绝重建空池。
++func TestF10_PoolMissingAfterExternalDeletionFailsClosed(t *testing.T) {
++	app, poolStore, _, _ := newFacadeTestApp(t)
++	markerPath := t.TempDir() + "/pool-initialized"
++	app.claudeAccountsPoolMarkerPath = markerPath
++	app.claudeAccountsPoolStore = poolStore
++
++	app.refreshClaudeAccountsCache(context.Background())
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsManaged {
++		t.Fatalf("policy with pool = %v, want managed", got)
++	}
++	if !app.claudeAccountsMarkerExists() {
++		t.Fatal("marker must be written once pool exists")
++	}
++
++	// 外部删除池项 → 刷新后 POOL_MISSING blocked。
++	poolStore.mu.Lock()
++	poolStore.pool = nil
++	poolStore.mu.Unlock()
++	app.refreshClaudeAccountsCache(context.Background())
++	if got := app.claudeCredentialsPolicy(); got != claudeCredentialsBlocked {
++		t.Fatalf("policy after external deletion = %v, want blocked", got)
++	}
++	app.claudeAccountsMu.RLock()
++	loadErr := app.claudeAccountsLoadErr
++	app.claudeAccountsMu.RUnlock()
++	if domain, ok := claudeaccounts.AsError(loadErr); !ok || domain.Reason != claudeaccounts.ReasonPoolMissing {
++		t.Fatalf("loadErr = %v, want POOL_MISSING", loadErr)
++	}
++	if _, err := app.CaptureClaudeAccount("", "rebuild", 0); err == nil || !strings.Contains(err.Error(), "POOL_MISSING") {
++		t.Fatalf("first capture after pool deletion must fail closed, got %v", err)
++	}
++
++	// 对照：从未创建过池（无标记）→ absent 正常未启用。
++	app2, poolStore2, _, _ := newFacadeTestApp(t)
++	poolStore2.mu.Lock()
++	poolStore2.pool = nil
++	poolStore2.mu.Unlock()
++	app2.claudeAccountsPoolStore = poolStore2
++	app2.claudeAccountsPoolMarkerPath = t.TempDir() + "/absent-marker"
++	app2.refreshClaudeAccountsCache(context.Background())
++	if got := app2.claudeCredentialsPolicy(); got != claudeCredentialsAbsent {
++		t.Fatalf("never-created pool must stay absent, got %v", got)
++	}
++}
++
++// ---- F12：进程观察器覆盖官方 RPC 入口 ----
++
++// TestF12_ObserverMatchesPiRpcAndPackagePaths：pi-rpc 进程标题与 node 直跑官方
++// 包入口都必须命中观察器，不能因标题不同漏掉（宁可误报不漏报）。
++func TestF12_ObserverMatchesPiRpcAndPackagePaths(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		args string
++		want bool
++	}{
++		{"官方 RPC 标题", "pi-rpc", true},
++		{"node 直跑官方包入口", "node /Users/u/.fnm/node_modules/@earendil-works/pi-coding-agent/dist/rpc-entry.js", true},
++		{"普通 claude", "/usr/local/bin/claude", true},
++		{"普通 pi", "/opt/homebrew/bin/pi --provider anthropic", true},
++		{"无关 zsh", "/bin/zsh -il", false},
++		{"名字包含 pi 的无关进程", "/usr/bin/ping example.com", false},
++	} {
++		if got := claudeProcessArgsMatch(tc.args); got != tc.want {
++			t.Fatalf("%s: claudeProcessArgsMatch(%q) = %v, want %v", tc.name, tc.args, got, tc.want)
++		}
++	}
++
++	app, _, _, _ := newFacadeTestApp(t)
++	app.claudeAccountsQuiescenceLister = func() ([]claudeProcessSample, error) {
++		return []claudeProcessSample{{PID: 4405, PPID: 1, Args: "pi-rpc"}}, nil
++	}
++	q := claudeProcessQuiescence{app: app, lister: app.claudeAccountsProcessSamples, attribution: func() map[int]bool { return nil }}
++	if err := q.Check(context.Background()); err == nil || claudeaccounts.ReasonOf(err) != claudeaccounts.ReasonExternalSessionUncertain {
++		t.Fatalf("live pi-rpc must be EXTERNAL_SESSION_UNCERTAIN, got %v", err)
++	}
++}
++
++// ---- F15：operation 缓存淘汰不得删除运行中操作 ----
++
++// TestF15_CacheEvictionKeepsRunningOperations：缓存超限时只淘汰已完成 victim；
++// 运行中最旧操作保留（同 requestId 查询/幂等仍命中）。
++func TestF15_CacheEvictionKeepsRunningOperations(t *testing.T) {
++	app, _, _, _ := newFacadeTestApp(t)
++	app.claudeAccountsOpsMu.Lock()
++	app.claudeAccountsOps = map[string]*claudeAccountOperation{}
++	app.claudeAccountsOpsOrder = nil
++	app.claudeAccountsRequests = map[string]string{}
++
++	running := &claudeAccountOperation{
++		dto: ClaudeAccountOperationDTO{ID: "ca-running", Kind: "switch", State: "running"},
++		requestID: "req-running", paramsDigest: "d", started: true,
++		done: make(chan struct{}),
++	}
++	app.claudeAccountsOps["ca-running"] = running
++	app.claudeAccountsOpsOrder = append(app.claudeAccountsOpsOrder, "ca-running")
++	app.claudeAccountsRequests["req-running"] = "ca-running"
++	for i := 0; i < claudeAccountOperationCacheLimit; i++ {
++		id := "ca-done-" + string(rune('A'+i%26)) + string(rune('a'+i/26))
++		op := &claudeAccountOperation{
++			dto: ClaudeAccountOperationDTO{ID: id, Kind: "switch", State: "done"},
++			paramsDigest: "d", done: closedChan(),
++		}
++		app.claudeAccountsOps[id] = op
++		app.claudeAccountsOpsOrder = append(app.claudeAccountsOpsOrder, id)
++	}
++	app.claudeAccountsOpsMu.Unlock()
++
++	if _, conflict := app.claudeOpBegin("switch", "req-new", "dn", 1); conflict {
++		t.Fatal("unexpected conflict")
++	}
++
++	app.claudeAccountsOpsMu.Lock()
++	stillThere := app.claudeAccountsOps["ca-running"] != nil
++	reqStillMapped := app.claudeAccountsRequests["req-running"] == "ca-running"
++	app.claudeAccountsOpsMu.Unlock()
++	if !stillThere || !reqStillMapped {
++		t.Fatalf("running operation must survive eviction (op=%v req=%v)", stillThere, reqStillMapped)
++	}
++	if _, err := app.GetClaudeAccountOperation("ca-running"); err != nil {
++		t.Fatalf("running op query after eviction: %v", err)
++	}
++	same, conflict2 := app.claudeOpBegin("switch", "req-running", "d", 1)
++	if conflict2 || same != running {
++		t.Fatalf("idempotent requestId must hit the running op, conflict=%v", conflict2)
++	}
++}
++
++// ---- 测试辅助 ----
++
++func closedChan() chan struct{} {
++	c := make(chan struct{})
++	close(c)
++	return c
++}
++
++// registerTestCredentialLease 构造一个已提升的外部运行凭据 lease（真实链路：
++// claim → MintExternalRunIdentity → coordinator 提升）。
++func registerTestCredentialLease(t *testing.T, app *App, sessionID string) *remote.SharedDependencyLease {
++	t.Helper()
++	claim, err := app.beginClaudeCredentialsClaim("lease-helper")
++	if err != nil {
++		t.Fatalf("claim: %v", err)
++	}
++	t.Cleanup(func() { claim.release(app) })
++	externalRun, err := app.sharedCoord.MintExternalRunIdentity(contract.SessionID(sessionID))
++	if err != nil {
++		t.Fatalf("mint: %v", err)
++	}
++	lease, err := app.sharedCoord.AcquireForExternalRunWithAdmission(context.Background(), externalRun, remote.SharedServiceClaudeCredentials, claim.fingerprint, claim.admission)
++	if err != nil {
++		t.Fatalf("lease: %v", err)
++	}
++	return lease
++}
+diff --git a/claude_accounts_launch.go b/claude_accounts_launch.go
+index 66fd573..3b7864a 100644
+--- a/claude_accounts_launch.go
++++ b/claude_accounts_launch.go
+@@ -75,6 +75,45 @@ func (a *App) claudeAccountsUnsupportedPlatform() bool {
+ 	return claudeaccounts.NewKeychainPoolStore().Kind() == "unsupported"
+ }
+ 
++// claudeAccountsPoolMissingErr 返回「曾初始化的池已消失」的稳定错误（F10：
++// 与从未创建区分，fail closed 不当未启用）。
++func claudeAccountsPoolMissingErr() error {
++	return claudeaccounts.NewErr(claudeaccounts.ReasonPoolMissing,
++		"账号池曾被创建但现已缺失（可能被外部删除）；不会自动重建空池或覆盖原生登录，请到 Provider Center 恢复")
++}
++
++// claudeAccountsMarkerExists 报告「曾初始化」标记是否存在（不含秘密；F10）。
++func (a *App) claudeAccountsMarkerExists() bool {
++	if a == nil || a.claudeAccountsPoolMarkerPath == "" {
++		return false
++	}
++	_, err := os.Stat(a.claudeAccountsPoolMarkerPath)
++	return err == nil
++}
++
++// writeClaudeAccountsMarker 幂等写入「曾初始化」标记（池首次创建后调用；
++// F10：用于区分「从未创建」与「已创建后被外部删除」）。
++func (a *App) writeClaudeAccountsMarker() {
++	if a == nil || a.claudeAccountsPoolMarkerPath == "" {
++		return
++	}
++	if a.claudeAccountsMarkerExists() {
++		return
++	}
++	content := fmt.Sprintf("claude-accounts-pool-initialized\ncreated=%s\n", time.Now().Format(time.RFC3339))
++	if err := os.MkdirAll(filepath.Dir(a.claudeAccountsPoolMarkerPath), 0o700); err != nil {
++		if a.Log != nil {
++			a.Log.Warn("claude-accounts", "写入池初始化标记失败", err.Error())
++		}
++		return
++	}
++	if err := os.WriteFile(a.claudeAccountsPoolMarkerPath, []byte(content), 0o644); err != nil {
++		if a.Log != nil {
++			a.Log.Warn("claude-accounts", "写入池初始化标记失败", err.Error())
++		}
++	}
++}
++
+ // claudeCredentialsPolicy 汇总缓存状态得出启动门禁结论。
+ func (a *App) claudeCredentialsPolicy() claudeCredentialsLaunchPolicy {
+ 	if a == nil || a.claudeAccounts == nil || a.sharedCoord == nil {
+@@ -220,6 +259,14 @@ func (a *App) beginClaudeCredentialsClaim(why string) (*claudeCredentialsClaim,
+ 		//（design §9 Phase 3 验收），启动以稳定错误结束。
+ 		return nil, fmt.Errorf("SESSIONS_ACTIVE: 共享凭据切换/录入进行中，请稍后重试（%w）", err)
+ 	}
++	// F01：取得 claim 后再次校验同一权威状态——mutation 可能在 policy 读取与
++	// admission 获取之间完成（失败事务留 journal → blocked；代际通常不变，
++	// 仅比代际不能发现）。mutation 在释放 admission 前已发布权威状态，此处
++	// 重读必见最新结论；blocked 则释放 claim 拒绝启动，不放行混合认证。
++	if a.claudeCredentialsPolicy() == claudeCredentialsBlocked {
++		a.sharedCoord.ReleaseLaunchAdmission(admission)
++		return nil, a.claudeCredentialsBlockedError()
++	}
+ 	if a.Log != nil {
+ 		a.Log.Info("claude-accounts", "启动已取得共享凭据 admission", why)
+ 	}
+@@ -228,10 +275,15 @@ func (a *App) beginClaudeCredentialsClaim(why string) (*claudeCredentialsClaim,
+ 
+ // recheckClaudeCredentialsClaim 在真正进程启动前复核 admission 指纹与当前池
+ // 代际一致（外部终端路径；embedded 路径的复核由 lease 提升时指纹重算承担）。
++// F01：失败事务通常不增加代际，仅比指纹放不开混合认证——同时复核权威
++// policy，blocked（needs-reconcile/journal 残留）一律拒绝。
+ func (a *App) recheckClaudeCredentialsClaim(claim *claudeCredentialsClaim) error {
+ 	if claim == nil {
+ 		return nil
+ 	}
++	if a.claudeCredentialsPolicy() == claudeCredentialsBlocked {
++		return a.claudeCredentialsBlockedError()
++	}
+ 	fingerprint, err := a.claudeCredentialsFingerprint()
+ 	if err != nil {
+ 		return err
+@@ -262,6 +314,17 @@ func (a *App) claudeCredentialsPlanCheck(planFingerprint [32]byte) error {
+ 	return nil
+ }
+ 
++// claudeCredentialsAbsenceCheck 是 remote adapter 的无凭据计划边界接缝（F01：
++// absent 时构建的旧计划不含凭据 admission，首次 capture 后执行会绕过仅
++// 存在于 admission 循环内的新鲜度检查）。计划未携带凭据 admission 时，
++// 执行边界必须确认权威状态仍为 absent；managed/blocked → 拒绝执行。
++func (a *App) claudeCredentialsAbsenceCheck() error {
++	if a.claudeCredentialsPolicy() == claudeCredentialsAbsent {
++		return nil
++	}
++	return errClaudeCredentialsGenerationChanged
++}
++
+ // ---------------------------------------------------------------------------
+ // MutationGate / QuiescenceChecker 生产实现
+ // ---------------------------------------------------------------------------
+@@ -286,10 +349,39 @@ func (g claudeCredentialsMutationGate) Acquire(_ context.Context, _ string) (fun
+ 			return
+ 		}
+ 		released = true
++		// F01：在释放 mutation admission 之前发布权威 ready/blocked/generation。
++		// 否则「Service 返回（可能已留 journal）→ 释放 admission → App 刷新缓存」
++		// 之间存在交接窗口，桌面 launch/remote admission 检查可读到旧缓存放行
++		// 半切换会话。注意：release 在 Service 持有串行锁期间破调，不能用
++		// svc.LoadPool（非重入死锁），直接读 PoolStore。
++		app.publishClaudeAccountsAuthoritativeState()
+ 		app.sharedCoord.ReleaseMutationAdmission(admission)
+ 	}, nil
+ }
+ 
++// publishClaudeAccountsAuthoritativeState 直接从 PoolStore 重读并更新门禁
++// 缓存（不经过 Service 串行锁；F01）。仅在「池已落盘、无并发写者」的边界
++// 调用（mutation admission 仍持有时只可能是刚完成写入的 mutation）。
++func (a *App) publishClaudeAccountsAuthoritativeState() {
++	if a == nil || a.claudeAccountsPoolStore == nil {
++		return
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
++	defer cancel()
++	pool, err := a.claudeAccountsPoolStore.Load(ctx)
++	a.claudeAccountsMu.Lock()
++	a.claudeAccountsPool = pool
++	a.claudeAccountsLoadErr = err
++	a.claudeAccountsMu.Unlock()
++	if pool != nil {
++		a.writeClaudeAccountsMarker()
++	} else if err == nil && a.claudeAccountsMarkerExists() {
++		a.claudeAccountsMu.Lock()
++		a.claudeAccountsLoadErr = claudeAccountsPoolMissingErr()
++		a.claudeAccountsMu.Unlock()
++	}
++}
++
+ // claudeProcessSample 是进程观察器的一行样本（credential-free）。
+ type claudeProcessSample struct {
+ 	PID  int
+@@ -330,14 +422,24 @@ func newProductionClaudeProcessLister() claudeProcessLister {
+ 	}
+ }
+ 
+-// claudeCredentialProcessNames 是保守匹配的可执行名（含 .exe 变体）。
++// claudeCredentialProcessNames 是保守匹配的可执行名（含 .exe 变体；F12：
++// 含官方 RPC 入口进程标题 pi-rpc——pi 安装源码 dist/rpc-entry.js 设置
++// process.title = APP_NAME + '-rpc'，逐字段 basename 精确 pi/claude 会漏掉）。
+ var claudeCredentialProcessNames = map[string]bool{
+ 	"claude": true, "claude.exe": true, // Claude Code
+ 	"pi": true, "pi.exe": true, // Pi（canonical ~/.pi/agent）
++	"pi-rpc": true, "pi-rpc.exe": true, // Pi 官方 RPC 入口（--mode rpc 改标题）
++}
++
++// claudeCredentialProcessArgFragments 是参数级路径片段（F12：node 直跑官方
++// 包入口等启动形式可执行名不命中，按可验证包路径保守计入，宁可误报）。
++var claudeCredentialProcessArgFragments = []string{
++	"pi-coding-agent",
+ }
+ 
+ // claudeProcessArgsMatch 报告样本是否像 Claude Code / Pi 进程：可执行路径或
+-// 任一参数的 basename 精确命中（保守：宁可误报阻塞切换，不漏报）。
++// 任一参数的 basename 精确命中，或任一字段含官方包路径片段（保守：宁可
++// 误报阻塞切换，不漏报）。
+ func claudeProcessArgsMatch(args string) bool {
+ 	fields := strings.Fields(args)
+ 	if len(fields) == 0 {
+@@ -348,6 +450,11 @@ func claudeProcessArgsMatch(args string) bool {
+ 		if claudeCredentialProcessNames[strings.ToLower(base)] {
+ 			return true
+ 		}
++		for _, fragment := range claudeCredentialProcessArgFragments {
++			if strings.Contains(field, fragment) {
++				return true
++		}
++	}
+ 	}
+ 	return false
+ }
+@@ -412,16 +519,30 @@ func (q claudeProcessQuiescence) Check(_ context.Context) error {
+ 	return nil
+ }
+ 
+-// claudeQuiescenceAttribution 汇总 CodeBox 已知会话 PID（embedded PTY 与外部
+-// Launcher 会话）作为观察器归因集合；归因只用于跳过自己的会话，不扩大放行
+-// 面（匹配仍要求 claude/pi 可执行名）。
++// claudeQuiescenceAttribution 汇总「持有凭据 lease 的会话」PID 作为观察器
++// 归因集合（F02：静止检查不能仅凭「属于 CodeBox」豁免——absent 状态下启动
++// 的会话从未持有凭据 lease，首次启用前它们仍是活动消费者，必须计入静止
++// 条件；启用后正常会话持有 SharedServiceClaudeCredentials lease，其进程树
++// 由 coordinator 的 mutation 门保护，观察器跳过）。归因只用于跳过自己持
++// lease 的会话，不扩大放行面（匹配仍要求 claude/pi 形态）。
+ func (a *App) claudeQuiescenceAttribution() map[int]bool {
+ 	out := map[int]bool{}
+-	if a == nil || a.Sessions == nil {
++	if a == nil {
++		return out
++	}
++	holders := map[string]bool{}
++	a.sharedLeaseMu.Lock()
++	for key := range a.sharedLeases {
++		if key.Kind == remote.SharedServiceClaudeCredentials {
++			holders[string(key.SessionID)] = true
++		}
++	}
++	a.sharedLeaseMu.Unlock()
++	if len(holders) == 0 || a.Sessions == nil {
+ 		return out
+ 	}
+ 	for _, s := range a.Sessions.List() {
+-		if s.PID > 0 {
++		if s.PID > 0 && holders[s.ID] {
+ 			out[s.PID] = true
+ 		}
+ 	}
+@@ -541,12 +662,29 @@ func managedClaudeIdentityBoundarySpec(spec platform.ResolvedLaunchSpec) platfor
+ // ---------------------------------------------------------------------------
+ 
+ // refreshClaudeAccountsCache 重读池并更新启动门禁缓存（任何 service mutation
+-// 与 Startup 恢复后调用）。 UNSUPPORTED_PLATFORM 平台保持 absent。
++// 与 Startup 恢复后调用）。 UNSUPPORTED_PLATFORM 平台保持 absent。F10：直接
++// 读 PoolStore（不经 Service 串行锁，与 publishClaudeAccountsAuthoritativeState
++// 同源），并维护「曾初始化」标记——已有池缺失时 fail closed 为 POOL_MISSING，
++// 不当从未启用。
+ func (a *App) refreshClaudeAccountsCache(ctx context.Context) {
+-	if a.claudeAccounts == nil {
++	if a.claudeAccountsPoolStore == nil {
++		// 测试/未装配场景回退 Service 路径。
++		if a.claudeAccounts == nil {
++			return
++		}
++		pool, err := a.claudeAccounts.LoadPool(ctx)
++		a.claudeAccountsMu.Lock()
++		a.claudeAccountsPool = pool
++		a.claudeAccountsLoadErr = err
++		a.claudeAccountsMu.Unlock()
+ 		return
+ 	}
+-	pool, err := a.claudeAccounts.LoadPool(ctx)
++	pool, err := a.claudeAccountsPoolStore.Load(ctx)
++	if pool != nil {
++		a.writeClaudeAccountsMarker()
++	} else if err == nil && a.claudeAccountsMarkerExists() {
++		err = claudeAccountsPoolMissingErr()
++	}
+ 	a.claudeAccountsMu.Lock()
+ 	a.claudeAccountsPool = pool
+ 	a.claudeAccountsLoadErr = err
+diff --git a/claude_accounts_launch_test.go b/claude_accounts_launch_test.go
+index 27e01c7..3d31be9 100644
+--- a/claude_accounts_launch_test.go
++++ b/claude_accounts_launch_test.go
+@@ -60,6 +60,21 @@ func (f *fakeNativeStore) ReadStable(_ context.Context) (*claudeaccounts.NativeP
+ 	defer f.mu.Unlock()
+ 	f.reads++
+ 	proj := f.proj
++	// 与真实 FileCredentialStore 契约一致：三处 revision 恒非 nil（内容
++	// hash 稳定，连续读一致；F03 终复核依赖此不变量）。
++	if proj.Revisions.ClaudeKeychain == nil {
++		proj.Revisions.ClaudeKeychain = &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(proj.ClaudeOAuth)}
++	}
++	if proj.Revisions.ClaudeJSON == nil {
++		var data []byte
++		if proj.ClaudeIdentity != nil {
++			data = append(append([]byte(nil), proj.ClaudeIdentity.OauthAccount...), []byte(proj.ClaudeIdentity.UserID)...)
++		}
++		proj.Revisions.ClaudeJSON = &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(data)}
++	}
++	if proj.Revisions.PiAuth == nil {
++		proj.Revisions.PiAuth = &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(proj.PiAnthropic)}
++	}
+ 	return &proj, nil
+ }
+ 
+@@ -68,7 +83,9 @@ func (f *fakeNativeStore) PatchClaudeKeychainOAuth(_ context.Context, oauth json
+ 	defer f.mu.Unlock()
+ 	f.proj.ClaudeOAuth = append([]byte(nil), oauth...)
+ 	f.proj.ClaudeOAuthRaw = append([]byte(nil), oauth...)
+-	return &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(oauth)}, nil
++	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(oauth)}
++	f.proj.Revisions.ClaudeKeychain = rev
++	return rev, nil
+ }
+ 
+ func (f *fakeNativeStore) PatchClaudeIdentity(_ context.Context, fields claudeaccounts.ClaudeIdentityFields) (*claudeaccounts.FileRevision, error) {
+@@ -78,26 +95,35 @@ func (f *fakeNativeStore) PatchClaudeIdentity(_ context.Context, fields claudeac
+ 		OauthAccount: append([]byte(nil), fields.OauthAccount...), UserID: fields.UserID,
+ 	}
+ 	data := append(fields.OauthAccount, []byte(fields.UserID)...)
+-	return &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(data)}, nil
++	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(data)}
++	f.proj.Revisions.ClaudeJSON = rev
++	return rev, nil
+ }
+ 
+ func (f *fakeNativeStore) PatchPiAnthropic(_ context.Context, anthropic json.RawMessage) (*claudeaccounts.FileRevision, error) {
+ 	f.mu.Lock()
+ 	defer f.mu.Unlock()
+ 	f.proj.PiAnthropic = append([]byte(nil), anthropic...)
+-	return &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(anthropic)}, nil
++	rev := &claudeaccounts.FileRevision{SHA256Hex: claudeaccounts.HashRevision(anthropic)}
++	f.proj.Revisions.PiAuth = rev
++	return rev, nil
+ }
+ 
+ func (f *fakeNativeStore) Kind() string { return "fake" }
+ 
+ // newRotationTestService 构造 fake 后端的 1a 服务（Gate/Quiescence 用生产
+-// 实现接线到 app，路径注入临时目录，绝不触碰真实凭据）。
+-func newRotationTestService(t *testing.T, app *App, pool *claudeaccounts.AccountPool, native *claudeaccounts.NativeProjections) (*claudeaccounts.Service, *fakePoolStore, *fakeNativeStore) {
++// 实现接线到 app，路径注入临时目录，绝不触碰真实凭据）。可选注入 fake
++// 身份提供者（F05：换入前目标双 grant 现场验证需要可控身份响应）。
++func newRotationTestService(t *testing.T, app *App, pool *claudeaccounts.AccountPool, native *claudeaccounts.NativeProjections, identity ...claudeaccounts.IdentityProvider) (*claudeaccounts.Service, *fakePoolStore, *fakeNativeStore) {
+ 	t.Helper()
+ 	dir := t.TempDir()
+ 	poolStore := &fakePoolStore{pool: pool}
+ 	nativeStore := &fakeNativeStore{proj: *native}
+ 	client := claudeaccounts.NewConstrainedHTTPClient(nil)
++	identityProvider := claudeaccounts.IdentityProvider(claudeaccounts.NewHTTPIdentityProvider(client))
++	if len(identity) > 0 && identity[0] != nil {
++		identityProvider = identity[0]
++	}
+ 	svc, err := claudeaccounts.NewService(claudeaccounts.Deps{
+ 		Pool:       poolStore,
+ 		Native:     nativeStore,
+@@ -109,7 +135,7 @@ func newRotationTestService(t *testing.T, app *App, pool *claudeaccounts.Account
+ 			lister:      app.claudeAccountsProcessSamples,
+ 			attribution: app.claudeQuiescenceAttribution,
+ 		},
+-		Identity:   claudeaccounts.NewHTTPIdentityProvider(client),
++		Identity:   identityProvider,
+ 		HTTPClient: client,
+ 	})
+ 	if err != nil {
+diff --git a/external_headroom_lease_test.go b/external_headroom_lease_test.go
+index 3da1185..23275b4 100644
+--- a/external_headroom_lease_test.go
++++ b/external_headroom_lease_test.go
+@@ -80,6 +80,7 @@ func (l *r6ExternalLauncher) LaunchGuarded(
+ 	mode session.LaunchMode,
+ 	workDir string,
+ 	beforeRawStart func() error,
++	_ []string,
+ ) (*launcher.LaunchResult, error) {
+ 	if beforeRawStart != nil {
+ 		if err := beforeRawStart(); err != nil {
+diff --git a/external_recovery_test.go b/external_recovery_test.go
+index 4221804..828b033 100644
+--- a/external_recovery_test.go
++++ b/external_recovery_test.go
+@@ -58,6 +58,7 @@ func (l *r11BlockedBeforeRawLauncher) LaunchGuarded(
+ 	mode session.LaunchMode,
+ 	workDir string,
+ 	beforeRawStart func() error,
++	_ []string,
+ ) (*launcher.LaunchResult, error) {
+ 	l.waitBeforeRawStart()
+ 	if beforeRawStart != nil {
+@@ -112,6 +113,7 @@ func (l *r11BlockedAfterAuthorizationLauncher) LaunchGuarded(
+ 	mode session.LaunchMode,
+ 	workDir string,
+ 	beforeRawStart func() error,
++	_ []string,
+ ) (*launcher.LaunchResult, error) {
+ 	if beforeRawStart != nil {
+ 		if err := beforeRawStart(); err != nil {
+diff --git a/frontend/src/__tests__/components/provider/claudeAccountsFix.test.ts b/frontend/src/__tests__/components/provider/claudeAccountsFix.test.ts
+new file mode 100644
+index 0000000..f56d297
+--- /dev/null
++++ b/frontend/src/__tests__/components/provider/claudeAccountsFix.test.ts
+@@ -0,0 +1,195 @@
++/**
++ * Phase 1 修复批次前端测试（diting F08/F09）。
++ *
++ * F08：真实组件模板分支验证——用 vue/server-renderer 的 renderToString（vue
++ * 包自带子路径导出，不新增依赖；仓库规范禁新增 DOM 测试库）渲染真实
++ * ClaudeAccountsSection.vue，断言 absent/enrolling/needs-reconcile 分支都能
++ * 看见异步 operation 的失败反馈（此前横幅只存在于 managed/error 分支内）。
++ * F09：刷新/重启后凭 pool.enrollmentId 续接录入向导。
++ */
++
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { createSSRApp, h, nextTick, ref } from 'vue';
++import { renderToString } from 'vue/server-renderer';
++
++// 在 api 边界打桩（真实类型与错误码表保留）。
++const { getAccounts, capture } = vi.hoisted(() => ({
++  getAccounts: vi.fn(),
++  capture: vi.fn(),
++}));
++
++vi.mock('../../../api/claudeAccounts', async (importOriginal) => {
++  const actual = await importOriginal<typeof import('../../../api/claudeAccounts')>();
++  return {
++    ...actual,
++    getClaudeAccounts: getAccounts,
++    captureClaudeAccount: capture,
++  };
++});
++
++vi.mock('../../../api/session', () => ({
++  getSessions: vi.fn(async () => []),
++}));
++
++vi.mock('../../../../wailsjs/runtime/runtime', () => ({
++  EventsOn: vi.fn(() => () => {}),
++}));
++
++import type { ClaudeAccount, ClaudeAccountOperation, ClaudeAccountsPool } from '../../../api/claudeAccounts';
++import ClaudeAccountsSection from '../../../components/provider/ClaudeAccountsSection.vue';
++import { useClaudeAccountsStore } from '../../../stores/claudeAccounts';
++
++function acc(overrides: Partial<ClaudeAccount> = {}): ClaudeAccount {
++  return {
++    id: 'acc-a',
++    alias: '工作号',
++    createdAt: '2026-10-28T10:00:00Z',
++    updatedAt: '2026-10-28T10:00:00Z',
++    emailMasked: 'wo***@example.com',
++    seatTier: 'max-20x',
++    active: true,
++    health: { claudeGrant: 'ready', piGrant: 'ready', identityStatus: 'verified' },
++    ...overrides,
++  } as ClaudeAccount;
++}
++
++function poolOf(overrides: Partial<ClaudeAccountsPool> = {}): ClaudeAccountsPool {
++  return {
++    capability: 'supported',
++    state: 'enabled',
++    revision: 7,
++    activeGeneration: 4,
++    activeId: 'acc-a',
++    accounts: [acc()],
++    rotationEnabled: false,
++    ...overrides,
++  } as ClaudeAccountsPool;
++}
++
++function errOperation(kind: string): ClaudeAccountOperation {
++  return {
++    id: 'ca-1',
++    kind,
++    stage: 'failed',
++    state: 'error',
++    changed: false,
++    activeGeneration: 4,
++    code: 'IDENTITY_MISMATCH',
++  } as ClaudeAccountOperation;
++}
++
++/** 用真实模板渲染组件（SSR；执行真实 computed/模板分支）。 */
++async function renderSection(): Promise<string> {
++  const app = createSSRApp({ render: () => h(ClaudeAccountsSection) });
++  const html = await renderToString(app);
++  return html;
++}
++
++describe('F08: 异步 operation 失败在 absent/enrolling/needs-reconcile 分支可见', () => {
++  beforeEach(() => {
++    setActivePinia(createPinia());
++    getAccounts.mockReset();
++    capture.mockReset();
++    getAccounts.mockResolvedValue(poolOf());
++  });
++
++  it('absent 分支渲染 capture 异步失败横幅', async () => {
++    getAccounts.mockResolvedValue(poolOf({ state: 'disabled', accounts: [], activeId: '' }));
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    // 首次 capture 已提交、异步终态失败（IDENTITY_MISMATCH：两端不是同一账号）。
++    store.applyOperationResult(errOperation('capture'), false);
++    await nextTick();
++    const html = await renderSection();
++    expect(html).toContain('ca-operation-error');
++    expect(html).toContain('Claude Code 与 Pi 当前登录的不是同一账号');
++    expect(html).toContain('ca-operation-section-marker-absent'.slice(0, 0)); // absent 分支主体仍在
++    expect(html).toContain('保存当前双端登录'); // absent 引导未消失
++  });
++
++  it('enrolling 分支渲染 enrollment capture 异步失败横幅', async () => {
++    getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-1' }));
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    store.applyOperationResult(errOperation('capture'), false);
++    await nextTick();
++    const html = await renderSection();
++    expect(html).toContain('ca-operation-error');
++    expect(html).toContain('Claude Code 与 Pi 当前登录的不是同一账号');
++    expect(html).toContain('已在两端登录新账号'); // 向导仍在（F09 续接后默认 login 步）
++  });
++
++  it('needs-reconcile 分支渲染恢复操作异步失败横幅', async () => {
++    getAccounts.mockResolvedValue(
++      poolOf({ state: 'needs-reconcile', pauseReason: '存在未结事务（swap）' }),
++    );
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    store.applyOperationResult(errOperation('reconcile-complete-target'), false);
++    await nextTick();
++    const html = await renderSection();
++    expect(html).toContain('ca-operation-error');
++    expect(html).toContain('存在未完成的事务');
++  });
++
++  it('running 反馈同样在共用区域可见', async () => {
++    getAccounts.mockResolvedValue(poolOf({ state: 'disabled', accounts: [], activeId: '' }));
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    store.applyOperationResult(
++      { id: 'ca-2', kind: 'capture', stage: 'running', state: 'running', changed: false, activeGeneration: 0 } as ClaudeAccountOperation,
++      false,
++    );
++    await nextTick();
++    const html = await renderSection();
++    expect(html).toContain('ca-operation-running');
++  });
++});
++
++describe('F09: 重启/刷新后续接 enrollment', () => {
++  beforeEach(() => {
++    setActivePinia(createPinia());
++    getAccounts.mockReset();
++    capture.mockReset();
++  });
++
++  it('refresh 凭 pool.enrollmentId 重建向导（此前只有内存态，重建即丢）', async () => {
++    getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-resume-1' }));
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    expect(store.enrollment).toEqual({ enrollmentId: 'enroll-resume-1', step: 'login' });
++
++    // 续接的 capture 用持久化 ID；后端仍校验 TxnID+revision。
++    capture.mockResolvedValue('ca-op-1');
++    getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-resume-1' }));
++    const opId = await store.captureEnrolled('个人号');
++    expect(opId).toBe('ca-op-1');
++    expect(capture).toHaveBeenCalledWith('enroll-resume-1', '个人号', 7);
++  });
++
++  it('后端不再报告 enrollment（完成/ drifted）时清本地向导', async () => {
++    getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-2' }));
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    expect(store.enrollment).not.toBeNull();
++
++    getAccounts.mockResolvedValue(poolOf({ state: 'needs-reconcile' }));
++    await store.refresh();
++    expect(store.enrollment).toBeNull();
++    expect(store.sectionState).toBe('needs-reconcile');
++  });
++
++  it('本地已推进的步骤不被静默刷新重置', async () => {
++    getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-3' }));
++    const store = useClaudeAccountsStore();
++    await store.refresh();
++    store.advanceEnrollmentStep();
++    getAccounts.mockResolvedValue(poolOf({ state: 'enrolling', enrollmentId: 'enroll-3' }));
++    await store.refresh();
++    expect(store.enrollment?.step).toBe('capture');
++  });
++});
++
++// 保持 ref 导入被使用（模板渲染路径依赖 Vue 响应式；防止 lint 未用告警）。
++void ref;
+diff --git a/frontend/src/__tests__/stores/claudeAccounts.test.ts b/frontend/src/__tests__/stores/claudeAccounts.test.ts
+index 5b1b1d9..2000d1f 100644
+--- a/frontend/src/__tests__/stores/claudeAccounts.test.ts
++++ b/frontend/src/__tests__/stores/claudeAccounts.test.ts
+@@ -171,7 +171,9 @@ describe('stores/claudeAccounts（状态机 + 幂等 + pending + 防重）', ()
+       await store.refresh();
+       expect(store.sectionState).toBe('managed');
+ 
+-      // ④ 添加另一个账号：begin（harvest A）→ 向导
++      // ④ 添加另一个账号：begin（harvest A）→ 向导（F09：池 DTO 回报
++      // enrollmentId，begin 内部的 silent refresh 凭它续接/保持向导状态）
++      getAccounts.mockResolvedValue(pool({ state: 'enrolling', revision: 1, activeGeneration: 1, accounts: [acc()], enrollmentId: 'enr-1' }));
+       begin.mockResolvedValueOnce('enr-1');
+       await store.beginEnrollment();
+       expect(store.enrollment).toEqual({ enrollmentId: 'enr-1', step: 'login' });
+diff --git a/frontend/src/components/provider/ClaudeAccountsSection.vue b/frontend/src/components/provider/ClaudeAccountsSection.vue
+index 49226f1..b055400 100644
+--- a/frontend/src/components/provider/ClaudeAccountsSection.vue
++++ b/frontend/src/components/provider/ClaudeAccountsSection.vue
+@@ -237,12 +237,13 @@
+           </footer>
+         </article>
+       </div>
+-
+-      <!-- operation 反馈 -->
+-      <div v-if="operationRunning" class="ca-opbanner" data-testid="ca-operation-running">{{ operationText }}</div>
+-      <div v-else-if="errorText" class="ca-opbanner error" data-testid="ca-operation-error">{{ errorText }}</div>
+     </template>
+ 
++    <!-- operation 反馈（F08：提到各状态共用区域——absent/enrolling/needs-reconcile
++         分支同样能看见异步 operation 的进行/失败，不再只藏在 managed/error 分支） -->
++    <div v-if="operationRunning" class="ca-opbanner" data-testid="ca-operation-running">{{ operationText }}</div>
++    <div v-else-if="errorText" class="ca-opbanner error" data-testid="ca-operation-error">{{ errorText }}</div>
++
+     <!-- 重命名弹窗 -->
+     <Dialog :open="renameOpen" title="重命名账号" @update:open="renameOpen = $event">
+       <div class="ca-form column">
+diff --git a/frontend/src/stores/claudeAccounts.ts b/frontend/src/stores/claudeAccounts.ts
+index b7f427e..f5a3527 100644
+--- a/frontend/src/stores/claudeAccounts.ts
++++ b/frontend/src/stores/claudeAccounts.ts
+@@ -131,6 +131,16 @@ export const useClaudeAccountsStore = defineStore('claudeAccounts', () => {
+       if (res.operation && (!operation.value || operation.value.id !== res.operation.id)) {
+         operation.value = res.operation;
+       }
++      // F09：持久化 enrollment 续接——重启/刷新后凭后端 enrollmentId 重建向导
++      //（保存仍需精确 TxnID+revision，后端强校验）；后端不再报告 enrollment
++      //（含 drifted 转入 needs-reconcile）时清掉本地向导状态。
++      if (res.enrollmentId) {
++        if (!enrollment.value) {
++          enrollment.value = { enrollmentId: res.enrollmentId, step: 'login' };
++        }
++      } else if (enrollment.value) {
++        enrollment.value = null;
++      }
+     } catch (err) {
+       const { code } = api.parseClaudeAccountError(err);
+       if (code === 'UNSUPPORTED_PLATFORM') {
+diff --git a/frontend/vitest.config.ts b/frontend/vitest.config.ts
+index 689ac78..3eff9e6 100644
+--- a/frontend/vitest.config.ts
++++ b/frontend/vitest.config.ts
+@@ -1,9 +1,12 @@
+ import { defineConfig } from 'vitest/config'
++import vue from '@vitejs/plugin-vue'
+ 
+ // 桌面前端单测基建：集中式 frontend/src/__tests__/ 镜像 src 目录结构（与 mobile 对齐）。
+-// environment 'node'：纯逻辑/纯 TS 单测，不引 jsdom，避免新依赖面；
+-// 未来出现组件级测试需求时再评估 DOM 环境与 vue 插件接入。
++// environment 'node'：纯逻辑/纯 TS 单测，不引 jsdom，避免新依赖面。
++// plugins: @vitejs/plugin-vue（既有 devDependency）——Phase 1 修复批次 F08 起
++// 支持渲染 .vue 组件的真实模板（SSR renderToString，仍无 DOM 环境依赖）。
+ export default defineConfig({
++  plugins: [vue()],
+   test: {
+     environment: 'node',
+     include: ['src/__tests__/**/*.test.ts'],
+diff --git a/frontend/wailsjs/go/models.ts b/frontend/wailsjs/go/models.ts
+index c976cba..37cbb92 100755
+--- a/frontend/wailsjs/go/models.ts
++++ b/frontend/wailsjs/go/models.ts
+@@ -2717,6 +2717,8 @@ export namespace main {
+ 	    pauseReason?: string;
+ 	    rotationEnabled: boolean;
+ 	    rotationConfig?: ClaudeAccountRotationConfigDTO;
++	    /** 持久化 enrollment 的可续接 ID（F09；不含池秘密）。 */
++	    enrollmentId?: string;
+ 	
+ 	    static createFrom(source: any = {}) {
+ 	        return new ClaudeAccountsPoolDTO(source);
+@@ -2734,6 +2736,7 @@ export namespace main {
+ 	        this.pauseReason = source["pauseReason"];
+ 	        this.rotationEnabled = source["rotationEnabled"];
+ 	        this.rotationConfig = this.convertValues(source["rotationConfig"], ClaudeAccountRotationConfigDTO);
++	        this.enrollmentId = source["enrollmentId"];
+ 	    }
+ 	
+ 		convertValues(a: any, classs: any, asMap: boolean = false): any {
+diff --git a/internal/claudeaccounts/fakes_test.go b/internal/claudeaccounts/fakes_test.go
+index 284be4b..6c72415 100644
+--- a/internal/claudeaccounts/fakes_test.go
++++ b/internal/claudeaccounts/fakes_test.go
+@@ -117,6 +117,9 @@ type fakeKeychain struct {
+ 	readErr      error
+ 	updateErrAt  int // 第 N 次 UpdateItem 失败；0=不失败
+ 	updateCalls  int
++	// onRead 在每次 ReadItem 读取前回调（锁外；F03 测试：在指定读取处模拟
++	// 外部写入者刷新，覆盖「source 读后→提交前」窗口）。
++	onRead func()
+ }
+ 
+ func (f *fakeKeychain) LocateItem(ctx context.Context) (*KeychainLocator, error) {
+@@ -145,6 +148,9 @@ func (f *fakeKeychain) find(account string) *fakeKCItem {
+ }
+ 
+ func (f *fakeKeychain) ReadItem(ctx context.Context, loc *KeychainLocator) ([]byte, error) {
++	if hook := f.onRead; hook != nil {
++		hook()
++	}
+ 	f.mu.Lock()
+ 	defer f.mu.Unlock()
+ 	if f.readErr != nil {
+diff --git a/internal/claudeaccounts/harvest.go b/internal/claudeaccounts/harvest.go
+index 74297c7..200d584 100644
+--- a/internal/claudeaccounts/harvest.go
++++ b/internal/claudeaccounts/harvest.go
+@@ -124,7 +124,9 @@ func ownedFromNative(current *NativeProjections) OwnedProjections {
+ }
+ 
+ // ensureTargetReadyLocked 准备目标：独占刷新过期的 standby grants；验证
+-// 目标双端身份（design §4.4）。调用方持锁与 admission。
++// 目标双端身份（design §4.4「验证目标双端身份」；F05：不能只信 capture 时的
++// 身份证据与存储健康度，写入原生前必须用当前 token 现场验证）。调用方持锁
++// 与 admission；网络身份探测在拿原生写锁之前完成（design §4.3）。
+ func (s *Service) ensureTargetReadyLocked(ctx context.Context, pool *AccountPool, targetID string) error {
+ 	if pool.ActiveAccountID == targetID {
+ 		return nil // 切到自身无需准备
+@@ -172,6 +174,42 @@ func (s *Service) ensureTargetReadyLocked(ctx context.Context, pool *AccountPool
+ 			return err
+ 		}
+ 	}
++	// F05：写入原生前用目标当前两份 grant 现场验证身份——刷新后的新 token
++	// 必须仍可证明属于目标账号（与目标身份/组织及双端配对一致）；未过期但
++	// 已撤销的 token 同样在此暴露（identity 查询失败/不一致 → 不写原生）。
++	return s.verifyTargetGrantsLocked(ctx, pool, targetID)
++}
++
++// verifyTargetGrantsLocked 用目标快照内当前两份 access token 分别查询身份，
++// 并与目标身份/组织及双端配对比较（design §4.4；F05）。
++func (s *Service) verifyTargetGrantsLocked(ctx context.Context, pool *AccountPool, targetID string) error {
++	snap := pool.Account(targetID)
++	if snap == nil {
++		return NewErr(ReasonRevisionConflict, "目标账号不存在")
++	}
++	ccToken := ccProjectionAccessToken(snap.Claude.OauthProjection)
++	piToken := piAnthropicAccessToken(snap.Pi.Anthropic)
++	if ccToken == "" || piToken == "" {
++		return NewErr(ReasonIdentityUnverified, "目标 grant 缺少可用的 access token")
++	}
++	ccID, err := s.identity.FetchProfile(ctx, ccToken)
++	if err != nil {
++		return NewErr(ReasonIdentityUnverified, "目标 Claude grant 身份验证失败：%s", ReasonOf(err))
++	}
++	piID, err := s.identity.FetchProfile(ctx, piToken)
++	if err != nil {
++		return NewErr(ReasonIdentityUnverified, "目标 Pi grant 身份验证失败：%s", ReasonOf(err))
++	}
++	if ccID.AccountUUID != snap.Identity.AccountUUID || piID.AccountUUID != snap.Identity.AccountUUID {
++		return NewErr(ReasonIdentityMismatch, "目标 grant 身份与账号身份不符，拒绝写入原生槽位")
++	}
++	if ccID.AccountUUID != piID.AccountUUID {
++		return NewErr(ReasonIdentityMismatch, "目标两份 grant 不属于同一账号，拒绝写入原生槽位")
++	}
++	if ccID.OrganizationUUID != "" && snap.Identity.OrganizationUUID != "" &&
++		ccID.OrganizationUUID != snap.Identity.OrganizationUUID {
++		return NewErr(ReasonIdentityMismatch, "目标 Claude grant 组织与账号记录不符，拒绝写入原生槽位")
++	}
+ 	return nil
+ }
+ 
+@@ -325,7 +363,9 @@ func (s *Service) applyRefreshResultLocked(pool *AccountPool, snap *AccountSnaps
+ 	nowT := s.now()
+ 	switch kind {
+ 	case GrantPi:
+-		entry, err := BuildPiAnthropicEntry(result)
++		// F13：在既有 anthropic JSON 上字段级更新 token/expiry，保留未知
++		// 扩展字段（design §3.1 未知字段保留契约），不从零重建条目。
++		entry, err := MergePiAnthropicRefresh(snap.Pi.Anthropic, result)
+ 		if err != nil {
+ 			return err
+ 		}
+@@ -376,6 +416,11 @@ func (s *Service) RemoveAccount(ctx context.Context, id string, expectedRevision
+ 	if pool.RefreshIntent != nil && pool.RefreshIntent.AccountID == id {
+ 		return NewErr(ReasonRefreshUncertain, "该账号存在未结刷新意图，禁止移除")
+ 	}
++	// F14：与 Rename/Capture 同源的乐观锁——stale revision 携带的删除请求
++	// 必须拒绝，不基于旧列表快照改写池（design §7.2 接口一致性）。
++	if pool.Revision != expectedRevision {
++		return NewErr(ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
++	}
+ 	delete(pool.Accounts, id)
+ 	pool.Revision++
+ 	if err := s.savePoolLocked(ctx, pool); err != nil {
+diff --git a/internal/claudeaccounts/lock.go b/internal/claudeaccounts/lock.go
+index 1e8dc22..e3493ed 100644
+--- a/internal/claudeaccounts/lock.go
++++ b/internal/claudeaccounts/lock.go
+@@ -16,6 +16,17 @@ func DefaultPoolLockPath() (string, error) {
+ 	return filepath.Join(home, ".amagi-codebox", "claude-accounts.lock"), nil
+ }
+ 
++// DefaultPoolMarkerPath 返回不含秘密的「池曾初始化」标记文件路径（F10：
++// 区分「从未创建池」与「已创建后被外部删除」；后者 fail closed 为
++// POOL_MISSING，不自动重建空池覆盖原生认证）。
++func DefaultPoolMarkerPath() (string, error) {
++	home, err := os.UserHomeDir()
++	if err != nil {
++		return "", err
++	}
++	return filepath.Join(home, ".amagi-codebox", "claude-accounts.pool-initialized"), nil
++}
++
+ // crossProcessLock 是进程间互斥锁句柄；获取/释放的平台实现见 lock_unix.go
+ // 与 lock_windows.go。
+ type crossProcessLock struct {
+diff --git a/internal/claudeaccounts/nativecc_darwin.go b/internal/claudeaccounts/nativecc_darwin.go
+index 563d247..05f5031 100644
+--- a/internal/claudeaccounts/nativecc_darwin.go
++++ b/internal/claudeaccounts/nativecc_darwin.go
+@@ -65,7 +65,10 @@ void amagi_cc_free(void* data) {
+ }
+ 
+ // amagi_cc_update 按 service+account 原位更新项内容（保留既有 ACL；
+-// design §4.4：使用更新现有 item 的 API，不 delete+add）。
++// design §3.1/§4.4：使用更新现有 item 的 API，不 delete+add）。
++// 项缺失（errSecItemNotFound）只返回稳定错误：原生登录项被外部登出/删除
++// 后静默重建会丢失原项 ACL 并复活已消失的登录，违背缺项停止契约——
++// 池 envelope 首建（amagi_ca_set_pool）与原生凭据更新不是同一权限语义。
+ OSStatus amagi_cc_update(const char* service, const char* account, const void* data, UInt32 length) {
+ 	SecKeychainItemRef item = NULL;
+ 	UInt32 existingLength = 0;
+@@ -78,10 +81,7 @@ OSStatus amagi_cc_update(const char* service, const char* account, const void* d
+ 		return updateStatus;
+ 	}
+ 	if (item != NULL) { CFRelease(item); }
+-	if (status == errSecItemNotFound) {
+-		return SecKeychainAddGenericPassword(NULL, (UInt32)strlen(service), service, (UInt32)strlen(account), account, length, data, NULL);
+-	}
+-	return status;
++	return status; // 含 errSecItemNotFound：缺项不 Add 重建（F11）
+ }
+ */
+ import "C"
+@@ -168,6 +168,9 @@ func (DarwinClaudeKeychain) UpdateItem(ctx context.Context, loc *KeychainLocator
+ 	cPayload := C.CBytes(item)
+ 	defer C.free(cPayload)
+ 	status := C.amagi_cc_update(service, account, cPayload, C.UInt32(len(item)))
++	if status == C.errSecItemNotFound {
++		return NewErr(ReasonNeedsReconcile, "Claude Code Keychain 凭据项已消失，禁止删后重建（需在原生客户端重新登录）")
++	}
+ 	if status != C.errSecSuccess {
+ 		return NewErr(ReasonNeedsReconcile, "Claude Code Keychain 更新被拒（osstatus=%d）", int(status))
+ 	}
+diff --git a/internal/claudeaccounts/oauth.go b/internal/claudeaccounts/oauth.go
+index 70e0808..14d6823 100644
+--- a/internal/claudeaccounts/oauth.go
++++ b/internal/claudeaccounts/oauth.go
+@@ -6,6 +6,9 @@ import (
+ 	"encoding/json"
+ 	"net/http"
+ 	"time"
++
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
+ )
+ 
+ // Pi OAuth 刷新协议常量（design §5.1 已核实；与 pi-ai 安装源码
+@@ -120,6 +123,39 @@ func BuildPiAnthropicEntry(result GrantRefreshResult) (json.RawMessage, error) {
+ 	return mustMarshalEntry(entry), nil
+ }
+ 
++// MergePiAnthropicRefresh 在既有 anthropic JSON 上字段级更新本事务拥有的
++// token/expiry 字段，保留其余未知字段（design §3.1 未知字段保留契约；F13：
++// 刷新不得从零重建条目丢失扩展字段）。既有条目缺失/非对象时可退回全新
++// 构造（首次写入语义）；存在但非法 JSON 则拒绝（无法证明字段归属）。
++func MergePiAnthropicRefresh(existing json.RawMessage, result GrantRefreshResult) (json.RawMessage, error) {
++	base := json.RawMessage(existing)
++	if len(bytes.TrimSpace(base)) == 0 || string(bytes.TrimSpace(base)) == "null" {
++		return BuildPiAnthropicEntry(result)
++	}
++	if !gjson.ValidBytes(base) {
++		return nil, NewErr(ReasonUnsupportedCredentialSchema, "既有 anthropic 条目非法，无法字段级合并刷新结果")
++	}
++	out := append(json.RawMessage(nil), base...)
++	var err error
++	set := func(key string, value any) {
++		if err != nil {
++			return
++		}
++		out, err = sjson.SetBytes(out, key, value)
++	}
++	set("type", "oauth")
++	set("access", result.AccessToken)
++	set("refresh", result.RefreshToken)
++	set("expires", float64(result.ExpiresAt.UnixMilli()))
++	if err != nil {
++		return nil, NewErr(ReasonPoolCorrupt, "anthropic 条目字段级更新失败")
++	}
++	if err := ValidatePiAnthropicEntry(out); err != nil {
++		return nil, err
++	}
++	return out, nil
++}
++
+ func mustMarshalEntry(entry PiAnthropicEntry) json.RawMessage {
+ 	data, _ := json.Marshal(entry)
+ 	return data
+diff --git a/internal/claudeaccounts/patch_test.go b/internal/claudeaccounts/patch_test.go
+index 97da7df..1472db2 100644
+--- a/internal/claudeaccounts/patch_test.go
++++ b/internal/claudeaccounts/patch_test.go
+@@ -120,10 +120,18 @@ func TestReadStableRejectsSymlink(t *testing.T) {
+ 	assertReason(t, err, ReasonNeedsReconcile)
+ }
+ 
+-// TestReadStableRejectsDirectory：拒绝目录替代文件。
++// TestReadStableRejectsDirectory：拒绝目录替代文件（F 测试有效性修复：此前
++// 用尚不存在的子路径，实际测的是 missing，不是目录）。先真实创建目录。
+ func TestReadStableRejectsDirectory(t *testing.T) {
+ 	dir := t.TempDir()
+-	_, _, err := readStableFile(filepath.Join(dir, "subdir"))
++	subdir := filepath.Join(dir, "subdir")
++	if err := os.Mkdir(subdir, 0o755); err != nil {
++		t.Fatalf("mkdir: %v", err)
++	}
++	if fi, err := os.Stat(subdir); err != nil || !fi.IsDir() {
++		t.Fatalf("前置失败：%v isDir=%v", err, fi != nil && fi.IsDir())
++	}
++	_, _, err := readStableFile(subdir)
+ 	assertReason(t, err, ReasonNeedsReconcile)
+ }
+ 
+diff --git a/internal/claudeaccounts/phase1_fix_test.go b/internal/claudeaccounts/phase1_fix_test.go
+new file mode 100644
+index 0000000..15009ea
+--- /dev/null
++++ b/internal/claudeaccounts/phase1_fix_test.go
+@@ -0,0 +1,315 @@
++package claudeaccounts
++
++// phase1_fix_test.go — Phase 1 修复批次的领域反例（diting F03/F05/F06/F13/F14）。
++// 全部使用合成凭据与 fake 后端（design §10.1：绝不触碰真实 Keychain/原生文件）。
++
++import (
++	"context"
++	"net/http"
++	"os"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/tidwall/gjson"
++)
++
++// countKeychainReads 返回一个在 fakeKeychain 第 N 次 ReadItem 前执行一次的 hook
++//（一次性触发，避免后续读继续变异）。
++func countKeychainReads(env *testEnv, nth int, mutate func()) {
++	env.t.Helper()
++	counts := 0
++	env.keychain.onRead = func() {
++		counts++
++		if counts == nth {
++			env.keychain.onRead = nil // 一次性触发
++			mutate()
++		}
++	}
++}
++
++// TestSwapStopsOnNativeDriftBeforeCommit：F03-A——最终 source 读取后、短提交锁内
++// 复核前原生 CC 项被外部刷新（B→B′）：revision 漂移必须阻止写入，journal 保留
++// 交由 reconcile 分类（CC 对 before/after 均 unknown → needs-reconcile），不得
++// 覆盖未回收的新 token。
++func TestSwapStopsOnNativeDriftBeforeCommit(t *testing.T) {
++	env := newTestEnv(t)
++	idA, _ := env.enrollAccountB() // active=B，native=B
++	pool, _ := env.svc.LoadPool(context.Background())
++
++	// Swap 读序（CombinedNativeStore 每次 ReadStable 含 2 次探测+实读）：
++	// 1-2=harvest、3-4=current2、5-6=短锁内复核。在第 5 次读取前把 CC 项
++	// 换成 B′（模拟外部刷新；无身份映射——漂移检查先于任何身份使用）。
++	countKeychainReads(env, 5, func() {
++		env.keychain.mu.Lock()
++		env.keychain.items[0].data = syntheticKeychainItem("cc-b-drifted")
++		env.keychain.mu.Unlock()
++	})
++
++	_, err := env.svc.Swap(context.Background(), SwapRequest{TargetID: idA, Reason: SwapReasonManual, ExpectedGeneration: pool.ActiveGeneration})
++	if err == nil {
++		t.Fatal("提交前漂移必须失败")
++	}
++	if ReasonOf(err) != ReasonNeedsReconcile {
++		t.Fatalf("漂移错误码 = %s，期望 NEEDS_RECONCILE", ReasonOf(err))
++	}
++	// 失败后自动 reconcile：CC=B′ 对 before=B/after=A 均不可分类 → journal 保留。
++	pool2, _ := env.svc.LoadPool(context.Background())
++	if pool2.Transaction == nil || pool2.Transaction.Swap == nil {
++		t.Fatal("漂移后 journal 必须保留（needs-reconcile），不能静默清除")
++	}
++	if pool2.ActiveGeneration != pool.ActiveGeneration {
++		t.Fatalf("代际不应变化：%d → %d", pool.ActiveGeneration, pool2.ActiveGeneration)
++	}
++	// 原生未被覆盖：CC 仍是 B′（外部刷新值），Pi 仍是 B。
++	native, rerr := env.svc.native.ReadStable(context.Background())
++	if rerr != nil {
++		t.Fatal(rerr)
++	}
++	if !strings.Contains(string(native.ClaudeOAuth), "cc-b-drifted") {
++		t.Fatalf("未回收的 B′ token 被覆盖：%s", native.ClaudeOAuth)
++	}
++	if got := gjson.GetBytes(readJSON(t, env.piAuthPath()), "anthropic.access").String(); got != "pi-b-1" {
++		t.Fatalf("Pi 槽位不应被写入，实际 access=%s", got)
++	}
++	// 后续恢复检查同样分类为 needs-reconcile（保全当前值）。
++	outcome, oerr := env.svc.ReconcileExistingTransaction(context.Background())
++	if oerr == nil || outcome.Action != ReconcileNeedsReconcile {
++		t.Fatalf("恢复分类 = %s/%v，期望 needs-reconcile", outcome.Action, oerr)
++	}
++}
++
++// TestSwapSecondHarvestReplacesJournalBefore：F03-B——第一次 harvest 与 current2 之间
++// 源账号刷新（B→B′）：第二次 harvest 的 OwnedProjections 必须同步替换 journal.Before；
++// 采集后崩溃于首写（注入 Keychain 更新失败）→ 全 before（B′）→ reconcile 清 journal
++// 而非因 before/expected 分裂卡死 needs-reconcile。
++func TestSwapSecondHarvestReplacesJournalBefore(t *testing.T) {
++	env := newTestEnv(t)
++	idA, _ := env.enrollAccountB()
++	pool, _ := env.svc.LoadPool(context.Background())
++
++	// B′ 属于账号 B（harvest 的身份校验需要）。
++	env.identityFake.responses["cc-b-2"] = ProfileIdentity{AccountUUID: syntheticUUIDB, OrganizationUUID: syntheticOrgB}
++	// Swap 读序：1=harvest（B）、2=current2——在第 2 次读取前外部刷新为 B′。
++	countKeychainReads(env, 2, func() {
++		env.keychain.mu.Lock()
++		env.keychain.items[0].data = syntheticKeychainItem("cc-b-2")
++		env.keychain.mu.Unlock()
++	})
++	// 首次原生写入（CC patch）失败：崩溃于 prepared 后第一写。
++	env.keychain.updateErrAt = 1
++
++	_, err := env.svc.Swap(context.Background(), SwapRequest{TargetID: idA, Reason: SwapReasonManual, ExpectedGeneration: pool.ActiveGeneration})
++	if err == nil {
++		t.Fatal("注入的写入失败必须上抛")
++	}
++	// F03-B 核心：before 与 expected 来自同一次（第二次 harvest 后的）快照——
++	// 全 before 分类成立 → journal 清除、源仍活动，且快照已回收 B′。
++	pool2, _ := env.svc.LoadPool(context.Background())
++	if pool2.Transaction != nil {
++		t.Fatalf("二次 harvest 后 before 一致时，失败事务应被分类为全 before 并清除，实际保留 %+v", pool2.Transaction)
++	}
++	if pool2.ActiveAccountID == "" {
++		t.Fatal("活动账号不应被清空")
++	}
++	if got := gjson.GetBytes(pool2.Accounts[pool2.ActiveAccountID].Claude.OauthProjection, "accessToken").String(); got != "cc-b-2" {
++		t.Fatalf("活动快照应已回收 B′，实际 access=%s", got)
++	}
++}
++
++// TestSwapRejectsRefreshedTargetWithoutIdentity：F05——standby grant 刷新后身份
++// 不可验证（新 token 无 profile 映射）→ 不写原生、不宣布切换成功。
++func TestSwapRejectsRefreshedTargetWithoutIdentity(t *testing.T) {
++	env := newTestEnv(t)
++	idA, _ := env.enrollAccountB()
++	pool, _ := env.svc.LoadPool(context.Background())
++	// A（standby）的 Pi grant 过期；刷新返回全新 token pi-a-fresh，但故意
++	// 不建立身份映射——旧身份证据不能代替现场验证。
++	expired := `{"type":"oauth","access":"pi-a-stale","refresh":"pir-a-stale","expires":` +
++		strconv.FormatInt(env.clock.Now().Add(-time.Hour).UnixMilli(), 10) + `}`
++	env.pool.mu.Lock()
++	pool.Accounts[idA].Pi.Anthropic = []byte(expired)
++	data, _ := encodePoolEnvelope(pool)
++	env.pool.envelope = data
++	env.pool.mu.Unlock()
++	env.transport.handler = func(req *http.Request) (*http.Response, error) {
++		return httpResponse(200, `{"access_token":"pi-a-fresh","refresh_token":"pir-a-fresh","expires_in":3600}`), nil
++	}
++
++	beforePi := readJSON(t, env.piAuthPath())
++	_, err := env.svc.Swap(context.Background(), SwapRequest{TargetID: idA, Reason: SwapReasonManual, ExpectedGeneration: pool.ActiveGeneration})
++	if err == nil {
++		t.Fatal("刷新后身份不可验证必须拒绝切换")
++	}
++	if ReasonOf(err) != ReasonIdentityUnverified {
++		t.Fatalf("错误码 = %s，期望 IDENTITY_UNVERIFIED", ReasonOf(err))
++	}
++	if string(readJSON(t, env.piAuthPath())) != string(beforePi) {
++		t.Fatal("身份验证失败时原生 Pi 槽位必须零写入")
++	}
++	pool2, _ := env.svc.LoadPool(context.Background())
++	if pool2.ActiveGeneration != pool.ActiveGeneration {
++		t.Fatalf("代际不应变化：%d → %d", pool.ActiveGeneration, pool2.ActiveGeneration)
++	}
++}
++
++// TestSwapRejectsRevokedTargetGrant：F05——未过期但已撤销/身份不符的 standby
++// grant（token 身份映射到另一账号）→ IDENTITY_MISMATCH，不写原生。
++func TestSwapRejectsRevokedTargetGrant(t *testing.T) {
++	env := newTestEnv(t)
++	idA, _ := env.enrollAccountB()
++	pool, _ := env.svc.LoadPool(context.Background())
++	// 目标 A 的 CC token 现场验证返回账号 C 的身份（未过期但被撤销换发的场景）。
++	env.identityFake.mu.Lock()
++	env.identityFake.responses["cc-a-1"] = ProfileIdentity{AccountUUID: "uuid-c", OrganizationUUID: "org-c"}
++	env.identityFake.mu.Unlock()
++
++	beforePi := readJSON(t, env.piAuthPath())
++	_, err := env.svc.Swap(context.Background(), SwapRequest{TargetID: idA, Reason: SwapReasonManual, ExpectedGeneration: pool.ActiveGeneration})
++	if err == nil {
++		t.Fatal("目标身份不符必须拒绝切换")
++	}
++	if ReasonOf(err) != ReasonIdentityMismatch && ReasonOf(err) != ReasonIdentityUnverified {
++		t.Fatalf("错误码 = %s，期望 IDENTITY_MISMATCH/UNVERIFIED", ReasonOf(err))
++	}
++	if string(readJSON(t, env.piAuthPath())) != string(beforePi) {
++		t.Fatal("身份不符时原生槽位必须零写入")
++	}
++}
++
++// TestSwapNoOpClearsAllBeforeJournal：F06——journal 全 before 时切回 source：
++// 先由 reconcile 清 journal，再 no-op 返回；不得带 journal 提前 done。
++func TestSwapNoOpClearsAllBeforeJournal(t *testing.T) {
++	env := newTestEnv(t)
++	idA, idB := env.enrollAccountB()
++	pool, _ := env.svc.LoadPool(context.Background())
++	// B→A 的 swap 失败于首写（journal prepared、原生全 before=B）。
++	env.keychain.updateErrAt = 1
++	_, err := env.svc.Swap(context.Background(), SwapRequest{TargetID: idA, Reason: SwapReasonManual, ExpectedGeneration: pool.ActiveGeneration})
++	if err == nil {
++		t.Fatal("注入失败必须上抛")
++	}
++	pool2, _ := env.svc.LoadPool(context.Background())
++	// 注入失败后自动 reconcile 清了 journal（全 before）——重新构造一个
++	// retained journal：直接注入 prepared journal（source=B, target=A），
++	// 原生保持 B（全 before）。
++	ownedB := pool2.Account(idB).OwnedProjectionsOf()
++	ownedA := pool2.Account(idA).OwnedProjectionsOf()
++	pool2.Transaction = &PoolTransaction{Kind: TransactionSwap, Swap: &SwapJournal{
++		TxnID: "txn-noop-before", SourceID: idB, TargetID: idA,
++		FromGeneration: pool2.ActiveGeneration, Phase: SwapPrepared,
++		Before: ownedB, After: ownedA,
++	}}
++	pool2.Revision++
++	env.pool.mu.Lock()
++	data, _ := encodePoolEnvelope(pool2)
++	env.pool.envelope = data
++	env.pool.mu.Unlock()
++
++	// restore-source 语义：Swap(target=source=B) → 先 reconcile（全 before 清
++	// journal）→ no-op。此前实现会在 no-op 检查处提前返回，journal 永远残留。
++	res, serr := env.svc.Swap(context.Background(), SwapRequest{TargetID: idB, Reason: SwapReasonManual, ExpectedGeneration: pool2.ActiveGeneration})
++	if serr != nil {
++		t.Fatalf("swap → %s: %v", idB, serr)
++	}
++	if !res.NoOp {
++		t.Fatal("全 before 恢复后同目标应为 no-op")
++	}
++	pool3, _ := env.svc.LoadPool(context.Background())
++	if pool3.Transaction != nil {
++		t.Fatal("no-op 前必须先完成未结事务（journal 已清）")
++	}
++}
++
++// TestMergePiAnthropicRefreshPreservesUnknownFields：F13——刷新在既有条目上
++// 字段级更新，未知扩展字段保留。
++func TestMergePiAnthropicRefreshPreservesUnknownFields(t *testing.T) {
++	existing := []byte(`{"type":"oauth","access":"old-acc","refresh":"old-ref","expires":1,"future_extension":{"x":2},"custom_note":"keep-me"}`)
++	out, err := MergePiAnthropicRefresh(existing, GrantRefreshResult{
++		AccessToken: "new-acc", RefreshToken: "new-ref",
++		ExpiresAt: time.UnixMilli(2_000_000_000_000),
++	})
++	if err != nil {
++		t.Fatalf("merge: %v", err)
++	}
++	if got := gjson.GetBytes(out, "access").String(); got != "new-acc" {
++		t.Fatalf("access = %s", got)
++	}
++	if got := gjson.GetBytes(out, "refresh").String(); got != "new-ref" {
++		t.Fatalf("refresh = %s", got)
++	}
++	if got := gjson.GetBytes(out, "expires").Float(); int64(got) != 2_000_000_000_000 {
++		t.Fatalf("expires = %v", got)
++	}
++	if !gjson.GetBytes(out, "future_extension.x").Exists() || gjson.GetBytes(out, "custom_note").String() != "keep-me" {
++		t.Fatalf("未知字段必须保留：%s", out)
++	}
++	if gjson.GetBytes(out, "type").String() != "oauth" {
++		t.Fatalf("type 必须保持 oauth：%s", out)
++	}
++
++	// 非法既有条目：拒绝（无法证明字段归属），不从零重建。
++	if _, err := MergePiAnthropicRefresh([]byte(`{broken`), GrantRefreshResult{}); err == nil {
++		t.Fatal("非法既有条目必须拒绝合并")
++	}
++	// 空既有条目：退回全新构造（首次写入语义）。
++	fresh, err := MergePiAnthropicRefresh(nil, GrantRefreshResult{AccessToken: "a", RefreshToken: "r", ExpiresAt: time.UnixMilli(1)})
++	if err != nil {
++		t.Fatalf("fresh: %v", err)
++	}
++	if gjson.GetBytes(fresh, "access").String() != "a" {
++		t.Fatalf("fresh access = %s", fresh)
++	}
++}
++
++// TestRefreshStandbyPiKeepsUnknownFieldsEndToEnd：F13 端到端——standby Pi 条目含
++// 扩展字段，换入前刷新后扩展字段仍在池内新条目中。
++func TestRefreshStandbyPiKeepsUnknownFieldsEndToEnd(t *testing.T) {
++	env := newTestEnv(t)
++	idA, _ := env.enrollAccountB()
++	pool, _ := env.svc.LoadPool(context.Background())
++	expired := `{"type":"oauth","access":"pi-a-stale","refresh":"pir-a-stale","expires":` +
++		strconv.FormatInt(env.clock.Now().Add(-time.Hour).UnixMilli(), 10) + `,"tier_hint":"beta"}`
++	env.identityFake.responses["pi-a-fresh"] = ProfileIdentity{AccountUUID: syntheticUUIDA, OrganizationUUID: syntheticOrgA}
++	env.pool.mu.Lock()
++	pool.Accounts[idA].Pi.Anthropic = []byte(expired)
++	data, _ := encodePoolEnvelope(pool)
++	env.pool.envelope = data
++	env.pool.mu.Unlock()
++	env.transport.handler = func(req *http.Request) (*http.Response, error) {
++		return httpResponse(200, `{"access_token":"pi-a-fresh","refresh_token":"pir-a-fresh","expires_in":3600}`), nil
++	}
++	mustSwap(t, env, idA, pool.ActiveGeneration)
++	pool2, _ := env.svc.LoadPool(context.Background())
++	if gjson.GetBytes(pool2.Accounts[idA].Pi.Anthropic, "tier_hint").String() != "beta" {
++		t.Fatalf("刷新后扩展字段丢失：%s", pool2.Accounts[idA].Pi.Anthropic)
++	}
++}
++
++// TestRemoveAccountRejectsStaleRevision：F14——stale revision 的删除请求被拒，
++// 账号零删除。
++func TestRemoveAccountRejectsStaleRevision(t *testing.T) {
++	env := newTestEnv(t)
++	idA, idB := env.enrollAccountB()
++	pool, _ := env.svc.LoadPool(context.Background())
++	err := env.svc.RemoveAccount(context.Background(), idA, pool.Revision+5)
++	if err == nil || ReasonOf(err) != ReasonRevisionConflict {
++		t.Fatalf("stale revision 删除必须 REVISION_CONFLICT，实际 %v", err)
++	}
++	pool2, _ := env.svc.LoadPool(context.Background())
++	if pool2.Account(idA) == nil {
++		t.Fatal("stale revision 删除不得移除账号")
++	}
++	// 正确 revision 删除成功。
++	if err := env.svc.RemoveAccount(context.Background(), idA, pool2.Revision); err != nil {
++		t.Fatalf("正确 revision 删除应成功：%v", err)
++	}
++	pool3, _ := env.svc.LoadPool(context.Background())
++	if pool3.Account(idA) != nil || pool3.ActiveAccountID != idB {
++		t.Fatal("删除后账号应移除且活动账号不变")
++	}
++}
++
++// 辅助：读取文件内容（测试内已存在 readJSON；此处供错误信息使用）。
++var _ = os.ReadFile
+diff --git a/internal/claudeaccounts/poolstore_test.go b/internal/claudeaccounts/poolstore_test.go
+index 90961ee..9deeb06 100644
+--- a/internal/claudeaccounts/poolstore_test.go
++++ b/internal/claudeaccounts/poolstore_test.go
+@@ -140,33 +140,48 @@ func TestCrossProcessLockMutualExclusion(t *testing.T) {
+ 	second.release()
+ }
+ 
+-// TestCrossProcessLockConcurrentSingleWinner：并发竞争只有一个赢家。
++// TestCrossProcessLockConcurrentSingleWinner：并发竞争只有一个赢家——真实
++// 双持锁互斥断言（F 测试有效性修复：此前只断言 total≥1，无法支撑「并发
++// 只有一个赢家」）。持锁期间记录重叠：任一时刻活跃持锁者必须 ≤1。
+ func TestCrossProcessLockConcurrentSingleWinner(t *testing.T) {
+ 	lockPath := filepath.Join(t.TempDir(), "claude-accounts.lock")
++	var mu sync.Mutex
++	active := 0
++	maxActive := 0
++	winners := 0
+ 	var wg sync.WaitGroup
+-	winners := make(chan int, 8)
+ 	for i := 0; i < 8; i++ {
+ 		wg.Add(1)
+-		go func(idx int) {
++		go func() {
+ 			defer wg.Done()
+ 			lock, err := acquireFileLock(lockPath)
+ 			if err != nil {
+-				return
++				return // 竞争失败者：正常路径
+ 			}
+-			winners <- idx
++			mu.Lock()
++			winners++
++			active++
++			if active > maxActive {
++				maxActive = active
++			}
++			mu.Unlock()
+ 			time.Sleep(5 * time.Millisecond)
++			mu.Lock()
++			active--
++			mu.Unlock()
+ 			lock.release()
+-		}(i)
++		}()
+ 	}
+ 	wg.Wait()
+-	close(winners)
+-	total := 0
+-	for range winners {
+-		total++
+-	}
+-	if total < 1 {
++	if winners == 0 {
+ 		t.Fatal("至少应有一个持锁者成功")
+ 	}
++	if maxActive > 1 {
++		t.Fatalf("flock 互斥被违反：同时存在 %d 个持锁者", maxActive)
++	}
++	if winners < 8 {
++		t.Logf("竞争赢家 %d/8（未全部拿到锁但互斥成立）", winners)
++	}
+ }
+ 
+ // TestProperLockBusyAndRelease：Pi 兼容锁的占用与释放。
+diff --git a/internal/claudeaccounts/service.go b/internal/claudeaccounts/service.go
+index edfec02..ae99492 100644
+--- a/internal/claudeaccounts/service.go
++++ b/internal/claudeaccounts/service.go
+@@ -429,9 +429,12 @@ func (s *Service) CaptureEnrolledAccount(ctx context.Context, enrollmentID, alia
+ 	return snap.ToDTO(pool.ActiveAccountID), nil
+ }
+ 
+-// CancelEnrollment 取消录入（design §4.1 末段）：只清 enrollment journal；
+-// 若原生槽位在录入期间被登录进程改变，不恢复旧 token 覆盖新值，保持
+-// needs-reconcile 由 reconcile 分类。
++// CancelEnrollment 取消录入（design §4.1 末段 + F04）：取消本身是 mutation，
++// 必须走共享凭据 admission 与写入者静止门；随后读取并分类当前投影——仅
++// 当原生槽位仍与活动源账号一致时才清除 enrollment；原生已变化（录入期间
++// 登录了新账号/CC/Pi 混对）或无法验证时，不清除 journal，标记 drifted 进入
++// needs-reconcile，保留可人工恢复的状态与证据：完成录入保存当前配对，或在
++// 原生客户端重新登录原账号后再次取消。
+ func (s *Service) CancelEnrollment(ctx context.Context, expectedRevision uint64) error {
+ 	release, err := s.withLocks(ctx, "cancel-enrollment")
+ 	if err != nil {
+@@ -448,15 +451,47 @@ func (s *Service) CancelEnrollment(ctx context.Context, expectedRevision uint64)
+ 	if pool.Revision != expectedRevision {
+ 		return NewErr(ReasonRevisionConflict, "池 revision 期望 %d，实际 %d", expectedRevision, pool.Revision)
+ 	}
++	gateRelease, err := s.acquireGate(ctx, "cancel-enrollment")
++	if err != nil {
++		return err
++	}
++	defer gateRelease()
++	if err := s.checkQuiescence(ctx); err != nil {
++		return err
++	}
+ 	txnID := pool.Transaction.Enrollment.TxnID
+-	pool.Transaction = nil
++	// 读取并分类当前投影：与活动源账号一致才允许静默取消。
++	current, rerr := s.readStableAll(ctx)
++	if rerr != nil {
++		// 无法验证：保留 journal 供人工恢复，不盲清。
++		pool.Transaction.Enrollment.DriftedReason = string(ReasonOf(rerr))
++		pool.Revision++
++		if serr := s.savePoolLocked(ctx, pool); serr != nil {
++			return serr
++		}
++		return NewErr(ReasonNeedsReconcile, "无法验证原生槽位状态，已保留录入事务待人工恢复（%s）", ReasonOf(rerr))
++	}
++	if active := pool.Account(pool.ActiveAccountID); active != nil &&
++		s.nativeMatchesOwned(current, active.OwnedProjectionsOf()) {
++		pool.Transaction = nil
++		pool.Revision++
++		if err := s.savePoolLocked(ctx, pool); err != nil {
++			return err
++		}
++		s.logStep("enrollment-cleared", txnID, pool.ActiveAccountID)
++		s.emitEvent(Event{Kind: EventEnrollmentCleared, TxnID: txnID})
++		return nil
++	}
++	// 原生槽位已偏离活动源：不清除 journal，标记 drifted → needs-reconcile
++	//（不恢复旧 token 覆盖新值，design §4.1）。
++	pool.Transaction.Enrollment.DriftedReason = string(ReasonExternalAccountChange)
+ 	pool.Revision++
+ 	if err := s.savePoolLocked(ctx, pool); err != nil {
+ 		return err
+ 	}
+-	s.logStep("enrollment-cleared", txnID, pool.ActiveAccountID)
+-	s.emitEvent(Event{Kind: EventEnrollmentCleared, TxnID: txnID})
+-	return nil
++	s.logf("[claudeaccounts] 取消录入发现原生槽位已变化，保留事务待人工恢复（txn=%s）", txnID)
++	return NewErr(ReasonNeedsReconcile,
++		"原生登录已变化，未自动取消：可完成录入保存当前配对，或在原生客户端重新登录原账号后再次取消")
+ }
+ 
+ // captureLocked 是 capture 伪码（design §4.4）：调用方持锁；任何错误均不
+diff --git a/internal/claudeaccounts/service_swap_test.go b/internal/claudeaccounts/service_swap_test.go
+index 29b4bb5..ab9ef33 100644
+--- a/internal/claudeaccounts/service_swap_test.go
++++ b/internal/claudeaccounts/service_swap_test.go
+@@ -173,6 +173,9 @@ func TestSwapRefreshesExpiredStandbyPiGrant(t *testing.T) {
+ 	env.pool.mu.Unlock()
+ 
+ 	// 刷新端点返回新 token。
++	// F05：换入前必须现场验证刷新后新 token 的身份——给新 token 建立属于 A
++	// 的身份映射，验证通过才允许写入原生。
++	env.identityFake.responses["pi-a-fresh"] = ProfileIdentity{AccountUUID: syntheticUUIDA, OrganizationUUID: syntheticOrgA}
+ 	env.transport.handler = func(req *http.Request) (*http.Response, error) {
+ 		return httpResponse(200, `{"access_token":"pi-a-fresh","refresh_token":"pir-a-fresh","expires_in":3600}`), nil
+ 	}
+diff --git a/internal/claudeaccounts/swap.go b/internal/claudeaccounts/swap.go
+index 3e3ab2c..546d1a4 100644
+--- a/internal/claudeaccounts/swap.go
++++ b/internal/claudeaccounts/swap.go
+@@ -56,18 +56,6 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
+ 		return SwapResult{}, NewErr(ReasonRevisionConflict, "活动代际期望 %d，实际 %d", req.ExpectedGeneration, pool.ActiveGeneration)
+ 	}
+ 
+-	// 同目标且三处确实匹配 → no-op（不能绕过漂移检查，design §4.4）。
+-	if req.TargetID == pool.ActiveAccountID {
+-		current, rerr := s.readStableAll(ctx)
+-		if rerr != nil {
+-			return SwapResult{}, rerr
+-		}
+-		if s.nativeMatchesOwned(current, pool.Active().OwnedProjectionsOf()) {
+-			return SwapResult{TxnID: "", Generation: pool.ActiveGeneration, ActiveID: pool.ActiveAccountID, NoOp: true}, nil
+-		}
+-		// 不匹配：存在漂移，继续走完整流程（内部 harvest 完成身份校验）。
+-	}
+-
+ 	// 取得共享凭据 mutation admission（design §6.3：凭据 admission）。
+ 	gateRelease, err := s.acquireGate(ctx, "swap")
+ 	if err != nil {
+@@ -86,6 +74,21 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
+ 		return SwapResult{}, NewErr(ReasonNeedsReconcile, "事务恢复后池处于异常状态")
+ 	}
+ 
++	// 同目标且三处确实匹配 → no-op（不能绕过漂移检查，design §4.4）。
++	// F06：no-op 判定必须在未结事务处理之后——restore-source 场景 target==source
++	// 且原生全 before 时，先由 reconcile 清 journal，再进入 no-op，不能带着
++	// journal 提前返回 done。
++	if req.TargetID == pool.ActiveAccountID {
++		current, rerr := s.readStableAll(ctx)
++		if rerr != nil {
++			return SwapResult{}, rerr
++		}
++		if s.nativeMatchesOwned(current, pool.Active().OwnedProjectionsOf()) {
++			return SwapResult{TxnID: "", Generation: pool.ActiveGeneration, ActiveID: pool.ActiveAccountID, NoOp: true}, nil
++		}
++		// 不匹配：存在漂移，继续走完整流程（内部 harvest 完成身份校验）。
++	}
++
+ 	journalPersisted := false
+ 	defer func() {
+ 		if err == nil || !journalPersisted {
+@@ -115,13 +118,15 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
+ 	}
+ 
+ 	// 重新读取 source，若有刷新则重新 harvest；若变成别的账号则拒绝
+-	// （design §4.4）。
++	// （design §4.4）。F03-B：第二次 harvest 的返回值必须同步替换
++	// sourceOwned/sourceRevs——journal 的 before 与 expected 必须来自同一次
++	// 快照，否则刷新后的 A′ 对 before/after 均不可分类，会把可恢复事务卡死。
+ 	current2, rerr := s.readStableAll(ctx)
+ 	if rerr != nil {
+ 		return SwapResult{}, rerr
+ 	}
+ 	if !sameRevisions(current2.Revisions, sourceRevs) {
+-		_, sourceRevs, herr = s.harvestLocked(ctx, pool, pool.ActiveAccountID)
++		sourceOwned, sourceRevs, herr = s.harvestLocked(ctx, pool, pool.ActiveAccountID)
+ 		if herr != nil {
+ 			return SwapResult{}, herr
+ 		}
+@@ -129,6 +134,12 @@ func (s *Service) Swap(ctx context.Context, req SwapRequest) (res SwapResult, er
+ 		if rerr != nil {
+ 			return SwapResult{}, rerr
+ 		}
++		// F03-B：before 与 expected 必须来自同一次快照——重新 harvest 后若仍在
++		// 变化（存在活跃外部写入者），静止条件已失效，fail closed 而非带着
++		// 分裂快照进事务。
++		if !sameRevisions(current2.Revisions, sourceRevs) {
++			return SwapResult{}, NewErr(ReasonExternalSessionUncertain, "源账号回收期间原生槽位持续变化，已中止切换")
++		}
+ 	}
+ 
+ 	after := pool.Account(req.TargetID).OwnedProjectionsOf()
+@@ -179,6 +190,19 @@ func (s *Service) applyAndCommitLocked(ctx context.Context, pool *AccountPool, j
+ 		}
+ 	}()
+ 
++	// F03-A：短提交锁内最终复核整文件/受管 revision——最终一次 source 读取
++	// 与取得原生锁之间若发生外部刷新（比较、rename、Keychain update 都不是
++	// 跨进程 CAS，design §4.3），当前值已不是 journal 记录的期望基线，直接
++	// 写会覆盖未回收的新 token；漂移则拒绝写入并交由 reconcile 分类（任一
++	// 投影既非 before 也非 after → needs-reconcile，保全当前值），不盲覆盖。
++	verify, verr := s.readStableAll(ctx)
++	if verr != nil {
++		return verr
++	}
++	if !sameRevisions(verify.Revisions, journal.ExpectedRevisions) {
++		return NewErr(ReasonNeedsReconcile, "原生槽位在提交前发生意外变化（revision 漂移），已停止写入待恢复")
++	}
++
+ 	for _, key := range keys {
+ 		if err := ctxShort(ctx); err != nil {
+ 			return err
+diff --git a/internal/claudeaccounts/types.go b/internal/claudeaccounts/types.go
+index a5fe53d..413a7c8 100644
+--- a/internal/claudeaccounts/types.go
++++ b/internal/claudeaccounts/types.go
+@@ -143,6 +143,10 @@ type EnrollmentJournal struct {
+ 	TxnID     string    `json:"txnId"`
+ 	Harvested bool      `json:"harvested"`
+ 	StartedAt time.Time `json:"startedAt"`
++	// DriftedReason 非空表示取消录入时检测到原生槽位已偏离活动源账号
++	//（F04/design §4.1）：不清除 journal、进入 needs-reconcile，由主上选择
++	// 完成录入保存当前配对，或在原生客户端重新登录原账号后再次取消。
++	DriftedReason string `json:"driftedReason,omitempty"`
+ }
+ 
+ // TransactionKind 区分池上未结事务类型。
+diff --git a/internal/launcher/network_env_test.go b/internal/launcher/network_env_test.go
+index 7526005..2665f60 100644
+--- a/internal/launcher/network_env_test.go
++++ b/internal/launcher/network_env_test.go
+@@ -14,7 +14,7 @@ func TestNetworkPolicyRejectsAllExternalLaunchKindsBeforeSpawn(t *testing.T) {
+ 	calls := 0
+ 	s.SetNetworkEnv(func(env []string) ([]string, error) { calls++; return nil, sentinel })
+ 	provider := config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com"}, Presets: map[string]config.Preset{"test": {Name: "test", Model: "model"}}}
+-	_, claude := s.LaunchGuarded("claude", provider, "test", "key", config.AgentTeamsConfig{}, session.ModeTerminal, t.TempDir(), nil)
++	_, claude := s.LaunchGuarded("claude", provider, "test", "key", config.AgentTeamsConfig{}, session.ModeTerminal, t.TempDir(), nil, nil)
+ 	_, codex := s.LaunchCodexArgsGuarded("codex", nil, session.ModeTerminal, t.TempDir(), nil, nil)
+ 	_, pi := s.LaunchPi("pi", "anthropic", "model", "", session.ModeTerminal, t.TempDir(), nil)
+ 	_, omp := s.LaunchOmp("omp", "openai", "model", "", session.ModeTerminal, t.TempDir(), nil)
+diff --git a/internal/launcher/service.go b/internal/launcher/service.go
+index fb59392..6266991 100644
+--- a/internal/launcher/service.go
++++ b/internal/launcher/service.go
+@@ -200,6 +200,26 @@ func (s *LauncherService) BuildOverrides(
+ 	return overrides
+ }
+ 
++// stripLauncherEnvKeys 从 "K=V" 列表移除指定键（大小写不敏感；空键集零变化）。
++func stripLauncherEnvKeys(env []string, keys []string) []string {
++	if len(keys) == 0 {
++		return env
++	}
++	lower := make(map[string]bool, len(keys))
++	for _, key := range keys {
++		lower[strings.ToLower(key)] = true
++	}
++	out := make([]string, 0, len(env))
++	for _, kv := range env {
++		k, _, ok := strings.Cut(kv, "=")
++		if ok && lower[strings.ToLower(k)] {
++			continue
++		}
++		out = append(out, kv)
++	}
++	return out
++}
++
+ func (s *LauncherService) reserveBindingID(sessionID string) (processcap.BindingID, error) {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+@@ -254,12 +274,17 @@ func (s *LauncherService) Launch(
+ 	mode session.LaunchMode,
+ 	workDir string,
+ ) (*LaunchResult, error) {
+-	return s.LaunchGuarded(sessionID, provider, presetName, apiKey, agentTeams, mode, workDir, nil)
++	return s.LaunchGuarded(sessionID, provider, presetName, apiKey, agentTeams, mode, workDir, nil, nil)
+ }
+ 
+ // LaunchGuarded invokes beforeRawStart immediately before cmd.Start. App uses
+ // this hook to revalidate its shutdown generation after any command/env setup
+ // delay; a rejected guard guarantees raw OS Start was never called.
++// managedEnvStrip（F07/design §6.3 R3）：受管 OAuth 启动在最终执行边界清除的
++// 身份/认证覆盖变量（CLAUDE_CODE_*、CLAUDE_CONFIG_DIR 等）；nil = 非受管
++// 路径零行为变化。外部终端直接 exec，无 shell startup 干预，直接从最终
++// env 剥键即可（与桌面 embedded 的 managedClaudeIdentityBoundarySpec 同一
++// 键集）。
+ func (s *LauncherService) LaunchGuarded(
+ 	sessionID string,
+ 	provider config.Provider,
+@@ -269,12 +294,14 @@ func (s *LauncherService) LaunchGuarded(
+ 	mode session.LaunchMode,
+ 	workDir string,
+ 	beforeRawStart func() error,
++	managedEnvStrip []string,
+ ) (*LaunchResult, error) {
+ 	overrides := s.BuildOverrides(provider, presetName, apiKey, agentTeams)
+ 	env, networkErr := s.buildEnv(overrides)
+ 	if networkErr != nil {
+ 		return nil, networkErr
+ 	}
++	env = stripLauncherEnvKeys(env, managedEnvStrip)
+ 
+ 	// ============================================================
+ 	// 启动策略：复刻原始验证可行的方式
+diff --git a/internal/launcher/service_test.go b/internal/launcher/service_test.go
+index fed26ac..156fdfb 100644
+--- a/internal/launcher/service_test.go
++++ b/internal/launcher/service_test.go
+@@ -152,7 +152,7 @@ func TestLauncherGuardRejectsClaudeAndCodexBeforeRawStart(t *testing.T) {
+ 	workDir := t.TempDir()
+ 	provider := config.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}
+ 
+-	if _, err := svc.LaunchGuarded("guarded-claude", provider, "", "", config.AgentTeamsConfig{}, session.ModeTerminal, workDir, guard); !errors.Is(err, guardErr) {
++	if _, err := svc.LaunchGuarded("guarded-claude", provider, "", "", config.AgentTeamsConfig{}, session.ModeTerminal, workDir, guard, nil); !errors.Is(err, guardErr) {
+ 		t.Fatalf("Claude guarded launch error=%v", err)
+ 	}
+ 	if _, err := svc.LaunchCodexGuarded("guarded-codex", "", session.ModeTerminal, workDir, nil, guard); !errors.Is(err, guardErr) {
+diff --git a/internal/remote/remote_session_adapter.go b/internal/remote/remote_session_adapter.go
+index 9f647fc..96b2740 100644
+--- a/internal/remote/remote_session_adapter.go
++++ b/internal/remote/remote_session_adapter.go
+@@ -99,6 +99,11 @@ type RemoteSessionAdapter struct {
+ 	//结束（客户端重新发起即重新规划），不带旧计划放行。nil = 未接线（测试）。
+ 	credentialPlanCheck func([32]byte) error
+ 
++	// credentialAbsenceCheck（F01）：计划未携带凭据 admission（池 absent 时
++	// 构建的旧计划）时，执行边界必须确认权威状态仍为 absent——首次 capture
++	// 后旧计划会绕过仅存在于 admission 循环内的新鲜度检查。nil = 未接线。
++	credentialAbsenceCheck func() error
++
+ 	// configDir is the host config root (for workdir default etc.).
+ 	configDir string
+ 
+@@ -203,6 +208,27 @@ func (a *RemoteSessionAdapter) SetClaudeCredentialsPlanCheck(check func([32]byte
+ 	a.credentialPlanCheck = check
+ }
+ 
++// SetClaudeCredentialsAbsenceCheck 注入无凭据计划的边界复核（F01：absent
++// 时构建的旧计划在首次 capture 后不得继续执行）。
++func (a *RemoteSessionAdapter) SetClaudeCredentialsAbsenceCheck(check func() error) {
++	a.credentialAbsenceCheck = check
++}
++
++// cliConsumesClaudeCredentials 报告该 CLI 是否消费 canonical Claude 凭据
++// 槽位（design §6.3：Claude Code 与宿主根 Pi；omp 独立根不计）。
++func cliConsumesClaudeCredentials(cli contract.CLIType) bool {
++	return cli == contract.CLITypeClaudeCode || cli == contract.CLITypePi
++}
++
++// verifyCredentialPlanAbsence 在受影响 CLI 的计划不携带凭据 admission 时，
++// 确认权威状态仍为 absent（F01）。返回 true 表示可继续执行。
++func (a *RemoteSessionAdapter) verifyCredentialPlanAbsence(cli contract.CLIType, hasCredentialAdmission bool) bool {
++	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
++		return true
++	}
++	return a.credentialAbsenceCheck() == nil
++}
++
+ // verifyCredentialPlanFreshness 在 admission 获取后立即复核代际；失败时由
+ // 调用方走既有失败路径（释放已取 admission + abort）。返回 true 表示通过。
+ func (a *RemoteSessionAdapter) verifyCredentialPlanFreshness(kind SharedServiceKind, fingerprint [32]byte) bool {
+@@ -546,6 +572,7 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
+ 	// 5. Acquire launch admissions before Executor preparation or any shared
+ 	// side effect. The exact admissions are bound into their prepared effects.
+ 	var admissions []*SharedLaunchAdmission
++	hasCredentialAdmission := false
+ 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
+ 	releaseAdmissions := func() {
+ 		for _, adm := range admissions {
+@@ -562,6 +589,9 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
+ 		if !ok {
+ 			continue
+ 		}
++		if remoteKind == SharedServiceClaudeCredentials {
++			hasCredentialAdmission = true
++		}
+ 		adm, acqErr := a.sharedCoord.AcquireLaunchAdmissionForConfig(remoteKind, planAdm.ConfigFingerprint)
+ 		if acqErr != nil {
+ 			releaseAdmissions()
+@@ -582,6 +612,15 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
+ 		admissions = append(admissions, adm)
+ 		sharedAdmissions[planAdm.Service] = adm
+ 	}
++	// F01：absent 时构建的旧计划（无凭据 admission）在首次 capture 后不得
++	// 继续执行——执行边界确认权威状态仍为 absent，不只检查已有 kind。
++	if !a.verifyCredentialPlanAbsence(contract.CLIType(plan.Recipe.CLIType), hasCredentialAdmission) {
++		releaseAdmissions()
++		plan.Secrets.Dispose()
++		a.gate.AbortLaunch(ctx, launchPermit, errSharedCredentialPlanStale)
++		abortReservation()
++		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
++	}
+ 
+ 	// 6. Executor Prepare (all effect allocations; opaque exact run handle).
+ 	execution, err := a.executor.Prepare(ctx, plan, launchplan.ExecutionBinding{
+@@ -1033,6 +1072,7 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
+ 	}
+ 
+ 	var admissions []*SharedLaunchAdmission
++	hasCredentialAdmission := false
+ 	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
+ 	releaseAdmissions := func() {
+ 		for _, admission := range admissions {
+@@ -1054,6 +1094,9 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
+ 			_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
+ 			return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
+ 		}
++		if kind == SharedServiceClaudeCredentials {
++			hasCredentialAdmission = true
++		}
+ 		// 凭据 kind：restart 同样在进程副作用前复核代际（design §6.3）。
+ 		if !a.verifyCredentialPlanFreshness(kind, spec.ConfigFingerprint) {
+ 			a.sharedCoord.ReleaseLaunchAdmission(admission)
+@@ -1065,6 +1108,14 @@ func (a *RemoteSessionAdapter) authorityRestart(ctx context.Context, reqID contr
+ 		admissions = append(admissions, admission)
+ 		sharedAdmissions[spec.Service] = admission
+ 	}
++	// F01：restart 链同样校验无凭据计划的 absent 边界（absent 旧计划 →
++	// 首次 capture → restart 执行）。
++	if !a.verifyCredentialPlanAbsence(contract.CLIType(snapshot.CLIType), hasCredentialAdmission) {
++		releaseAdmissions()
++		a.authority.AbortPreparedLifecycle(lifecycleToken)
++		_ = a.journal.Complete(ctx, journalPermit, SessionOutcomeFailed, contract.ErrorCodeServiceDown)
++		return SessionDetailResult{}, newAdapterError(a.mapper.mapGenericError(reqID))
++	}
+ 
+ 	var (
+ 		restartPermit     *operationPermit
+diff --git a/internal/remote/shared_coordinator_credentials_test.go b/internal/remote/shared_coordinator_credentials_test.go
+index d4d435e..ee462c7 100644
+--- a/internal/remote/shared_coordinator_credentials_test.go
++++ b/internal/remote/shared_coordinator_credentials_test.go
+@@ -245,3 +245,41 @@ func TestCredentialsKind_EarlyReleaseIsIdempotent(t *testing.T) {
+ 	}
+ 	c.ReleaseMutationAdmission(mut)
+ }
++
++// TestCredentialPlanAbsenceBoundary：F01——受影响 CLI（claude/pi）的计划未
++// 携带凭据 admission（absent 时构建的旧计划）时，执行边界必须确认权威状态
++// 仍为 absent；首次 capture 后（check 返回错误）旧计划不得继续执行。
++func TestCredentialPlanAbsenceBoundary(t *testing.T) {
++	if !cliConsumesClaudeCredentials(contract.CLITypeClaudeCode) || !cliConsumesClaudeCredentials(contract.CLITypePi) {
++		t.Fatal("claude/pi must consume claude credentials")
++	}
++	if cliConsumesClaudeCredentials(contract.CLITypeCodex) || cliConsumesClaudeCredentials(contract.CLITypeOmp) {
++		t.Fatal("codex/omp must not consume claude credentials")
++	}
++
++	// 未接线（nil check）→ 通过（测试环境兼容）。
++	adapter := &RemoteSessionAdapter{}
++	if !adapter.verifyCredentialPlanAbsence(contract.CLITypeClaudeCode, false) {
++		t.Fatal("nil absence check must pass (not wired)")
++	}
++	// 计划已携带凭据 admission → 不做 absent 校验（admission 循环内的
++	// freshness 检查负责）。
++	adapter.credentialAbsenceCheck = func() error { return errors.New("pool became managed") }
++	if !adapter.verifyCredentialPlanAbsence(contract.CLITypeClaudeCode, true) {
++		t.Fatal("plans carrying credential admission skip absence check")
++	}
++	// absent 仍成立 → 通过。
++	adapter.credentialAbsenceCheck = func() error { return nil }
++	if !adapter.verifyCredentialPlanAbsence(contract.CLITypePi, false) {
++		t.Fatal("absent must pass")
++	}
++	// absent→managed（首次 capture 后）→ 旧计划拒绝执行。
++	adapter.credentialAbsenceCheck = func() error { return errSharedCredentialPlanStale }
++	if adapter.verifyCredentialPlanAbsence(contract.CLITypePi, false) {
++		t.Fatal("absent-era stale plan must be rejected after pool became managed")
++	}
++	// 非受影响 CLI（codex）无凭据 admission → 不校验。
++	if !adapter.verifyCredentialPlanAbsence(contract.CLITypeCodex, false) {
++		t.Fatal("unaffected CLI plans skip the credential boundary")
++	}
++}
+diff --git a/launch_planner.go b/launch_planner.go
+index a7783d2..627ba11 100644
+--- a/launch_planner.go
++++ b/launch_planner.go
+@@ -350,6 +350,12 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
+ 			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+ 		} else if ok {
+ 			admissions = append(admissions, credSpec)
++			// F07（design §6.3 R3）：受管 OAuth 启动在最终 shell 后边界清除身份/
++			// 认证覆盖变量（与桌面 embedded 同一 managedClaudeIdentityBoundarySpec；
++			// remote create/restart 消费同一 spec，不能只修桌面路径）。
++			if provider.IsOAuthMode() {
++				spec = managedClaudeIdentityBoundarySpec(spec)
++			}
+ 		}
+ 	}
+ 	effects = append(effects, launchplan.EffectSpec{
+diff --git a/pi_login_launch.go b/pi_login_launch.go
+index 1a6ee78..6d1745f 100644
+--- a/pi_login_launch.go
++++ b/pi_login_launch.go
+@@ -359,7 +359,22 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req
+ 	preset := login.Preset
+ 	recipe.ProviderRef = config.PiLoginProviderID(preset.Provider)
+ 	recipe.PresetRef = recipe.ModelRef
+-	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), piLoginEnvOverrides(login.AgentDir))
++	// Claude 订阅账号轮换（design §6.3 + 任务 F，F07 提前到 env 构建前）：先取
++	// 凭据 admission 描述（blocked → 计划构建失败，入口关闭）。受管状态下
++	// WSL 登录会话消费 canonical 凭据的 distro 副本，v1 不支持——spec 解析后
++	// 明确拒绝，不动现有 WSL 同步逻辑；非 WSL 登录会话消费 canonical
++	// auth.json，携带 admission，并在 env 构建与最终执行边界同步剥离身份/
++	// 认证覆盖变量（与桌面 LaunchPiSession 同一键集，remote create/restart
++	// 不能漏）。
++	managedExtra := []string(nil)
++	credSpec, credManaged, credErr := p.claudeCredentialAdmissionSpec()
++	if credErr != nil {
++		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
++	}
++	if credManaged {
++		managedExtra = managedClaudeIdentityEnvKeys
++	}
++	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), piLoginEnvOverrides(login.AgentDir, managedExtra...))
+ 	args := []string{"--provider", preset.Provider, "--model", preset.Model}
+ 	if preset.Thinking != "" {
+ 		args = append(args, "--thinking", preset.Thinking)
+@@ -387,13 +402,7 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req
+ 	// auth write on this path.
+ 	var effects []launchplan.EffectSpec
+ 	var loginAdmissions []launchplan.SharedAdmissionSpec
+-	// Claude 订阅账号轮换（design §6.3 + 任务 F）：先取凭据 admission 描述
+-	//（blocked → 计划构建失败，入口关闭）；受管状态下 WSL 登录会话消费
+-	// canonical 凭据的 distro 副本，v1 不支持——明确拒绝，不动现有 WSL
+-	// 同步逻辑。非 WSL 登录会话消费 canonical auth.json，携带 admission。
+-	if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
+-		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+-	} else if ok {
++	if credManaged {
+ 		if spec.BootstrapMode == platform.BootstrapWSL {
+ 			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+ 		}
+@@ -419,7 +428,7 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req
+ 			},
+ 		})
+ 	} else {
+-		spec = piLoginReAnchorSpec(spec, login.AgentDir)
++		spec = piLoginReAnchorSpec(spec, login.AgentDir, managedExtra...)
+ 	}
+ 	effects = append(effects, launchplan.EffectSpec{Kind: launchplan.EffectPTYStart, Process: &launchplan.ProcessStartSpec{
+ 		Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,

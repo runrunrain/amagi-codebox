@@ -1,0 +1,51 @@
+{"id":"51e85be3","role":"assistant","paths":[],"sourceDigest":"ef5b4adc6e521485feff995412f09fac512034da3ed51275931ab0e6a216caf4"}
+三处凭据/身份位置全部核实完毕。现在给你完整结论：
+
+---
+
+## 需求全貌（已核实）
+
+```
+账号 A（Claude 订阅）          账号 B（Claude 订阅）
+   │                              │
+   ├─ Claude Code ←─ Keychain "Claude Code-credentials"（OAuth tokens）
+   ├─ pi-black    ←─ ~/.pi/agent/auth.json → "anthropic" 条目（pi 自己的 OAuth grant）
+   └─ pi-black 还读 ~/.claude.json → oauthAccount.accountUuid / userID 构造请求身份元数据
+```
+
+关键事实：**pi 和 Claude Code 各持有同一账号的两份独立 OAuth grant，各自刷新、互不同步**（pi-black 明确保留 pi 的凭据存储与刷新机制）。所以轮换不是换一处，是**三处联动换入换出**：
+
+| # | 位置 | 内容 | 谁会写它 |
+|---|---|---|---|
+| 1 | macOS Keychain `Claude Code-credentials` | Claude Code OAuth tokens | Claude Code 自刷 |
+| 2 | `~/.claude.json` → `oauthAccount` + `userID` | 账号身份（pi-black 消费） | Claude Code 登录时 |
+| 3 | `~/.pi/agent/auth.json` → `anthropic` 条目 | pi 侧 OAuth tokens | pi 自刷 |
+
+## 结论：结合 provider center 实现，完全可行
+
+上一轮的路线 A 设计现在完全落地化，且你的 pi-login 预设（Opus-5-5 / Sonnet-5-5）**一行不用改**——轮换只改 `anthropic` 条目内容，provider 名不变。
+
+### CodeBox 内实现蓝图
+
+**Phase 1 — 账号池 + 手动切换**（解决"不反复登出登入"）
+- `internal/secrets` Keychain 新增 `claude-account/<别名>` 条目：存三处快照（Keychain 凭据 JSON + claude.json 身份字段 + auth.json anthropic 条目）
+- `capture` 命令：登录 A 后一键快照入池 → 登录 B 再 capture → 池成
+- `swap(别名)` 切换原语：
+  1. **回收**：三处读当前值（可能已被各自刷新）→ 按新陈判定（mtime+SHA，`SyncWSLPiLoginAuth` 已有同款算法）更新池内**换出账号**——漏了这步，下次切回时 refresh token 已作废
+  2. **写入**：目标账号三处原子写入（claude.json 做 `oauthAccount` 字段级替换，不动项目历史；auth.json 只换 `anthropic` 键，保留其余 6 个条目）
+- Provider center 新增「Claude 订阅账号」卡片组（A/B 别名 + 邮箱 + 套餐档），一键切换
+
+**Phase 2 — claude-sub 额度家族**
+- `quota_probe.go` 加 `claude-sub` family：用活动账号 token 探 5h/周窗口（aswap 已实证该端点可用），卡片显示余量条与重置时间——Codex 订阅探测是现成范本
+
+**Phase 3 — 自动轮换引擎**
+- 阈值（默认 90%）触发 `swap` 到余量最多账号；5min 冷却 + 迟滞防乒乓（照抄 aswap 行为设计）
+- 与会话启动经 `SharedServiceCoordinator` lease 互斥（headroom 已用同一机制）
+
+### 三个工程注意点
+
+1. **运行中会话语义**：swap 后新会话确定生效；运行中的 pi/Claude Code 会话是否每请求重读凭据需实测——保守承诺「新会话生效」，实测能热切再升格承诺
+2. **auth.json 写竞争**：pi 刷新 token 与 CodeBox swap 可能撞车——swap 前后都要做回收判定，且写 auth.json 用原子替换（temp+rename）
+3. **WSL 明确排除 v1**：现有 Windows↔distro 双向同步加了轮换变三方竞争，v1 只做 macOS 本机
+
+要不要我把 Phase 1 任务书拆好派给 luban 开工？还是你想先自己试用 aswap 验证一下轮换思路再决定自研？
