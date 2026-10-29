@@ -437,6 +437,8 @@ type App struct {
 	// claudeAccountsPoolMarkerPath 是不含秘密的「池曾初始化」标记文件路径
 	//（F10；测试可注入）。
 	claudeAccountsPoolMarkerPath string
+	// nil 使用 File.Sync；测试在真实创建后注入文件/目录同步失败。
+	claudeAccountsMarkerSync func(*os.File) error
 	// claudeAccountsQuiescenceLister 是进程观察器枚举接缝（nil = 生产 ps）。
 	claudeAccountsQuiescenceLister claudeProcessLister
 	// operation 注册表（有界缓存 + requestId 幂等，见 claude_accounts_facade.go）。
@@ -747,6 +749,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		// 不带旧计划放行。
 		m2aAdapter.SetClaudeCredentialsPlanCheck(app.claudeCredentialsPlanCheck)
 		m2aAdapter.SetClaudeCredentialsAbsenceCheck(app.claudeCredentialsAbsenceCheck)
+		m2aAdapter.SetClaudeCredentialsFingerprint(app.claudeCredentialsFingerprint)
 		m2aAdapter.SetRestartPtyStart(func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error) {
 			resolved, ok := spec.(platform.ResolvedLaunchSpec)
 			if !ok {

@@ -103,6 +103,8 @@ type RemoteSessionAdapter struct {
 	// 构建的旧计划）时，执行边界必须确认权威状态仍为 absent——首次 capture
 	// 后旧计划会绕过仅存在于 admission 循环内的新鲜度检查。nil = 未接线。
 	credentialAbsenceCheck func() error
+	// absent reservation 与桌面从同一 canonical 路径/代际函数取指纹（R04）。
+	credentialFingerprint func() ([32]byte, error)
 
 	// configDir is the host config root (for workdir default etc.).
 	configDir string
@@ -214,6 +216,12 @@ func (a *RemoteSessionAdapter) SetClaudeCredentialsAbsenceCheck(check func() err
 	a.credentialAbsenceCheck = check
 }
 
+// SetClaudeCredentialsFingerprint 注入与桌面启动同源的指纹计算；不可用时
+// 受影响 absent 计划 fail closed，不使用与桌面不兼容的零指纹。
+func (a *RemoteSessionAdapter) SetClaudeCredentialsFingerprint(fingerprint func() ([32]byte, error)) {
+	a.credentialFingerprint = fingerprint
+}
+
 // cliConsumesClaudeCredentials 报告该 CLI 是否消费 canonical Claude 凭据
 // 槽位（design §6.3：Claude Code 与宿主根 Pi；omp 独立根不计）。
 func cliConsumesClaudeCredentials(cli contract.CLIType) bool {
@@ -226,10 +234,14 @@ func (a *RemoteSessionAdapter) reserveCredentialPlanAbsence(cli contract.CLIType
 	if hasCredentialAdmission || !cliConsumesClaudeCredentials(cli) || a.credentialAbsenceCheck == nil {
 		return func() {}, nil
 	}
-	if a.sharedCoord == nil {
+	if a.sharedCoord == nil || a.credentialFingerprint == nil {
 		return nil, errSharedCredentialPlanStale
 	}
-	reservation, err := a.sharedCoord.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, [32]byte{})
+	fingerprint, err := a.credentialFingerprint()
+	if err != nil {
+		return nil, err
+	}
+	reservation, err := a.sharedCoord.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, fingerprint)
 	if err != nil {
 		return nil, err
 	}

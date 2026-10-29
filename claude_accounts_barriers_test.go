@@ -42,6 +42,7 @@ func TestAbsentRemotePrepareReservationBlocksFirstCapture(t *testing.T) {
 			store.mu.Unlock()
 			setClaudeAccountsCache(app, nil, nil, true)
 			h.adapter.SetClaudeCredentialsAbsenceCheck(app.claudeCredentialsAbsenceCheck)
+			h.adapter.SetClaudeCredentialsFingerprint(app.claudeCredentialsFingerprint)
 			stopAt := 1
 			if action == "restart" {
 				stopAt = 2

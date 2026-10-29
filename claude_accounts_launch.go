@@ -104,19 +104,28 @@ func (a *App) claudeAccountsMarkerStatus() (bool, error) {
 // F10：用于区分「从未创建」与「已创建后被外部删除」）。
 func (a *App) writeClaudeAccountsMarker() error {
 	exists, err := a.claudeAccountsMarkerStatus()
-	if err != nil || exists {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(a.claudeAccountsPoolMarkerPath), 0o700); err != nil {
-		return err
-	}
-	// 内容无秘密。先同步文件再同步目录；失败不得宣布 managed。
-	f, err := os.OpenFile(a.claudeAccountsPoolMarkerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
-	_, writeErr := f.WriteString("claude-accounts-pool-initialized\n")
-	syncErr := f.Sync()
+	flags := os.O_WRONLY
+	if !exists {
+		if err := os.MkdirAll(filepath.Dir(a.claudeAccountsPoolMarkerPath), 0o700); err != nil {
+			return err
+		}
+		flags |= os.O_CREATE | os.O_EXCL
+	}
+	// Stat 仅证明存在，不能证明上次 Write/Sync/Close/目录 Sync 已成功。
+	// 已有文件也重新打开、同步、关闭，再同步父目录；每轮独立确认，不靠
+	// 本进程成功/失败缓存。标记按存在性消费，内容不含秘密且不作状态判据。
+	f, err := os.OpenFile(a.claudeAccountsPoolMarkerPath, flags, 0o644)
+	if err != nil {
+		return err
+	}
+	var writeErr error
+	if !exists {
+		_, writeErr = f.WriteString("claude-accounts-pool-initialized\n")
+	}
+	syncErr := a.syncClaudeAccountsMarker(f)
 	closeErr := f.Close()
 	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
 		return err
@@ -125,7 +134,14 @@ func (a *App) writeClaudeAccountsMarker() error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(dir.Sync(), dir.Close())
+	return errors.Join(a.syncClaudeAccountsMarker(dir), dir.Close())
+}
+
+func (a *App) syncClaudeAccountsMarker(f *os.File) error {
+	if a.claudeAccountsMarkerSync != nil {
+		return a.claudeAccountsMarkerSync(f)
+	}
+	return f.Sync()
 }
 
 // claudeCredentialsPolicy 汇总缓存状态得出启动门禁结论。
