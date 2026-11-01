@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to rebuild (for example v1.3.124)'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build-windows:
@@ -14,6 +23,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -31,7 +42,10 @@ jobs:
             mobile/package-lock.json
 
       - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        shell: bash
+        run: |
+          version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$version"
 
       - name: Install frontend dependencies
         run: npm ci
@@ -51,7 +65,9 @@ jobs:
 
       - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
+          echo "VERSION=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Sync wails.json version
@@ -90,6 +106,7 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
           files: amagi-codebox-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip
           generate_release_notes: true
 
@@ -98,6 +115,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -115,7 +134,10 @@ jobs:
             mobile/package-lock.json
 
       - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        shell: bash
+        run: |
+          version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$version"
 
       - name: Install frontend dependencies
         run: npm ci
@@ -135,7 +157,9 @@ jobs:
 
       - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
+          echo "VERSION=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Sync wails.json version
@@ -183,4 +207,5 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
           files: release-assets/amagi-codebox-${{ steps.get_version.outputs.VERSION }}-darwin-arm64.zip
