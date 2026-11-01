@@ -481,12 +481,11 @@ func TestUninstallToolAddsNoExportedServiceMethods(t *testing.T) {
 		}
 	}
 	// The private entry must exist instead (reachable via RunFixAction).
-	// reflect cannot see unexported methods, so existence is proven by this
-	// compile-time reference; if the method disappears the build breaks.
-	var entry func(*Service, CLITool) (*OperationState, error) = (*Service).startUninstallTool
-	if entry == nil {
-		t.Fatal("unreachable")
-	}
+	// reflect cannot see unexported methods, so existence (and the exact
+	// signature) is proven by this compile-time reference; if the method
+	// disappears or changes shape the build breaks. A method value is never
+	// nil, so no runtime nil check is possible or needed.
+	var _ func(*Service, CLITool) (*OperationState, error) = (*Service).startUninstallTool
 }
 
 // ---------------------------------------------------------------------------

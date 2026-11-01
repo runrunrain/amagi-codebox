@@ -32,12 +32,6 @@ import (
 	"os"
 )
 
-// fmtMoveNoReplaceUnsupported 把底层「无此原语」errno 包装为不支持错误
-// （保留原始 errno 供诊断）。
-func fmtMoveNoReplaceUnsupported(err error) error {
-	return fmt.Errorf("%w: %w", ErrMoveNoReplaceUnsupported, err)
-}
-
 // ErrMoveNoReplaceUnsupported 报告当前 GOOS/文件系统不支持原子 no-replace
 // 移动。调用方必须按「能力不可用」处理：保留 source 与既有目标，不得退化
 // 为覆盖式移动。

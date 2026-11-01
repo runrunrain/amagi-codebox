@@ -67,8 +67,10 @@ func (b *logBuffer) Write(p []byte) (int, error) {
 func (b *logBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return string(b.data) }
 
 type process struct {
-	cmd  *exec.Cmd
-	job  uintptr
+	cmd *exec.Cmd
+	// job 仅 Windows 的 tie/release（kill-on-close Job Object）使用，其它
+	// GOOS 恒零值；字段按平台使用（build tags 隔离），不能删。
+	job  uintptr //nolint:unused // used on windows only, see process_windows.go
 	done chan struct{}
 	err  error
 }

@@ -44,7 +44,7 @@ func snapshotProcesses() map[uint32]processEntryW {
 	if snap == 0 || snap == invalidHandle {
 		return nil
 	}
-	defer procCloseHandle.Call(snap)
+	defer func() { _ = closeHandle(snap) }()
 	procs := map[uint32]processEntryW{}
 	entry := processEntryW{Size: uint32(unsafe.Sizeof(processEntryW{}))}
 	next := func(first bool) bool {

@@ -62,14 +62,7 @@ func DefaultProbes() Probes {
 	}
 }
 
-// logInfo/logWarn 是 nil 安全的日志出口。
-func logInfo(log Logger, scope, msg, detail string) {
-	if log == nil {
-		return
-	}
-	log.Info(scope, msg, detail)
-}
-
+// logWarn 是 nil 安全的日志出口。
 func logWarn(log Logger, scope, msg, detail string) {
 	if log == nil {
 		return

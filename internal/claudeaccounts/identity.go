@@ -83,11 +83,7 @@ func (p *HTTPIdentityProvider) FetchProfile(ctx context.Context, accessToken str
 	if parsed.AccountUUID == "" {
 		return ProfileIdentity{}, NewErr(ReasonIdentityUnverified, "身份响应缺少账号 UUID")
 	}
-	return ProfileIdentity{
-		AccountUUID:      parsed.AccountUUID,
-		OrganizationUUID: parsed.OrganizationUUID,
-		SeatTier:         parsed.SeatTier,
-	}, nil
+	return ProfileIdentity(parsed), nil
 }
 
 // VerifyPairedIdentities 做双 grant 身份配对校验（design §4.2）：两个独立

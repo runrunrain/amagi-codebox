@@ -1287,7 +1287,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
 		return fail(PluginErrVerifyFailed, fmt.Sprintf("实体版本 %q 与锚定版本 %q 不一致", facts.version, pinned))
 	}
 	if spec.Type == "git" && refKind == string(PluginRefGitCommit) && facts.commit != "" && facts.commit != pinned {
-		return fail(PluginErrVerifyFailed, fmt.Sprintf("实体 HEAD 与锚定 commit 不一致"))
+		return fail(PluginErrVerifyFailed, "实体 HEAD 与锚定 commit 不一致")
 	}
 	entry := PluginStateEntry{
 		Source: replaySource, Identity: identity, SourceType: spec.Type, Generation: target.Generation,

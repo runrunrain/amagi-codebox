@@ -640,17 +640,5 @@ func projectionsEqual(a, b OwnedProjections) bool {
 	return ccOK && idOK && equalJSON(a.PiAnthropic, b.PiAnthropic)
 }
 
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // newRandomID 生成随机 UUID（事务 ID 复用同一生成器）。
 func newRandomID() (string, error) { return NewLocalAccountID() }

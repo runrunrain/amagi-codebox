@@ -224,7 +224,6 @@ func (a *App) claudeOpBegin(kind, requestID, paramsDigest string, generation uin
 					}
 				}
 				evicted = true
-				break
 			default:
 				// 运行中：跳过，试次旧者（不放回队尾避免死循环）。
 			}

@@ -859,7 +859,6 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 				},
 			},
 		})
-		hasConfigMutation = false
 	} else if hasConfigMutation {
 		secrets = launchplan.NewEphemeralSecretBundle(configBuf)
 		effects = append(effects, launchplan.EffectSpec{

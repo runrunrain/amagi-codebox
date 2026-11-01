@@ -1530,7 +1530,6 @@ func wslSkillSummary(m *wslsupply.SkillManifest, entry wslsupply.UnitStatus, has
 
 // wslSkillRegisteredState 派生已登记技能的状态面（TrackedProjection 语义）。
 func wslSkillRegisteredState(entry wslsupply.UnitStatus) (state, detail string, actions []string) {
-	actions = []string{"preview"}
 	switch {
 	case entry.Detached:
 		return "detached", "已保留 WSL 本地（停跟随）；确认接管可重新启用", []string{"preview", "takeover"}

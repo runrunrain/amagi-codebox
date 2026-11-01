@@ -19,7 +19,6 @@ import (
 // countingA2 记录 Sync 调用的 A2 适配器。
 type countingA2 struct {
 	inner  A2Adapter
-	calls  int32
 	called *int32
 }
 

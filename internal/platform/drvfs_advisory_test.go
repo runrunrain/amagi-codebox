@@ -70,7 +70,6 @@ func TestDrvFSAdvisorySnapshotIsCopy(t *testing.T) {
 
 	snap := DrvFSAdvisories()
 	snap[0].Detail = "mutated"
-	snap = snap[:0]
 
 	again := DrvFSAdvisories()
 	if len(again) != 1 || again[0].Detail != "" {

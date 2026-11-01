@@ -325,18 +325,6 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
 	return out, ""
 }
 
-func toMapKeys(v any) []string {
-	m, ok := v.(map[string]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
 func strconvItoa(n int) string { return fmt.Sprintf("%d", n) }
 
 // codexProfileBefore 生成 profile 键的脱敏预览摘要：总键数与其中不导入的
@@ -369,7 +357,7 @@ func (a *codexConfigAdapter) AdoptCandidate(ctx context.Context, target TargetRe
 func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRef, state *StateEntry, adopt bool) (ProjectionCandidate, error) {
 	// SA-11：Detached 只阻断普通供给路径；显式「预览后确认接管」（adopt=true，
 	// 协调器已过 CAS/同怠门）是唯一声明的恢复入口，必须放行重建基准（与 Pi
-	// 键级适配器同构；接管成功后 recordProjectionState 重建条目即解除 Detached）。
+	// 键级适配器同构；接管成功后 Register 闭包经 registerProjectionEntryIn 重建条目即解除 Detached）。
 	if state != nil && state.Detached && !adopt {
 		return ProjectionCandidate{}, errors.New("unit is detached (keep-local); takeover required to re-enable")
 	}

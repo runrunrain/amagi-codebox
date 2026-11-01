@@ -336,12 +336,6 @@ func (f *fakeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return handler(req)
 }
 
-func (f *fakeTransport) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.calls)
-}
-
 func httpResponse(status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,

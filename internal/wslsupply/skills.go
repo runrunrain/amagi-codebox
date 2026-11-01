@@ -453,12 +453,3 @@ func (c *Coordinator) applySkillPlanned(ctx context.Context, target TargetRef, u
 			Err:    fmt.Errorf("unsupported skill action: %d", unit.Action)}
 	}
 }
-
-// skillIncompatDetail 把不兼容项拼为脱敏明细行（相对路径 + 原因）。
-func skillIncompatDetail(items []SkillIncompat) []string {
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		out = append(out, fmt.Sprintf("%s：%s", it.RelPath, it.Reason))
-	}
-	return out
-}

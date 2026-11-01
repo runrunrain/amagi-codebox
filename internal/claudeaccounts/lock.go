@@ -27,12 +27,9 @@ func DefaultPoolMarkerPath() (string, error) {
 	return filepath.Join(home, ".amagi-codebox", "claude-accounts.pool-initialized"), nil
 }
 
-// crossProcessLock 是进程间互斥锁句柄；获取/释放的平台实现见 lock_unix.go
-// 与 lock_windows.go。
-type crossProcessLock struct {
-	path string
-	file fileHandle
-}
+// crossProcessLock 是进程间互斥锁句柄；结构体与获取/释放的平台实现见
+// lock_unix.go 与 lock_windows.go（Unix 形态持有锁文件路径，Windows v1
+// 获取一律 unsupported、无需路径字段）。
 
 // release 释放跨进程锁（幂等）。
 func (l *crossProcessLock) release() {

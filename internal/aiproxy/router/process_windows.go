@@ -3,6 +3,7 @@
 package router
 
 import (
+	"errors"
 	"os"
 	"syscall"
 	"unsafe"
@@ -52,6 +53,18 @@ type jobObjectExtendedLimitInformation struct {
 
 func interruptCore(p *os.Process) { _ = p.Kill() }
 
+// closeHandle 关闭句柄，失败返回错误。LazyProc.Call 的第三返回值（lastErr）
+// 即使成功也可能非 nil（它反映 GetLastError，成功调用不重置该值），因此
+// 失败只按 BOOL 返回值 r1==0 判定，绝不用 lastErr 当失败信号。清理路径的
+// 调用方按尽力清理惯例显式丢弃（`_ =`，与仓内 windows.CloseHandle 惯例一致）。
+func closeHandle(h uintptr) error {
+	r1, _, _ := procCloseHandle.Call(h)
+	if r1 == 0 {
+		return errors.New("CloseHandle failed")
+	}
+	return nil
+}
+
 // tie 把内核子进程绑进 kill-on-close 的 Job Object：CodeBox 无论以何种方式退出
 // （正常关闭、崩溃、被强杀、被更新器替换），Windows 内核都会在最后一个 job
 // 句柄关闭时连带终止 sing-box，从根上杜绝孤儿占住代理端口。
@@ -65,7 +78,7 @@ func (p *process) tie() {
 	if h == 0 {
 		return
 	}
-	defer procCloseHandle.Call(h)
+	defer func() { _ = closeHandle(h) }()
 	job, _, _ := procCreateJobObjectW.Call(0, 0)
 	if job == 0 {
 		return
@@ -75,7 +88,7 @@ func (p *process) tie() {
 	_, _, _ = procSetInformationJobObject.Call(job, jobObjectExtendedLimitInfoClass,
 		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info))
 	if r, _, _ := procAssignProcessToJobObject.Call(job, h); r == 0 {
-		procCloseHandle.Call(job)
+		_ = closeHandle(job)
 		return
 	}
 	p.job = job
@@ -85,7 +98,7 @@ func (p *process) tie() {
 // 再触发终止）；CodeBox 自身异常退出时句柄由内核回收，正好触发连带终止。
 func (p *process) release() {
 	if p.job != 0 {
-		procCloseHandle.Call(p.job)
+		_ = closeHandle(p.job)
 		p.job = 0
 	}
 }

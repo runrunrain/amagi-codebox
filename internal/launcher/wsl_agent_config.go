@@ -142,11 +142,6 @@ func wslEnsurePrivateStagingContext(ctx context.Context, target WSLAgentTarget) 
 	return uncDir, linuxDir, nil
 }
 
-// wslEnsurePrivateStaging（旧无 ctx 入口）以 Background 包装 ctx 核心。
-func wslEnsurePrivateStaging(target WSLAgentTarget) (uncDir, linuxDir string, err error) {
-	return wslEnsurePrivateStagingContext(context.Background(), target)
-}
-
 // writeWSLAgentFileStaged 是 WSL 侧敏感配置文件的提交原语（SA-06/07，
 // wsl-goal-closure）：
 //  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；

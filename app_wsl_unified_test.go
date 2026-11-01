@@ -252,13 +252,6 @@ func unifiedTargetExists(f *unifiedFixture, rel string) bool {
 	return err == nil
 }
 
-func targetMCPServers(t *testing.T, f *unifiedFixture) map[string]any {
-	t.Helper()
-	root := readUnifiedTargetJSON(t, f, ".claude.json")
-	servers, _ := root["mcpServers"].(map[string]any)
-	return servers
-}
-
 // mcpServerURL 是轮询友好的非致命取值。
 func mcpServerURL(f *unifiedFixture, name string) (string, bool) {
 	root, ok := unifiedTargetJSONOk(f, ".claude.json")

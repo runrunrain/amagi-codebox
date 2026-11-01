@@ -30,9 +30,6 @@ const (
 	ClaudeJSONFile = ".claude.json"
 	// ClaudeSettingsFile：~/.claude/settings.json。
 	ClaudeSettingsFile = ".claude/settings.json"
-
-	claudeMCPTransform      = "claude-mcp-v1"
-	claudeSettingsTransform = "claude-settings-v1"
 )
 
 // ClaudeConfigSource 是 App 注入的 Windows 侧来源（真实文件读取；缺失返回

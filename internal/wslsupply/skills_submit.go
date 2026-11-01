@@ -553,19 +553,6 @@ func relDirsOf(rel string) string {
 	return rel[:i]
 }
 
-// reserveHiddenName 在 parent 下保留一个唯一隐藏名（先 MkdirTemp 占位再删除，
-// rename 落位）。失败返回错误。
-func reserveHiddenName(parent, pattern string) (string, error) {
-	d, err := os.MkdirTemp(parent, pattern)
-	if err != nil {
-		return "", err
-	}
-	if err := os.Remove(d); err != nil {
-		return "", err
-	}
-	return d, nil
-}
-
 // chmodTree 批量 distro chmod 补偿（文件 644 / 目录 755；分批防命令行超长）。
 // relDir 是目标相对目录（如 "skills/foo"、".claude/commands/foo"）。
 func (c *Coordinator) chmodTree(ctx context.Context, target TargetRef, relDir string, files []skillWriteFile, dirs map[string]bool) error {

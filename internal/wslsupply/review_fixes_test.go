@@ -183,8 +183,10 @@ func TestReviewFixPR01LegacySensitiveRiskPending(t *testing.T) {
 		if res := runUnit(t, c2, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
 			t.Fatalf("publish: %+v", res.Results[0])
 		}
-		if !c2.LegacySensitiveCopyPending("Ubuntu") {
-			// 发布后风险已由当前受管状态接管（标记清除是合法终态）。
+		// 发布后风险已由当前受管状态接管（与上一子测试同语义：成功写入必须
+		// 接管并清除 v1 遗留风险标记；下文继续验证撤回后的风险状态）。
+		if c2.LegacySensitiveCopyPending("Ubuntu") {
+			t.Fatal("successful publish must take over the legacy risk marker before withdrawal")
 		}
 		// 关闭宿主导出 → 撤回确认副本移除 → 无任何遗留风险。
 		c3, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })

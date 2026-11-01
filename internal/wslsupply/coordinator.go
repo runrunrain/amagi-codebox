@@ -798,15 +798,6 @@ func (c *Coordinator) applyWithdrawal(ctx context.Context, target TargetRef, pla
 	return res
 }
 
-// withdrawnUnpersistedResult 构造「副本已处理但登记未落盘」的降级结果
-// （PR05）：撤回的用户可见目标（密钥副本移除）已达成，但清单未持久化——
-// 不报 applied 成功；下次运行会幂等重确认（already-absent / 重新撤回）。
-func (c *Coordinator) withdrawnUnpersistedResult(planned PlannedUnit, werr error) UnitResult {
-	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitWarnDegraded,
-		Detail: "withdrawn-state-unpersisted",
-		Err:    fmt.Errorf("target copy withdrawn but state registration failed to persist (re-runs re-confirm idempotently): %w", werr)}
-}
-
 // recordProjectionWithdrawn 登记撤回终态：清空写入基准（下次发布按首次发布
 // 判定），保留同意/选择集/停跟随等跨写入字段。PR05：返回持久化错误。
 // PR01：撤回确认副本已移除——同时清除该 distro 的 v1 迁移遗留风险标记。
@@ -944,18 +935,6 @@ func resolveLegacyEvidenceIn(st *StateFile, unit UnitID, targetKey, disposition 
 	}
 }
 
-// recordProjectionState 更新投影单元登记（独立登记路径；提交路径经
-// CommitRequest.Register 同次保存）。
-func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string, subs map[string]SubHash, outcome string) error {
-	err := c.state.mutate(func(st *StateFile) {
-		registerProjectionEntryIn(st, target, unit, policy, sourceHash, writtenHash, transformVersion, subs, outcome)
-	})
-	if err != nil {
-		logWarn(c.log, "wslsupply", "投影单元状态登记失败（内容已提交，下次视为待核实）", err.Error())
-	}
-	return err
-}
-
 // recordProjectionPendingConsent 把「待同意」态写入登记（Consented=false，
 // LastOutcome=awaiting-consent）；授权后由 GrantUnitConsent 覆写。基线字段
 // （Subs/SelectedKeys/hash）仅同代保留——跨代复制会把旧代键级基准泄漏到
@@ -986,7 +965,7 @@ func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit Unit
 
 // recordProjectionFreeze 把冻结态写入登记（仅同代保留既有 hash/同意标记/
 // 键级基准/选择集/停跟随标记，仅置 Frozen 与原因）；后续成功写入时由
-// recordProjectionState 的全新条目清除冻结。F-1（S2 diting）：Subs 必须
+// registerProjectionEntryIn 的全新条目清除冻结。F-1（S2 diting）：Subs 必须
 // 保留——键级单元的部分键冻结不得摧毁其余健康键的登记（否则下轮全部沦为
 // unmanaged-existing，永久停跟随）。
 func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, policy Policy, reason string) {

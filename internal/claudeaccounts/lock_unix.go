@@ -11,6 +11,12 @@ import (
 // fileHandle 抽象平台文件句柄。
 type fileHandle = *os.File
 
+// crossProcessLock 是进程间互斥锁句柄（Unix 形态：flock 依赖锁文件路径）。
+type crossProcessLock struct {
+	path string
+	file fileHandle
+}
+
 // acquireFileLock 用 flock 系统调用获取跨进程互斥锁（design §3.3：使用系统
 // 调用能力，不引第三方库）。非阻塞；被他人持有时返回 POOL_LOCKED。
 func acquireFileLock(path string) (*crossProcessLock, error) {
