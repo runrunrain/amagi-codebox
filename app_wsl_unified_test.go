@@ -29,11 +29,19 @@ type unifiedTestProbes struct {
 	mu       sync.Mutex
 	identity platform.WSLUserIdentity
 	uncRoot  string
+	// Linux chmod 的目标权限不等于宿主 Windows 的 os.FileMode。按文件身份
+	// 记录已执行的 chmod；rename 后仍匹配同一文件，未 chmod 的新文件不继承。
+	modes []unifiedTestMode
 	// failFromCall：第 N 次身份探测起返回失败（模拟 UNC/身份短暂不可达；
 	// 0=永不失败）。recovered 置位后恢复——用于验证部分启用失败后的自动续接。
 	failFromCall int
 	calls        int
 	recovered    bool
+}
+
+type unifiedTestMode struct {
+	info os.FileInfo
+	mode string
 }
 
 // ident 返回当前身份（带计数与故障注入；并发安全）。
@@ -73,25 +81,105 @@ func (p *unifiedTestProbes) probes() wslsupply.Probes {
 		ToUNC: func(_, linuxPath string) string {
 			return filepath.Join(p.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 		},
-		Chmod: func(_ context.Context, _, _ string, paths ...string) error {
+		Chmod: func(_ context.Context, _, mode string, paths ...string) error {
 			for _, path := range paths {
 				unc := filepath.Join(p.uncRoot, filepath.FromSlash(strings.TrimPrefix(path, "/")))
-				if _, err := os.Lstat(unc); err != nil {
+				info, err := os.Lstat(unc)
+				if err != nil {
 					return err
 				}
+				if !info.Mode().IsRegular() && !info.IsDir() {
+					return fmt.Errorf("fixture chmod refuses non-regular path: %s", path)
+				}
+				// Windows FileInfo 延迟读取文件ID；必须在路径尚未rename时固化，
+				// 否则稍后 SameFile 会尝试打开已不存在的旧路径。
+				if !os.SameFile(info, info) {
+					return fmt.Errorf("fixture chmod cannot pin file identity: %s", path)
+				}
+				p.mu.Lock()
+				index := len(p.modes)
+				for i, applied := range p.modes {
+					if os.SameFile(applied.info, info) {
+						index = i
+						break
+					}
+				}
+				applied := unifiedTestMode{info: info, mode: mode}
+				if index == len(p.modes) {
+					p.modes = append(p.modes, applied)
+				} else {
+					p.modes[index] = applied
+				}
+				p.mu.Unlock()
 			}
 			return nil
 		},
 		StatMode: func(_ context.Context, _, linuxPath string) (string, bool) {
 			unc := filepath.Join(p.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
 			info, err := os.Stat(unc)
-			// 目录也要返回真实权限位：敏感提交的 .amagi-staging 隔离验证（0700）
-			// 与文件位（0600）同一探测面。
+			// 目录和文件都由目标 Linux 权限模型检查，不能拿宿主 Windows 的
+			// 0777/0666 位当成 chmod 700/600 没有生效。
 			if err != nil || (!info.Mode().IsRegular() && !info.IsDir()) {
 				return "", false
 			}
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			for _, applied := range p.modes {
+				if os.SameFile(applied.info, info) {
+					return applied.mode, true
+				}
+			}
 			return fmt.Sprintf("%o", info.Mode().Perm()), true
 		},
+	}
+}
+
+// 假目标权限随真实文件身份迁移，且必须由 Chmod 明确设置；不能硬编码安全位
+// 来绕过敏感提交检查，也不能把旧路径的权限授给同名替换文件。
+func TestWSLUnifiedProbeModesFollowFileIdentity(t *testing.T) {
+	p := &unifiedTestProbes{uncRoot: t.TempDir()}
+	probe := p.probes()
+	ctx := context.Background()
+	const source = "/home/u/source.json"
+	const moved = "/home/u/moved.json"
+	unc := probe.ToUNC("Ubuntu", source)
+	writeUnifiedFile(t, unc, "fixture")
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", source); !ok || mode == "640" {
+		t.Fatalf("unmodified file must not inherit synthetic chmod, mode=%q ok=%v", mode, ok)
+	}
+	if err := probe.Chmod(ctx, "Ubuntu", "640", source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(unc, probe.ToUNC("Ubuntu", moved)); err != nil {
+		t.Fatal(err)
+	}
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", moved); !ok || mode != "640" {
+		t.Fatalf("chmod must survive rename, mode=%q ok=%v", mode, ok)
+	}
+	writeUnifiedFile(t, unc, "replacement")
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", source); !ok || mode == "640" {
+		t.Fatalf("replacement must not inherit renamed file's mode, mode=%q ok=%v", mode, ok)
+	}
+	if err := probe.Chmod(ctx, "Ubuntu", "644", source); err != nil {
+		t.Fatal(err)
+	}
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", moved); !ok || mode != "640" {
+		t.Fatalf("chmod of replacement must not erase moved file's mode, mode=%q ok=%v", mode, ok)
+	}
+	if err := probe.Chmod(ctx, "Ubuntu", "600", moved); err != nil {
+		t.Fatal(err)
+	}
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", moved); !ok || mode != "600" {
+		t.Fatalf("latest chmod after rename must replace prior mode, mode=%q ok=%v", mode, ok)
+	}
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", source); !ok || mode == "640" || mode == "600" {
+		t.Fatalf("new file at old path must not inherit prior chmod, mode=%q ok=%v", mode, ok)
+	}
+	if err := probe.Chmod(ctx, "Ubuntu", "710", "/home/u"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, ok := probe.StatMode(ctx, "Ubuntu", "/home/u"); !ok || mode != "710" {
+		t.Fatalf("directory must report the applied Linux mode, mode=%q ok=%v", mode, ok)
 	}
 }
 
@@ -142,13 +230,13 @@ func (r *recordingCoordinator) hasCall(prefix string) bool {
 
 // unifiedFixture 是一轮入口级测试的完整装配。
 type unifiedFixture struct {
-	app    *App
-	coord  *recordingCoordinator
-	probes *unifiedTestProbes
-	home   string // Windows 侧 Home（来源文件根）
+	app     *App
+	coord   *recordingCoordinator
+	probes  *unifiedTestProbes
+	home    string // Windows 侧 Home（来源文件根）
 	uncRoot string // distro UNC 落点根（目标 = uncRoot + identity.Home）
-	target string // distro 用户 Home 的 UNC 落点（随身份变化重算）
-	state  string // 协调器状态清单路径（降级断言直读）
+	target  string // distro 用户 Home 的 UNC 落点（随身份变化重算）
+	state   string // 协调器状态清单路径（降级断言直读）
 }
 
 // setIdentity 模拟目标身份变化（machine-id/Home 变化 → 新代；可选新 HOME），
@@ -524,11 +612,11 @@ func setWSLUnifiedLoopIntervalsForTest(t *testing.T, pendingTick, rescan time.Du
 }
 
 // fakeUnifiedVisionSource 是固定分组 #2（视觉清单共享）的测试内来源
-//（不读真实导出文件；字节由测试提供）。
+// （不读真实导出文件；字节由测试提供）。
 type fakeUnifiedVisionSource struct{ bytes []byte }
 
 func (s fakeUnifiedVisionSource) VisionExportBytes() ([]byte, error) { return s.bytes, nil }
-func (s fakeUnifiedVisionSource) ModalityKBBytes() ([]byte, error)  { return nil, nil }
+func (s fakeUnifiedVisionSource) ModalityKBBytes() ([]byte, error)   { return nil, nil }
 
 // TestWSLUnifiedPeriodicRescanFollowsSourceChanges（F1）：首次扫描完成后，
 // Windows 侧修改 + 新增技能与 Claude 资源——不点任何显式「检查」，仅靠真实
@@ -602,7 +690,7 @@ func TestWSLUnifiedPushDeferredUntilActiveSessionsEnd(t *testing.T) {
 		snap := f.coord.SkillsSnapshot()
 		return snap.Started && !snap.Running
 	}, "background scans must complete while the session is running")
-	waitForWSLSupplyPushIdleForTest() // 启用推送 + 扫描完成推送均已执行并被挡下
+	waitForWSLSupplyPushIdleForTest()  // 启用推送 + 扫描完成推送均已执行并被挡下
 	time.Sleep(200 * time.Millisecond) // pending 心跳空转窗口：活动会话仍不得写入
 	for _, rel := range []string{".agents/skills/alpha/SKILL.md", ".claude/CLAUDE.md"} {
 		if unifiedTargetExists(f, rel) {

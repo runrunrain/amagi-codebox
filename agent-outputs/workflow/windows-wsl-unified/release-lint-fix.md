@@ -79,6 +79,14 @@ internal/aiproxy/router/{orphan_windows.go:47, process_windows.go:68/78/88} `pro
 - 未跟踪 agent-outputs/baize、amagi-task 未触碰；未 commit、未 push、未打 tag。
 - 回退前先备份现场，仅反向本次 lint 修复增量并检查上下文，不在共享主树整文件还原；冲突先核对，不强制覆盖。/tmp 下隔离工具与日志可留档。
 
+## CI 后续：Windows 夹具修正
+
+run 41331285311 中 frontend/mobile、macOS 全部通过，Windows lint 已通过；Windows WSL 回归暴露两个测试夹具的平台假设，未推送发布标签：
+
+- `launch_wsl_parity_test.go`：不能在 Windows 临时目录下创建包含第二个 `C:` 的目录组件。存在宿主盘符时使用临时目录的真实盘符路径；无盘符宿主仍保留字面量 Windows 路径模拟，断言不变。
+- `app_wsl_unified_test.go`：原假 Chmod 仅检查路径存在，StatMode 却读取宿主权限；Windows 的 0666/0777 不表示 Linux chmod 600/700 失败。现按真实文件身份记录模拟 Linux chmod，rename 后保留权限、新建同名文件不继承；尚未模拟 chmod 的路径不伪报安全权限。
+- 固化 Windows 延迟加载的 FileInfo ID（在 rename 前 SameFile 自检），避免移动后回头读取不存在的旧路径。新增测试覆盖文件/目录权限、移动、同名替换和后续权限更新。生产安全逻辑未改，不增加 skip、不放宽断言和超时、不改 CI。
+
 ## 未覆盖/风险
 
 Leader 集成复验：主树使用 `GOTOOLCHAIN=go1.25.0`，macOS/Windows 两侧 golangci-lint 2.12.2 均0 issues；`go test ./... -count=1`、`go vet ./...`、Windows交叉构建全部exit 0。GitHub CI将对后续修复提交重新运行；首次run 41329538037的失败历史保留，不冒充首次全绿。

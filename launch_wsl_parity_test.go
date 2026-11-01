@@ -192,8 +192,12 @@ func TestBuildPlanPreservesWSLLinuxWorkdir(t *testing.T) {
 	t.Run("windows form still host-validated when valid", func(t *testing.T) {
 		planner, _, _ := newWSLWorkdirPlanner(t, home)
 		// Windows 盘符形态（含空格中文）在 WSL 目标下仍走宿主校验，存在即保留
-		// Clean+Abs 形态（macOS 宿主上以字面量目录名模拟盘符路径）。
-		winProj := filepath.Join(base, `C:\工程 空格`)
+		// Clean+Abs 形态。Windows直接使用临时目录的真实盘符；无盘符宿主才用
+		// 字面量目录名模拟，不能在Windows目录中再嵌入一个非法的 C: 组件。
+		winProj := filepath.Join(base, "工程 空格")
+		if filepath.VolumeName(winProj) == "" {
+			winProj = filepath.Join(base, `C:\工程 空格`)
+		}
 		mustMkdir(t, winProj)
 		plan, failure := planner.BuildPlan(context.Background(), launchplan.BuildRequest{
 			CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote,
