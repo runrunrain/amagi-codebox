@@ -255,7 +255,8 @@ export interface FixResultLike {
 export interface ResultBanner {
   title: string
   description?: string
-  type: 'success' | 'error'
+  /** warning：Windows 侧成功而 WSL 同步失败的部分失败（不显示纯成功）。 */
+  type: 'success' | 'error' | 'warning'
 }
 
 /**
@@ -307,6 +308,16 @@ export function planPostFixRefresh(result: FixResultLike | null | undefined): Po
   return { recheck: 'snapshot' }
 }
 
+/** 与 envcheck.WSLSyncResult 结构兼容的最小类型（安装/升级双侧联动，direction §2.4）。 */
+export interface WSLSyncLike {
+  status?: string
+  distro?: string
+  version?: string
+  alreadyOK?: boolean
+  message?: string
+  error?: string
+}
+
 /** 与 envcheck.OperationState 结构兼容的最小类型。 */
 export interface OperationLike {
   id?: string
@@ -315,12 +326,19 @@ export interface OperationLike {
   status?: string
   message?: string
   error?: string
-  result?: { version?: string; message?: string; error?: string } | null
+  result?: { version?: string; message?: string; error?: string; wsl?: WSLSyncLike | null } | null
 }
 
 /**
  * 异步操作终态 → 结果横幅。非终态（running/idle）返回 null。
  * kind=uninstall 的受理（RunFixAction success）不是终态，不得走本函数报成功。
+ *
+ * 安装/升级双侧联动（direction §2.4）：succeeded 终态下 result.wsl 决定呈现：
+ * - wsl.status=failed → warning 横幅（Windows 成功，WSL 失败），绝不显示
+ *   纯「成功」；
+ * - wsl.status=succeeded → 描述追加「WSL 已同步 v…」；
+ * - wsl.status=skipped → 描述追加跳过原因；
+ * - wsl 未定义（nil / 旧后端）→ 与现有行为完全一致。
  */
 export function operationCompletionBanner(
   op: OperationLike | null | undefined,
@@ -334,8 +352,24 @@ export function operationCompletionBanner(
   const kind = operationKindLabel(op.kind || '')
   if (op.status === 'succeeded') {
     const ver = op.result?.version ? ` (v${op.result.version})` : ''
+    const wsl = op.result?.wsl
+    if (wsl?.status === 'failed') {
+      const distro = wsl.distro ? `（${wsl.distro}）` : ''
+      return {
+        title: `${name} ${kind}：Windows 成功，WSL${distro}同步失败`,
+        description: wsl.error || wsl.message || undefined,
+        type: 'warning',
+      }
+    }
+    const parts: string[] = []
     const msg = op.result?.message || op.message || ''
-    return { title: `${name} ${kind}成功${ver}`, description: msg || undefined, type: 'success' }
+    if (msg) parts.push(msg)
+    if (wsl?.status === 'succeeded') {
+      parts.push(wsl.version ? `WSL 已同步 v${wsl.version}` : 'WSL 已同步')
+    } else if (wsl?.status === 'skipped') {
+      parts.push(wsl.message || 'WSL 未同步（该 CLI 未使用 WSL 模式）')
+    }
+    return { title: `${name} ${kind}成功${ver}`, description: parts.join('\n') || undefined, type: 'success' }
   }
   const errMsg = op.error || op.result?.error || ''
   const msg = op.message || ''

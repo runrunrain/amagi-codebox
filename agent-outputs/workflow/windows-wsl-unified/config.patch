@@ -1,0 +1,661 @@
+diff --git a/app.go b/app.go
+index c745135..f85d497 100644
+--- a/app.go
++++ b/app.go
+@@ -2207,6 +2207,10 @@ func (a *App) Startup(ctx context.Context) {
+ 	// 重建会同时校验/补写 config.toml 的 openai_base_url 标记块，保证 codex 路由一致。
+ 	go a.restoreCodexGlobalHeadroomOnStartup()
+ 
++	// P2-B：WSL 统一配置管理启动对账（统一管理开启时点火后台扫描，随后推一轮
++	// 保存后补漏；未开启时与现状行为一致）。
++	a.scheduleWSLUnifiedStartupReconcile()
++
+ 	// 远程 API 仅在用户显式启用后恢复。新安装和没有该设置的旧配置
+ 	// 默认保持 loopback 且不监听，避免无意暴露到局域网。
+ 	// M1-B3c：remote load/start 由迁移 gate 结果守卫。LoadSecurityState 在所有
+diff --git a/app_wsl_supply.go b/app_wsl_supply.go
+index 5799ad1..d7706bf 100644
+--- a/app_wsl_supply.go
++++ b/app_wsl_supply.go
+@@ -150,6 +150,9 @@ func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator
+ 		ExactNpmVersion: piplugin.IsExactNpmVersion,
+ 		FullCommitSHA:   piplugin.IsFullCommitSHA,
+ 	})
++	// P2-B：扫描完成回调——skills/资源后台扫描真正结束后触发统一对账推送
++	//（避免启用时调度一次早于扫描结束的推送永远不同步）。
++	coord.SetScanCompletionCallback(app.wslUnifiedOnScanDone)
+ 	return coord
+ }
+ 
+@@ -216,7 +219,14 @@ func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec
+ 	if spec.BootstrapMode != platform.BootstrapWSL || runner == nil {
+ 		return nil
+ 	}
+-	return runWSLSharedFilesAtLaunch(ctx, runner, wslDefaultDistroFn(spec.Env.Variables))
++	distro := wslDefaultDistroFn(spec.Env.Variables)
++	if err := runWSLSharedFilesAtLaunch(ctx, runner, distro); err != nil {
++		return err
++	}
++	// P2-B 统一管理：Claude/Codex 键级单元的启动 lazy 补漏（只告警不阻断；
++	// pi 单元另有独立闸门，资源/技能不进启动链）。
++	runWSLCliConfigAtLaunch(ctx, runner, distro, spec.AppType)
++	return nil
+ }
+ 
+ func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string) error {
+@@ -459,6 +469,10 @@ func (a *App) doPushWSLSupply() {
+ 			}
+ 		}
+ 	}
++	// P2-B 统一管理增量：claude/codex 键级单元（含选择集物化）与技能/资源
++	// 对账（未启用统一管理时两者都是 no-op，行为与现状一致）。
++	a.pushWSLUnifiedCliConfig(context.Background(), distro)
++	a.reconcileWSLUnifiedResources(distro)
+ }
+ 
+ // hasActiveSessionsForWSLPush 报告是否存在活动（running）内嵌会话。保守取全
+@@ -549,6 +563,9 @@ type WSLConfigSupplyStatus struct {
+ 	Reason      string                `json:"reason,omitempty"`
+ 	Faces       []WSLConfigSupplyFace `json:"faces"`
+ 	PendingPush bool                  `json:"pendingPush"` // 有保存后未推送的来源变更
++	// Unified（P2-B）：当前 distro 是否已启用统一配置管理（一次授权后启动/
++	// 保存/对账自动同步）。false = 显示「启用统一管理」入口。
++	Unified bool `json:"unified"`
+ 	// Units 是 P3-S2 键级配置单元的逐项详情（配置状态区扩展）。
+ 	Units []WSLConfigUnitDetail `json:"units"`
+ }
+@@ -567,6 +584,8 @@ func (a *App) GetWSLConfigSupplyStatus() WSLConfigSupplyStatus {
+ 		return out
+ 	}
+ 	out.Available = true
++	// P2-B：统一管理状态（只读标记，不探测）。
++	out.Unified = a.wslUnifiedCached(distro)
+ 
+ 	pending := map[string]uint64{}
+ 	piStatus := a.wslSupplyStatus(distro, wslsupply.CLIPi)
+diff --git a/docs/user/installation.md b/docs/user/installation.md
+index 7322414..73456cc 100644
+--- a/docs/user/installation.md
++++ b/docs/user/installation.md
+@@ -52,9 +52,20 @@ Release 资产按以下命名约定出包（见 `.github/workflows/release.yml`
+ 
+ Windows 上 CodeBox 默认把终端会话启动到 WSL（Linux）环境中。CLI 需要安装在 WSL 内部才能被默认会话使用：
+ 
+-- 打开"环境检测"页（`/envcheck`），其中的 **WSL 内的 CLI** 卡片（`frontend/src/views/settings/WSLCLISettings.vue`）会检测 WSL 状态与发行版版本（WSL1/WSL2），并提供"安装到 WSL"按钮，把 Claude Code / OpenCode / Codex / Pi / OMP 装进 WSL 内部（必要时先安装 Node 运行时）。
++- 打开"环境检测"页（`/envcheck`），其中的 **WSL 内的 CLI** 卡片（`frontend/src/views/settings/WSLCLISettings.vue`）会检测 WSL 状态与发行版版本（WSL1/WSL2），并提供"安装到 WSL"/"升级"按钮，把 Claude Code / OpenCode / Codex / Pi / OMP 装进 WSL 内部（必要时先安装 Node 运行时；已安装的 CLI 点"升级"更新到最新版）。
+ - 后端实现为 `internal/wslsetup`（Windows 构建下为 `service_windows.go`，其他平台为 no-op stub）。
+ 
++#### 统一配置管理（Windows 统一配置入口）
++
++同一张卡片的"配置状态"区提供 **启用统一管理** 按钮：点一次，Windows 就是唯一配置入口，此后无需在 WSL 内重复配置或逐项勾选：
++
++- 自动同步范围：Pi settings/amagi/mcp、Claude MCP 服务器与设置白名单字段、Codex MCP/profile、共享技能（`~/.agents/skills`）与 CLAUDE.md/commands/agents/AGENTS.md、视觉清单；Windows 侧新增的 MCP 服务器/字段/技能在下一次自动同步时纳入。
++- 同步时机：WSL 会话启动时补漏、Windows 侧保存后推送、CodeBox 启动时对账，以及技能/资源后台扫描完成后。
++- 保护边界不变：WSL 内手动修改过的条目会冻结保留本地（可预览后接管）；WSL 已有同名内容不会被自动覆盖；permissions/hooks/trust 等授权类字段与登录凭据永不跨界；MCP env 与视觉清单含密钥副本，按 0600 权限写入。
++- "停止自动纳入新项"只停止自动同步，已同步内容保持现状；撤回单个条目用各面板的"保留本地"。WSL 发行版重装或更换默认用户后需要重新点一次"启用统一管理"（授权绑定目标身份）。
++
++需要逐条控制（预览/勾选导入/接管冲突）时，下方的 Pi 配置投影、用户配置导入（Claude/Codex）、共享技能等高级面板仍然可用。
++
+ ## macOS 安装
+ 
+ 1. 从 Releases 下载 `amagi-codebox-<版本>-darwin-arm64.zip` 并解压。
+diff --git a/frontend/src/__tests__/api/wslSupply.test.ts b/frontend/src/__tests__/api/wslSupply.test.ts
+index 946f271..ed1300c 100644
+--- a/frontend/src/__tests__/api/wslSupply.test.ts
++++ b/frontend/src/__tests__/api/wslSupply.test.ts
+@@ -2,16 +2,21 @@ import { describe, expect, it, vi } from 'vitest'
+ 
+ // 在 wailsjs 绑定边界打桩：api 包装层的职责是透传（P3-S1 WSL 配置供给状态
+ // 与视觉清单共享同意入口）。
+-const { statusBinding, consentBinding } = vi.hoisted(() => ({
++const { statusBinding, consentBinding, unifiedEnableBinding, unifiedDisableBinding } = vi.hoisted(() => ({
+   statusBinding: vi.fn(),
+   consentBinding: vi.fn(),
++  unifiedEnableBinding: vi.fn(),
++  unifiedDisableBinding: vi.fn(),
+ }))
+ 
+-// 单一 mock 工厂：全部 App 绑定集中注册（P3-S1/S2/S3/S4 共用；多个叠加的
+-// vi.mock 工厂在同模块上胜者不确定，全量跑时会让后批绑定解析失败）。
++// 单一 mock 工厂：全部 App 绑定集中注册（P3-S1/S2/S3/S4 + P2-B 统一管理
++// 共用；多个叠加的 vi.mock 工厂在同模块上胜者不确定，全量跑时会让后批绑定
++// 解析失败）。
+ vi.mock('../../../wailsjs/go/main/App', () => ({
+   GetWSLConfigSupplyStatus: statusBinding,
+   GrantWSLVisionConsent: consentBinding,
++  EnableWSLUnifiedSupply: unifiedEnableBinding,
++  DisableWSLUnifiedSupply: unifiedDisableBinding,
+   CheckWSLPiConfigSupply: checkBinding,
+   PreviewWSLPiConfigSupply: previewBinding,
+   ApplyWSLPiConfigSupply: applyBinding,
+@@ -379,3 +384,45 @@ describe('api.wslSupply S4 OpenCode 附加层 MCP 选择', () => {
+     expect(ocSetBinding).toHaveBeenCalledWith(['fetch'])
+   })
+ })
++
++// ---------------------------------------------------------------------------
++// P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步）。
++import { enableWSLUnifiedSupply, disableWSLUnifiedSupply } from '../../api/wslSupply'
++
++describe('api.wslSupply 统一配置管理 (P2-B)', () => {
++  it('enableWSLUnifiedSupply 透传逐单元授权结果（不汇总成单一成功）', async () => {
++    unifiedEnableBinding.mockResolvedValueOnce([
++      { unit: 'claude/mcp', outcome: 'applied', detail: '已授权统一管理' },
++      { unit: 'shared/vision-export', outcome: 'fresh', detail: '此前已授权，保持不变' },
++      { unit: 'claude/settings', outcome: 'blocked', detail: '已保留本地（停跟随），跳过自动授权' },
++    ])
++    const outcomes = await enableWSLUnifiedSupply()
++    expect(unifiedEnableBinding).toHaveBeenCalledTimes(1)
++    expect(outcomes).toHaveLength(3)
++    expect(outcomes[0].outcome).toBe('applied')
++    expect(outcomes[2].outcome).toBe('blocked')
++  })
++
++  it('enableWSLUnifiedSupply 携带 unified 状态位返回前可见（状态快照透传）', async () => {
++    statusBinding.mockResolvedValueOnce({
++      distro: 'Ubuntu',
++      available: true,
++      unified: true,
++      faces: [],
++      pendingPush: false,
++    })
++    const st = await getWSLConfigSupplyStatus()
++    expect(st.unified).toBe(true)
++  })
++
++  it('disableWSLUnifiedSupply 透传停止动作', async () => {
++    unifiedDisableBinding.mockResolvedValueOnce(undefined)
++    await disableWSLUnifiedSupply()
++    expect(unifiedDisableBinding).toHaveBeenCalledTimes(1)
++  })
++
++  it('启用失败沿拒绝面透出（目标身份不可验证等）', async () => {
++    unifiedEnableBinding.mockRejectedValueOnce(new Error('启用统一管理失败：无法验证 WSL 目标身份'))
++    await expect(enableWSLUnifiedSupply()).rejects.toThrow('无法验证 WSL 目标身份')
++  })
++})
+diff --git a/frontend/src/api/wslSupply.ts b/frontend/src/api/wslSupply.ts
+index e05b749..facd18d 100644
+--- a/frontend/src/api/wslSupply.ts
++++ b/frontend/src/api/wslSupply.ts
+@@ -275,3 +275,27 @@ export function getWSLOpenCodeMCPPreview(): Promise<WSLOpenCodeMCPEntry[]> {
+ export function setWSLOpenCodeMCPSelection(overrideGlobal: string[]): Promise<void> {
+   return callApi('[api.wslSupply.setWSLOpenCodeMCPSelection]', () => SetWSLOpenCodeMCPSelection(overrideGlobal));
+ }
++
++// ---------------------------------------------------------------------------
++// P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步）。
++// ---------------------------------------------------------------------------
++
++import { EnableWSLUnifiedSupply, DisableWSLUnifiedSupply } from '../../wailsjs/go/main/App';
++
++/**
++ * 「启用统一管理」：对当前 distro 一次性授权固定单元集（Pi settings/amagi/mcp、
++ * 视觉清单、Claude MCP/设置白名单、Codex MCP/profile），此后会话启动、保存
++ * 推送与启动对账自动同步，新条目随下次对账纳入（无需重复预览/勾选）。逐单元
++ * 返回结果，不汇总成单一成功。
++ */
++export function enableWSLUnifiedSupply(): Promise<WSLConfigUnitOutcome[]> {
++  return callApi('[api.wslSupply.enableWSLUnifiedSupply]', () => EnableWSLUnifiedSupply());
++}
++
++/**
++ * 「停止自动纳入新项」：停止统一管理的自动同步；已授权单元与既有副本保持
++ * 现状（撤回单个单元用既有「保留本地」）。distro 重装后需重新启用。
++ */
++export function disableWSLUnifiedSupply(): Promise<void> {
++  return callApi('[api.wslSupply.disableWSLUnifiedSupply]', () => DisableWSLUnifiedSupply());
++}
+diff --git a/frontend/src/views/settings/WSLCLISettings.vue b/frontend/src/views/settings/WSLCLISettings.vue
+index 55c920a..2cb26c1 100644
+--- a/frontend/src/views/settings/WSLCLISettings.vue
++++ b/frontend/src/views/settings/WSLCLISettings.vue
+@@ -15,7 +15,7 @@
+         <span v-if="status.distroWSLVersion === 2" class="badge badge-wsl2">WSL2</span>
+         <span v-else-if="status.distroWSLVersion === 1" class="badge">WSL1</span>
+         <span class="mono">
+-          Node: {{ status.nodeVersion || '未安装 (安装 CLI 时会自动安装 Node 20)' }}
++          Node: {{ status.nodeVersion || '未安装 (安装 CLI 时会自动安装 Node 22)' }}
+         </span>
+       </div>
+ 
+@@ -31,14 +31,14 @@
+               :disabled="busyTool === t.tool"
+               @click="install(t.tool)"
+             >
+-              {{ busyTool === t.tool ? '安装中…' : (t.installed ? '重新安装' : '安装到 WSL') }}
++              {{ busyTool === t.tool ? (t.installed ? '升级中…' : '安装中…') : (t.installed ? '升级' : '安装到 WSL') }}
+             </AppButton>
+           </div>
+         </div>
+       </div>
+ 
+       <p v-if="busyTool" class="set-hint">
+-        正在 WSL 内安装 {{ displayName(busyTool) }}，首次可能需要安装 Node 运行时，请稍候…
++        正在 WSL 内{{ toolInstalled(busyTool) ? '升级' : '安装' }} {{ displayName(busyTool) }}，首次可能需要安装 Node 运行时，请稍候…
+       </p>
+ 
+       <!-- P3-S1 最小「配置状态」区：托管面同步状态 + 视觉清单共享同意入口 -->
+@@ -48,6 +48,27 @@
+           Windows 面板保存后，托管配置按需同步到 WSL（{{ supply.distro }}）；
+           已安装不等于已同步，安装成功也不改写 WSL 内的用户自有文件。
+         </p>
++        <!-- P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步） -->
++        <div class="unified-row">
++          <template v-if="!supply.unified">
++            <span class="supply-detail">
++              统一管理：一次启用后，Windows 侧配置自动同步到 WSL，无需重复预览/勾选——Pi
++              settings/amagi/mcp、Claude MCP 服务器与设置白名单、Codex MCP/profile、共享技能与
++              CLAUDE.md/commands/agents/AGENTS.md、视觉清单；新条目随下次对账自动纳入。
++              MCP env 与视觉清单含密钥副本，按 0600 写入；WSL 手改与已有同名项不会被覆盖。
++            </span>
++            <AppButton variant="primary" size="small" :disabled="unifiedBusy" @click="enableUnified">
++              {{ unifiedBusy ? '启用中…' : '启用统一管理' }}
++            </AppButton>
++          </template>
++          <template v-else>
++            <span class="badge badge-ok">已由 Windows 统一管理（{{ supply.distro }}）</span>
++            <AppButton variant="ghost" size="small" :disabled="unifiedBusy" @click="disableUnified">
++              {{ unifiedBusy ? '处理中…' : '停止自动纳入新项' }}
++            </AppButton>
++            <span class="supply-detail">停止后已授权单元与副本保持现状；撤回单个单元用各面板的「保留本地」。</span>
++          </template>
++        </div>
+         <div class="supply-list">
+           <div v-for="f in supply.faces" :key="f.key" class="supply-row">
+             <label>{{ f.label }}</label>
+@@ -58,7 +79,7 @@
+             </div>
+           </div>
+         </div>
+-        <div v-if="visionAwaitingConsent" class="consent-row">
++        <div v-if="visionAwaitingConsent && !supply.unified" class="consent-row">
+           <span class="supply-detail">
+             视觉清单含 API 密钥副本；向 WSL 共享前需要你的明确同意（文件将以 0600 权限写入，
+             仅在 distro 内可读）。
+@@ -76,7 +97,7 @@
+             （D4 动作分离：检查/预览/应用安全更新/保留本地/确认接管） -->
+         <div v-if="piUnits.length" class="pi-units">
+           <h4>Pi 配置投影（Windows 面板 → WSL）</h4>
+-          <div v-if="anyUnitAwaitingConsent" class="consent-row">
++          <div v-if="anyUnitAwaitingConsent && !supply?.unified" class="consent-row">
+             <span class="supply-detail">
+               向 WSL 投影 Windows 侧的 settings/amagi/mcp（mcp env 可能含密钥副本，
+               文件以 0600 写入）需要你的明确同意；未手改的条目将跟随 Windows 面板。
+@@ -297,11 +318,13 @@
+ 
+ <script setup lang="ts">
+ import { ref, computed, onMounted, onUnmounted } from 'vue'
+-import { getWSLCLIStatus, installCLIToWSL, type WSLStatus } from '../../api/wslsetup'
++import { getWSLCLIStatus, installCLIToWSL, updateCLIInWSL, type WSLStatus } from '../../api/wslsetup'
+ import {
+   getWSLConfigSupplyStatus,
+   grantWSLVisionConsent,
+   enableWSLPiConfigSupply,
++  enableWSLUnifiedSupply,
++  disableWSLUnifiedSupply,
+   previewWSLPiConfigSupply,
+   applyWSLPiConfigSupply,
+   keepWSLPiConfigUnitLocal,
+@@ -333,11 +356,17 @@ const NAMES: Record<string, string> = {
+   opencode: 'OpenCode',
+   codex: 'Codex',
+   pi: 'Pi',
++  omp: 'Oh My Pi (OMP)',
+ }
+ function displayName(tool: string): string {
+   return NAMES[tool] || tool
+ }
+ 
++// 工具行当前安装态（升级/安装文案与动作分派用）。
++function toolInstalled(tool: string): boolean {
++  return !!status.value?.tools?.find((t) => t.tool === tool)?.installed
++}
++
+ async function load() {
+   try {
+     const st = await getWSLCLIStatus()
+@@ -364,22 +393,28 @@ async function load() {
+ 
+ async function install(tool: string) {
+   if (busyTool.value) return
++  const installed = toolInstalled(tool)
++  const action = installed ? '升级' : '安装'
+   busyTool.value = tool
+-  showInfo(`正在将 ${displayName(tool)} 安装到 WSL…`)
++  showInfo(installed ? `正在升级 WSL 内的 ${displayName(tool)}…` : `正在将 ${displayName(tool)} 安装到 WSL…`)
+   try {
+-    const res = await installCLIToWSL(tool)
++    const res = installed ? await updateCLIInWSL(tool) : await installCLIToWSL(tool)
+     if (res.success) {
+-      if (res.alreadyOK) {
++      if (installed) {
++        showSuccess(res.alreadyOK
++          ? `${displayName(tool)} 已是 WSL 内最新版本 (${res.version})`
++          : `${displayName(tool)} 已在 WSL 内升级 (${res.version})`)
++      } else if (res.alreadyOK) {
+         showSuccess(`${displayName(tool)} 已在 WSL 中 (${res.version})`)
+       } else {
+         showSuccess(`${displayName(tool)} 已安装到 WSL (${res.version})`)
+       }
+       await load()
+     } else {
+-      showError(`安装失败: ${res.error || '未知错误'}`)
++      showError(`${action}失败: ${res.error || '未知错误'}`)
+     }
+   } catch (err: any) {
+-    showError('安装失败: ' + (err?.message || err))
++    showError(`${action}失败: ` + (err?.message || err))
+   } finally {
+     busyTool.value = ''
+   }
+@@ -434,6 +469,44 @@ async function grantConsent(): Promise<void> {
+   }
+ }
+ 
++// ---------------------------------------------------------------------------
++// P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步）
++// ---------------------------------------------------------------------------
++const unifiedBusy = ref(false)
++
++async function enableUnified(): Promise<void> {
++  if (unifiedBusy.value) return
++  unifiedBusy.value = true
++  try {
++    const outcomes = await enableWSLUnifiedSupply()
++    const skipped = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
++    if (skipped.length) {
++      showInfo(`已启用统一管理：${outcomes.length - skipped.length} 项授权，${skipped.length} 项跳过（保留本地等，详见逐单元状态）`)
++    } else {
++      showSuccess('已启用统一管理（此后启动/保存/对账自动同步；WSL 手改条目冻结保留）')
++    }
++    await load()
++  } catch (err: any) {
++    showError('启用失败: ' + (err?.message || err))
++  } finally {
++    unifiedBusy.value = false
++  }
++}
++
++async function disableUnified(): Promise<void> {
++  if (unifiedBusy.value) return
++  unifiedBusy.value = true
++  try {
++    await disableWSLUnifiedSupply()
++    showInfo('已停止自动纳入新项（已授权单元与副本保持现状；撤回单个单元用「保留本地」）')
++    await refreshStatus()
++  } catch (err: any) {
++    showError('停止失败: ' + (err?.message || err))
++  } finally {
++    unifiedBusy.value = false
++  }
++}
++
+ // faces 变化时同步同意标记（load 完成后调用）。
+ function watchFaces(): void {
+   refreshConsentFlag()
+@@ -1114,6 +1187,16 @@ onMounted(load)
+   flex-wrap: wrap;
+   margin: 8px 0 4px;
+ }
++.unified-row {
++  display: flex;
++  align-items: baseline;
++  gap: 12px;
++  flex-wrap: wrap;
++  padding: 8px 10px;
++  background: var(--control);
++  border-radius: 8px;
++  margin-bottom: 8px;
++}
+ 
+ .set-card {
+   background: var(--card);
+diff --git a/internal/wslsupply/codex_adapter.go b/internal/wslsupply/codex_adapter.go
+index bf33929..3cf2358 100644
+--- a/internal/wslsupply/codex_adapter.go
++++ b/internal/wslsupply/codex_adapter.go
+@@ -71,6 +71,18 @@ func (a *codexConfigAdapter) Files() []string       { return []string{CodexConfi
+ // SelectionAware 报告接受键级导入选择（server/profile 叶名选择集）。
+ func (a *codexConfigAdapter) SelectionAware() bool { return true }
+ 
++// importableSourceKeys 返回来源侧当前可导入键全集（"mcp_servers/<name>"/
++// "profiles/<name>"；P2-B 统一管理的选择集物化面）。只读 Windows 侧
++// config.toml，不探测目标；来源读失败返回错误（物化不猜键集）。
++func (a *codexConfigAdapter) importableSourceKeys() ([]string, error) {
++	doc, _, err := a.readSourceDoc()
++	if err != nil {
++		return nil, err
++	}
++	desired, _ := a.desiredFrom(doc, nil) // nil = 不过滤，全量可导入段
++	return sortedDesiredKeys(desired), nil
++}
++
+ // codexAnalysis 是一次分析的完整产物（Plan/预览/候选共用形态）。
+ type codexAnalysis struct {
+ 	desired    map[string]any
+diff --git a/internal/wslsupply/coordinator.go b/internal/wslsupply/coordinator.go
+index cfd8870..a33e218 100644
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -42,6 +42,10 @@ type Coordinator struct {
+ 
+ 	a2          A2Adapter
+ 	projections map[UnitID]ProjectionAdapter
++	// scanDoneMu/scanDone 是「扫描完成」通知回调（P2-B 统一管理：App 层对账
++	// 依赖扫描真正结束后再推送；SetScanCompletionCallback 注册）。
++	scanDoneMu sync.Mutex
++	scanDone   func()
+ 	// skills 是技能资源作用域（S3：shared/skill/<name> 动态单元；nil 表示
+ 	// 未注册——技能单元全部 unknown）。
+ 	skills *SkillsScope
+@@ -1630,23 +1634,9 @@ func firstFileOrDefault(adapter ProjectionAdapter) string {
+ // 共享，design §四）。同意按目标 generation 记录：distro 重装/换用户后旧授权
+ // 不自动扩散，需重新确认。仅 RequiresConsent 单元接受本操作。
+ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli CLI, unit UnitID) error {
+-	policy := Policy("")
+-	if _, isSkill := ParseSkillUnit(unit); isSkill {
+-		if c.skills == nil {
+-			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+-		}
+-		policy = PolicyTrackedProjection
+-	} else if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
+-		if c.resourceScope(resCLI) == nil {
+-			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+-		}
+-		policy = PolicyTrackedProjection
+-	} else {
+-		adapter, ok := c.projections[unit]
+-		if !ok || !adapter.RequiresConsent() {
+-			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+-		}
+-		policy = adapter.Policy()
++	policy, ok := c.consentPolicyFor(unit)
++	if !ok {
++		return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
+ 	}
+ 	target, err := c.ResolveTarget(ctx, distro, cli)
+ 	if err != nil {
+@@ -1658,39 +1648,11 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
+ 	if target.Generation == GenerationUnknown {
+ 		return fmt.Errorf("无法验证 WSL 目标身份（distro %q 拿不到 machine-id）：跨界授权需要可验证的目标身份；请在 WSL 内恢复 /etc/machine-id 后重试", distro)
+ 	}
+-	grantPolicy := policy
+ 	return c.state.mutate(func(st *StateFile) {
+-		prev, _ := st.entry(unit)
+-		entry := StateEntry{
+-			Unit: unit, Policy: grantPolicy, Generation: target.Generation,
+-			Consented: true, LastOutcome: "consented", LastSuccess: time.Now(),
+-		}
+-		// F3（S1 diting）：仅同代才保留 hash 基线；跨代（distro 重装/换默认
+-		// 用户后重新同意）时新 generation 无任何基线——旧代 SourceHash/
+-		// LastWrittenHash 不继承（继承会让新 distro 首发布被误判
+-		// local-deletion-frozen，重新同意即失效）。S4：同代的键级基准与选择集
+-		// 同样保留（幂等再授权不得摧毁 Subs/SelectedKeys——否则后续运行会把
+-		// 已托管键误判为 unmanaged-existing）。
+-		if prev.Generation == target.Generation {
+-			entry.SourceHash = prev.SourceHash
+-			entry.LastWrittenHash = prev.LastWrittenHash
+-			entry.Subs = prev.Subs
+-			entry.SelectedKeys = prev.SelectedKeys
+-		}
+-		st.upsertEntry(entry, target.Generation)
+-		st.Distro = target.Distro
+-		st.Home = target.Home
+-		// SA-02：授权也记入身份索引（授权后首次 Inspect 前，状态页能归属分区）。
+-		if st.Targets == nil {
+-			st.Targets = map[string]TargetRecord{}
+-		}
+-		rec := st.Targets[target.Generation]
+-		rec.Distro = target.Distro
+-		rec.UID = target.UID
+-		rec.Home = target.Home
+-		rec.LegacyGeneration = target.LegacyGeneration
+-		rec.LastSeen = time.Now()
+-		st.Targets[target.Generation] = rec
++		// F3/S4 同代保留与身份索引登记统一在 grantEntryIn（与
++		// AutoConsentIfUnified 共用；prev 查找改为按目标代 entryFor，
++		// 多 distro 交替操作时不再把 A 目标的基线误挂到 B）。
++		grantEntryIn(st, target, unit, policy)
+ 	})
+ }
+ 
+diff --git a/internal/wslsupply/pi_config.go b/internal/wslsupply/pi_config.go
+index e3ef7e5..3459fa0 100644
+--- a/internal/wslsupply/pi_config.go
++++ b/internal/wslsupply/pi_config.go
+@@ -253,6 +253,22 @@ func keyLeafName(key string) string {
+ 	return key
+ }
+ 
++// importableSourceKeys 返回来源侧当前可导入键全集（全路径键；P2-B 统一
++// 管理的选择集物化面）。只读 Windows 侧来源，不探测目标、不解析转换事实
++//——不可转换的键仍列入（写入时的冻结/转换受阻保护独立于选择集生效）。
++// 来源读失败返回错误（物化不猜键集）。
++func (a *keyedProjectionAdapter) importableSourceKeys() ([]string, error) {
++	src, err := a.readSourceSafe()
++	if err != nil {
++		return nil, err
++	}
++	desired, _, corrupt := a.desiredFrom(src)
++	if corrupt {
++		return nil, fmt.Errorf("windows-side %s is not valid JSON", a.shape.relPath)
++	}
++	return sortedDesiredKeys(desired), nil
++}
++
+ // desiredFrom 解析来源字节并抽取期望键集；corrupt=true 表示来源形态不可解析。
+ func (a *keyedProjectionAdapter) desiredFrom(src []byte) (map[string]any, []string, bool) {
+ 	if len(src) == 0 {
+diff --git a/internal/wslsupply/resources.go b/internal/wslsupply/resources.go
+index b1eb5ce..e23d71b 100644
+--- a/internal/wslsupply/resources.go
++++ b/internal/wslsupply/resources.go
+@@ -85,6 +85,9 @@ type ResourceScope struct {
+ 	running   bool
+ 	manifests map[string]*SkillManifest // rel → manifest
+ 	progress  SkillsScanProgress
++	// onDone 是扫描结束通知（P2-B 统一管理；在扫描 goroutine 内、无锁状态
++	// 下调用，必须非阻塞）。
++	onDone func()
+ }
+ 
+ // NewResourceScope 创建资源作用域。
+@@ -123,13 +126,24 @@ func (s *ResourceScope) RescanAsync() bool {
+ 	return s.startScanLocked()
+ }
+ 
++// SetScanDoneCallback 注册扫描结束通知（重复注册以后者为准；nil 清除）。
++func (s *ResourceScope) SetScanDoneCallback(fn func()) {
++	s.mu.Lock()
++	s.onDone = fn
++	s.mu.Unlock()
++}
++
+ func (s *ResourceScope) startScanLocked() bool {
+ 	s.running = true
+ 	go func() {
+ 		s.Scan()
+ 		s.mu.Lock()
+ 		s.running = false
++		cb := s.onDone
+ 		s.mu.Unlock()
++		if cb != nil {
++			cb()
++		}
+ 	}()
+ 	return true
+ }
+@@ -298,6 +312,7 @@ func (c *Coordinator) RegisterResources(scope *ResourceScope) {
+ 	if scope == nil {
+ 		return
+ 	}
++	scope.SetScanDoneCallback(c.scanDoneNotifier())
+ 	if c.resources == nil {
+ 		c.resources = map[CLI]*ResourceScope{}
+ 	}
+diff --git a/internal/wslsupply/skills.go b/internal/wslsupply/skills.go
+index d1f0717..e1616a9 100644
+--- a/internal/wslsupply/skills.go
++++ b/internal/wslsupply/skills.go
+@@ -85,6 +85,9 @@ type SkillsScope struct {
+ 	running  bool
+ 	skills   map[string]*SkillManifest
+ 	progress SkillsScanProgress
++	// onDone 是扫描结束通知（P2-B 统一管理：App 对账依赖扫描真正完成；
++	// 在扫描 goroutine 内、无锁状态下调用，必须非阻塞）。
++	onDone func()
+ }
+ 
+ // NewSkillsScope 创建技能作用域。root 是宿主侧 skills 根（Windows 路径）。
+@@ -119,13 +122,24 @@ func (s *SkillsScope) RescanAsync() bool {
+ 	return s.startScanLocked()
+ }
+ 
++// SetScanDoneCallback 注册扫描结束通知（重复注册以后者为准；nil 清除）。
++func (s *SkillsScope) SetScanDoneCallback(fn func()) {
++	s.mu.Lock()
++	s.onDone = fn
++	s.mu.Unlock()
++}
++
+ func (s *SkillsScope) startScanLocked() bool {
+ 	s.running = true
+ 	go func() {
+ 		s.Scan()
+ 		s.mu.Lock()
+ 		s.running = false
++		cb := s.onDone
+ 		s.mu.Unlock()
++		if cb != nil {
++			cb()
++		}
+ 	}()
+ 	return true
+ }
+@@ -379,6 +393,7 @@ const skillsTransformVersion = "skills-materialize-v1"
+ // RegisterSkills 注册技能作用域（S3 装配；生产由 newWSLSupplyCoordinator 注入）。
+ func (c *Coordinator) RegisterSkills(scope *SkillsScope) {
+ 	if scope != nil {
++		scope.SetScanDoneCallback(c.scanDoneNotifier())
+ 		c.skills = scope
+ 	}
+ }
+diff --git a/internal/wslsupply/state.go b/internal/wslsupply/state.go
+index 3b4b82e..3c69131 100644
+--- a/internal/wslsupply/state.go
++++ b/internal/wslsupply/state.go
+@@ -91,6 +91,13 @@ type TargetRecord struct {
+ 	LegacyGeneration string            `json:"legacyGeneration,omitempty"`
+ 	LastSeen    time.Time         `json:"lastSeen"`
+ 	InspectedAt map[CLI]time.Time `json:"inspectedAt,omitempty"`
++	// Unified（P2-B 统一管理）：该目标代的一次性「统一配置管理」授权标记。
++	// 打开后协调器在会话启动/保存推送/启动对账时自动授权新出现的可导入单元
++	// 并物化显式选择键（永不持久化通配键——旧版本二进制按普通键名消费选择
++	// 集，显式键保证降级安全）；换代（重装/换默认用户）后自动失效，需重新
++	// 启用。关闭（Disable）只停止自动纳入新项，不动已授权单元。
++	Unified    bool      `json:"unified,omitempty"`
++	UnifiedAt  time.Time `json:"unifiedAt,omitempty"`
+ }
+ 
+ // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与

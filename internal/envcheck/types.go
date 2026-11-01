@@ -206,13 +206,40 @@ type OverallStatus struct {
 }
 
 // InstallResult is returned by install and update operations.
+// Success 永远只表示 Windows 侧结论（direction §2.1）：双侧结论由消费者读取
+// WSL 字段得出，nil 表示本次不涉及 WSL（非 Windows、Windows 失败、非
+// install/update、headroom 或回调未注入）。
 type InstallResult struct {
 	Success bool    `json:"success"`
 	Message string  `json:"message"`
 	Tool    CLITool `json:"tool"`
 	Version string  `json:"version"`
 	Error   string  `json:"error"`
+
+	// WSL 报告同一操作内 WSL 侧 CLI 同步的结果（安装/升级双侧联动）。nil
+	// 时不代表失败，只代表本次没有 WSL 步骤；Status=failed 时前端横幅必须
+	// 降级为 warning，不得显示纯「成功」。
+	WSL *WSLSyncResult `json:"wsl,omitempty"`
 }
+
+// WSLSyncResult 是 Windows 侧 install/update 成功后、同一操作内追加的
+// WSL 侧同步步骤的结果（App 装配的 syncCLIToWSL 回调产出，方向文档
+// windows-wsl-unified/direction.md §2.1）。
+type WSLSyncResult struct {
+	Status    string `json:"status"`            // WSLSyncSucceeded / WSLSyncFailed / WSLSyncSkipped
+	Distro    string `json:"distro,omitempty"`  // 目标发行版（skipped 时也填，便于展示）
+	Version   string `json:"version,omitempty"` // WSL 侧同步后的版本
+	AlreadyOK bool   `json:"alreadyOK,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// WSL 同步状态（字符串而非自定义类型：与前端/JSON 消费保持简单字面量）。
+const (
+	WSLSyncSucceeded = "succeeded"
+	WSLSyncFailed    = "failed"
+	WSLSyncSkipped   = "skipped"
+)
 
 // ---------------------------------------------------------------------------
 // Async operation types for long-running install/update tasks
@@ -247,7 +274,11 @@ const (
 	OperationStepRunCommand   OperationStep = "run_command"
 	OperationStepVerify       OperationStep = "verify"
 	OperationStepRefreshCache OperationStep = "refresh_cache"
-	OperationStepCompleted    OperationStep = "completed"
+
+	// OperationStepWSLSync 是 Windows 侧成功后、同操作内的 WSL 侧同步步骤
+	// （经 SetWSLCLISync 注入的回调执行；异步操作经既有轮询可见）。
+	OperationStepWSLSync   OperationStep = "wsl_sync"
+	OperationStepCompleted OperationStep = "completed"
 )
 
 // OperationState holds the full state of a single async install/update operation.

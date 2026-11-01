@@ -430,6 +430,7 @@ import {
   type OperationObs,
 } from './envcheckOperationTracking'
 
+const emit = defineEmits<{ 'wsl-cli-changed': [] }>()
 const { showSuccess, showError, showInfo, showWarn } = useToast()
 
 interface ToolMeta {
@@ -889,6 +890,8 @@ function surfaceTerminalOperation(op: OperationObs): void {
   if (op.id) resolvedOpIds.add(op.id)
   const banner = operationCompletionBanner(op as envcheck.OperationState, toolDisplayName)
   if (banner) lastResult.value = banner
+  // Windows 安装可同时改变下方 WSL 卡片；终态只通知一次，不新增轮询。
+  if ((op as envcheck.OperationState).result?.wsl) emit('wsl-cli-changed')
 }
 
 /**
@@ -1642,6 +1645,11 @@ onUnmounted(() => {
 
 .op-result.result-error {
   border-left: 3px solid var(--error, #ff3b30);
+}
+
+/* 安装/升级双侧联动：Windows 成功而 WSL 同步失败的部分失败横幅（direction §2.4）。 */
+.op-result.result-warning {
+  border-left: 3px solid var(--warning, #ff9500);
 }
 
 .op-result-title {

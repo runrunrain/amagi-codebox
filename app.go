@@ -349,6 +349,10 @@ type App struct {
 	// 测试可替换为假 Runner；nil 时闸门 fail closed。
 	WSLSupply wslsupply.Runner
 
+	// wslUnifiedLoop 是 WSL 统一管理的后台对账循环与延期补推标记（P4 修复
+	// F1/F2：来源周期重扫 + 活动会话阻挡后的自动补推；见 app_wsl_unified.go）。
+	wslUnifiedLoop wslUnifiedReconcileLoopState
+
 	// DockerWSL 面向 Windows：Docker Desktop ↔ WSL 集成健康检查与一键自愈
 	//（2026-09-25 运维复盘 §1.2：共享挂载竞态挂坏的实证修复序列固化）。
 	// 非 Windows 平台方法返回不支持。
@@ -651,6 +655,10 @@ func NewApp(mobileAssets embed.FS) *App {
 		}
 		return &envcheck.InstallResult{Success: res.Success, Message: res.Message, Error: res.Error}, err
 	})
+
+	// P2-C 安装/升级双侧联动：Windows 侧 install/update 成功后，同一操作内
+	// 同步 WSL 侧 CLI（门控/分派见 app_wsl_cli_sync.go）。
+	envCheckSvc.SetWSLCLISync(app.syncCLIToWSL)
 
 	// M3-A2: control runtime + shared-service coordinator. The PTY raw port and
 	// Wails context are injected at Startup (they require the Wails ctx). The
@@ -2207,6 +2215,10 @@ func (a *App) Startup(ctx context.Context) {
 	// 重建会同时校验/补写 config.toml 的 openai_base_url 标记块，保证 codex 路由一致。
 	go a.restoreCodexGlobalHeadroomOnStartup()
 
+	// P2-B：WSL 统一配置管理启动对账（统一管理开启时点火后台扫描，随后推一轮
+	// 保存后补漏；未开启时与现状行为一致）。
+	a.scheduleWSLUnifiedStartupReconcile()
+
 	// 远程 API 仅在用户显式启用后恢复。新安装和没有该设置的旧配置
 	// 默认保持 loopback 且不监听，避免无意暴露到局域网。
 	// M1-B3c：remote load/start 由迁移 gate 结果守卫。LoadSecurityState 在所有
@@ -2236,6 +2248,10 @@ func (a *App) Startup(ctx context.Context) {
 // Shutdown Wails 生命周期钩子：应用关闭前停止代理和进程。
 func (a *App) Shutdown(ctx context.Context) {
 	a.Log.Info("app", "应用关闭中...")
+
+	// P4-F2：先收敛 WSL 统一管理后台循环（等待退出；之后不再有循环侧
+	// 推送调度，防 goroutine 泄漏）。
+	a.stopWSLUnifiedReconcileLoop()
 
 	// RC2：先收尾远程客户端终端长连接（等待读泵退出与 outbox 销毁；
 	// 不依赖网络往返，仅本地关闭）。

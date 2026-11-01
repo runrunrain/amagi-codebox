@@ -2,16 +2,21 @@ import { describe, expect, it, vi } from 'vitest'
 
 // 在 wailsjs 绑定边界打桩：api 包装层的职责是透传（P3-S1 WSL 配置供给状态
 // 与视觉清单共享同意入口）。
-const { statusBinding, consentBinding } = vi.hoisted(() => ({
+const { statusBinding, consentBinding, unifiedEnableBinding, unifiedDisableBinding } = vi.hoisted(() => ({
   statusBinding: vi.fn(),
   consentBinding: vi.fn(),
+  unifiedEnableBinding: vi.fn(),
+  unifiedDisableBinding: vi.fn(),
 }))
 
-// 单一 mock 工厂：全部 App 绑定集中注册（P3-S1/S2/S3/S4 共用；多个叠加的
-// vi.mock 工厂在同模块上胜者不确定，全量跑时会让后批绑定解析失败）。
+// 单一 mock 工厂：全部 App 绑定集中注册（P3-S1/S2/S3/S4 + P2-B 统一管理
+// 共用；多个叠加的 vi.mock 工厂在同模块上胜者不确定，全量跑时会让后批绑定
+// 解析失败）。
 vi.mock('../../../wailsjs/go/main/App', () => ({
   GetWSLConfigSupplyStatus: statusBinding,
   GrantWSLVisionConsent: consentBinding,
+  EnableWSLUnifiedSupply: unifiedEnableBinding,
+  DisableWSLUnifiedSupply: unifiedDisableBinding,
   CheckWSLPiConfigSupply: checkBinding,
   PreviewWSLPiConfigSupply: previewBinding,
   ApplyWSLPiConfigSupply: applyBinding,
@@ -377,5 +382,47 @@ describe('api.wslSupply S4 OpenCode 附加层 MCP 选择', () => {
     ocSetBinding.mockResolvedValueOnce(undefined)
     await setWSLOpenCodeMCPSelection(['fetch'])
     expect(ocSetBinding).toHaveBeenCalledWith(['fetch'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步）。
+import { enableWSLUnifiedSupply, disableWSLUnifiedSupply } from '../../api/wslSupply'
+
+describe('api.wslSupply 统一配置管理 (P2-B)', () => {
+  it('enableWSLUnifiedSupply 透传逐单元授权结果（不汇总成单一成功）', async () => {
+    unifiedEnableBinding.mockResolvedValueOnce([
+      { unit: 'claude/mcp', outcome: 'applied', detail: '已授权统一管理' },
+      { unit: 'shared/vision-export', outcome: 'fresh', detail: '此前已授权，保持不变' },
+      { unit: 'claude/settings', outcome: 'blocked', detail: '已保留本地（停跟随），跳过自动授权' },
+    ])
+    const outcomes = await enableWSLUnifiedSupply()
+    expect(unifiedEnableBinding).toHaveBeenCalledTimes(1)
+    expect(outcomes).toHaveLength(3)
+    expect(outcomes[0].outcome).toBe('applied')
+    expect(outcomes[2].outcome).toBe('blocked')
+  })
+
+  it('enableWSLUnifiedSupply 携带 unified 状态位返回前可见（状态快照透传）', async () => {
+    statusBinding.mockResolvedValueOnce({
+      distro: 'Ubuntu',
+      available: true,
+      unified: true,
+      faces: [],
+      pendingPush: false,
+    })
+    const st = await getWSLConfigSupplyStatus()
+    expect(st.unified).toBe(true)
+  })
+
+  it('disableWSLUnifiedSupply 透传停止动作', async () => {
+    unifiedDisableBinding.mockResolvedValueOnce(undefined)
+    await disableWSLUnifiedSupply()
+    expect(unifiedDisableBinding).toHaveBeenCalledTimes(1)
+  })
+
+  it('启用失败沿拒绝面透出（目标身份不可验证等）', async () => {
+    unifiedEnableBinding.mockRejectedValueOnce(new Error('启用统一管理失败：无法验证 WSL 目标身份'))
+    await expect(enableWSLUnifiedSupply()).rejects.toThrow('无法验证 WSL 目标身份')
   })
 })

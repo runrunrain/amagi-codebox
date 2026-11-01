@@ -118,12 +118,20 @@ export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
 }
 
+export function DisableWSLUnifiedSupply() {
+  return window['go']['main']['App']['DisableWSLUnifiedSupply']();
+}
+
 export function DownloadAndApplyUpdate() {
   return window['go']['main']['App']['DownloadAndApplyUpdate']();
 }
 
 export function EnableWSLPiConfigSupply() {
   return window['go']['main']['App']['EnableWSLPiConfigSupply']();
+}
+
+export function EnableWSLUnifiedSupply() {
+  return window['go']['main']['App']['EnableWSLUnifiedSupply']();
 }
 
 export function ExportConfigToFile() {
@@ -920,6 +928,10 @@ export function ToggleRemoteServer(arg1) {
 
 export function UninstallClaudeCode(arg1) {
   return window['go']['main']['App']['UninstallClaudeCode'](arg1);
+}
+
+export function UpdateCLIInWSL(arg1) {
+  return window['go']['main']['App']['UpdateCLIInWSL'](arg1);
 }
 
 export function UpdatePiPackageTargeted(arg1, arg2) {

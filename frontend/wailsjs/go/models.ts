@@ -1945,12 +1945,35 @@ export namespace envcheck {
 	        this.previousValue = source["previousValue"];
 	    }
 	}
+	export class WSLSyncResult {
+	    status: string;
+	    distro?: string;
+	    version?: string;
+	    alreadyOK?: boolean;
+	    message?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSyncResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.distro = source["distro"];
+	        this.version = source["version"];
+	        this.alreadyOK = source["alreadyOK"];
+	        this.message = source["message"];
+	        this.error = source["error"];
+	    }
+	}
 	export class InstallResult {
 	    success: boolean;
 	    message: string;
 	    tool: string;
 	    version: string;
 	    error: string;
+	    wsl?: WSLSyncResult;
 	
 	    static createFrom(source: any = {}) {
 	        return new InstallResult(source);
@@ -1963,7 +1986,26 @@ export namespace envcheck {
 	        this.tool = source["tool"];
 	        this.version = source["version"];
 	        this.error = source["error"];
+	        this.wsl = this.convertValues(source["wsl"], WSLSyncResult);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class OperationState {
 	    id: string;
@@ -2145,6 +2187,7 @@ export namespace envcheck {
 	        this.nextSteps = source["nextSteps"];
 	    }
 	}
+	
 	
 	
 	
@@ -3232,6 +3275,7 @@ export namespace main {
 	    reason?: string;
 	    faces: WSLConfigSupplyFace[];
 	    pendingPush: boolean;
+	    unified: boolean;
 	    units: WSLConfigUnitDetail[];
 	
 	    static createFrom(source: any = {}) {
@@ -3245,6 +3289,7 @@ export namespace main {
 	        this.reason = source["reason"];
 	        this.faces = this.convertValues(source["faces"], WSLConfigSupplyFace);
 	        this.pendingPush = source["pendingPush"];
+	        this.unified = source["unified"];
 	        this.units = this.convertValues(source["units"], WSLConfigUnitDetail);
 	    }
 	

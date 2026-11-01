@@ -71,6 +71,18 @@ func (a *codexConfigAdapter) Files() []string       { return []string{CodexConfi
 // SelectionAware 报告接受键级导入选择（server/profile 叶名选择集）。
 func (a *codexConfigAdapter) SelectionAware() bool { return true }
 
+// importableSourceKeys 返回来源侧当前可导入键全集（"mcp_servers/<name>"/
+// "profiles/<name>"；P2-B 统一管理的选择集物化面）。只读 Windows 侧
+// config.toml，不探测目标；来源读失败返回错误（物化不猜键集）。
+func (a *codexConfigAdapter) importableSourceKeys() ([]string, error) {
+	doc, _, err := a.readSourceDoc()
+	if err != nil {
+		return nil, err
+	}
+	desired, _ := a.desiredFrom(doc, nil) // nil = 不过滤，全量可导入段
+	return sortedDesiredKeys(desired), nil
+}
+
 // codexAnalysis 是一次分析的完整产物（Plan/预览/候选共用形态）。
 type codexAnalysis struct {
 	desired    map[string]any

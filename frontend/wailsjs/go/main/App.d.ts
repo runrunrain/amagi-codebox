@@ -77,9 +77,13 @@ export function DeleteProvider(arg1:string):Promise<void>;
 
 export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
 
+export function DisableWSLUnifiedSupply():Promise<void>;
+
 export function DownloadAndApplyUpdate():Promise<void>;
 
 export function EnableWSLPiConfigSupply():Promise<void>;
+
+export function EnableWSLUnifiedSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function ExportConfigToFile():Promise<string>;
 
@@ -478,6 +482,8 @@ export function TakeOverWSLSkill(arg1:string,arg2:string):Promise<void>;
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 
 export function UninstallClaudeCode(arg1:string):Promise<envcheck.InstallResult>;
+
+export function UpdateCLIInWSL(arg1:string):Promise<wslsetup.InstallResult>;
 
 export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
 

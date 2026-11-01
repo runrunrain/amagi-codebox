@@ -253,6 +253,22 @@ func keyLeafName(key string) string {
 	return key
 }
 
+// importableSourceKeys 返回来源侧当前可导入键全集（全路径键；P2-B 统一
+// 管理的选择集物化面）。只读 Windows 侧来源，不探测目标、不解析转换事实
+//——不可转换的键仍列入（写入时的冻结/转换受阻保护独立于选择集生效）。
+// 来源读失败返回错误（物化不猜键集）。
+func (a *keyedProjectionAdapter) importableSourceKeys() ([]string, error) {
+	src, err := a.readSourceSafe()
+	if err != nil {
+		return nil, err
+	}
+	desired, _, corrupt := a.desiredFrom(src)
+	if corrupt {
+		return nil, fmt.Errorf("windows-side %s is not valid JSON", a.shape.relPath)
+	}
+	return sortedDesiredKeys(desired), nil
+}
+
 // desiredFrom 解析来源字节并抽取期望键集；corrupt=true 表示来源形态不可解析。
 func (a *keyedProjectionAdapter) desiredFrom(src []byte) (map[string]any, []string, bool) {
 	if len(src) == 0 {

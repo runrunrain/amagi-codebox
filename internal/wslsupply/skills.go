@@ -85,6 +85,9 @@ type SkillsScope struct {
 	running  bool
 	skills   map[string]*SkillManifest
 	progress SkillsScanProgress
+	// onDone 是扫描结束通知（P2-B 统一管理：App 对账依赖扫描真正完成；
+	// 在扫描 goroutine 内、无锁状态下调用，必须非阻塞）。
+	onDone func()
 }
 
 // NewSkillsScope 创建技能作用域。root 是宿主侧 skills 根（Windows 路径）。
@@ -119,13 +122,24 @@ func (s *SkillsScope) RescanAsync() bool {
 	return s.startScanLocked()
 }
 
+// SetScanDoneCallback 注册扫描结束通知（重复注册以后者为准；nil 清除）。
+func (s *SkillsScope) SetScanDoneCallback(fn func()) {
+	s.mu.Lock()
+	s.onDone = fn
+	s.mu.Unlock()
+}
+
 func (s *SkillsScope) startScanLocked() bool {
 	s.running = true
 	go func() {
 		s.Scan()
 		s.mu.Lock()
 		s.running = false
+		cb := s.onDone
 		s.mu.Unlock()
+		if cb != nil {
+			cb()
+		}
 	}()
 	return true
 }
@@ -379,6 +393,7 @@ const skillsTransformVersion = "skills-materialize-v1"
 // RegisterSkills 注册技能作用域（S3 装配；生产由 newWSLSupplyCoordinator 注入）。
 func (c *Coordinator) RegisterSkills(scope *SkillsScope) {
 	if scope != nil {
+		scope.SetScanDoneCallback(c.scanDoneNotifier())
 		c.skills = scope
 	}
 }

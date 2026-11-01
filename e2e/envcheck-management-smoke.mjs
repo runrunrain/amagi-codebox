@@ -61,6 +61,26 @@ try {
     passed(`${scenario}：即时完成/首次快照失败仍跟踪正确终态`);
   }
 
+  for (const scenario of ['wsl-success', 'wsl-failure', 'wsl-skipped']) {
+    open(scenario);
+    wait(`window.__envCalls.some(c=>c.name==='GetWSLCLIStatus')`);
+    click('安装');
+    wait(`window.__envFixture.operation?.status === 'succeeded' && document.querySelector('.op-result')?.textContent.includes('WSL')`);
+    wait(`window.__envCalls.filter(c=>c.name==='GetWSLCLIStatus').length >= 2`);
+    const result = evaluate(`document.querySelector('.op-result').textContent`);
+    assert.match(evaluate(`document.querySelector('.envcheck-tool-item:nth-child(4)').textContent`), /已安装/);
+    if (scenario === 'wsl-failure') {
+      assert.match(result, /TEST_ONLY_WSL_NPM_FAILURE/);
+      assert.equal(evaluate(`document.querySelector('.op-result').classList.contains('result-success')`), false);
+    } else if (scenario === 'wsl-success') {
+      assert.match(result, /1\.0\.1/);
+      wait(`Array.from(document.querySelectorAll('.setting-row')).some(e=>e.textContent.includes('Pi') && e.textContent.includes('已安装 1.0.1'))`);
+    } else {
+      assert.match(result, /未使用 WSL/);
+    }
+    passed(`${scenario}：双侧结果可见，兄弟 WSL 卡片在终态后刷新`);
+  }
+
   open('failure');
   click('安装');
   wait(`document.querySelector('.op-result-title')?.textContent.includes('安装失败')`);

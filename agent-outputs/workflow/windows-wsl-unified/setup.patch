@@ -1,0 +1,1276 @@
+diff --git a/internal/wslsetup/install_search_tools_windows_test.go b/internal/wslsetup/install_search_tools_windows_test.go
+deleted file mode 100644
+index 6420fb9..0000000
+--- a/internal/wslsetup/install_search_tools_windows_test.go
++++ /dev/null
+@@ -1,148 +0,0 @@
+-//go:build windows
+-
+-package wslsetup
+-
+-import (
+-	"errors"
+-	"strings"
+-	"testing"
+-
+-	"amagi-codebox/internal/platform"
+-)
+-
+-// stubSearchToolsEnv 替换 InstallSearchTools 依赖的三个包级 var：
+-// searchToolStatus（探测序列，末值保持）、resetSearchToolCache（记录调用）、
+-// wslExecRoot（记录 apt 脚本并由 rootFn 决定输出/错误）。
+-func stubSearchToolsEnv(t *testing.T, statuses []platform.WSLSearchTools, rootFn func(distro, script string) (string, error)) (probes, resets *int, scripts *[]string) {
+-	t.Helper()
+-	prevStatus, prevReset, prevRoot := searchToolStatus, resetSearchToolCache, wslExecRoot
+-	probeCount, resetCount := 0, 0
+-	var rootScripts []string
+-	searchToolStatus = func(distro string) platform.WSLSearchTools {
+-		probeCount++
+-		if len(statuses) == 0 {
+-			return platform.WSLSearchTools{}
+-		}
+-		if probeCount <= len(statuses) {
+-			return statuses[probeCount-1]
+-		}
+-		return statuses[len(statuses)-1]
+-	}
+-	resetSearchToolCache = func(string) { resetCount++ }
+-	wslExecRoot = func(distro, script string) (string, error) {
+-		rootScripts = append(rootScripts, script)
+-		if rootFn != nil {
+-			return rootFn(distro, script)
+-		}
+-		return "ok\n", nil
+-	}
+-	t.Cleanup(func() {
+-		searchToolStatus, resetSearchToolCache, wslExecRoot = prevStatus, prevReset, prevRoot
+-	})
+-	return &probeCount, &resetCount, &rootScripts
+-}
+-
+-// TestInstallSearchToolsAlreadyOK 已装短路：探测全命中时不跑 apt，只做一次
+-// 安装前缓存失效（刷新 stale 快照）。
+-func TestInstallSearchToolsAlreadyOK(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-	probes, resets, scripts := stubSearchToolsEnv(t, []platform.WSLSearchTools{{FD: true, Ripgrep: true}}, nil)
+-
+-	res, err := NewService(nil).InstallSearchTools()
+-	if err != nil {
+-		t.Fatalf("InstallSearchTools: %v", err)
+-	}
+-	if !res.Success || !res.AlreadyOK {
+-		t.Fatalf("result = %+v, want already-ok success", res)
+-	}
+-	if *probes != 1 || *resets != 1 {
+-		t.Errorf("probes=%d resets=%d, want 1/1 (pre-check only)", *probes, *resets)
+-	}
+-	if len(*scripts) != 0 {
+-		t.Errorf("no apt must run when already installed, got %v", *scripts)
+-	}
+-	if res.Tool != SearchToolsKey || res.Package != "fd-find ripgrep" {
+-		t.Errorf("tool/package = %q/%q", res.Tool, res.Package)
+-	}
+-}
+-
+-// TestInstallSearchToolsInstallFlow 安装主流程：apt 脚本含 update 与
+-// fd-find/ripgrep；安装前后各失效一次缓存；验证探测命中后 Success。
+-func TestInstallSearchToolsInstallFlow(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-	probes, resets, scripts := stubSearchToolsEnv(t,
+-		[]platform.WSLSearchTools{{}, {FD: true, Ripgrep: true}}, nil)
+-
+-	res, err := NewService(nil).InstallSearchTools()
+-	if err != nil {
+-		t.Fatalf("InstallSearchTools: %v", err)
+-	}
+-	if !res.Success || res.AlreadyOK {
+-		t.Fatalf("result = %+v, want fresh-install success", res)
+-	}
+-	if !strings.Contains(res.Message, "fd-find") || !strings.Contains(res.Message, "PI_OFFLINE") {
+-		t.Errorf("message should explain what/why: %q", res.Message)
+-	}
+-	if *probes != 2 || *resets != 2 {
+-		t.Errorf("probes=%d resets=%d, want 2/2 (pre + post)", *probes, *resets)
+-	}
+-	if len(*scripts) != 1 {
+-		t.Fatalf("apt scripts = %v, want exactly one", *scripts)
+-	}
+-	script := (*scripts)[0]
+-	for _, want := range []string{"DEBIAN_FRONTEND=noninteractive", "apt-get update -qq", "apt-get install -y fd-find ripgrep"} {
+-		if !strings.Contains(script, want) {
+-			t.Errorf("apt script missing %q:\n%s", want, script)
+-		}
+-	}
+-}
+-
+-// TestInstallSearchToolsAptFailure apt 失败：Success=false，Error 带原因；
+-// 非 apt 系（command not found）额外给手动包管理器指引。
+-func TestInstallSearchToolsAptFailure(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	t.Run("generic apt failure", func(t *testing.T) {
+-		_, _, _ = stubSearchToolsEnv(t, []platform.WSLSearchTools{{}}, func(_, _ string) (string, error) {
+-			return "E: Unable to locate package fd-find\n", errors.New("exit status 100")
+-		})
+-		res, err := NewService(nil).InstallSearchTools()
+-		if err != nil {
+-			t.Fatalf("InstallSearchTools: %v", err)
+-		}
+-		if res.Success || res.Error == "" || !strings.Contains(res.Error, "apt 安装") {
+-			t.Fatalf("result = %+v, want structured apt failure", res)
+-		}
+-	})
+-
+-	t.Run("non-apt distro guidance", func(t *testing.T) {
+-		_, _, _ = stubSearchToolsEnv(t, []platform.WSLSearchTools{{}}, func(_, _ string) (string, error) {
+-			return "bash: apt-get: command not found\n", errors.New("exit status 127")
+-		})
+-		res, err := NewService(nil).InstallSearchTools()
+-		if err != nil {
+-			t.Fatalf("InstallSearchTools: %v", err)
+-		}
+-		if res.Success || !strings.Contains(res.Error, "apk add fd ripgrep") {
+-			t.Fatalf("non-apt failure should carry manual guidance, got: %q", res.Error)
+-		}
+-	})
+-}
+-
+-// TestInstallSearchToolsVerifyFails 安装命令成功但验证探测仍缺失：
+-// Success=false 且 Error 给手动兜底命令（不能谎报成功）。
+-func TestInstallSearchToolsVerifyFails(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-	_, _, _ = stubSearchToolsEnv(t, []platform.WSLSearchTools{{}, {Ripgrep: true}}, nil)
+-
+-	res, err := NewService(nil).InstallSearchTools()
+-	if err != nil {
+-		t.Fatalf("InstallSearchTools: %v", err)
+-	}
+-	if res.Success {
+-		t.Fatal("Success=true despite fd missing after install")
+-	}
+-	if !strings.Contains(res.Error, "sudo apt-get install -y fd-find ripgrep") {
+-		t.Errorf("error should carry the manual fallback command: %q", res.Error)
+-	}
+-}
+diff --git a/internal/wslsetup/service.go b/internal/wslsetup/service.go
+index 23166de..f671251 100644
+--- a/internal/wslsetup/service.go
++++ b/internal/wslsetup/service.go
+@@ -1,11 +1,13 @@
+-// Package wslsetup installs the managed AI CLIs (Claude Code, OpenCode, Codex,
+-// Pi) INTO a WSL distribution so they run natively in the Linux environment that
+-// CodeBox now defaults to on Windows. It is orthogonal to internal/envcheck,
+-// which manages the Windows-side installs.
++// Package wslsetup installs and upgrades the managed AI CLIs (Claude Code,
++// OpenCode, Codex, Pi, Oh My Pi) INTO a WSL distribution so they run natively
++// in the Linux environment that CodeBox now defaults to on Windows. It is
++// orthogonal to internal/envcheck, which manages the Windows-side installs.
+ //
+-// The whole package is only meaningful on Windows with a usable WSL distro; the
+-// heavy lifting lives in service_windows.go, with a stub in service_other.go so
+-// the module still builds on macOS/Linux (per the repo's build-tag convention).
++// The business flow lives in portable files driven through the wslRunner seam
++// (runner.go): service_windows.go wires the real wsl.exe implementation on
++// Windows, off Windows the runner is nil and every method reports the platform
++// limitation (the historical stub contract), while tests on any OS inject a
++// fake runner and drive the real InstallTool/UpdateTool flow without WSL.
+ package wslsetup
+ 
+ // cliPackages maps a canonical CLI tool key (as returned by normalizeToolKey) to
+@@ -17,8 +19,17 @@ var cliPackages = map[string]string{
+ 	"opencode": "opencode-ai",
+ 	"codex":    "@openai/codex",
+ 	"pi":       "@earendil-works/pi-coding-agent",
++	// omp shares pi's codebase (package name aligned with envcheck's
++	// ompNPMPackageName, installer.go). Added 2026-10 per the Windows/WSL
++	// unified-management workflow, superseding the old B7 exclusion which
++	// predated the five-CLI coverage requirement.
++	"omp": "@oh-my-pi/pi-coding-agent",
+ }
+ 
++// cliToolOrder is the canonical report order of the five managed CLIs (used by
++// GetStatus). Every key must exist in cliPackages — pinned by tests.
++var cliToolOrder = []string{"claude", "opencode", "codex", "pi", "omp"}
++
+ // InstallResult reports the outcome of an install-into-WSL operation. It mirrors
+ // the shape of envcheck.InstallResult so the frontend can treat both uniformly.
+ type InstallResult struct {
+diff --git a/internal/wslsetup/service_other.go b/internal/wslsetup/service_other.go
+deleted file mode 100644
+index 51f795d..0000000
+--- a/internal/wslsetup/service_other.go
++++ /dev/null
+@@ -1,54 +0,0 @@
+-//go:build !windows
+-
+-package wslsetup
+-
+-import (
+-	"fmt"
+-
+-	"amagi-codebox/internal/logging"
+-)
+-
+-// Service is a no-op on non-Windows platforms: installing CLIs into WSL only
+-// makes sense on Windows. The stub keeps the App wiring and cross-platform
+-// builds uniform (per the repo's build-tag convention).
+-type Service struct {
+-	log *logging.Service
+-}
+-
+-func NewService(log *logging.Service) *Service {
+-	return &Service{log: log}
+-}
+-
+-// GetStatus always reports WSL unavailable off Windows.
+-func (s *Service) GetStatus() Status {
+-	return Status{Available: false, Reason: "WSL CLI install is only supported on Windows"}
+-}
+-
+-// InstallTool is unsupported off Windows. It still rejects unknown tools first,
+-// mirroring the Windows contract (unsupported tool -> error), then reports the
+-// platform limitation for supported tools.
+-func (s *Service) InstallTool(tool string) (*InstallResult, error) {
+-	key := normalizeToolKey(tool)
+-	pkg, ok := packageForTool(key)
+-	if !ok {
+-		return nil, fmt.Errorf("unsupported CLI tool for WSL install: %q", tool)
+-	}
+-	return &InstallResult{
+-		Tool:    key,
+-		Package: pkg,
+-		Success: false,
+-		Error:   "WSL CLI install is only supported on Windows",
+-	}, nil
+-}
+-
+-// InstallSearchTools is unsupported off Windows (no WSL); mirrors the Windows
+-// contract's failure shape so the envcheck fix dispatcher and frontend see a
+-// structured failure instead of a missing method.
+-func (s *Service) InstallSearchTools() (*InstallResult, error) {
+-	return &InstallResult{
+-		Tool:    SearchToolsKey,
+-		Package: "fd-find ripgrep",
+-		Success: false,
+-		Error:   "WSL CLI install is only supported on Windows",
+-	}, nil
+-}
+diff --git a/internal/wslsetup/service_test.go b/internal/wslsetup/service_test.go
+index 0fdc89b..3538c0e 100644
+--- a/internal/wslsetup/service_test.go
++++ b/internal/wslsetup/service_test.go
+@@ -11,6 +11,7 @@ func TestNormalizeToolKey(t *testing.T) {
+ 		"OpenCode":    "opencode",
+ 		"open-code":   "opencode",
+ 		"codex":       "codex",
++		"OMP":         "omp", // lowercase passthrough covers Oh My Pi
+ 		"unknown":     "unknown",
+ 	}
+ 	for in, want := range cases {
+@@ -28,6 +29,8 @@ func TestPackageForTool(t *testing.T) {
+ 		"codex":       "@openai/codex",
+ 		"pi":          "@earendil-works/pi-coding-agent",
+ 		"Pi":          "@earendil-works/pi-coding-agent",
++		"omp":         "@oh-my-pi/pi-coding-agent",
++		"OMP":         "@oh-my-pi/pi-coding-agent",
+ 	}
+ 	for in, want := range cases {
+ 		got, ok := packageForTool(in)
+@@ -40,6 +43,30 @@ func TestPackageForTool(t *testing.T) {
+ 	}
+ }
+ 
++// TestAllFiveCLIsMapped pins the五 CLI coverage requirement: every key in the
++// canonical order resolves to a distinct npm package, and omp (the historical
++// B7 exclusion, superseded by the Windows/WSL unified-management requirement)
++// is present.
++func TestAllFiveCLIsMapped(t *testing.T) {
++	if len(cliToolOrder) != 5 {
++		t.Fatalf("cliToolOrder has %d entries, want 5", len(cliToolOrder))
++	}
++	seen := map[string]bool{}
++	for _, key := range cliToolOrder {
++		pkg, ok := packageForTool(key)
++		if !ok || pkg == "" {
++			t.Errorf("cliToolOrder key %q has no npm package", key)
++		}
++		if seen[pkg] {
++			t.Errorf("duplicate npm package %q across CLI keys", pkg)
++		}
++		seen[pkg] = true
++	}
++	if _, ok := packageForTool("omp"); !ok {
++		t.Error("omp must be installable into WSL (five-CLI coverage)")
++	}
++}
++
+ func TestNodeVersionAtLeast(t *testing.T) {
+ 	cases := []struct {
+ 		v           string
+@@ -79,18 +106,39 @@ func TestBashSingleQuote(t *testing.T) {
+ 	}
+ }
+ 
+-// TestGetStatusUnavailableOffWindowsOrNoDistro verifies the stub/no-distro path
+-// returns Available=false with a reason (the Windows path with a real distro is
+-// covered by the real-machine verification, not unit tests).
+-func TestGetStatusReason(t *testing.T) {
++// TestUnsupportedPlatformContract pins the off-Windows behavior for every
++// public method: a nil runner (explicitly injected so the test is
++// deterministic on Windows hosts too) must yield structured failures — never
++// a Go error for supported tools, and the plain error for unknown tools
++// BEFORE the platform check, mirroring the historical stub order.
++func TestUnsupportedPlatformContract(t *testing.T) {
++	injectRunner(t, nil)
+ 	svc := NewService(nil)
+-	st := svc.GetStatus()
+-	if st.Available {
+-		// On a machine WITH a usable distro this may be true; only assert the
+-		// contract shape (no panic, tools list shape) rather than a fixed value.
+-		return
+-	}
+-	if st.Reason == "" {
+-		t.Errorf("unavailable status must carry a reason")
++
++	if st := svc.GetStatus(); st.Available || st.Reason != errInstallUnsupported {
++		t.Errorf("GetStatus() = %+v, want unavailable with %q", st, errInstallUnsupported)
++	}
++
++	res, err := svc.InstallTool("pi")
++	if err != nil || res.Success || res.Error != errInstallUnsupported {
++		t.Errorf("InstallTool(pi) = %+v, %v; want structured %q failure", res, err, errInstallUnsupported)
++	}
++	res, err = svc.UpdateTool("pi")
++	if err != nil || res.Success || res.Error != errUpdateUnsupported {
++		t.Errorf("UpdateTool(pi) = %+v, %v; want structured %q failure", res, err, errUpdateUnsupported)
++	}
++	sres, err := svc.InstallSearchTools()
++	if err != nil || sres.Success || sres.Error != errInstallUnsupported || sres.Tool != SearchToolsKey {
++		t.Errorf("InstallSearchTools() = %+v, %v; want structured unsupported failure", sres, err)
++	}
++
++	// Unknown tools are rejected with a Go error regardless of platform.
++	for _, bad := range []string{"nope", ""} {
++		if _, err := svc.InstallTool(bad); err == nil {
++			t.Errorf("InstallTool(%q) must return an error for unknown tools", bad)
++		}
++		if _, err := svc.UpdateTool(bad); err == nil {
++			t.Errorf("UpdateTool(%q) must return an error for unknown tools", bad)
++		}
+ 	}
+ }
+diff --git a/internal/wslsetup/service_windows.go b/internal/wslsetup/service_windows.go
+index ff05003..d6a3f40 100644
+--- a/internal/wslsetup/service_windows.go
++++ b/internal/wslsetup/service_windows.go
+@@ -3,23 +3,15 @@
+ package wslsetup
+ 
+ import (
++	"context"
+ 	"fmt"
+ 	"os/exec"
+ 	"strings"
++	"time"
+ 
+-	"amagi-codebox/internal/logging"
+ 	"amagi-codebox/internal/platform"
+ )
+ 
+-// Service installs and inspects the managed CLIs inside a WSL distro.
+-type Service struct {
+-	log *logging.Service
+-}
+-
+-func NewService(log *logging.Service) *Service {
+-	return &Service{log: log}
+-}
+-
+ // userBinPathPrefix prepends the user npm-global bin (where `npm i -g` shims land
+ // with our prefix config) to PATH. Ubuntu's ~/.bashrc returns early for
+ // non-interactive shells (`case $- in *i*) ;; *) return;;`), so a non-interactive
+@@ -28,436 +20,71 @@ func NewService(log *logging.Service) *Service {
+ // relying on .bashrc being sourced. /usr/bin covers the NodeSource node/npm.
+ const userBinPathPrefix = `export PATH="$HOME/.npm-global/bin:/usr/bin:/usr/local/bin:$PATH"; `
+ 
+-// wslExec runs a bash command inside the given distro as the distro's default
+-// user and returns combined output. user "" = default user. The command is run
+-// with an explicit PATH prefix (see userBinPathPrefix) so the native toolchain
+-// and user-global npm shims resolve regardless of .bashrc's interactive guard.
+-// It is a package var so tests can substitute it.
+-var wslExec = func(distro, user, script string) (string, error) {
++// realRunnerOnInit snapshots the runner wired by init() so the Windows
++// wiring test can assert it even if other tests injected fakes meanwhile
++// (package tests run sequentially and restore via t.Cleanup; this makes the
++// pin independent of ordering).
++var realRunnerOnInit *wslRunner
++
++// init wires the real wsl.exe runner into the portable business flow. Off
++// Windows no wiring happens and the package methods report the platform
++// limitation (see runner.go).
++func init() {
++	wslRunnerImpl = &wslRunner{
++		defaultDistro:    func() string { return platform.DefaultWSLDistro(nil) },
++		distroVersion:    func(distro string) int { return platform.WSLDistroVersions(nil)[distro] },
++		execUser:         runWslUser,
++		execRoot:         runWslRoot,
++		execLogin:        runWslLogin,
++		searchStatus:     platform.WSLSearchToolStatus,
++		resetSearchCache: platform.ResetWSLSearchToolCache,
++	}
++	realRunnerOnInit = wslRunnerImpl
++}
++
++// runWslUser runs a bash command inside the given distro as the distro's
++// default user (user "" = default) and returns combined output, with the
++// explicit PATH prefix applied (see userBinPathPrefix). timeout <= 0 means
++// unbounded (fast probes); positive values bound long steps.
++func runWslUser(distro, user, script string, timeout time.Duration) (string, error) {
+ 	args := []string{"-d", distro}
+ 	if strings.TrimSpace(user) != "" {
+ 		args = append(args, "-u", user)
+ 	}
+ 	args = append(args, "--", "bash", "-lc", userBinPathPrefix+script)
+-	cmd := exec.Command("wsl.exe", args...)
+-	platform.SuppressConsoleWindow(cmd)
+-	out, err := cmd.CombinedOutput()
+-	return string(out), err
++	return runWsl(args, timeout)
+ }
+ 
+-// wslExecRoot runs a non-interactive command as root (for apt / NodeSource).
+-var wslExecRoot = func(distro, script string) (string, error) {
+-	args := []string{"-d", distro, "-u", "root", "--", "bash", "-lc", script}
+-	cmd := exec.Command("wsl.exe", args...)
+-	platform.SuppressConsoleWindow(cmd)
+-	out, err := cmd.CombinedOutput()
+-	return string(out), err
++// runWslRoot runs a non-interactive command as root (for apt / NodeSource).
++func runWslRoot(distro, script string, timeout time.Duration) (string, error) {
++	return runWsl([]string{"-d", distro, "-u", "root", "--", "bash", "-lc", script}, timeout)
+ }
+ 
+-// searchToolStatus / resetSearchToolCache wrap the platform-side cached probe
+-// of fd/fdfind + ripgrep. Package vars so tests inject fakes AND assert the
+-// post-install cache invalidation (without the reset, env checks and launch
+-// probes keep reporting the stale pre-install state — the very bug this
+-// feature exists to fix).
+-var (
+-	searchToolStatus     = platform.WSLSearchToolStatus
+-	resetSearchToolCache = platform.ResetWSLSearchToolCache
+-)
+-
+-// wslExecLogin runs a login-shell script inside the given distro as the
++// runWslLogin runs a login-shell script inside the given distro as the
+ // distro's default user WITHOUT the artificial PATH prefix, so `command -v`
+ // observes the real .profile/.bashrc state — the same resolution a launched
+-// session's `bash -lic` performs. It is a package var so tests can substitute
+-// it.
+-var wslExecLogin = func(distro, script string) (string, error) {
+-	args := []string{"-d", distro, "--", "bash", "-lc", script}
+-	cmd := exec.Command("wsl.exe", args...)
++// session's `bash -lic` performs.
++func runWslLogin(distro, script string) (string, error) {
++	return runWsl([]string{"-d", distro, "--", "bash", "-lc", script}, 0)
++}
++
++// runWsl executes wsl.exe with the given args and returns combined output. A
++// positive timeout bounds the command: on expiry wsl.exe is killed (which
++// disconnects the distro-side session) and a timeout error is returned so
++// callers surface a real failure instead of hanging forever — and, with the
++// per-distro operation lock, blocking every later operation on that distro.
++func runWsl(args []string, timeout time.Duration) (string, error) {
++	ctx := context.Background()
++	var cancel context.CancelFunc
++	if timeout > 0 {
++		ctx, cancel = context.WithTimeout(ctx, timeout)
++		defer cancel()
++	}
++	cmd := exec.CommandContext(ctx, "wsl.exe", args...)
+ 	platform.SuppressConsoleWindow(cmd)
+ 	out, err := cmd.CombinedOutput()
+-	return string(out), err
+-}
+-
+-// GetStatus reports whether WSL is usable and which managed CLIs are installed
+-// natively inside the selected distro.
+-func (s *Service) GetStatus() Status {
+-	distro := platform.DefaultWSLDistro(nil)
+-	if distro == "" {
+-		return Status{Available: false, Reason: "no usable WSL distro installed"}
+-	}
+-	st := Status{Available: true, Distro: distro}
+-	// Surface the WSL architecture generation (WSL1/WSL2) so the UI can show a
+-	// "WSL2" badge. wsl.exe is the unified entry for both; the version only
+-	// affects how the distro runs, not how we launch it. 0 = unknown.
+-	st.DistroWSLVersion = platform.WSLDistroVersions(nil)[distro]
+-
+-	// Native node version (empty when only the Windows passthrough exists).
+-	if p := s.nativeCommandPath(distro, "node"); isNativePath(p) {
+-		if out, err := wslExec(distro, "", "node -v"); err == nil {
+-			st.NodeVersion = firstNonEmptyLine(out)
+-		}
+-	}
+-
+-	for _, key := range []string{"claude", "opencode", "codex", "pi"} {
+-		pkg, _ := packageForTool(key)
+-		ts := ToolStatus{Tool: key, Package: pkg}
+-		if p := s.nativeCommandPath(distro, key); isNativePath(p) {
+-			ts.Installed = true
+-			ts.ExecutablePath = p
+-			if out, err := wslExec(distro, "", key+" --version 2>/dev/null | head -1"); err == nil {
+-				ts.Version = firstNonEmptyLine(out)
+-			}
+-		}
+-		st.Tools = append(st.Tools, ts)
+-	}
+-	return st
+-}
+-
+-// nativeCommandPath returns the PATH-resolved absolute path of cmd inside the
+-// distro, or "" when absent. It runs `type -P <cmd>` as the WHOLE script and
+-// reads its stdout directly: in this non-interactive `wsl.exe -- bash -lc`
+-// context, wrapping a shell builtin lookup in `$(...)` command substitution
+-// unreliably returns empty, whereas the builtin's direct stdout is correct.
+-func (s *Service) nativeCommandPath(distro, cmd string) string {
+-	out, err := wslExec(distro, "", "type -P "+bashSingleQuote(cmd)+" 2>/dev/null || true")
+-	if err != nil {
+-		return ""
+-	}
+-	return firstNonEmptyLine(out)
+-}
+-
+-// isNativePath reports whether p is a real Linux path (present and not a /mnt
+-// Windows passthrough).
+-func isNativePath(p string) bool {
+-	return p != "" && !strings.HasPrefix(p, "/mnt/")
+-}
+-
+-// nodeMajorFloor / nodeMinorFloor are the minimum native Node version WSL CLI
+-// installs accept. pi's undici 8.x dependency uses worker_threads APIs that only
+-// exist from Node 22.13 on (its engines field says >=22.19.0); anything older
+-// crashes at module load with "webidl.util.markAsUncloneable is not a function".
+-const (
+-	nodeMajorFloor = 22
+-	nodeMinorFloor = 19
+-)
+-
+-// EnsureNode makes sure a native Node.js at or above the version floor is
+-// available inside the distro. It is idempotent: when a native node at or above
+-// the floor already exists it is a no-op. Otherwise it installs Node 22 from
+-// NodeSource (requires network + root), which also upgrades an older native
+-// Node via apt. Returns whether an install was performed.
+-func (s *Service) ensureNode(distro string) (installed bool, log string, err error) {
+-	// Already have a recent enough native node?
+-	if isNativePath(s.nativeCommandPath(distro, "node")) {
+-		if out, e := wslExec(distro, "", "node -v"); e == nil {
+-			ver := strings.TrimSpace(firstNonEmptyLine(out))
+-			if nodeVersionAtLeast(ver, nodeMajorFloor, nodeMinorFloor) {
+-				return false, "native node already present: " + ver, nil
+-			}
+-			s.logInfo("wslsetup", "native node below floor, upgrading to Node 22 in WSL", "current="+ver)
+-		}
+-	}
+-
+-	s.logInfo("wslsetup", "installing native Node.js 22 in WSL", "distro="+distro)
+-	script := strings.Join([]string{
+-		"export DEBIAN_FRONTEND=noninteractive",
+-		"apt-get update -qq",
+-		"apt-get install -y ca-certificates curl gnupg",
+-		"curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh",
+-		"bash /tmp/nodesource_setup.sh",
+-		"apt-get install -y nodejs",
+-		"node -v",
+-	}, " && ")
+-	out, e := wslExecRoot(distro, script)
+-	if e != nil {
+-		return false, out, fmt.Errorf("install node in WSL: %w", e)
+-	}
+-	// Verify a native node now resolves.
+-	if !isNativePath(s.nativeCommandPath(distro, "node")) {
+-		return false, out, fmt.Errorf("node still not resolvable inside WSL after install")
+-	}
+-	return true, out, nil
+-}
+-
+-// ensureUserNpmPrefix configures a user-writable npm global prefix
+-// (~/.npm-global) and puts it on PATH via ~/.bashrc AND ~/.profile, so
+-// `npm i -g` works without root and the installed CLI shims resolve ahead of any
+-// Windows passthrough. The .profile line matters for non-interactive login
+-// shells (`wsl.exe -- bash -lc`): Ubuntu's .bashrc returns early for those, so a
+-// .bashrc-only PATH line leaves `bash -lc pi` resolving to the /mnt/c Windows
+-// shim. Idempotent.
+-//
+-// The append guard matches the EXACT standard line via `grep -qF` (fixed
+-// string). A looser substring guard (`grep -q "npm-global/bin"`) is defeated
+-// by dirty snapshots: a stale `export PATH=<fully expanded snapshot>` line in
+-// .bashrc/.profile merely CONTAINS the substring, so the standard line was
+-// never appended and login shells kept resolving CLIs to /mnt/c. Even when
+-// such near-miss lines exist, the missing exact line is appended — with
+-// PATH-prepend semantics the later line takes effect, which also repairs those
+-// dirty snapshots.
+-func (s *Service) ensureUserNpmPrefix(distro string) (string, error) {
+-	script := strings.Join([]string{
+-		`mkdir -p "$HOME/.npm-global"`,
+-		`npm config set prefix "$HOME/.npm-global"`,
+-		`grep -qF 'export PATH="$HOME/.npm-global/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"`,
+-		`grep -qF 'export PATH="$HOME/.npm-global/bin:$PATH"' "$HOME/.profile" 2>/dev/null || printf '%s\n' 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.profile"`,
+-		`echo prefix-ok`,
+-	}, " && ")
+-	return wslExec(distro, "", script)
+-}
+-
+-// ensurePiConfig（首装整树播种 ~/.pi/agent）已于 P3-S0 停用并删除：cp -r
+-// 会把 sessions/凭据/插件实体带入 distro（证据 T1/T3），且 distro 侧已有
+-// agent 目录时永远跳过，安装不再是唯一供给入口。替代路径：Pi 登录凭据由
+-// 启动时 wslsupply A2 惰性同步保障（已就绪）；其余配置供给是 S1+ 批次。
+-// 已播种的旧副本按「未托管现状」识别：不迁移、不清除、不接管。
+-
+-// InstallTool installs one CLI into WSL: ensure Node, ensure user npm prefix,
+-// then npm i -g the package, and verify. Idempotent: a present native install
+-// short-circuits with AlreadyOK.
+-func (s *Service) InstallTool(tool string) (*InstallResult, error) {
+-	key := normalizeToolKey(tool)
+-	pkg, ok := packageForTool(key)
+-	if !ok {
+-		return nil, fmt.Errorf("unsupported CLI tool for WSL install: %q", tool)
+-	}
+-	distro := platform.DefaultWSLDistro(nil)
+-	if distro == "" {
+-		return &InstallResult{Tool: key, Package: pkg, Success: false,
+-			Error: "no usable WSL distro installed"}, nil
++	if ctx.Err() == context.DeadlineExceeded {
++		return string(out), fmt.Errorf("wsl command timed out after %s", timeout)
+ 	}
+-
+-	res := &InstallResult{Tool: key, Package: pkg, Distro: distro}
+-	var logB strings.Builder
+-
+-	// nativeVersion probes for a native (non-/mnt) install and returns its
+-	// version line, or "" when absent/Windows-bridged.
+-	nativeVersion := func() string {
+-		if !isNativePath(s.nativeCommandPath(distro, key)) {
+-			return ""
+-		}
+-		out, e := wslExec(distro, "", key+" --version 2>/dev/null | head -1")
+-		if e != nil {
+-			return ""
+-		}
+-		return firstNonEmptyLine(out)
+-	}
+-
+-	// Short-circuit if already installed natively.
+-	if v := nativeVersion(); v != "" {
+-		res.AlreadyOK = true
+-		res.Success = true
+-		res.Version = v
+-		res.Message = fmt.Sprintf("%s already installed in WSL (%s)", key, v)
+-		// Effectiveness guard: nativeVersion resolves through our artificial
+-		// probe PATH, so a dirty historical PATH snapshot (login shells never got
+-		// the standard npm-global line) still reports AlreadyOK while real
+-		// sessions fall through to the /mnt/c Windows shim. ensureUserNpmPrefix
+-		// matches the exact standard line now, so re-running it appends the
+-		// missing line and repairs such snapshots (PATH-prepend semantics: the
+-		// appended line runs last and wins).
+-		if diag := s.checkLoginResolution(distro, key); diag != "" {
+-			if prefixLog, e := s.ensureUserNpmPrefix(distro); e != nil {
+-				logB.WriteString("[npm-prefix-repair]\n" + prefixLog + "\nrepair failed: " + e.Error() + "\n")
+-			} else {
+-				logB.WriteString("[npm-prefix-repair]\n" + prefixLog + "\n")
+-			}
+-			if diag = s.checkLoginResolution(distro, key); diag != "" {
+-				res.Success = false
+-				res.Error = diag
+-			} else {
+-				res.Message += "; repaired login PATH (appended missing npm-global line)"
+-			}
+-		}
+-		res.Log = logB.String()
+-		return res, nil
+-	}
+-
+-	nodeInstalled, nodeLog, err := s.ensureNode(distro)
+-	logB.WriteString("[node]\n" + nodeLog + "\n")
+-	if err != nil {
+-		res.Success = false
+-		res.Error = err.Error()
+-		res.Log = logB.String()
+-		return res, nil
+-	}
+-	res.NodeInstalled = nodeInstalled
+-
+-	if prefixLog, e := s.ensureUserNpmPrefix(distro); e != nil {
+-		logB.WriteString("[npm-prefix]\n" + prefixLog + "\n")
+-		res.Success = false
+-		res.Error = "configure npm prefix: " + e.Error()
+-		res.Log = logB.String()
+-		return res, nil
+-	}
+-
+-	s.logInfo("wslsetup", "npm i -g in WSL", fmt.Sprintf("distro=%s pkg=%s", distro, pkg))
+-	installScript := fmt.Sprintf(`export PATH="$HOME/.npm-global/bin:$PATH"; npm i -g %s`, bashSingleQuote(pkg))
+-	out, e := wslExec(distro, "", installScript)
+-	logB.WriteString("[install]\n" + out + "\n")
+-	if e != nil {
+-		res.Success = false
+-		res.Error = "npm install failed: " + e.Error()
+-		res.Log = logB.String()
+-		return res, nil
+-	}
+-
+-	// Verify.
+-	if v := nativeVersion(); v != "" {
+-		res.Success = true
+-		res.Version = v
+-		res.Message = fmt.Sprintf("%s installed in WSL (%s)", key, v)
+-		// P3-S0：不再 cp -r 整树播种 ~/.pi/agent（证据 T1/T3）；Pi 登录凭据
+-		// 由启动时 wslsupply A2 惰性同步保障，安装成功语义与配置供给解耦。
+-		// Final effectiveness check: a plain login shell (no artificial PATH)
+-		// must resolve the CLI into $HOME/.npm-global/bin, otherwise launched
+-		// sessions silently run the Windows-side CLI via /mnt/c interop.
+-		if diag := s.checkLoginResolution(distro, key); diag != "" {
+-			res.Success = false
+-			res.Error = diag
+-		}
+-	} else {
+-		res.Success = false
+-		res.Error = "install completed but CLI did not resolve natively in WSL"
+-	}
+-	res.Log = logB.String()
+-	return res, nil
+-}
+-
+-// InstallSearchTools installs the fd-find + ripgrep pair pi/omp shell out to
+-// for file search into the default WSL distro, as root via apt (Debian/Ubuntu
+-// family). CodeBox injects PI_OFFLINE=1 into pi/omp sessions, so pi never
+-// auto-downloads these tools; a distro without them degrades file search.
+-// Idempotent: when both tools already probe present (after refreshing the
+-// platform cache) it short-circuits with AlreadyOK. On success it invalidates
+-// the platform-side probe cache so env checks / launch warnings observe the
+-// new state immediately. Non-apt distros surface the raw apt failure plus
+-// manual guidance in Error.
+-func (s *Service) InstallSearchTools() (*InstallResult, error) {
+-	distro := platform.DefaultWSLDistro(nil)
+-	if distro == "" {
+-		return &InstallResult{
+-			Tool:    SearchToolsKey,
+-			Package: searchToolsAptPackages,
+-			Success: false,
+-			Error:   "no usable WSL distro installed",
+-		}, nil
+-	}
+-	res := &InstallResult{Tool: SearchToolsKey, Package: searchToolsAptPackages, Distro: distro}
+-
+-	// 先失效 platform 侧探测缓存：更早的启动探测/环境检测可能已把“缺失”
+-	// 缓存住，AlreadyOK 判定与安装后验证都必须看到当前文件系统真值。
+-	resetSearchToolCache(distro)
+-	if tools := searchToolStatus(distro); tools.FD && tools.Ripgrep {
+-		res.AlreadyOK = true
+-		res.Success = true
+-		res.Message = "WSL 内 fd-find 与 ripgrep 均已存在，无需安装"
+-		return res, nil
+-	}
+-
+-	s.logInfo("wslsetup", "installing fd-find + ripgrep in WSL", "distro="+distro)
+-	// 与 ensureNode 同构：DEBIAN_FRONTEND 抑制交互式前端；update -qq 先刷新
+-	// 索引，避免全新 distro 上 install 因空索引报 Unable to locate package。
+-	script := strings.Join([]string{
+-		"export DEBIAN_FRONTEND=noninteractive",
+-		"apt-get update -qq",
+-		"apt-get install -y " + searchToolsAptPackages,
+-	}, " && ")
+-	out, e := wslExecRoot(distro, script)
+-	res.Log = out
+-	if e != nil {
+-		res.Success = false
+-		res.Error = "apt 安装 fd-find/ripgrep 失败: " + e.Error()
+-		// 非 apt 系发行版（Alpine/Fedora 等）在 apt-get 不存在时在这里暴露；
+-		// 失败信息附上对应包管理器的手动指引。
+-		if strings.Contains(out, "command not found") || strings.Contains(out, "not found") {
+-			res.Error += "；该发行版可能非 Debian/Ubuntu（无 apt），请手动安装，如 Alpine: apk add fd ripgrep，Fedora: sudo dnf install fd-find ripgrep"
+-		}
+-		return res, nil
+-	}
+-
+-	// 安装后失效缓存并重新探测验证（fdfind 与 rg 均须在登录 shell PATH 上）。
+-	resetSearchToolCache(distro)
+-	tools := searchToolStatus(distro)
+-	if !tools.FD || !tools.Ripgrep {
+-		res.Success = false
+-		res.Error = "apt 安装已完成，但 fd/ripgrep 仍未在 WSL 登录 shell PATH 中解析到；请在 WSL 终端内手动执行: sudo apt-get install -y fd-find ripgrep"
+-		return res, nil
+-	}
+-	res.Success = true
+-	res.Message = fmt.Sprintf("已在 WSL（%s）内安装 fd-find 与 ripgrep", distro) +
+-		"（CodeBox 向 pi/omp 会话注入 PI_OFFLINE=1，pi 不会自动下载搜索工具；安装后文件搜索能力恢复）"
+-	return res, nil
+-}
+-
+-// searchToolsAptPackages is the apt package pair installed by
+-// InstallSearchTools (Debian/Ubuntu name the fd binary fdfind; ripgrep ships rg).
+-const searchToolsAptPackages = "fd-find ripgrep"
+-
+-// checkLoginResolution verifies that a plain login shell inside the distro
+-// resolves the CLI into $HOME/.npm-global/bin rather than a /mnt/<drive>
+-// Windows passthrough — the same resolution a launched session's `bash -lic`
+-// builds on (driven by the .profile/.bashrc PATH lines). It must NOT go through
+-// wslExec, whose artificial PATH prefix would mask a broken login PATH. Returns
+-// "" when effective; otherwise a diagnostic suitable for InstallResult.Error /
+-// the InstallResult log. A probe that itself errors is inconclusive and returns
+-// "" (a diagnostic must not fail an otherwise completed install); the miss is
+-// logged instead.
+-func (s *Service) checkLoginResolution(distro, key string) string {
+-	script := `printf '%s\n' "$HOME/.npm-global/bin"; command -v ` + bashSingleQuote(key) + ` 2>/dev/null || true`
+-	out, err := wslExecLogin(distro, script)
+-	if err != nil {
+-		s.logInfo("wslsetup", "login-resolution probe failed (treated as inconclusive)", "tool="+key+" err="+err.Error())
+-		return ""
+-	}
+-	userBin, resolved := splitLoginResolutionProbe(out)
+-	if userBin == "" {
+-		s.logInfo("wslsetup", "login-resolution probe returned no marker line (treated as inconclusive)", "tool="+key)
+-		return ""
+-	}
+-	if strings.HasPrefix(resolved, userBin+"/") {
+-		return ""
+-	}
+-	if resolved == "" {
+-		return fmt.Sprintf("%s installed but not effective in the WSL login shell: command -v %s found nothing on PATH (expected under %s); check the npm-global PATH line in ~/.profile", key, key, userBin)
+-	}
+-	return fmt.Sprintf("%s installed but not effective in the WSL login shell: command -v %s resolves to %s instead of %s (Windows passthrough); WSL sessions would run the Windows-side CLI — check the npm-global PATH line in ~/.profile", key, key, resolved, userBin)
+-}
+-
+-// splitLoginResolutionProbe parses checkLoginResolution's probe output: the
+-// first non-empty line is the echoed "$HOME/.npm-global/bin" marker; the next
+-// non-empty line (if any) is `command -v`'s direct stdout hit. Direct-stdout
+-// parsing is used because command substitution is unreliable in this
+-// non-interactive wsl.exe context (see nativeCommandPath).
+-func splitLoginResolutionProbe(out string) (userBin, resolved string) {
+-	seen := 0
+-	for _, l := range strings.Split(out, "\n") {
+-		t := strings.TrimSpace(strings.Trim(l, "\r\x00"))
+-		if t == "" {
+-			continue
+-		}
+-		if seen == 0 {
+-			userBin = t
+-			seen = 1
+-			continue
+-		}
+-		resolved = t
+-		return
+-	}
+-	return
+-}
+-
+-func (s *Service) logInfo(scope, msg, detail string) {
+-	if s.log != nil {
+-		s.log.Info(scope, msg, detail)
+-	}
+-}
+-
+-func firstNonEmptyLine(s string) string {
+-	for _, l := range strings.Split(s, "\n") {
+-		t := strings.TrimSpace(strings.Trim(l, "\r\x00"))
+-		if t != "" {
+-			return t
+-		}
+-	}
+-	return ""
++	return string(out), err
+ }
+diff --git a/internal/wslsetup/service_windows_test.go b/internal/wslsetup/service_windows_test.go
+index 1398916..f103a57 100644
+--- a/internal/wslsetup/service_windows_test.go
++++ b/internal/wslsetup/service_windows_test.go
+@@ -2,372 +2,23 @@
+ 
+ package wslsetup
+ 
+-import (
+-	"strings"
+-	"testing"
+-
+-	"amagi-codebox/internal/platform"
+-)
+-
+-// stubWSLExec replaces the wslExec / wslExecLogin package vars for one test and
+-// restores them afterwards, so other tests (and GetStatus) keep the real
+-// executors.
+-func stubWSLExec(t *testing.T, execFn, loginFn func(distro, script string) (string, error)) {
+-	t.Helper()
+-	prevExec, prevLogin := wslExec, wslExecLogin
+-	wslExec = func(_, _, script string) (string, error) {
+-		return execFn("", script)
+-	}
+-	if loginFn != nil {
+-		wslExecLogin = loginFn
+-	}
+-	t.Cleanup(func() {
+-		wslExec, wslExecLogin = prevExec, prevLogin
+-	})
+-}
+-
+-// TestEnsureUserNpmPrefixUsesExactLineGuard pins the C6① guard: the append
+-// condition must match the exact standard line with grep -qF, not the old weak
+-// `grep -q "npm-global/bin"` substring guard that dirty PATH-snapshot lines
+-// defeated.
+-func TestEnsureUserNpmPrefixUsesExactLineGuard(t *testing.T) {
+-	var captured string
+-	stubWSLExec(t, func(_, script string) (string, error) {
+-		captured = script
+-		return "prefix-ok\n", nil
+-	}, nil)
+-
+-	svc := NewService(nil)
+-	if _, err := svc.ensureUserNpmPrefix("Ubuntu-Test"); err != nil {
+-		t.Fatalf("ensureUserNpmPrefix: %v", err)
+-	}
+-
+-	exactGuard := `grep -qF 'export PATH="$HOME/.npm-global/bin:$PATH"'`
+-	for _, target := range []string{`"$HOME/.bashrc"`, `"$HOME/.profile"`} {
+-		if !strings.Contains(captured, exactGuard+" "+target) {
+-			t.Errorf("script missing exact-line guard for %s:\n%s", target, captured)
+-		}
+-	}
+-	if strings.Contains(captured, `grep -q "npm-global/bin"`) {
+-		t.Errorf("script still contains the old weak substring guard:\n%s", captured)
+-	}
+-	// The appended line must be the standard line itself (C6③: appending the
+-	// exact line after a dirty snapshot repairs it — later PATH-prepends win).
+-	if got := strings.Count(captured, `'export PATH="$HOME/.npm-global/bin:$PATH"' >> `); got != 2 {
+-		t.Errorf("script appends the standard line %d times, want 2 (.bashrc + .profile):\n%s", got, captured)
+-	}
+-}
+-
+-func TestSplitLoginResolutionProbe(t *testing.T) {
+-	cases := []struct {
+-		name     string
+-		out      string
+-		userBin  string
+-		resolved string
+-	}{
+-		{"effective", "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/claude\n", "/home/u/.npm-global/bin", "/home/u/.npm-global/bin/claude"},
+-		{"windows passthrough", "/home/u/.npm-global/bin\r\n/mnt/c/Users/u/AppData/Roaming/npm/claude\r\n", "/home/u/.npm-global/bin", "/mnt/c/Users/u/AppData/Roaming/npm/claude"},
+-		{"not found", "/home/u/.npm-global/bin\n", "/home/u/.npm-global/bin", ""},
+-		{"empty output", "", "", ""},
+-		{"garbage single line", "something went wrong\n", "something went wrong", ""},
+-	}
+-	for _, c := range cases {
+-		t.Run(c.name, func(t *testing.T) {
+-			userBin, resolved := splitLoginResolutionProbe(c.out)
+-			if userBin != c.userBin || resolved != c.resolved {
+-				t.Errorf("splitLoginResolutionProbe(%q) = (%q, %q), want (%q, %q)", c.out, userBin, resolved, c.userBin, c.resolved)
+-			}
+-		})
+-	}
+-}
+-
+-func TestCheckLoginResolution(t *testing.T) {
+-	svc := NewService(nil)
+-
+-	stubWSLExec(t, nil, func(_, _ string) (string, error) {
+-		return "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/claude\n", nil
+-	})
+-	if diag := svc.checkLoginResolution("Ubuntu-Test", "claude"); diag != "" {
+-		t.Errorf("effective resolution produced diagnostic: %s", diag)
+-	}
+-
+-	stubWSLExec(t, nil, func(_, _ string) (string, error) {
+-		return "/home/u/.npm-global/bin\n/mnt/c/Users/u/AppData/Roaming/npm/claude\n", nil
+-	})
+-	diag := svc.checkLoginResolution("Ubuntu-Test", "claude")
+-	if diag == "" || !strings.Contains(diag, "/mnt/c/Users/u/AppData/Roaming/npm/claude") || !strings.Contains(diag, "Windows passthrough") {
+-		t.Errorf("passthrough resolution diagnostic missing expected content: %q", diag)
+-	}
+-
+-	stubWSLExec(t, nil, func(_, _ string) (string, error) {
+-		return "/home/u/.npm-global/bin\n", nil
+-	})
+-	if diag = svc.checkLoginResolution("Ubuntu-Test", "claude"); diag == "" || !strings.Contains(diag, "found nothing on PATH") {
+-		t.Errorf("unresolved diagnostic missing expected content: %q", diag)
+-	}
+-
+-	// A probe error is inconclusive: it must not fail an otherwise completed
+-	// install, so no diagnostic is produced.
+-	stubWSLExec(t, nil, func(_, _ string) (string, error) {
+-		return "boom", errFakeWSL
+-	})
+-	if diag = svc.checkLoginResolution("Ubuntu-Test", "claude"); diag != "" {
+-		t.Errorf("probe error must be inconclusive, got diagnostic: %s", diag)
+-	}
+-}
+-
+-// wslPiInstallScriptRunner fakes wslExec for the scripted pi InstallTool flow:
+-// captures every script so tests can assert the retired cp -r seeding never
+-// reappears, while the CLI itself resolves/installs/verifies normally.
+-func wslPiInstallScriptRunner(scripts *[]string, typePPi []string) func(distro, script string) (string, error) {
+-	return func(_, script string) (string, error) {
+-		*scripts = append(*scripts, script)
+-		switch {
+-		case strings.Contains(script, "type -P 'pi'"):
+-			if len(typePPi) == 0 {
+-				return "\n", nil
+-			}
+-			out := typePPi[0]
+-			typePPi = typePPi[1:]
+-			return out + "\n", nil
+-		case strings.Contains(script, "type -P 'node'"):
+-			return "/usr/bin/node\n", nil
+-		case strings.Contains(script, "node -v"):
+-			return "v22.19.0\n", nil
+-		case strings.Contains(script, "pi --version"):
+-			return "1.1.0\n", nil
+-		case strings.Contains(script, "prefix-ok"), strings.Contains(script, "npm config set prefix"):
+-			return "prefix-ok\n", nil
+-		case strings.Contains(script, "npm i -g"):
+-			return "added 1 package\n", nil
+-		default:
+-			return "\n", nil
+-		}
+-	}
+-}
+-
+-// assertNoAgentTreeSeeding fails when any captured wslExec script touches the
+-// distro agent tree or performs a recursive copy (P3-S0：ensurePiConfig 整树
+-// 播种停用；首装不得带入 sessions/auth/plugin 实体)。
+-func assertNoAgentTreeSeeding(t *testing.T, scripts []string) {
+-	t.Helper()
+-	for _, script := range scripts {
+-		if strings.Contains(script, "cp -r") || strings.Contains(script, ".pi/agent") || strings.Contains(script, ".pi\\agent") {
+-			t.Fatalf("agent-tree seeding leaked into install script:\n%s", script)
+-		}
+-	}
+-}
+-
+-// TestInstallToolPiDoesNotSeedAgentTree（P3-S0 验收 1）：pi 首装不再 cp -r
+-// Windows ~/.pi/agent 整树——任何阶段（含验证与登录 shell 检查）的脚本都不得
+-// 触碰 distro agent 目录；CLI 安装成功语义保留（Success + 版本）。
+-func TestInstallToolPiDoesNotSeedAgentTree(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	var execScripts []string
+-	stubWSLExec(t,
+-		wslPiInstallScriptRunner(&execScripts, []string{"", "/home/u/.npm-global/bin/pi"}),
+-		func(_, _ string) (string, error) {
+-			return "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/pi\n", nil
+-		})
+-
+-	res, err := NewService(nil).InstallTool("pi")
+-	if err != nil {
+-		t.Fatalf("InstallTool(pi): %v", err)
+-	}
+-	if !res.Success || res.Version != "1.1.0" {
+-		t.Fatalf("install success semantics must hold: Success=%v Version=%q Error=%q", res.Success, res.Version, res.Error)
+-	}
+-	if strings.Contains(res.Log, "[pi-config]") || strings.Contains(res.Log, "seed") {
+-		t.Fatalf("install log still mentions config seeding:\n%s", res.Log)
+-	}
+-	assertNoAgentTreeSeeding(t, execScripts)
+-}
+-
+-// TestInstallToolPiAlreadyOKIdempotent（P3-S0 验收 2）：重复 InstallTool(pi)
+-// 幂等——第二次 AlreadyOK 短路成功，且两次都不触发任何播种/检查脚本副作用。
+-func TestInstallToolPiAlreadyOKIdempotent(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	var execScripts []string
+-	runner := wslPiInstallScriptRunner(&execScripts, []string{"/home/u/.npm-global/bin/pi", "/home/u/.npm-global/bin/pi"})
+-	stubWSLExec(t, runner, func(_, _ string) (string, error) {
+-		return "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/pi\n", nil
+-	})
+-
+-	svc := NewService(nil)
+-	first, err := svc.InstallTool("pi")
+-	if err != nil {
+-		t.Fatalf("first InstallTool: %v", err)
+-	}
+-	if !first.Success {
+-		t.Fatalf("first install failed: %q", first.Error)
+-	}
+-	second, err := svc.InstallTool("pi")
+-	if err != nil {
+-		t.Fatalf("second InstallTool: %v", err)
+-	}
+-	if !second.AlreadyOK || !second.Success {
+-		t.Fatalf("second install must be AlreadyOK success, got AlreadyOK=%v Success=%v Error=%q", second.AlreadyOK, second.Success, second.Error)
+-	}
+-	assertNoAgentTreeSeeding(t, execScripts)
+-}
+-
+-type fakeWSLError struct{}
+-
+-func (fakeWSLError) Error() string { return "fake wsl.exe failure" }
+-
+-var errFakeWSL = fakeWSLError{}
+-
+-// wslInstallScriptRunner fakes wslExec for the scripted InstallTool flow tests:
+-// the CLI is present in the user npm-global bin (so the artificial-PATH probes
+-// succeed), node is native and at the floor, and the prefix script reports ok.
+-func wslInstallScriptRunner(typePClaude []string) func(distro, script string) (string, error) {
+-	return func(_, script string) (string, error) {
+-		switch {
+-		case strings.Contains(script, "type -P 'claude'"):
+-			if len(typePClaude) == 0 {
+-				return "\n", nil
+-			}
+-			out := typePClaude[0]
+-			typePClaude = typePClaude[1:]
+-			return out + "\n", nil
+-		case strings.Contains(script, "type -P 'node'"):
+-			return "/usr/bin/node\n", nil
+-		case strings.Contains(script, "node -v"):
+-			return "v22.19.0\n", nil
+-		case strings.Contains(script, "claude --version"):
+-			return "1.2.3\n", nil
+-		case strings.Contains(script, "prefix-ok"), strings.Contains(script, "npm config set prefix"):
+-			return "prefix-ok\n", nil
+-		case strings.Contains(script, "npm i -g"):
+-			return "added 1 package\n", nil
+-		default:
+-			return "\n", nil
+-		}
+-	}
+-}
+-
+-// skipWithoutWSLDistro skips tests whose code path calls
+-// platform.DefaultWSLDistro (no injection seam) on machines without WSL.
+-func skipWithoutWSLDistro(t *testing.T) {
+-	t.Helper()
+-	if platform.DefaultWSLDistro(nil) == "" {
+-		t.Skip("no usable WSL distro on this machine; skipping scripted install-flow test")
+-	}
+-}
+-
+-// TestInstallToolAlreadyOKRepairsDirtySnapshot covers C6②③ on the AlreadyOK
+-// short-circuit: the binary only resolves through the artificial probe PATH,
+-// while the login shell still hits the /mnt/c Windows shim (dirty PATH
+-// snapshot). The repaired prefix script (exact-line guard) is re-run, and the
+-// re-probe must confirm the fix; the result surfaces the repair in Message.
+-func TestInstallToolAlreadyOKRepairsDirtySnapshot(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	loginOutputs := []string{
+-		"/home/u/.npm-global/bin\n/mnt/c/Users/u/AppData/Roaming/npm/claude\n", // dirty snapshot
+-		"/home/u/.npm-global/bin\n/home/u/.npm-global/bin/claude\n",            // repaired
+-	}
+-	stubWSLExec(t,
+-		wslInstallScriptRunner([]string{"/home/u/.npm-global/bin/claude"}),
+-		func(_, _ string) (string, error) {
+-			if len(loginOutputs) == 0 {
+-				t.Fatal("unexpected extra login probe")
+-			}
+-			out := loginOutputs[0]
+-			loginOutputs = loginOutputs[1:]
+-			return out, nil
+-		})
+-
+-	res, err := NewService(nil).InstallTool("claude")
+-	if err != nil {
+-		t.Fatalf("InstallTool: %v", err)
+-	}
+-	if !res.AlreadyOK || !res.Success {
+-		t.Fatalf("AlreadyOK=%v Success=%v Error=%q, want already-ok success", res.AlreadyOK, res.Success, res.Error)
+-	}
+-	if !strings.Contains(res.Message, "repaired login PATH") {
+-		t.Errorf("Message should mention the repaired login PATH: %q", res.Message)
+-	}
+-	if !strings.Contains(res.Log, "[npm-prefix-repair]") {
+-		t.Errorf("Log should contain the repair block:\n%s", res.Log)
+-	}
+-}
+-
+-// TestInstallToolAlreadyOKUnrepairableReportsFailure keeps Success=false with
+-// the effectiveness diagnostic when even the repaired prefix cannot make the
+-// login shell resolve the CLI into the user bin.
+-func TestInstallToolAlreadyOKUnrepairableReportsFailure(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	dirty := "/home/u/.npm-global/bin\n/mnt/c/Users/u/AppData/Roaming/npm/claude\n"
+-	stubWSLExec(t,
+-		wslInstallScriptRunner([]string{"/home/u/.npm-global/bin/claude"}),
+-		func(_, _ string) (string, error) { return dirty, nil })
+-
+-	res, err := NewService(nil).InstallTool("claude")
+-	if err != nil {
+-		t.Fatalf("InstallTool: %v", err)
+-	}
+-	if res.Success {
+-		t.Fatalf("Success=true, want false with effectiveness error")
+-	}
+-	if res.Error == "" || !strings.Contains(res.Error, "not effective in the WSL login shell") {
+-		t.Errorf("Error should carry the effectiveness diagnostic: %q", res.Error)
+-	}
+-}
+-
+-// TestInstallToolEffectivenessFailureReported covers the fresh-install path:
+-// npm i -g succeeds and the artificial-PATH verify passes, but the login-shell
+-// effectiveness check finds the /mnt/c passthrough — the install result must
+-// report failure with the diagnostic instead of silently succeeding.
+-func TestInstallToolEffectivenessFailureReported(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	stubWSLExec(t,
+-		// First probe (short-circuit check): not installed yet. Verify probe
+-		// after npm i -g: present in the user bin.
+-		wslInstallScriptRunner([]string{"", "/home/u/.npm-global/bin/claude"}),
+-		func(_, _ string) (string, error) {
+-			return "/home/u/.npm-global/bin\n/mnt/c/Users/u/AppData/Roaming/npm/claude\n", nil
+-		})
+-
+-	res, err := NewService(nil).InstallTool("claude")
+-	if err != nil {
+-		t.Fatalf("InstallTool: %v", err)
+-	}
+-	if res.Success {
+-		t.Fatalf("Success=true, want false: login shell resolves the Windows passthrough")
+-	}
+-	if res.Error == "" || !strings.Contains(res.Error, "/mnt/c/Users/u/AppData/Roaming/npm/claude") {
+-		t.Errorf("Error should carry the resolved passthrough path: %q", res.Error)
+-	}
+-	if res.Version != "1.2.3" {
+-		t.Errorf("Version = %q, want the installed version retained for diagnostics", res.Version)
+-	}
+-}
+-
+-// TestInstallToolEffectiveShortCircuitUnchanged pins the happy path: when the
+-// login shell already resolves into the user bin, AlreadyOK stays a plain
+-// success with no repair and no error.
+-func TestInstallToolEffectiveShortCircuitUnchanged(t *testing.T) {
+-	skipWithoutWSLDistro(t)
+-
+-	stubWSLExec(t,
+-		wslInstallScriptRunner([]string{"/home/u/.npm-global/bin/claude"}),
+-		func(_, _ string) (string, error) {
+-			return "/home/u/.npm-global/bin\n/home/u/.npm-global/bin/claude\n", nil
+-		})
+-
+-	res, err := NewService(nil).InstallTool("claude")
+-	if err != nil {
+-		t.Fatalf("InstallTool: %v", err)
+-	}
+-	if !res.AlreadyOK || !res.Success || res.Error != "" {
+-		t.Fatalf("AlreadyOK=%v Success=%v Error=%q, want plain already-ok success", res.AlreadyOK, res.Success, res.Error)
+-	}
+-	if strings.Contains(res.Message, "repaired") {
+-		t.Errorf("no repair expected on effective resolution: %q", res.Message)
++import "testing"
++
++// TestRealRunnerWiredOnInit pins the Windows wiring contract: init() must
++// install a fully populated real wsl.exe runner so the portable business flow
++// (service_flow.go) executes against the live distro. The flow behavior itself
++// is covered by the portable fake-runner tests, which run on every OS.
++func TestRealRunnerWiredOnInit(t *testing.T) {
++	// Restore any runner a parallel test may have injected; assert the wired
++	// one captured at package init below.
++	t.Cleanup(func() { wslRunnerImpl = realRunnerOnInit })
++
++	if realRunnerOnInit == nil {
++		t.Fatal("wslRunnerImpl must be wired by init() on Windows")
++	}
++	r := realRunnerOnInit
++	if r.defaultDistro == nil || r.distroVersion == nil || r.execUser == nil ||
++		r.execRoot == nil || r.execLogin == nil || r.searchStatus == nil || r.resetSearchCache == nil {
++		t.Fatal("real runner wired on Windows has nil functions")
+ 	}
+ }

@@ -52,8 +52,21 @@ Release 资产按以下命名约定出包（见 `.github/workflows/release.yml`�
 
 Windows 上 CodeBox 默认把终端会话启动到 WSL（Linux）环境中。CLI 需要安装在 WSL 内部才能被默认会话使用：
 
-- 打开"环境检测"页（`/envcheck`），其中的 **WSL 内的 CLI** 卡片（`frontend/src/views/settings/WSLCLISettings.vue`）会检测 WSL 状态与发行版版本（WSL1/WSL2），并提供"安装到 WSL"按钮，把 Claude Code / OpenCode / Codex / Pi / OMP 装进 WSL 内部（必要时先安装 Node 运行时）。
-- 后端实现为 `internal/wslsetup`（Windows 构建下为 `service_windows.go`，其他平台为 no-op stub）。
+- 打开"环境检测"页（`/envcheck`），其中的 **WSL 内的 CLI** 卡片（`frontend/src/views/settings/WSLCLISettings.vue`）会检测 WSL 状态与发行版版本（WSL1/WSL2），并提供"安装到 WSL"/"升级"按钮，把 Claude Code / OpenCode / Codex / Pi / OMP 装进 WSL 内部（必要时先安装 Node 运行时；已安装的 CLI 点"升级"更新到最新版）。
+- 从 Windows 环境检测卡片安装或升级时，该 CLI 使用 WSL 模式或已在 WSL 安装的，会联动安装/升级默认发行版中的 Linux 版本。结果分别显示；Windows 成功但 WSL 失败时会给出警告，可在 WSL 卡片单独重试。
+- 后端实现为 `internal/wslsetup`：Windows 通过 `service_windows.go` 执行真实命令，其他平台返回不支持。
+
+#### 统一配置管理（Windows 统一配置入口）
+
+同一张卡片的"配置状态"区提供 **启用统一管理** 按钮：点一次，Windows 就是唯一配置入口，此后无需在 WSL 内重复配置或逐项勾选：
+
+- 自动同步范围：Pi settings/amagi/mcp、Claude MCP 服务器与设置白名单字段、Codex MCP/profile、共享技能（`~/.agents/skills`）与 CLAUDE.md/commands/agents/AGENTS.md、视觉清单；Windows 侧新增的 MCP 服务器/字段/技能在下一次自动同步时纳入。
+- 同步时机：WSL 会话启动时补漏、Windows 侧保存后推送、CodeBox 启动时对账，以及技能/资源后台扫描完成后。启用统一管理时，技能与资源每 5 分钟后台重扫一次以发现新增和修改；活动会话期间暂停写入，结束后补推，停机的 WSL 不会被同步任务唤醒。
+- 保护边界不变：WSL 内手动修改过的条目会冻结保留本地（可预览后接管）；WSL 已有同名内容不会被自动覆盖；permissions/hooks/trust 等授权类字段不导入。Claude/Codex 订阅登录凭据不复制；Pi 登录会话沿用已有的凭据同步机制。MCP env 与视觉清单含密钥副本，按 0600 权限写入。
+- "停止自动纳入新项"不会撤回既有授权或删除副本；已授权内容仍可能由会话启动或原有同步机制更新。停止单个单元跟随用各面板的"保留本地"。WSL 发行版重装或更换默认用户后需要重新点一次"启用统一管理"（授权绑定目标身份）。
+- 统一管理限于上述兼容范围：暂不迁移所有引擎的插件、OpenCode 用户全局配置中附加层之外的内容，以及 OMP 的 models.yml 之外配置；五种 CLI 安装升级覆盖不等于任意 Windows 配置都能在 Linux 直接使用。
+
+需要逐条控制（预览/勾选导入/接管冲突）时，下方的 Pi 配置投影、用户配置导入（Claude/Codex）、共享技能等高级面板仍然可用。
 
 ## macOS 安装
 

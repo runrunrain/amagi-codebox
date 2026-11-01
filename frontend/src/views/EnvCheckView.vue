@@ -3,18 +3,21 @@
     <PageHead title="环境检测" description="CLI 工具安装状态、版本与 PATH 校验" />
     <!-- RC1-6：远程模式提示条（环境检测为本机功能） -->
     <RemoteScopeBanner subject="环境检测" />
-    <EnvCheckSettings />
-    <WSLCLISettings />
+    <EnvCheckSettings @wsl-cli-changed="wslRevision++" />
+    <WSLCLISettings :refresh-revision="wslRevision" />
     <DockerWSLHealth />
   </section>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue'
 import EnvCheckSettings from './settings/EnvCheckSettings.vue'
 import WSLCLISettings from './settings/WSLCLISettings.vue'
 import DockerWSLHealth from './settings/DockerWSLHealth.vue'
+
+const wslRevision = ref(0)
 </script>
 
 <style scoped>

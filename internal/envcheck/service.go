@@ -88,6 +88,17 @@ type Service struct {
 	// Mirrors the SetHeadroomStopper injection pattern.
 	wslSearchToolsInstaller func() (*InstallResult, error)
 
+	// wslCLISync, when set via SetWSLCLISync, is invoked by attachWSLSync
+	// after a SUCCESSFUL Windows-side install/update of a managed CLI, so the
+	// same operation also installs/upgrades the CLI inside the default WSL
+	// distro (install/upgrade two-sided linkage). app.go wiring adapts
+	// App.syncCLIToWSL (app_wsl_cli_sync.go), which gates on distro
+	// availability + shell=wsl/already-installed and dispatches to
+	// wslsetup Install/Update. envcheck never imports wslsetup — same
+	// injection rationale as wslSearchToolsInstaller. Nil (zero value, tests /
+	// non-Windows wiring) means no linkage and attachWSLSync is a no-op.
+	wslCLISync func(tool CLITool, kind OperationKind) *WSLSyncResult
+
 	// Async operation state
 	opMu    sync.Mutex
 	current *OperationState
@@ -183,6 +194,52 @@ func (s *Service) SetWSLSearchToolsInstaller(fn func() (*InstallResult, error)) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.wslSearchToolsInstaller = fn
+}
+
+// SetWSLCLISync 注入「Windows 侧安装/升级成功 → 同步 WSL 侧 CLI」回调
+// （安装/升级双侧联动，direction §2.2）。app.go 装配时把 App.syncCLIToWSL
+// 注入；nil 安全（未注入时 attachWSLSync 是 no-op，测试/非 Windows 装配
+// 均不受影响）。与 SetWSLSearchToolsInstaller 同样的 setter 线程安全范式
+// （s.mu 写锁，读取走 RLock），必须在首次 Install/Update 之前调用。
+func (s *Service) SetWSLCLISync(fn func(tool CLITool, kind OperationKind) *WSLSyncResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.wslCLISync = fn
+}
+
+// attachWSLSync 在 Windows 侧 install/update 成功后，把 WSL 侧同步作为
+// 同一操作的最后一步执行（direction §2.2）：
+//   - Windows 失败（err != nil / result == nil / !result.Success）不触发，
+//     WSL 字段保持 nil；
+//   - 非 install/update kind（uninstall 等）与 ToolHeadroom 不触发；
+//   - 回调未注入时不触发（nil 安全）；
+//   - reporter 非 nil 时先上报 OperationStepWSLSync（异步操作内经既有轮询
+//     可见「正在同步到 WSL」），再执行回调并把结果写进 result.WSL。
+//     回调返回 nil 视为「本次不涉及 WSL」（例如无可用发行版）。
+//
+// 调用点：runOperation（异步全链）、serializedInstallOrUpdate 与
+// serializedInstallOrUpdateWithMethod（同步链，不传 reporter）。调用方
+// 不得持有 opMu（reporter 内部会取锁）。
+func (s *Service) attachWSLSync(tool CLITool, kind OperationKind, result *InstallResult, err error, reporter progressReporter) {
+	if err != nil || result == nil || !result.Success {
+		return
+	}
+	if kind != OperationKindInstall && kind != OperationKindUpdate {
+		return
+	}
+	if tool == ToolHeadroom {
+		return
+	}
+	s.mu.RLock()
+	fn := s.wslCLISync
+	s.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	if reporter != nil {
+		reporter.report(OperationStepWSLSync, "正在同步到 WSL…", progressWSLSync)
+	}
+	result.WSL = fn(tool, kind)
 }
 
 // CheckAll checks every supported CLI tool and updates the in-memory cache.
@@ -637,6 +694,11 @@ func (s *Service) serializedInstallOrUpdate(tool CLITool, operation installOpera
 		_, _ = s.CheckOne(tool)
 	}
 
+	// 安装/升级双侧联动（同步链，direction §2.2）：Windows 成功后追加 WSL
+	// 同步步骤；不传 reporter（占位操作态即将被清除，步骤上报无观察面），
+	// 结果仅经返回值 result.WSL 暴露给同步调用方。不得在持有 opMu 时调用。
+	s.attachWSLSync(tool, OperationKind(operation), result, err, nil)
+
 	// Clear the operation state so the gate is released.
 	s.opMu.Lock()
 	s.current = nil
@@ -1024,6 +1086,13 @@ func (s *Service) runOperation(op *OperationState, method ClaudeInstallMethod) {
 		cacheRefreshed = cacheErr == nil
 	}
 
+	// 安装/升级双侧联动：Windows 成功后在同一操作内追加 WSL 同步步骤
+	// （direction §2.2）。操作保持 running 直到本步结束，复用同一操作槽与
+	// 同一套前端轮询；结果写 result.WSL（含 skipped/failed，均不改变
+	// OperationState.Status 仍只表示 Windows 侧的语义）。不得在持有 opMu
+	// 时调用（reporter 内部取锁）。
+	s.attachWSLSync(op.Tool, op.Kind, result, err, reporter)
+
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -1287,6 +1356,11 @@ func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod
 		s.invalidateVersionCache(ToolClaudeCode)
 		_, _ = s.CheckOne(ToolClaudeCode)
 	}
+
+	// 安装/升级双侧联动（同步链，direction §2.2）：Claude 指定通道安装成功后
+	// 追加 WSL 同步；不传 reporter，结果经返回值 result.WSL 暴露。不得在
+	// 持有 opMu 时调用。
+	s.attachWSLSync(ToolClaudeCode, OperationKindInstall, result, err, nil)
 
 	s.opMu.Lock()
 	s.current = nil

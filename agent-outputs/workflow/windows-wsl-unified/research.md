@@ -1,0 +1,141 @@
+# Windows 统一配置入口 × WSL Linux CLI：实现前定向调查
+
+> 调查角色：baize（只读取证）。宿主 macOS，全部结论来自仓库 HEAD `0723bdb` 源码阅读，未做真机 Windows/WSL 验证、未安装/升级任何 CLI、未修改代码。上游：任务书 + `agent-outputs/workflow/wsl-goal-closure/workflow.md`（已读）+ `agent-outputs/workflow/wsl-session-friction/`（B7 相关定向回读）。
+
+## 0. 结论索引（O=观察 / I=推断 / U=未覆盖）
+
+| # | 主张 | 态 | 锚点 |
+|---|---|---|---|
+| 1 | 五 CLI Windows 侧安装/升级入口完整（含 omp），经 envcheck 白名单修复动作执行 | O | `internal/envcheck/fix_dispatcher.go:118-139`、`installer.go:1221-1300`、`internal/envcheck/types.go:24-25` |
+| 2 | WSL 侧安装入口 `InstallCLIToWSL` 存在但只覆盖 4/5 CLI（claude/opencode/codex/pi），**无 omp** | O | `internal/wslsetup/service.go:16-22`（cliPackages）、`service_windows.go:98`（GetStatus tools 列表） |
+| 3 | omp 缺席是 2026-10-16 主上裁定 B7「关闭不修」的结果，与本轮新需求（五 CLI 全覆盖）冲突，需主上明示撤销 | O | `agent-outputs/workflow/wsl-session-friction/workflow.md:24,62`、`p3-config-supply-design.md:24,450` |
+| 4 | **WSL 侧无升级路径**：InstallTool 对已装 CLI 短路 AlreadyOK，不比较最新版；前端「重新安装」按钮实际不重装 | O | `internal/wslsetup/service_windows.go:185-210`（AlreadyOK 短路）、`frontend/src/views/settings/WSLCLISettings.vue:36`（按钮文案） |
+| 5 | **Windows 安装/升级与 WSL 安装零联动**：envcheck install/update 成功路径无任何 wslsetup 调用；唯一桥是 envcheck 卡片注入的 search-tools 安装回调 | O | `app.go` 全文仅 3 处 wslsetup 引用（:345,:530,:939-947,:646）；`envcheck/service.go:82-89` 唯一 WSL 回调是搜索工具 |
+| 6 | 发行版选择 = 首个可用非保留 distro，进程内缓存，无用户偏好/设置面；wslsetup、供给协调器、resolver 共用 | O | `internal/platform/wsl.go:150-202`（DefaultWSLDistro/availableWSLDistros） |
+| 7 | WSL 启用策略 = Windows 默认 shell "wsl"（capabilities 判定），用户可按会话选其它 shell 退出 WSL；resolver 在 CLI 解析前短路进 WSL 分支 | O | `internal/platform/resolver.go:138-160`、`internal/settings/service.go:189-195` |
+| 8 | 启动自动供给：pi（托管 models.json + 登录 auth.json + settings/amagi/mcp 三键投影）在 pi 会话启动闸门；共享小文件（视觉清单/学习层）在**所有五 CLI** 内嵌 PTY 启动（桌面 launchEmbeddedPTYWithClaims + remote/restart control_wiring）| O | `app.go:3842`、`pi_login_launch.go:144-162`、`control_wiring.go:147`、`app_wsl_supply.go:182-289` |
+| 9 | pi/omp/opencode 的 provider 配置在各自启动路径直接写 distro（models.json / models.yml / amagi-codebox.json 附加层），SA-06 staging 原语 | O | `app.go:5261-5262,:5354-5357`、`internal/launcher/wsl_agent_config.go:281-319,361-` |
+| 10 | Claude/Codex 配置与 skills/commands 是**手动键级导入**（S4：检查/预览/应用/保留/接管），不随启动自动同步 | O | `app_wsl_supply_s4.go:1-19,95-112`、`WSLCLISettings.vue:75-108` |
+| 11 | 配置更改推送：provider 保存（所有保存点经 syncProvidersToHarnesses）、pi 登录预设、pi 配置面板三类来源标脏 → single-flight 异步推送；停机 distro 只标不唤醒、活动会话暂停 | O | `provider_harness_sync.go:17-25`、`app.go:4112-4122`、`app_wsl_supply.go:407-480` |
+| 12 | 剩余手动边界：视觉清单共享同意、pi 键投影启用、skills 逐项勾选导入、Claude/Codex 导入、插件 WSL 重放（仅 pi 支持，其余占位）、omp 整链、WSL 侧 CLI 升级 | O | `WSLCLISettings.vue:44-120`、`app_wsl_plugins.go:44-49` |
+| 13 | 混合架构预警覆盖五 CLI（含 omp）：登录 shell 解析命中 /mnt/* 即告警并指引到「WSL 内的 CLI」卡片——但 omp 在该卡片无安装入口（指引死角） | O | `internal/envcheck/wsl_hybrid.go:36-46,84-95`、`EnvCheckView.vue:7`（卡片挂载点） |
+| 14 | 「已实现」的 WSL 安装/供给链路真机验证状态：wsl-goal-closure W 阶段真机用例五 CLI/UNC/Windows 工程未闭环；本调查未复测 | O | `agent-outputs/workflow/wsl-goal-closure/workflow.md`（W 行：「五CLI/UNC/Windows工程用例尚未闭环」） |
+
+## 1. 用户需求 → 现状差距映射
+
+用户已确认三条目标（快照 entry 461f73fd）：
+
+1. **Windows 统一配置入口，WSL 跑 Linux CLI 无需重新配置（允许后台兼容副本）** → 现状大部分已实现（§2.5/2.6），差距只在手动同意面与 omp 安装链。
+2. **通过 CodeBox 安装/升级 CLI 时同步安装/升级 Linux 版** → **完全缺失**（主张 #4/#5），是本轮核心新增工作量。
+3. **复用现有机制** → wslsetup/envcheck/wslsupply 三层基建齐备，新增面小（§4 切片估算）。
+
+## 2. 现状覆盖矩阵（逐链路证据）
+
+### 2.1 五 CLI Windows 安装/升级入口（已实现，非本轮缺口）
+
+- 前端按钮：`frontend/src/views/settings/EnvCheckSettings.vue`（install/update → `frontend/src/api/envcheck.ts:54-76`）。
+- 绑定面：`App.InstallTool/UpdateTool/StartInstallToolAsync/StartUpdateToolAsync`（`app.go:926-1002` 区段）→ `envcheck.Service`。
+- 执行面：`installOrUpdateWithProgress` 按工具分派（`installer.go:1221-1300`）：claude 走 native/npm 双通道 + `claude update`；opencode/codex/pi/omp 走 `npm i -g <pkg>@latest` 或外部托管时 self-update（omp 无自带 self-update，按来源分派 `installer.go:1410-1446`）。omp 包名 `@oh-my-pi/pi-coding-agent`（`installer.go:1412`）。
+- 异步操作契约：`service.go:900-1070`（OperationState 轮询、成功后 CheckOne 刷新缓存）。
+
+### 2.2 WSL 侧安装（4/5 CLI，无升级）
+
+- 入口链：`WSLCLISettings.vue:343,370`（环境检测页卡片，`EnvCheckView.vue:7` 挂载）→ `frontend/src/api/wslsetup.ts` → `App.InstallCLIToWSL`（`app.go:946`）→ `wslsetup.Service.InstallTool`（`service_windows.go:172`）。
+- 安装脚本链：ensureNode（NodeSource 22，floor 22.19，`service_windows.go:116-160`）→ ensureUserNpmPrefix（`~/.npm-global` + .bashrc/.profile 精确行，`:163-183`）→ `npm i -g <pkg>` → 登录 shell 解析验证（`checkLoginResolution`，`:292-317`）。
+- **无升级**：`InstallTool` 对已装 CLI 直接 `AlreadyOK`（`:185-210`）；无版本比较、无 `@latest` 路径。UI 按钮文案「重新安装」名不副实（`WSLCLISettings.vue:36`：`t.installed ? '重新安装' : '安装到 WSL'`，但后端短路）。
+- **omp 缺席**：`cliPackages`（`service.go:16-22`）与 `GetStatus` tools 循环（`service_windows.go:98`）均只列 claude/opencode/codex/pi。`normalizeToolKey`（`common.go:10-21`）对 "omp" 透传小写，补 map 即可生效。
+
+### 2.3 安装/升级同步联动（缺失——核心缺口）
+
+- envcheck 全部安装/升级完成路径（`service.go:995-1070` runOperation；`fix_dispatcher.go:260-283` runInstallTool）无 WSL 调用。
+- App 层 wslsetup 引用仅 3 处：构造（`app.go:530`）、状态（`app.go:939`）、安装（`app.go:946`）+ 搜索工具回调适配（`app.go:646-651`）。
+- 现成可复用的注入模式：`SetWSLSearchToolsInstaller`（`envcheck/service.go:177-186` + app 装配 `app.go:642-651`）——envcheck 经回调调 wslsetup，避免包依赖，单测可注入。
+
+### 2.4 发行版选择/启用策略
+
+- 选择：`DefaultWSLDistro` = 探测列表第一个非保留 distro（docker-desktop 等排除，`wsl.go:150-202`），进程内一次缓存；无设置项、无 UI、无 per-CLI 覆盖。wslsetup（`service_windows.go:76`）、供给推送（`app_wsl_supply.go:444`）、pi 登录闸门（`app.go:4091-4093`）均取同一函数。
+- 启用：Windows 上默认 shell 为 "wsl"（`settings/service.go:189-195` 种子）；resolver 在 Windows + embedded 模式且有效 shell 为 wsl 时短路进 BootstrapWSL（`resolver.go:138-160`），CLI 由 distro PATH 解析——「CLI 只装在 WSL」是核心场景。
+- B5（distro 选择）在 wsl-session-friction workflow 中列为「明确不做」（`s1-report.md:47`），与本轮无关但说明现状是有意设计。
+
+### 2.5 启动自动供给（已实现，分层）
+
+| CLI | 启动时自动 | 锚点 |
+|---|---|---|
+| pi | 托管 models.json（API-provider 会话，损坏阻断）+ 登录 auth.json 双向同步（新者为准）+ settings/amagi/mcp 三键投影补漏 | `app.go:3842`、`pi_login_launch.go:158-162`、`wsl_pi_login_sync.go` |
+| pi/omp | 每次 provider 会话合并写 distro agent root（merge 保用户条目，staging 0600） | `app.go:5261,:5357`、`launcher/wsl_agent_config.go:281-319` |
+| opencode | 每次 provider 会话整体覆写 distro `~/.config/opencode/amagi-codebox.json` 附加层 + OPENCODE_CONFIG 指向 | `app_wsl_supply.go:508-519`、`launcher/wsl_agent_config.go:361-` |
+| claude/codex | 仅共享小文件闸门；MCP/settings/资源导入为手动 S4 | `app_wsl_supply_s4.go:95-112` |
+| 全部 | 共享视觉清单 + 多模态学习层补漏/撤回闸门（敏感副本未确认撤回时阻断） | `app_wsl_supply.go:213-289`、`control_wiring.go:147` |
+
+### 2.6 配置更改推送（已实现）
+
+- 来源：providers（`provider_harness_sync.go:24` 一处集中，覆盖全部 provider/预设/公共预设保存点）、pi-login-presets（`app.go:618`）、pi-config 面板（`app.go:6842,6868`）。
+- 机制：`markWSLSupplyDirty` → desired revision 持久化 → `scheduleWSLSupplyPush` single-flight；守卫：distro Running 才推、有活动会话暂停、停机只保留标记等下次启动 lazy（`app_wsl_supply.go:407-480`）。
+- 同意面（显式人工动作）：视觉清单共享（`GrantWSLVisionConsent`）、pi 键投影（`EnableWSLPiConfigSupply`）、skills 逐项导入、S4 Claude/Codex 导入——均由冻结/接管框架保护 WSL 手改（`WSLCLISettings.vue:44-120`）。
+
+### 2.7 剩余手动边界（现状需要用户动手的完整清单）
+
+1. WSL 内安装 CLI：去「WSL 内的 CLI」卡片逐个点（且无 omp）。
+2. WSL 内升级 CLI：**无任何入口**，须在 WSL 终端手动 `npm i -g <pkg>@latest`。
+3. Claude/Codex 配置进 WSL：手动检查/预览/应用。
+4. skills：逐项勾选导入。
+5. 视觉清单/pi 键投影：首次显式同意（安全设计，预期保留）。
+6. 插件 WSL 重放：仅 pi 支持目标化操作；claude/codex/opencode 占位、omp excluded（`app_wsl_plugins.go:44-49`）。
+7. fd/ripgrep 搜索工具：envcheck 修复动作一键装（`fix_dispatcher.go:185-216`），已自动。
+
+## 3. 关键决策冲突（需 Leader/主上裁决）
+
+**B7 vs 本轮新需求**。B7（2026-10-16 主上裁决，`wsl-session-friction/workflow.md:24`）：「omp 进 wslsetup 安装面 → 关闭不修」，理由链见 `p3-config-supply-design.md:24`（保留 omp models.yml 启动写入，不新增面板入口）。本轮任务书（更新）明确要求「所有五种CLI」安装/升级同步。按「较新的明确撤销/更正优先」原则新需求应胜出，但 B7 是同一位主上的显式裁决且在归档里被反复引用为排除声明——**建议派发切片 1 前由主上一句确认撤销 B7**，避免实现者背翻转裁决的责任。技术上加 omp 只是 map 补行 + GetStatus 列表补项（§4），无架构障碍；omp 启动配置写入（models.yml）与混合预警（wsl_hybrid 含 omp）均已存在，只差安装面。
+
+## 4. 最小完整实现切片（可直接派发，复用现有机制）
+
+> 原则：全部走既有 wslsetup wslExec/ensureNode/ensureUserNpmPrefix/checkLoginResolution 原语与 envcheck 注入回调模式；不新建包、不碰 wailsjs 手改（需 `wails dev/build` 再生）。
+
+### 切片 1：omp 进 wslsetup 安装面（前置：B7 撤销确认）
+
+- 文件/符号：`internal/wslsetup/service.go:16-22` cliPackages 加 `"omp": "@oh-my-pi/pi-coding-agent"`（包名与 envcheck `installer.go:1412` 对齐）；`service_windows.go:98` GetStatus 循环加 "omp"。
+- 前端：`WSLCLISettings.vue` 遍历 `status.tools` 自动出卡片，displayName 确认覆盖 "omp"（该文件 displayName(t.tool) 已有映射，需核对补 omp 词条）。
+- 测试入口：`internal/wslsetup/service_windows_test.go`（wslExec 注入范式现成）、`install_search_tools_windows_test.go` 同构。
+- 冲突/风险：极小；`app_wsl_plugins.go:48` 的 omp=excluded 声明属插件面（B7 延伸），若 B7 撤销需同步把该行 Detail 改为omp 支持或保持插件面排除（插件面与 CLI 安装面可分开裁定，注意文案别再引用已撤销的 B7）。
+
+### 切片 2：wslsetup 增加升级能力（InstallOrUpdateTool）
+
+- 文件/符号：`internal/wslsetup/service_windows.go` 新增 `UpdateTool(tool string) (*InstallResult, error)`：复用 ensureNode/ensureUserNpmPrefix，脚本 `npm i -g <pkg>@latest` + `checkLoginResolution` 验证；不动既有 `InstallTool` 的 AlreadyOK 语义（避免破坏现有测试与调用方）。
+- 可选：`InstallTool` 加 force 参数变体或新增 `InstallOrUpdate`；**不要改 InstallTool 签名**（App.InstallCLIToWSL 与前端 wrapper 依赖）。
+- 测试入口：`service_windows_test.go` 注入 wslExec 断言 `@latest` 出现与验证链。
+- 冲突/风险：与 wsl-goal-closure 阶段 G0/G1 活跃修复无共享文件（wslsetup 未在那些 delta patch 写面清单中出现，见 `workflow.md` 续行阶段表）；npm 无网/慢网超时需预算（ensureNode 已有 && 链失败语义，InstallResult.Error 如实上抛）。
+
+### 切片 3：Windows 安装/升级成功 → WSL 同步钩子（核心需求）
+
+- 接缝选型（二选一，推荐 A）：
+  - **A（推荐）envcheck 注入回调，复制 SetWSLSearchToolsInstaller 模式**：`internal/envcheck/service.go` 加 `wslCLISyncInstaller func(tool CLITool) (*InstallResult, error)` + `SetWSLCLISyncInstaller`；在 `runOperation` 成功分支（`service.go:1057-1063`，Install/Update 均经此）与 `runInstallTool`（`fix_dispatcher.go:260`，StartInstallToolAsync 已在 runOperation 覆盖）调用；app 装配处（`app.go:642-651` 旁）注入闭包 → `app.WSLSetup.UpdateTool`/`InstallTool`（按 WSL 内是否已装分派）。
+  - B（备选）App 层包装 `StartInstallToolAsync/InstallTool/UpdateTool/StartUpdateToolAsync` 完成后调度——但异步轮询模型下 App 看不到完成时机，需要新轮询/回调面，复杂度更高，不推荐。
+- 语义约束（证据支持的默认，最终由下游定）：
+  - 仅 Windows + distro 可用时触发；WSL 侧失败**只告警不改写 Windows 侧成功结果**（对齐「宿主保存成功 ≠ WSL 已同步」既有契约，`app.go:4108-4111` 注释）；
+  - 异步/非阻塞：envcheck 操作状态机（OperationState）不应被 WSL 安装（分钟级）占住——回调里起 goroutine 或挂到 App 侧任务，结果记 `Log.Info("wslsetup",...)` 并 invalidate 混合预警 TTL 缓存（`wsl_hybrid.go` 30s TTL 自愈，可不显式失效）；
+  - 是否需要用户同意：CLI 二进制安装非密钥面，现有 `InstallCLIToWSL` 手动路径即无同意门；但「自动装进 WSL」是新语义，是否加设置开关（默认开/关）属产品决策，建议切片任务书里显式写给主上确认。
+- 测试入口：`internal/envcheck/fix_dispatcher_test.go`/`installer_lifecycle_test.go`（注入回调断言触发/失败不污染主结果）；根目录 `app_envcheck_test.go`、`app_wsl_supply_test.go`（App 装配面）；前端 `frontend/src/__tests__/`（若 UI 提示同步结果）。
+- 冲突/风险：
+  - `app.go` 巨型共享文件，装配段落（:640-660）与 wsl-goal-closure 声明的 C2/C3 写面（app_wsl_supply*.go 不同段）不同文件不冲突，但 app.go 本身可能有并行会话写入——派发时声明精确行段；
+  - envcheck → wslsetup 若直接 import 会引入跨包依赖（wslsetup 仅被 root 引用），回调注入保持 envcheck 不 import wslsetup（现有模式即为此设计，`service.go:82-89` 注释）；
+  - OperationState 契约扩展（若要把 WSL 同步显示为操作步骤）会动前端轮询渲染，范围膨胀——建议第一版只记日志 + WSLCLISettings 卡片状态自刷新。
+
+### 验证基线（各切片共用）
+
+- `go vet ./...` + `go test ./internal/wslsetup/ ./internal/envcheck/` + 根 `go test -run 'TestApp' .`（macOS 可跑单元面）；Windows 交叉编译 `GOOS=windows go build ./...`；真机 WSL 行为按惯例标 U，不在本地冒充（wsl-goal-closure V5 分账原则）。
+- 前端：`npm --prefix frontend run build`（vue-tsc 门禁）；wailsjs 若新增 App 方法须再生。
+
+## 5. 已实现 / 缺失 / 未验证汇总
+
+**已实现（代码级证据）**：五 CLI Windows 安装/升级；WSL 四 CLI 手动安装（Node/npm 前缀/登录解析验证链完整）；pi+omp+opencode 启动即写 provider 配置；pi 登录凭据双向同步；共享敏感文件启动闸门；provider/pi 配置保存推送（single-flight+停机守卫）；混合架构预警（含 omp）；搜索工具一键装；插件 pi 目标化重放。
+
+**缺失**：① Windows 安装/升级 → WSL 同步联动（零代码）；② WSL 侧任何升级路径；③ omp 的 WSL 安装面（B7 裁定残留，与新需求冲突）；④ CLI 版本新旧比较（WSL 侧）。
+
+**未验证（U）**：Windows/WSL 真机行为（本会话 macOS 只读）；WSLCLISettings.vue 仅读前 120 行（供给/技能区 UI 细节未全读，不影响安装/升级链结论）；wsl-goal-closure G0/G1 修复是否已合入 HEAD 后被本调查读到的是最终形态（git status 显示树干净，仅未跟踪归档目录，故 HEAD 即当前态）；npm 包名时效（`@oh-my-pi/pi-coding-agent` 取自 envcheck 现行代码，未查 registry）。
+
+## 6. 待核验项
+
+1. 主上对 B7 撤销的显式确认（切片 1 前置）。
+2. 同步安装/升级是否需要用户开关或默认开启（产品语义，任务书应写明）。
+3. WSL 侧同步失败在 UI 的呈现面（日志 vs OperationState 步骤 vs 卡片状态）——影响切片 3 是否扩前端。
+4. 真机验证轮（Windows + WSL2）：omp 安装、升级幂等、断网失败语义——归 wsl-goal-closure W 阶段同类真机流程，本轮不做。

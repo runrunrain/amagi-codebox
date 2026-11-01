@@ -62,6 +62,10 @@ export function SetHeadroomVenvDir(arg1) {
   return window['go']['envcheck']['Service']['SetHeadroomVenvDir'](arg1);
 }
 
+export function SetWSLCLISync(arg1) {
+  return window['go']['envcheck']['Service']['SetWSLCLISync'](arg1);
+}
+
 export function SetWSLSearchToolsInstaller(arg1) {
   return window['go']['envcheck']['Service']['SetWSLSearchToolsInstaller'](arg1);
 }

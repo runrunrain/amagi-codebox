@@ -42,6 +42,10 @@ type Coordinator struct {
 
 	a2          A2Adapter
 	projections map[UnitID]ProjectionAdapter
+	// scanDoneMu/scanDone 是「扫描完成」通知回调（P2-B 统一管理：App 层对账
+	// 依赖扫描真正结束后再推送；SetScanCompletionCallback 注册）。
+	scanDoneMu sync.Mutex
+	scanDone   func()
 	// skills 是技能资源作用域（S3：shared/skill/<name> 动态单元；nil 表示
 	// 未注册——技能单元全部 unknown）。
 	skills *SkillsScope
@@ -1630,23 +1634,9 @@ func firstFileOrDefault(adapter ProjectionAdapter) string {
 // 共享，design §四）。同意按目标 generation 记录：distro 重装/换用户后旧授权
 // 不自动扩散，需重新确认。仅 RequiresConsent 单元接受本操作。
 func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli CLI, unit UnitID) error {
-	policy := Policy("")
-	if _, isSkill := ParseSkillUnit(unit); isSkill {
-		if c.skills == nil {
-			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
-		}
-		policy = PolicyTrackedProjection
-	} else if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
-		if c.resourceScope(resCLI) == nil {
-			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
-		}
-		policy = PolicyTrackedProjection
-	} else {
-		adapter, ok := c.projections[unit]
-		if !ok || !adapter.RequiresConsent() {
-			return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
-		}
-		policy = adapter.Policy()
+	policy, ok := c.consentPolicyFor(unit)
+	if !ok {
+		return fmt.Errorf("wsl supply unit %q does not accept consent", string(unit))
 	}
 	target, err := c.ResolveTarget(ctx, distro, cli)
 	if err != nil {
@@ -1658,39 +1648,11 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
 	if target.Generation == GenerationUnknown {
 		return fmt.Errorf("无法验证 WSL 目标身份（distro %q 拿不到 machine-id）：跨界授权需要可验证的目标身份；请在 WSL 内恢复 /etc/machine-id 后重试", distro)
 	}
-	grantPolicy := policy
 	return c.state.mutate(func(st *StateFile) {
-		prev, _ := st.entry(unit)
-		entry := StateEntry{
-			Unit: unit, Policy: grantPolicy, Generation: target.Generation,
-			Consented: true, LastOutcome: "consented", LastSuccess: time.Now(),
-		}
-		// F3（S1 diting）：仅同代才保留 hash 基线；跨代（distro 重装/换默认
-		// 用户后重新同意）时新 generation 无任何基线——旧代 SourceHash/
-		// LastWrittenHash 不继承（继承会让新 distro 首发布被误判
-		// local-deletion-frozen，重新同意即失效）。S4：同代的键级基准与选择集
-		// 同样保留（幂等再授权不得摧毁 Subs/SelectedKeys——否则后续运行会把
-		// 已托管键误判为 unmanaged-existing）。
-		if prev.Generation == target.Generation {
-			entry.SourceHash = prev.SourceHash
-			entry.LastWrittenHash = prev.LastWrittenHash
-			entry.Subs = prev.Subs
-			entry.SelectedKeys = prev.SelectedKeys
-		}
-		st.upsertEntry(entry, target.Generation)
-		st.Distro = target.Distro
-		st.Home = target.Home
-		// SA-02：授权也记入身份索引（授权后首次 Inspect 前，状态页能归属分区）。
-		if st.Targets == nil {
-			st.Targets = map[string]TargetRecord{}
-		}
-		rec := st.Targets[target.Generation]
-		rec.Distro = target.Distro
-		rec.UID = target.UID
-		rec.Home = target.Home
-		rec.LegacyGeneration = target.LegacyGeneration
-		rec.LastSeen = time.Now()
-		st.Targets[target.Generation] = rec
+		// F3/S4 同代保留与身份索引登记统一在 grantEntryIn（与
+		// AutoConsentIfUnified 共用；prev 查找改为按目标代 entryFor，
+		// 多 distro 交替操作时不再把 A 目标的基线误挂到 B）。
+		grantEntryIn(st, target, unit, policy)
 	})
 }
 

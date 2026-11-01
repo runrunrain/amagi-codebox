@@ -223,6 +223,75 @@ describe('operationCompletionBanner：异步操作终态横幅（uninstall 受�
   });
 });
 
+describe('operationCompletionBanner：安装/升级双侧联动（result.wsl，direction §2.4）', () => {
+  const nameOf = (tool: string) => ({ pi: 'Pi', codex: 'Codex', claude_code: 'Claude Code' } as Record<string, string>)[tool] || tool;
+
+  it('wsl.status=failed → warning 横幅，绝不显示纯「成功」', () => {
+    const banner = operationCompletionBanner(
+      {
+        id: 'op-w1', tool: 'claude_code', kind: 'install', status: 'succeeded',
+        result: {
+          version: '1.0.30', message: '安装成功',
+          wsl: { status: 'failed', distro: 'Ubuntu', error: 'npm i -g 失败: EAI_AGAIN' },
+        },
+      },
+      nameOf,
+    );
+    expect(banner)!.toEqual({
+      title: 'Claude Code 安装：Windows 成功，WSL（Ubuntu）同步失败',
+      description: 'npm i -g 失败: EAI_AGAIN',
+      type: 'warning',
+    });
+    expect(banner!.type).not.toBe('success');
+  });
+
+  it('wsl.status=succeeded → 成功横幅追加「WSL 已同步 v…」', () => {
+    const banner = operationCompletionBanner(
+      {
+        id: 'op-w2', tool: 'pi', kind: 'update', status: 'succeeded',
+        result: { version: '2.1.0', message: '更新完成', wsl: { status: 'succeeded', distro: 'Ubuntu', version: '2.1.0' } },
+      },
+      nameOf,
+    );
+    expect(banner!.type).toBe('success');
+    expect(banner!.description).toContain('WSL 已同步 v2.1.0');
+    expect(banner!.description).toContain('更新完成');
+  });
+
+  it('wsl.status=skipped → 描述追加跳过原因，不阻断成功呈现', () => {
+    const banner = operationCompletionBanner(
+      {
+        id: 'op-w3', tool: 'codex', kind: 'install', status: 'succeeded',
+        result: { version: '0.9.0', message: 'ok', wsl: { status: 'skipped', distro: 'Ubuntu', message: '该 CLI 未使用 WSL 模式且 WSL 内未安装，已跳过同步' } },
+      },
+      nameOf,
+    );
+    expect(banner!.type).toBe('success');
+    expect(banner!.description).toContain('已跳过同步');
+  });
+
+  it('result.wsl 缺失（旧后端/非 Windows）→ 行为与既有完全一致', () => {
+    const banner = operationCompletionBanner(
+      { id: 'op-w4', tool: 'pi', kind: 'install', status: 'succeeded', result: { version: '1.2.3', message: 'done' } },
+      nameOf,
+    );
+    expect(banner)!.toEqual({ title: 'Pi 安装成功 (v1.2.3)', description: 'done', type: 'success' });
+  });
+
+  it('wsl 失败只影响 succeeded 终态；Windows 失败终态仍为 error 横幅', () => {
+    const banner = operationCompletionBanner(
+      {
+        id: 'op-w5', tool: 'codex', kind: 'install', status: 'failed',
+        error: 'npm 不可用',
+        result: { wsl: { status: 'failed', error: '不应出现' } },
+      },
+      nameOf,
+    );
+    expect(banner!.type).toBe('error');
+    expect(banner!.description ?? '').not.toContain('不应出现');
+  });
+});
+
 describe('visibleTopLevelSolutions：顶层 solutions 渲染与去重（Leader dependency 夹具场景）', () => {
   it('夹具场景：issue.solutions 为空、仅顶层有 fix_path/install_node → 两个依赖按钮都必须可见', () => {
     const status = {

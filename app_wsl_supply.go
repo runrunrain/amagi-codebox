@@ -150,6 +150,9 @@ func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator 
 		ExactNpmVersion: piplugin.IsExactNpmVersion,
 		FullCommitSHA:   piplugin.IsFullCommitSHA,
 	})
+	// P2-B：扫描完成回调——skills/资源后台扫描真正结束后触发统一对账推送
+	//（避免启用时调度一次早于扫描结束的推送永远不同步）。
+	coord.SetScanCompletionCallback(app.wslUnifiedOnScanDone)
 	return coord
 }
 
@@ -216,7 +219,14 @@ func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec
 	if spec.BootstrapMode != platform.BootstrapWSL || runner == nil {
 		return nil
 	}
-	return runWSLSharedFilesAtLaunch(ctx, runner, wslDefaultDistroFn(spec.Env.Variables))
+	distro := wslDefaultDistroFn(spec.Env.Variables)
+	if err := runWSLSharedFilesAtLaunch(ctx, runner, distro); err != nil {
+		return err
+	}
+	// P2-B 统一管理：Claude/Codex 键级单元的启动 lazy 补漏（只告警不阻断；
+	// pi 单元另有独立闸门，资源/技能不进启动链）。
+	runWSLCliConfigAtLaunch(ctx, runner, distro, spec.AppType)
+	return nil
 }
 
 func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string) error {
@@ -429,8 +439,14 @@ func (a *App) doPushWSLSupply() {
 		return // 停机 distro：只保留待同步标记（下次启动 lazy 兜底），不唤醒
 	}
 	if a.hasActiveSessionsForWSLPush() {
-		return // 活动会话期间暂停后台应用（design §三），待同步标记保留
+		// 活动会话期间暂停后台应用（design §三）。P4-F2：保留待对账标记，
+		// 会话归零后由统一管理后台循环异步补推（无需用户再保存一次）。
+		a.wslUnifiedMarkPushPending()
+		return
 	}
+	// P4-F3：统一管理固定单元的幂等续接（未启用统一管理时为 no-op；已就绪
+	// 分组零成本跳过）——先补授权/物化，本推送后续分支随写。
+	a.reconcileWSLUnifiedFixedUnits(distro)
 	piUnits := wslSupplyUnitsFiltered(a.WSLSupply,
 		wslsupply.UnitPiManagedModels, wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
 	if len(piUnits) > 0 {
@@ -459,6 +475,10 @@ func (a *App) doPushWSLSupply() {
 			}
 		}
 	}
+	// P2-B 统一管理增量：claude/codex 键级单元（含选择集物化）与技能/资源
+	// 对账（未启用统一管理时两者都是 no-op，行为与现状一致）。
+	a.pushWSLUnifiedCliConfig(context.Background(), distro)
+	a.reconcileWSLUnifiedResources(distro)
 }
 
 // hasActiveSessionsForWSLPush 报告是否存在活动（running）内嵌会话。保守取全
@@ -549,6 +569,9 @@ type WSLConfigSupplyStatus struct {
 	Reason      string                `json:"reason,omitempty"`
 	Faces       []WSLConfigSupplyFace `json:"faces"`
 	PendingPush bool                  `json:"pendingPush"` // 有保存后未推送的来源变更
+	// Unified（P2-B）：当前 distro 是否已启用统一配置管理（一次授权后启动/
+	// 保存/对账自动同步）。false = 显示「启用统一管理」入口。
+	Unified bool `json:"unified"`
 	// Units 是 P3-S2 键级配置单元的逐项详情（配置状态区扩展）。
 	Units []WSLConfigUnitDetail `json:"units"`
 }
@@ -567,6 +590,8 @@ func (a *App) GetWSLConfigSupplyStatus() WSLConfigSupplyStatus {
 		return out
 	}
 	out.Available = true
+	// P2-B：统一管理状态（只读标记，不探测）。
+	out.Unified = a.wslUnifiedCached(distro)
 
 	pending := map[string]uint64{}
 	piStatus := a.wslSupplyStatus(distro, wslsupply.CLIPi)

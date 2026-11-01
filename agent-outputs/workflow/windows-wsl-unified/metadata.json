@@ -1,0 +1,26 @@
+{
+  "taskId": "20261101-windows-wsl-unified",
+  "timestamp": "2026-11-01T16:39:09Z",
+  "agent": "leader",
+  "projectId": "amagi-codebox",
+  "taskBrief": "Windows统一配置及WSL CLI安装升级联动",
+  "status": "completed",
+  "upstreamArtifactReferences": ["research.md", "direction.md", "setup-implementation.md", "config-implementation.md", "install-implementation.md", "review.md", "review-fix.md"],
+  "validationEvidence": {
+    "buildStatus": "passed",
+    "testStatus": "passed",
+    "browserVerification": "verified",
+    "scope": "macOS逻辑面、Windows交叉编译、真实Vue加内存Wails隔离fixture；真实Windows/WSL未验证",
+    "commands": [
+      {"command": "go test ./...", "exitCode": 0, "summary": "修复后全量Go通过，postfix-go-tests.log"},
+      {"command": "go test -race . ./internal/wslsupply -run 'TestWSLUnified|TestWSLCliConfigAtLaunch|TestUnified|TestAutoConsent|TestExtendUnitSelection' -count=1", "exitCode": 0, "summary": "postfix-race.log；独立复审另将4条真实loop测试各重复3轮race通过"},
+      {"command": "go vet ./...", "exitCode": 0, "summary": "postfix-vet.log"},
+      {"command": "GOOS=windows go build ./...", "exitCode": 0, "summary": "仅交叉构建，postfix-windows-build.log"},
+      {"command": "npm run build && npm exec -- vitest run (cwd=frontend)", "exitCode": 0, "summary": "前端构建与41文件413单测通过，f4-frontend日志"},
+      {"command": "node e2e/envcheck-management-smoke.mjs && node e2e/wsl-unified-management-smoke.mjs", "exitCode": 0, "summary": "24个agent-browser驱动真实Vue隔离fixture用例；不是实际安装测试"}
+    ]
+  },
+  "tags": ["workflow", "windows", "wsl", "review-pass"],
+  "relatedFiles": ["workflow.md", "closure.md", "verification.md", "review.md"],
+  "nextSteps": {"suggestedAgent": "leader", "suggestedAction": "使用获授权Windows/WSL测试环境按review.md真机建议验收；代码未提交"}
+}

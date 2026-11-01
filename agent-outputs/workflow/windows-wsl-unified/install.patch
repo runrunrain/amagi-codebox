@@ -1,0 +1,425 @@
+diff --git a/app.go b/app.go
+index c745135..4639726 100644
+--- a/app.go
++++ b/app.go
+@@ -652,6 +652,10 @@ func NewApp(mobileAssets embed.FS) *App {
+ 		return &envcheck.InstallResult{Success: res.Success, Message: res.Message, Error: res.Error}, err
+ 	})
+ 
++	// P2-C 安装/升级双侧联动：Windows 侧 install/update 成功后，同一操作内
++	// 同步 WSL 侧 CLI（门控/分派见 app_wsl_cli_sync.go）。
++	envCheckSvc.SetWSLCLISync(app.syncCLIToWSL)
++
+ 	// M3-A2: control runtime + shared-service coordinator. The PTY raw port and
+ 	// Wails context are injected at Startup (they require the Wails ctx). The
+ 	// arbiter/gate/projector are ready immediately; MarkReady is called in
+diff --git a/frontend/src/__tests__/views/settings/envcheckSolutions.test.ts b/frontend/src/__tests__/views/settings/envcheckSolutions.test.ts
+index af569e3..8c12bab 100644
+--- a/frontend/src/__tests__/views/settings/envcheckSolutions.test.ts
++++ b/frontend/src/__tests__/views/settings/envcheckSolutions.test.ts
+@@ -223,6 +223,75 @@ describe('operationCompletionBanner：异步操作终态横幅（uninstall 受
+   });
+ });
+ 
++describe('operationCompletionBanner：安装/升级双侧联动（result.wsl，direction §2.4）', () => {
++  const nameOf = (tool: string) => ({ pi: 'Pi', codex: 'Codex', claude_code: 'Claude Code' } as Record<string, string>)[tool] || tool;
++
++  it('wsl.status=failed → warning 横幅，绝不显示纯「成功」', () => {
++    const banner = operationCompletionBanner(
++      {
++        id: 'op-w1', tool: 'claude_code', kind: 'install', status: 'succeeded',
++        result: {
++          version: '1.0.30', message: '安装成功',
++          wsl: { status: 'failed', distro: 'Ubuntu', error: 'npm i -g 失败: EAI_AGAIN' },
++        },
++      },
++      nameOf,
++    );
++    expect(banner)!.toEqual({
++      title: 'Claude Code 安装：Windows 成功，WSL（Ubuntu）同步失败',
++      description: 'npm i -g 失败: EAI_AGAIN',
++      type: 'warning',
++    });
++    expect(banner!.type).not.toBe('success');
++  });
++
++  it('wsl.status=succeeded → 成功横幅追加「WSL 已同步 v…」', () => {
++    const banner = operationCompletionBanner(
++      {
++        id: 'op-w2', tool: 'pi', kind: 'update', status: 'succeeded',
++        result: { version: '2.1.0', message: '更新完成', wsl: { status: 'succeeded', distro: 'Ubuntu', version: '2.1.0' } },
++      },
++      nameOf,
++    );
++    expect(banner!.type).toBe('success');
++    expect(banner!.description).toContain('WSL 已同步 v2.1.0');
++    expect(banner!.description).toContain('更新完成');
++  });
++
++  it('wsl.status=skipped → 描述追加跳过原因，不阻断成功呈现', () => {
++    const banner = operationCompletionBanner(
++      {
++        id: 'op-w3', tool: 'codex', kind: 'install', status: 'succeeded',
++        result: { version: '0.9.0', message: 'ok', wsl: { status: 'skipped', distro: 'Ubuntu', message: '该 CLI 未使用 WSL 模式且 WSL 内未安装，已跳过同步' } },
++      },
++      nameOf,
++    );
++    expect(banner!.type).toBe('success');
++    expect(banner!.description).toContain('已跳过同步');
++  });
++
++  it('result.wsl 缺失（旧后端/非 Windows）→ 行为与既有完全一致', () => {
++    const banner = operationCompletionBanner(
++      { id: 'op-w4', tool: 'pi', kind: 'install', status: 'succeeded', result: { version: '1.2.3', message: 'done' } },
++      nameOf,
++    );
++    expect(banner)!.toEqual({ title: 'Pi 安装成功 (v1.2.3)', description: 'done', type: 'success' });
++  });
++
++  it('wsl 失败只影响 succeeded 终态；Windows 失败终态仍为 error 横幅', () => {
++    const banner = operationCompletionBanner(
++      {
++        id: 'op-w5', tool: 'codex', kind: 'install', status: 'failed',
++        error: 'npm 不可用',
++        result: { wsl: { status: 'failed', error: '不应出现' } },
++      },
++      nameOf,
++    );
++    expect(banner!.type).toBe('error');
++    expect(banner!.description ?? '').not.toContain('不应出现');
++  });
++});
++
+ describe('visibleTopLevelSolutions：顶层 solutions 渲染与去重（Leader dependency 夹具场景）', () => {
+   it('夹具场景：issue.solutions 为空、仅顶层有 fix_path/install_node → 两个依赖按钮都必须可见', () => {
+     const status = {
+diff --git a/frontend/src/views/settings/EnvCheckSettings.vue b/frontend/src/views/settings/EnvCheckSettings.vue
+index 59bb0db..73990a6 100644
+--- a/frontend/src/views/settings/EnvCheckSettings.vue
++++ b/frontend/src/views/settings/EnvCheckSettings.vue
+@@ -1644,6 +1644,11 @@ onUnmounted(() => {
+   border-left: 3px solid var(--error, #ff3b30);
+ }
+ 
++/* 安装/升级双侧联动：Windows 成功而 WSL 同步失败的部分失败横幅（direction §2.4）。 */
++.op-result.result-warning {
++  border-left: 3px solid var(--warning, #ff9500);
++}
++
+ .op-result-title {
+   font-size: 13px;
+   font-weight: 600;
+diff --git a/frontend/src/views/settings/envcheckSolutions.ts b/frontend/src/views/settings/envcheckSolutions.ts
+index 3c06fb8..804d8da 100644
+--- a/frontend/src/views/settings/envcheckSolutions.ts
++++ b/frontend/src/views/settings/envcheckSolutions.ts
+@@ -255,7 +255,8 @@ export interface FixResultLike {
+ export interface ResultBanner {
+   title: string
+   description?: string
+-  type: 'success' | 'error'
++  /** warning：Windows 侧成功而 WSL 同步失败的部分失败（不显示纯成功）。 */
++  type: 'success' | 'error' | 'warning'
+ }
+ 
+ /**
+@@ -307,6 +308,16 @@ export function planPostFixRefresh(result: FixResultLike | null | undefined): Po
+   return { recheck: 'snapshot' }
+ }
+ 
++/** 与 envcheck.WSLSyncResult 结构兼容的最小类型（安装/升级双侧联动，direction §2.4）。 */
++export interface WSLSyncLike {
++  status?: string
++  distro?: string
++  version?: string
++  alreadyOK?: boolean
++  message?: string
++  error?: string
++}
++
+ /** 与 envcheck.OperationState 结构兼容的最小类型。 */
+ export interface OperationLike {
+   id?: string
+@@ -315,12 +326,19 @@ export interface OperationLike {
+   status?: string
+   message?: string
+   error?: string
+-  result?: { version?: string; message?: string; error?: string } | null
++  result?: { version?: string; message?: string; error?: string; wsl?: WSLSyncLike | null } | null
+ }
+ 
+ /**
+  * 异步操作终态 → 结果横幅。非终态（running/idle）返回 null。
+  * kind=uninstall 的受理（RunFixAction success）不是终态，不得走本函数报成功。
++ *
++ * 安装/升级双侧联动（direction §2.4）：succeeded 终态下 result.wsl 决定呈现：
++ * - wsl.status=failed → warning 横幅（Windows 成功，WSL 失败），绝不显示
++ *   纯「成功」；
++ * - wsl.status=succeeded → 描述追加「WSL 已同步 v…」；
++ * - wsl.status=skipped → 描述追加跳过原因；
++ * - wsl 未定义（nil / 旧后端）→ 与现有行为完全一致。
+  */
+ export function operationCompletionBanner(
+   op: OperationLike | null | undefined,
+@@ -334,8 +352,24 @@ export function operationCompletionBanner(
+   const kind = operationKindLabel(op.kind || '')
+   if (op.status === 'succeeded') {
+     const ver = op.result?.version ? ` (v${op.result.version})` : ''
++    const wsl = op.result?.wsl
++    if (wsl?.status === 'failed') {
++      const distro = wsl.distro ? `（${wsl.distro}）` : ''
++      return {
++        title: `${name} ${kind}：Windows 成功，WSL${distro}同步失败`,
++        description: wsl.error || wsl.message || undefined,
++        type: 'warning',
++      }
++    }
++    const parts: string[] = []
+     const msg = op.result?.message || op.message || ''
+-    return { title: `${name} ${kind}成功${ver}`, description: msg || undefined, type: 'success' }
++    if (msg) parts.push(msg)
++    if (wsl?.status === 'succeeded') {
++      parts.push(wsl.version ? `WSL 已同步 v${wsl.version}` : 'WSL 已同步')
++    } else if (wsl?.status === 'skipped') {
++      parts.push(wsl.message || 'WSL 未同步（该 CLI 未使用 WSL 模式）')
++    }
++    return { title: `${name} ${kind}成功${ver}`, description: parts.join('\n') || undefined, type: 'success' }
+   }
+   const errMsg = op.error || op.result?.error || ''
+   const msg = op.message || ''
+diff --git a/internal/envcheck/fix_dispatcher.go b/internal/envcheck/fix_dispatcher.go
+index 97a714c..6add1ba 100644
+--- a/internal/envcheck/fix_dispatcher.go
++++ b/internal/envcheck/fix_dispatcher.go
+@@ -119,10 +119,22 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		return &FixActionResult{
++		fres := &FixActionResult{
+ 			Success: result.Success,
+ 			Message: result.Message,
+-		}, nil
++		}
++		// 部分失败不漏报（direction §2.2）：Windows 成功而 WSL 同步失败时，
++		// Success 仍只表示 Windows 侧，但 WSL 错误必须写入 Error 并追加到
++		// Message，避免消费方把部分失败读成全成功。
++		if wsl := result.WSL; wsl != nil && wsl.Status == WSLSyncFailed {
++			distro := wsl.Distro
++			if distro == "" {
++				distro = "WSL"
++			}
++			fres.Error = fmt.Sprintf("Windows 侧成功，但 WSL（%s）同步失败: %s", distro, wsl.Error)
++			fres.Message = fmt.Sprintf("%s；%s", result.Message, fres.Error)
++		}
++		return fres, nil
+ 	case SolutionCleanClaudeInstall:
+ 		result, err := s.cleanClaudeCode(InstallMethod(req.Method))
+ 		if err != nil {
+diff --git a/internal/envcheck/installer.go b/internal/envcheck/installer.go
+index d2e0a67..6d420e2 100644
+--- a/internal/envcheck/installer.go
++++ b/internal/envcheck/installer.go
+@@ -50,11 +50,16 @@ const (
+ 	headroomVenvCreateTimeout = 120 * time.Second
+ 
+ 	// Progress percentages for each phase of an install/update operation.
+-	progressPrecheck  = 5
+-	progressPrepare   = 15
+-	progressRunStart  = 20
+-	progressRunEnd    = 80
+-	progressVerify    = 85
++	progressPrecheck = 5
++	progressPrepare  = 15
++	progressRunStart = 20
++	progressRunEnd   = 80
++	progressVerify   = 85
++	// progressWSLSync sits between verify and refresh-cache: in the async
++	// flow the WSL step runs AFTER the cache refresh, so the monotonic
++	// reporter clamps it up to the already-reported 95 — the step label still
++	// flips to wsl_sync, which is what the frontend shows.
++	progressWSLSync   = 92
+ 	progressRefresh   = 95
+ 	progressCompleted = 100
+ 
+@@ -1506,7 +1511,7 @@ func (s *Service) resolveCommandNPMPathForTool(cmd installCommand, current *Chec
+ 		if resolved := s.npmExecutableForInstall(current); resolved != "" && resolved != "npm" {
+ 			cmd.path = resolved
+ 			// npm 前缀对齐时同步前置该前缀的 bin 目录，让 npm-cli.js 的
+-		// `#!/usr/bin/env node` 拿到同前缀的 node，npm -g 才会写回同一前缀。
++			// `#!/usr/bin/env node` 拿到同前缀的 node，npm -g 才会写回同一前缀。
+ 			if current != nil && current.Installed {
+ 				if prefix, ok := npmPrefixFromInstalledPath(current.ExecutablePath); ok {
+ 					cmd.pathPrefixDirs = []string{npmBinDirInsidePrefix(prefix)}
+diff --git a/internal/envcheck/service.go b/internal/envcheck/service.go
+index 86137c9..1697df7 100644
+--- a/internal/envcheck/service.go
++++ b/internal/envcheck/service.go
+@@ -88,6 +88,17 @@ type Service struct {
+ 	// Mirrors the SetHeadroomStopper injection pattern.
+ 	wslSearchToolsInstaller func() (*InstallResult, error)
+ 
++	// wslCLISync, when set via SetWSLCLISync, is invoked by attachWSLSync
++	// after a SUCCESSFUL Windows-side install/update of a managed CLI, so the
++	// same operation also installs/upgrades the CLI inside the default WSL
++	// distro (install/upgrade two-sided linkage). app.go wiring adapts
++	// App.syncCLIToWSL (app_wsl_cli_sync.go), which gates on distro
++	// availability + shell=wsl/already-installed and dispatches to
++	// wslsetup Install/Update. envcheck never imports wslsetup — same
++	// injection rationale as wslSearchToolsInstaller. Nil (zero value, tests /
++	// non-Windows wiring) means no linkage and attachWSLSync is a no-op.
++	wslCLISync func(tool CLITool, kind OperationKind) *WSLSyncResult
++
+ 	// Async operation state
+ 	opMu    sync.Mutex
+ 	current *OperationState
+@@ -185,6 +196,52 @@ func (s *Service) SetWSLSearchToolsInstaller(fn func() (*InstallResult, error))
+ 	s.wslSearchToolsInstaller = fn
+ }
+ 
++// SetWSLCLISync 注入「Windows 侧安装/升级成功 → 同步 WSL 侧 CLI」回调
++// （安装/升级双侧联动，direction §2.2）。app.go 装配时把 App.syncCLIToWSL
++// 注入；nil 安全（未注入时 attachWSLSync 是 no-op，测试/非 Windows 装配
++// 均不受影响）。与 SetWSLSearchToolsInstaller 同样的 setter 线程安全范式
++// （s.mu 写锁，读取走 RLock），必须在首次 Install/Update 之前调用。
++func (s *Service) SetWSLCLISync(fn func(tool CLITool, kind OperationKind) *WSLSyncResult) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.wslCLISync = fn
++}
++
++// attachWSLSync 在 Windows 侧 install/update 成功后，把 WSL 侧同步作为
++// 同一操作的最后一步执行（direction §2.2）：
++//   - Windows 失败（err != nil / result == nil / !result.Success）不触发，
++//     WSL 字段保持 nil；
++//   - 非 install/update kind（uninstall 等）与 ToolHeadroom 不触发；
++//   - 回调未注入时不触发（nil 安全）；
++//   - reporter 非 nil 时先上报 OperationStepWSLSync（异步操作内经既有轮询
++//     可见「正在同步到 WSL」），再执行回调并把结果写进 result.WSL。
++//     回调返回 nil 视为「本次不涉及 WSL」（例如无可用发行版）。
++//
++// 调用点：runOperation（异步全链）、serializedInstallOrUpdate 与
++// serializedInstallOrUpdateWithMethod（同步链，不传 reporter）。调用方
++// 不得持有 opMu（reporter 内部会取锁）。
++func (s *Service) attachWSLSync(tool CLITool, kind OperationKind, result *InstallResult, err error, reporter progressReporter) {
++	if err != nil || result == nil || !result.Success {
++		return
++	}
++	if kind != OperationKindInstall && kind != OperationKindUpdate {
++		return
++	}
++	if tool == ToolHeadroom {
++		return
++	}
++	s.mu.RLock()
++	fn := s.wslCLISync
++	s.mu.RUnlock()
++	if fn == nil {
++		return
++	}
++	if reporter != nil {
++		reporter.report(OperationStepWSLSync, "正在同步到 WSL…", progressWSLSync)
++	}
++	result.WSL = fn(tool, kind)
++}
++
+ // CheckAll checks every supported CLI tool and updates the in-memory cache.
+ func (s *Service) CheckAll() (*OverallStatus, error) {
+ 	// F-4: publish Checking=true on the cached snapshot before any per-tool
+@@ -637,6 +694,11 @@ func (s *Service) serializedInstallOrUpdate(tool CLITool, operation installOpera
+ 		_, _ = s.CheckOne(tool)
+ 	}
+ 
++	// 安装/升级双侧联动（同步链，direction §2.2）：Windows 成功后追加 WSL
++	// 同步步骤；不传 reporter（占位操作态即将被清除，步骤上报无观察面），
++	// 结果仅经返回值 result.WSL 暴露给同步调用方。不得在持有 opMu 时调用。
++	s.attachWSLSync(tool, OperationKind(operation), result, err, nil)
++
+ 	// Clear the operation state so the gate is released.
+ 	s.opMu.Lock()
+ 	s.current = nil
+@@ -1024,6 +1086,13 @@ func (s *Service) runOperation(op *OperationState, method ClaudeInstallMethod) {
+ 		cacheRefreshed = cacheErr == nil
+ 	}
+ 
++	// 安装/升级双侧联动：Windows 成功后在同一操作内追加 WSL 同步步骤
++	// （direction §2.2）。操作保持 running 直到本步结束，复用同一操作槽与
++	// 同一套前端轮询；结果写 result.WSL（含 skipped/failed，均不改变
++	// OperationState.Status 仍只表示 Windows 侧的语义）。不得在持有 opMu
++	// 时调用（reporter 内部取锁）。
++	s.attachWSLSync(op.Tool, op.Kind, result, err, reporter)
++
+ 	s.opMu.Lock()
+ 	defer s.opMu.Unlock()
+ 
+@@ -1288,6 +1357,11 @@ func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod
+ 		_, _ = s.CheckOne(ToolClaudeCode)
+ 	}
+ 
++	// 安装/升级双侧联动（同步链，direction §2.2）：Claude 指定通道安装成功后
++	// 追加 WSL 同步；不传 reporter，结果经返回值 result.WSL 暴露。不得在
++	// 持有 opMu 时调用。
++	s.attachWSLSync(ToolClaudeCode, OperationKindInstall, result, err, nil)
++
+ 	s.opMu.Lock()
+ 	s.current = nil
+ 	s.opMu.Unlock()
+diff --git a/internal/envcheck/types.go b/internal/envcheck/types.go
+index 96d3b90..6474ecb 100644
+--- a/internal/envcheck/types.go
++++ b/internal/envcheck/types.go
+@@ -206,14 +206,41 @@ type OverallStatus struct {
+ }
+ 
+ // InstallResult is returned by install and update operations.
++// Success 永远只表示 Windows 侧结论（direction §2.1）：双侧结论由消费者读取
++// WSL 字段得出，nil 表示本次不涉及 WSL（非 Windows、Windows 失败、非
++// install/update、headroom 或回调未注入）。
+ type InstallResult struct {
+ 	Success bool    `json:"success"`
+ 	Message string  `json:"message"`
+ 	Tool    CLITool `json:"tool"`
+ 	Version string  `json:"version"`
+ 	Error   string  `json:"error"`
++
++	// WSL 报告同一操作内 WSL 侧 CLI 同步的结果（安装/升级双侧联动）。nil
++	// 时不代表失败，只代表本次没有 WSL 步骤；Status=failed 时前端横幅必须
++	// 降级为 warning，不得显示纯「成功」。
++	WSL *WSLSyncResult `json:"wsl,omitempty"`
++}
++
++// WSLSyncResult 是 Windows 侧 install/update 成功后、同一操作内追加的
++// WSL 侧同步步骤的结果（App 装配的 syncCLIToWSL 回调产出，方向文档
++// windows-wsl-unified/direction.md §2.1）。
++type WSLSyncResult struct {
++	Status    string `json:"status"`            // WSLSyncSucceeded / WSLSyncFailed / WSLSyncSkipped
++	Distro    string `json:"distro,omitempty"`  // 目标发行版（skipped 时也填，便于展示）
++	Version   string `json:"version,omitempty"` // WSL 侧同步后的版本
++	AlreadyOK bool   `json:"alreadyOK,omitempty"`
++	Message   string `json:"message,omitempty"`
++	Error     string `json:"error,omitempty"`
+ }
+ 
++// WSL 同步状态（字符串而非自定义类型：与前端/JSON 消费保持简单字面量）。
++const (
++	WSLSyncSucceeded = "succeeded"
++	WSLSyncFailed    = "failed"
++	WSLSyncSkipped   = "skipped"
++)
++
+ // ---------------------------------------------------------------------------
+ // Async operation types for long-running install/update tasks
+ // ---------------------------------------------------------------------------
+@@ -247,7 +274,11 @@ const (
+ 	OperationStepRunCommand   OperationStep = "run_command"
+ 	OperationStepVerify       OperationStep = "verify"
+ 	OperationStepRefreshCache OperationStep = "refresh_cache"
+-	OperationStepCompleted    OperationStep = "completed"
++
++	// OperationStepWSLSync 是 Windows 侧成功后、同操作内的 WSL 侧同步步骤
++	// （经 SetWSLCLISync 注入的回调执行；异步操作经既有轮询可见）。
++	OperationStepWSLSync   OperationStep = "wsl_sync"
++	OperationStepCompleted OperationStep = "completed"
+ )
+ 
+ // OperationState holds the full state of a single async install/update operation.

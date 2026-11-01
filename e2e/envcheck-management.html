@@ -5,10 +5,11 @@
 <div id="app"></div>
 <script type="module">
 // 真实设置组件 + 明确的 Wails 替身。所有操作仅修改本页内存，绝不管理本机软件。
-// URL ?scenario=installed|dependency|manual|path|fast|failure|snapshot-error|uninstall-snapshot-error|uninstall-fast|slow-accept|empty
+// URL ?scenario=installed|dependency|manual|path|fast|failure|snapshot-error|uninstall-snapshot-error|uninstall-fast|slow-accept|empty|wsl-success|wsl-failure|wsl-skipped
 // window.__envCalls 记录绑定调用，window.__envFixture 供自动化断言。
-import { createApp, h } from 'vue';
+import { createApp, h, ref } from 'vue';
 import EnvCheckSettings from '/frontend/src/views/settings/EnvCheckSettings.vue';
+import WSLCLISettings from '/frontend/src/views/settings/WSLCLISettings.vue';
 import { useToast } from '/frontend/src/composables/useToast.ts';
 import '/frontend/src/styles/tokens.css';
 
@@ -51,7 +52,7 @@ if (scenario === 'path') Object.assign(items.pi, {
   pathOk: false, systemPathOk: false, pathState: 'outside_path', solutions: [fixPath],
   issues: [{ severity: 'warning', code: 'path_missing', message: '测试夹具：需要修复 PATH', solutions: [fixPath] }],
 });
-if (['fast', 'failure', 'snapshot-error', 'slow-accept'].includes(scenario)) Object.assign(items.pi, {
+if (['fast', 'failure', 'snapshot-error', 'slow-accept', 'wsl-success', 'wsl-failure', 'wsl-skipped'].includes(scenario)) Object.assign(items.pi, {
   installed: false, executablePath: '', pathOk: false, pathState: 'missing',
 });
 const status = () => ({
@@ -73,7 +74,14 @@ function start(tool, kind) {
     });
     operation = { ...operation, status: success ? 'succeeded' : 'failed', progress: 100, completedAt: now(),
       error: success ? '' : '测试夹具：安装进程失败，退出码 1',
-      result: { success, tool, message: success ? '测试夹具操作完成' : '测试夹具操作失败', error: success ? '' : 'exit 1' },
+      result: { success, tool, message: success ? '测试夹具操作完成' : '测试夹具操作失败', error: success ? '' : 'exit 1',
+        ...(scenario.startsWith('wsl-') ? { wsl: {
+          status: scenario === 'wsl-failure' ? 'failed' : scenario === 'wsl-skipped' ? 'skipped' : 'succeeded',
+          distro: 'Ubuntu', version: scenario === 'wsl-success' ? '1.0.1' : '',
+          error: scenario === 'wsl-failure' ? 'TEST_ONLY_WSL_NPM_FAILURE' : '',
+          message: scenario === 'wsl-skipped' ? '未使用 WSL 模式且 WSL 内未安装' : 'TEST_ONLY_WSL_RESULT',
+        } } : {}),
+      },
     };
   };
   if (['fast', 'uninstall-fast'].includes(scenario)) finish();
@@ -81,6 +89,14 @@ function start(tool, kind) {
   return accepted;
 }
 const implementations = {
+  GetWSLCLIStatus: () => ({ available: true, distro: 'Ubuntu', tools: [{
+    tool: 'pi', installed: operation?.result?.wsl?.status === 'succeeded',
+    version: operation?.result?.wsl?.status === 'succeeded' ? '1.0.1' : '',
+  }] }),
+  GetWSLConfigSupplyStatus: () => ({ distro: 'Ubuntu', unified: false, faces: [], units: [] }),
+  GetWSLSkillsSupplyStatus: () => ({ available: true, skills: [], scanRunning: false }),
+  GetWSLCliSupplyStatus: () => ({ available: true, units: [], resources: { skills: [], scanRunning: false } }),
+  GetWSLOpenCodeMCPPreview: () => [],
   GetEnvCheckSnapshot: () => {
     if (snapshotFailures > 0) { snapshotFailures--; throw new Error('测试夹具：一次快照获取失败'); }
     return { status: status(), operation: copy(operation) };
@@ -123,9 +139,11 @@ window.go = { main: { App: app }, envcheck: { Service: { CleanHeadroom: async ()
 window.__envCalls = calls;
 window.__envFixture = { scenario, status, advanceTime(ms) { clockOffset += ms; }, get operation() { return copy(operation); }, get dependencyInstalled() { return dependencyInstalled; }, set confirmAllowed(value) { confirmAllowed = value; } };
 const { toasts } = useToast();
+const wslRevision = ref(0);
 createApp({ render: () => h('main', [
   h('p', { class: 'fixture-notice' }, `隔离测试：${scenario}。操作仅改页面内存，不调用真实系统。`),
-  h(EnvCheckSettings),
+  h(EnvCheckSettings, { onWslCliChanged: () => { wslRevision.value++; } }),
+  scenario.startsWith('wsl-') ? h(WSLCLISettings, { refreshRevision: wslRevision.value }) : null,
   h('aside', { 'aria-label': '操作通知' }, toasts.map(toast => h('p', { role: 'status', key: toast.id }, toast.message))),
 ]) }).mount('#app');
 </script>

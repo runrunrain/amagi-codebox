@@ -91,6 +91,13 @@ type TargetRecord struct {
 	LegacyGeneration string            `json:"legacyGeneration,omitempty"`
 	LastSeen    time.Time         `json:"lastSeen"`
 	InspectedAt map[CLI]time.Time `json:"inspectedAt,omitempty"`
+	// Unified（P2-B 统一管理）：该目标代的一次性「统一配置管理」授权标记。
+	// 打开后协调器在会话启动/保存推送/启动对账时自动授权新出现的可导入单元
+	// 并物化显式选择键（永不持久化通配键——旧版本二进制按普通键名消费选择
+	// 集，显式键保证降级安全）；换代（重装/换默认用户）后自动失效，需重新
+	// 启用。关闭（Disable）只停止自动纳入新项，不动已授权单元。
+	Unified    bool      `json:"unified,omitempty"`
+	UnifiedAt  time.Time `json:"unifiedAt,omitempty"`
 }
 
 // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与

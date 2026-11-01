@@ -119,10 +119,22 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &FixActionResult{
+		fres := &FixActionResult{
 			Success: result.Success,
 			Message: result.Message,
-		}, nil
+		}
+		// 部分失败不漏报（direction §2.2）：Windows 成功而 WSL 同步失败时，
+		// Success 仍只表示 Windows 侧，但 WSL 错误必须写入 Error 并追加到
+		// Message，避免消费方把部分失败读成全成功。
+		if wsl := result.WSL; wsl != nil && wsl.Status == WSLSyncFailed {
+			distro := wsl.Distro
+			if distro == "" {
+				distro = "WSL"
+			}
+			fres.Error = fmt.Sprintf("Windows 侧成功，但 WSL（%s）同步失败: %s", distro, wsl.Error)
+			fres.Message = fmt.Sprintf("%s；%s", result.Message, fres.Error)
+		}
+		return fres, nil
 	case SolutionCleanClaudeInstall:
 		result, err := s.cleanClaudeCode(InstallMethod(req.Method))
 		if err != nil {

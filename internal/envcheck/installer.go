@@ -50,11 +50,16 @@ const (
 	headroomVenvCreateTimeout = 120 * time.Second
 
 	// Progress percentages for each phase of an install/update operation.
-	progressPrecheck  = 5
-	progressPrepare   = 15
-	progressRunStart  = 20
-	progressRunEnd    = 80
-	progressVerify    = 85
+	progressPrecheck = 5
+	progressPrepare  = 15
+	progressRunStart = 20
+	progressRunEnd   = 80
+	progressVerify   = 85
+	// progressWSLSync sits between verify and refresh-cache: in the async
+	// flow the WSL step runs AFTER the cache refresh, so the monotonic
+	// reporter clamps it up to the already-reported 95 — the step label still
+	// flips to wsl_sync, which is what the frontend shows.
+	progressWSLSync   = 92
 	progressRefresh   = 95
 	progressCompleted = 100
 
@@ -1506,7 +1511,7 @@ func (s *Service) resolveCommandNPMPathForTool(cmd installCommand, current *Chec
 		if resolved := s.npmExecutableForInstall(current); resolved != "" && resolved != "npm" {
 			cmd.path = resolved
 			// npm 前缀对齐时同步前置该前缀的 bin 目录，让 npm-cli.js 的
-		// `#!/usr/bin/env node` 拿到同前缀的 node，npm -g 才会写回同一前缀。
+			// `#!/usr/bin/env node` 拿到同前缀的 node，npm -g 才会写回同一前缀。
 			if current != nil && current.Installed {
 				if prefix, ok := npmPrefixFromInstalledPath(current.ExecutablePath); ok {
 					cmd.pathPrefixDirs = []string{npmBinDirInsidePrefix(prefix)}

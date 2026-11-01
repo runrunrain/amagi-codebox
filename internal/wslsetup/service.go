@@ -1,11 +1,13 @@
-// Package wslsetup installs the managed AI CLIs (Claude Code, OpenCode, Codex,
-// Pi) INTO a WSL distribution so they run natively in the Linux environment that
-// CodeBox now defaults to on Windows. It is orthogonal to internal/envcheck,
-// which manages the Windows-side installs.
+// Package wslsetup installs and upgrades the managed AI CLIs (Claude Code,
+// OpenCode, Codex, Pi, Oh My Pi) INTO a WSL distribution so they run natively
+// in the Linux environment that CodeBox now defaults to on Windows. It is
+// orthogonal to internal/envcheck, which manages the Windows-side installs.
 //
-// The whole package is only meaningful on Windows with a usable WSL distro; the
-// heavy lifting lives in service_windows.go, with a stub in service_other.go so
-// the module still builds on macOS/Linux (per the repo's build-tag convention).
+// The business flow lives in portable files driven through the wslRunner seam
+// (runner.go): service_windows.go wires the real wsl.exe implementation on
+// Windows, off Windows the runner is nil and every method reports the platform
+// limitation (the historical stub contract), while tests on any OS inject a
+// fake runner and drive the real InstallTool/UpdateTool flow without WSL.
 package wslsetup
 
 // cliPackages maps a canonical CLI tool key (as returned by normalizeToolKey) to
@@ -17,7 +19,16 @@ var cliPackages = map[string]string{
 	"opencode": "opencode-ai",
 	"codex":    "@openai/codex",
 	"pi":       "@earendil-works/pi-coding-agent",
+	// omp shares pi's codebase (package name aligned with envcheck's
+	// ompNPMPackageName, installer.go). Added 2026-10 per the Windows/WSL
+	// unified-management workflow, superseding the old B7 exclusion which
+	// predated the five-CLI coverage requirement.
+	"omp": "@oh-my-pi/pi-coding-agent",
 }
+
+// cliToolOrder is the canonical report order of the five managed CLIs (used by
+// GetStatus). Every key must exist in cliPackages — pinned by tests.
+var cliToolOrder = []string{"claude", "opencode", "codex", "pi", "omp"}
 
 // InstallResult reports the outcome of an install-into-WSL operation. It mirrors
 // the shape of envcheck.InstallResult so the frontend can treat both uniformly.

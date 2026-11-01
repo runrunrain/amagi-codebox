@@ -275,3 +275,27 @@ export function getWSLOpenCodeMCPPreview(): Promise<WSLOpenCodeMCPEntry[]> {
 export function setWSLOpenCodeMCPSelection(overrideGlobal: string[]): Promise<void> {
   return callApi('[api.wslSupply.setWSLOpenCodeMCPSelection]', () => SetWSLOpenCodeMCPSelection(overrideGlobal));
 }
+
+// ---------------------------------------------------------------------------
+// P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步）。
+// ---------------------------------------------------------------------------
+
+import { EnableWSLUnifiedSupply, DisableWSLUnifiedSupply } from '../../wailsjs/go/main/App';
+
+/**
+ * 「启用统一管理」：对当前 distro 一次性授权固定单元集（Pi settings/amagi/mcp、
+ * 视觉清单、Claude MCP/设置白名单、Codex MCP/profile），此后会话启动、保存
+ * 推送与启动对账自动同步，新条目随下次对账纳入（无需重复预览/勾选）。逐单元
+ * 返回结果，不汇总成单一成功。
+ */
+export function enableWSLUnifiedSupply(): Promise<WSLConfigUnitOutcome[]> {
+  return callApi('[api.wslSupply.enableWSLUnifiedSupply]', () => EnableWSLUnifiedSupply());
+}
+
+/**
+ * 「停止自动纳入新项」：停止统一管理的自动同步；已授权单元与既有副本保持
+ * 现状（撤回单个单元用既有「保留本地」）。distro 重装后需重新启用。
+ */
+export function disableWSLUnifiedSupply(): Promise<void> {
+  return callApi('[api.wslSupply.disableWSLUnifiedSupply]', () => DisableWSLUnifiedSupply());
+}

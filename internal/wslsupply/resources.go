@@ -85,6 +85,9 @@ type ResourceScope struct {
 	running   bool
 	manifests map[string]*SkillManifest // rel → manifest
 	progress  SkillsScanProgress
+	// onDone 是扫描结束通知（P2-B 统一管理；在扫描 goroutine 内、无锁状态
+	// 下调用，必须非阻塞）。
+	onDone func()
 }
 
 // NewResourceScope 创建资源作用域。
@@ -123,13 +126,24 @@ func (s *ResourceScope) RescanAsync() bool {
 	return s.startScanLocked()
 }
 
+// SetScanDoneCallback 注册扫描结束通知（重复注册以后者为准；nil 清除）。
+func (s *ResourceScope) SetScanDoneCallback(fn func()) {
+	s.mu.Lock()
+	s.onDone = fn
+	s.mu.Unlock()
+}
+
 func (s *ResourceScope) startScanLocked() bool {
 	s.running = true
 	go func() {
 		s.Scan()
 		s.mu.Lock()
 		s.running = false
+		cb := s.onDone
 		s.mu.Unlock()
+		if cb != nil {
+			cb()
+		}
 	}()
 	return true
 }
@@ -298,6 +312,7 @@ func (c *Coordinator) RegisterResources(scope *ResourceScope) {
 	if scope == nil {
 		return
 	}
+	scope.SetScanDoneCallback(c.scanDoneNotifier())
 	if c.resources == nil {
 		c.resources = map[CLI]*ResourceScope{}
 	}

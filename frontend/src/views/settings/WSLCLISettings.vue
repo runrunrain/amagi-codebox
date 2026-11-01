@@ -15,7 +15,7 @@
         <span v-if="status.distroWSLVersion === 2" class="badge badge-wsl2">WSL2</span>
         <span v-else-if="status.distroWSLVersion === 1" class="badge">WSL1</span>
         <span class="mono">
-          Node: {{ status.nodeVersion || '未安装 (安装 CLI 时会自动安装 Node 20)' }}
+          Node: {{ status.nodeVersion || '未安装 (安装 CLI 时会自动安装 Node 22)' }}
         </span>
       </div>
 
@@ -31,14 +31,14 @@
               :disabled="busyTool === t.tool"
               @click="install(t.tool)"
             >
-              {{ busyTool === t.tool ? '安装中…' : (t.installed ? '重新安装' : '安装到 WSL') }}
+              {{ busyTool === t.tool ? (t.installed ? '升级中…' : '安装中…') : (t.installed ? '升级' : '安装到 WSL') }}
             </AppButton>
           </div>
         </div>
       </div>
 
       <p v-if="busyTool" class="set-hint">
-        正在 WSL 内安装 {{ displayName(busyTool) }}，首次可能需要安装 Node 运行时，请稍候…
+        正在 WSL 内{{ toolInstalled(busyTool) ? '升级' : '安装' }} {{ displayName(busyTool) }}，首次可能需要安装 Node 运行时，请稍候…
       </p>
 
       <!-- P3-S1 最小「配置状态」区：托管面同步状态 + 视觉清单共享同意入口 -->
@@ -48,6 +48,27 @@
           Windows 面板保存后，托管配置按需同步到 WSL（{{ supply.distro }}）；
           已安装不等于已同步，安装成功也不改写 WSL 内的用户自有文件。
         </p>
+        <!-- P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步） -->
+        <div class="unified-row">
+          <template v-if="!supply.unified">
+            <span class="supply-detail">
+              统一管理：一次启用后，Windows 侧配置自动同步到 WSL，无需重复预览/勾选——Pi
+              settings/amagi/mcp、Claude MCP 服务器与设置白名单、Codex MCP/profile、共享技能与
+              CLAUDE.md/commands/agents/AGENTS.md、视觉清单；新条目随下次对账自动纳入。
+              MCP env 与视觉清单含密钥副本，按 0600 写入；WSL 手改与已有同名项不会被覆盖。
+            </span>
+            <AppButton variant="primary" size="small" :disabled="unifiedBusy" @click="enableUnified">
+              {{ unifiedBusy ? '启用中…' : '启用统一管理' }}
+            </AppButton>
+          </template>
+          <template v-else>
+            <span class="badge badge-ok">已由 Windows 统一管理（{{ supply.distro }}）</span>
+            <AppButton variant="ghost" size="small" :disabled="unifiedBusy" @click="disableUnified">
+              {{ unifiedBusy ? '处理中…' : '停止自动纳入新项' }}
+            </AppButton>
+            <span class="supply-detail">停止后已授权单元与副本保持现状；撤回单个单元用各面板的「保留本地」。</span>
+          </template>
+        </div>
         <div class="supply-list">
           <div v-for="f in supply.faces" :key="f.key" class="supply-row">
             <label>{{ f.label }}</label>
@@ -58,7 +79,7 @@
             </div>
           </div>
         </div>
-        <div v-if="visionAwaitingConsent" class="consent-row">
+        <div v-if="visionAwaitingConsent && !supply.unified" class="consent-row">
           <span class="supply-detail">
             视觉清单含 API 密钥副本；向 WSL 共享前需要你的明确同意（文件将以 0600 权限写入，
             仅在 distro 内可读）。
@@ -76,7 +97,7 @@
             （D4 动作分离：检查/预览/应用安全更新/保留本地/确认接管） -->
         <div v-if="piUnits.length" class="pi-units">
           <h4>Pi 配置投影（Windows 面板 → WSL）</h4>
-          <div v-if="anyUnitAwaitingConsent" class="consent-row">
+          <div v-if="anyUnitAwaitingConsent && !supply?.unified" class="consent-row">
             <span class="supply-detail">
               向 WSL 投影 Windows 侧的 settings/amagi/mcp（mcp env 可能含密钥副本，
               文件以 0600 写入）需要你的明确同意；未手改的条目将跟随 Windows 面板。
@@ -296,12 +317,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { getWSLCLIStatus, installCLIToWSL, type WSLStatus } from '../../api/wslsetup'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { getWSLCLIStatus, installCLIToWSL, updateCLIInWSL, type WSLStatus } from '../../api/wslsetup'
 import {
   getWSLConfigSupplyStatus,
   grantWSLVisionConsent,
   enableWSLPiConfigSupply,
+  enableWSLUnifiedSupply,
+  disableWSLUnifiedSupply,
   previewWSLPiConfigSupply,
   applyWSLPiConfigSupply,
   keepWSLPiConfigUnitLocal,
@@ -314,6 +337,7 @@ import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import { cliImportOutcomeMessage } from './wslSupplyMessages'
 
+const props = withDefaults(defineProps<{ refreshRevision?: number }>(), { refreshRevision: 0 })
 const { showSuccess, showError, showInfo } = useToast()
 
 // SA-17：卸载后停止扫描轮询链（setTimeout 链不再触发新请求）。
@@ -333,9 +357,15 @@ const NAMES: Record<string, string> = {
   opencode: 'OpenCode',
   codex: 'Codex',
   pi: 'Pi',
+  omp: 'Oh My Pi (OMP)',
 }
 function displayName(tool: string): string {
   return NAMES[tool] || tool
+}
+
+// 工具行当前安装态（升级/安装文案与动作分派用）。
+function toolInstalled(tool: string): boolean {
+  return !!status.value?.tools?.find((t) => t.tool === tool)?.installed
 }
 
 async function load() {
@@ -364,22 +394,28 @@ async function load() {
 
 async function install(tool: string) {
   if (busyTool.value) return
+  const installed = toolInstalled(tool)
+  const action = installed ? '升级' : '安装'
   busyTool.value = tool
-  showInfo(`正在将 ${displayName(tool)} 安装到 WSL…`)
+  showInfo(installed ? `正在升级 WSL 内的 ${displayName(tool)}…` : `正在将 ${displayName(tool)} 安装到 WSL…`)
   try {
-    const res = await installCLIToWSL(tool)
+    const res = installed ? await updateCLIInWSL(tool) : await installCLIToWSL(tool)
     if (res.success) {
-      if (res.alreadyOK) {
+      if (installed) {
+        showSuccess(res.alreadyOK
+          ? `${displayName(tool)} 已是 WSL 内最新版本 (${res.version})`
+          : `${displayName(tool)} 已在 WSL 内升级 (${res.version})`)
+      } else if (res.alreadyOK) {
         showSuccess(`${displayName(tool)} 已在 WSL 中 (${res.version})`)
       } else {
         showSuccess(`${displayName(tool)} 已安装到 WSL (${res.version})`)
       }
       await load()
     } else {
-      showError(`安装失败: ${res.error || '未知错误'}`)
+      showError(`${action}失败: ${res.error || '未知错误'}`)
     }
   } catch (err: any) {
-    showError('安装失败: ' + (err?.message || err))
+    showError(`${action}失败: ` + (err?.message || err))
   } finally {
     busyTool.value = ''
   }
@@ -431,6 +467,44 @@ async function grantConsent(): Promise<void> {
     showError('授权失败: ' + (err?.message || err))
   } finally {
     consentBusy.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步）
+// ---------------------------------------------------------------------------
+const unifiedBusy = ref(false)
+
+async function enableUnified(): Promise<void> {
+  if (unifiedBusy.value) return
+  unifiedBusy.value = true
+  try {
+    const outcomes = await enableWSLUnifiedSupply()
+    const skipped = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
+    if (skipped.length) {
+      showInfo(`已启用统一管理：${outcomes.length - skipped.length} 项授权，${skipped.length} 项跳过（保留本地等，详见逐单元状态）`)
+    } else {
+      showSuccess('已启用统一管理（此后启动/保存/对账自动同步；WSL 手改条目冻结保留）')
+    }
+    await load()
+  } catch (err: any) {
+    showError('启用失败: ' + (err?.message || err))
+  } finally {
+    unifiedBusy.value = false
+  }
+}
+
+async function disableUnified(): Promise<void> {
+  if (unifiedBusy.value) return
+  unifiedBusy.value = true
+  try {
+    await disableWSLUnifiedSupply()
+    showInfo('已停止自动纳入新项（已授权单元与副本保持现状；撤回单个单元用「保留本地」）')
+    await refreshStatus()
+  } catch (err: any) {
+    showError('停止失败: ' + (err?.message || err))
+  } finally {
+    unifiedBusy.value = false
   }
 }
 
@@ -1057,6 +1131,7 @@ async function saveOcSelection(): Promise<void> {
   }
 }
 
+watch(() => props.refreshRevision, () => { if (alive) void load() })
 onMounted(load)
 </script>
 
@@ -1113,6 +1188,16 @@ onMounted(load)
   gap: 12px;
   flex-wrap: wrap;
   margin: 8px 0 4px;
+}
+.unified-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: var(--control);
+  border-radius: 8px;
+  margin-bottom: 8px;
 }
 
 .set-card {

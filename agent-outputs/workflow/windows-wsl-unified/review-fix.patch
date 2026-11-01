@@ -1,0 +1,771 @@
+diff --git a/app.go b/app.go
+index 7a80079..18e2050 100644
+--- a/app.go
++++ b/app.go
+@@ -349,6 +349,10 @@ type App struct {
+ 	// 测试可替换为假 Runner；nil 时闸门 fail closed。
+ 	WSLSupply wslsupply.Runner
+ 
++	// wslUnifiedLoop 是 WSL 统一管理的后台对账循环与延期补推标记（P4 修复
++	// F1/F2：来源周期重扫 + 活动会话阻挡后的自动补推；见 app_wsl_unified.go）。
++	wslUnifiedLoop wslUnifiedReconcileLoopState
++
+ 	// DockerWSL 面向 Windows：Docker Desktop ↔ WSL 集成健康检查与一键自愈
+ 	//（2026-09-25 运维复盘 §1.2：共享挂载竞态挂坏的实证修复序列固化）。
+ 	// 非 Windows 平台方法返回不支持。
+@@ -2245,6 +2249,10 @@ func (a *App) Startup(ctx context.Context) {
+ func (a *App) Shutdown(ctx context.Context) {
+ 	a.Log.Info("app", "应用关闭中...")
+ 
++	// P4-F2：先收敛 WSL 统一管理后台循环（等待退出；之后不再有循环侧
++	// 推送调度，防 goroutine 泄漏）。
++	a.stopWSLUnifiedReconcileLoop()
++
+ 	// RC2：先收尾远程客户端终端长连接（等待读泵退出与 outbox 销毁；
+ 	// 不依赖网络往返，仅本地关闭）。
+ 	a.shutdownRemoteClientTerminals()
+diff --git a/app_wsl_supply.go b/app_wsl_supply.go
+index d7706bf..f4ef18d 100644
+--- a/app_wsl_supply.go
++++ b/app_wsl_supply.go
+@@ -439,8 +439,14 @@ func (a *App) doPushWSLSupply() {
+ 		return // 停机 distro：只保留待同步标记（下次启动 lazy 兜底），不唤醒
+ 	}
+ 	if a.hasActiveSessionsForWSLPush() {
+-		return // 活动会话期间暂停后台应用（design §三），待同步标记保留
++		// 活动会话期间暂停后台应用（design §三）。P4-F2：保留待对账标记，
++		// 会话归零后由统一管理后台循环异步补推（无需用户再保存一次）。
++		a.wslUnifiedMarkPushPending()
++		return
+ 	}
++	// P4-F3：统一管理固定单元的幂等续接（未启用统一管理时为 no-op；已就绪
++	// 分组零成本跳过）——先补授权/物化，本推送后续分支随写。
++	a.reconcileWSLUnifiedFixedUnits(distro)
+ 	piUnits := wslSupplyUnitsFiltered(a.WSLSupply,
+ 		wslsupply.UnitPiManagedModels, wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
+ 	if len(piUnits) > 0 {
+diff --git a/app_wsl_unified.go b/app_wsl_unified.go
+index b17e701..4f615b9 100644
+--- a/app_wsl_unified.go
++++ b/app_wsl_unified.go
+@@ -23,10 +23,33 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"strings"
++	"sync"
++	"time"
+ 
+ 	"amagi-codebox/internal/wslsupply"
+ )
+ 
++// wslUnifiedReconcileLoopState 是统一管理后台对账循环与延期推送标记的进程内
++// 状态（P4 修复 F1/F2；App 字段，随 App 实例生命周期）。
++type wslUnifiedReconcileLoopState struct {
++	mu     sync.Mutex
++	cancel context.CancelFunc // nil = 循环未运行
++	done   chan struct{}      // 循环退出信号（stop 等待它，保证不泄漏）
++	// pushPending：推送被活动会话挡下后保留的待补推标记（F2——活动会话
++	// 归零后由循环心跳异步补推，无需用户再保存一次）。
++	pushPending bool
++}
++
++// 统一管理后台循环的两个节拍（有节制调度；测试注入缩短）。
++var (
++	// wslUnifiedPendingTickInterval：延期补推检查周期（只查会话状态与标记，
++	// 不唤醒停机 distro、不写目标）。
++	wslUnifiedPendingTickInterval = 5 * time.Second
++	// wslUnifiedRescanInterval：来源重扫周期（有界、只读 Windows 来源目录；
++	// 完成回调才触发一次推送）。
++	wslUnifiedRescanInterval = 5 * time.Minute
++)
++
+ // wslUnifiedCoordinator 是统一管理消费的协调器能力切片（nil 语义：运行器
+ // 不支持 → 全部自动路径退化为现状 pi/shared 行为）。
+ type wslUnifiedCoordinator interface {
+@@ -94,6 +117,10 @@ func (a *App) EnableWSLUnifiedSupply() ([]WSLConfigUnitOutcome, error) {
+ 	if err := coord.SetTargetUnified(ctx, distro, true); err != nil {
+ 		return out, fmt.Errorf("启用统一管理失败：%v", err)
+ 	}
++	// 先启动后台对账循环（P4-F1/F2）：即使下方分组授权部分失败，周期重扫
++	// 与延期补推也已在运行，未完成分组随自动对账续接。
++	a.startWSLUnifiedReconcileLoop()
++	var failedGroups []string
+ 	for _, group := range wslUnifiedFixedUnits {
+ 		units := wslSupplyUnitsFiltered(a.WSLSupply, group.Units...)
+ 		if len(units) == 0 {
+@@ -104,7 +131,12 @@ func (a *App) EnableWSLUnifiedSupply() ([]WSLConfigUnitOutcome, error) {
+ 			for _, u := range units {
+ 				out = append(out, WSLConfigUnitOutcome{Unit: string(u), Outcome: "failed", Detail: "自动授权失败：" + err.Error()})
+ 			}
+-			return out, fmt.Errorf("统一管理授权失败（%s）：%v", group.CLI, err)
++			// P4-F3：不回滚已提交的 Unified 标记，也不中断后续分组——成功分组
++			// 保持不变，失败分组随下次统一对账幂等续接（reconcileWSLUnified-
++			// FixedUnits：AutoConsentIfUnified 跳过已授权/detached，无需用户
++			// 再次敏感授权）。
++			failedGroups = append(failedGroups, fmt.Sprintf("%s：%v", group.CLI, err))
++			continue
+ 		}
+ 		grantedSet := map[wslsupply.UnitID]bool{}
+ 		for _, u := range granted {
+@@ -135,6 +167,9 @@ func (a *App) EnableWSLUnifiedSupply() ([]WSLConfigUnitOutcome, error) {
+ 	a.startWSLUnifiedScans()
+ 	// 立即推一轮：覆盖固定单元与已完成的扫描缓存（未完成的由回调补）。
+ 	a.scheduleWSLSupplyPush()
++	if len(failedGroups) > 0 {
++		return out, fmt.Errorf("统一管理部分授权失败（%s）；成功分组保持不变，失败分组将随自动对账续接", strings.Join(failedGroups, "；"))
++	}
+ 	a.Log.Info("wslsupply", "已启用 WSL 统一配置管理（一次授权；此后启动/保存/对账自动同步，新条目随下次对账纳入）", "distro="+distro)
+ 	return out, nil
+ }
+@@ -156,6 +191,9 @@ func (a *App) DisableWSLUnifiedSupply() error {
+ 	if err := coord.SetTargetUnified(context.Background(), distro, false); err != nil {
+ 		return fmt.Errorf("停止统一管理失败：%v", err)
+ 	}
++	// P4-F2：停用即收敛后台循环与延期补推标记（防 goroutine 泄漏；未完成
++	// 的固定单元续接随之停止——重新启用时恢复）。
++	a.stopWSLUnifiedReconcileLoop()
+ 	a.Log.Info("wslsupply", "已停止 WSL 统一配置管理的自动纳入（已授权单元与副本保持不变；撤回单个单元用「保留本地」）", "distro="+distro)
+ 	return nil
+ }
+@@ -185,8 +223,178 @@ func (a *App) scheduleWSLUnifiedStartupReconcile() {
+ 	}
+ 	if a.wslUnifiedCached(distro) {
+ 		a.startWSLUnifiedScans()
++		// 已启用统一管理：恢复后台对账循环（P4-F1/F2——来源重扫与延期
++		// 补推跨重启续跑）。
++		a.startWSLUnifiedReconcileLoop()
++	}
++	a.scheduleWSLSupplyPush()
++}
++
++// ---------------------------------------------------------------------------
++// 后台对账循环（P4-F1/F2：来源周期重扫 + 活动会话阻挡后的延期补推）
++// ---------------------------------------------------------------------------
++
++// startWSLUnifiedReconcileLoop 单飞启动后台对账循环（已运行则幂等返回）。
++// ctx 父级优先取 Wails Startup ctx（应用关闭即取消）；测试环境（未 Startup）
++// 用 Background + 显式 stop 收敛。循环 goroutine 经 done 通道 join，stop 返回
++// 后不再有任何循环侧调度。
++func (a *App) startWSLUnifiedReconcileLoop() {
++	if a == nil || a.WSLSupply == nil {
++		return
++	}
++	a.wslUnifiedLoop.mu.Lock()
++	if a.wslUnifiedLoop.cancel != nil {
++		a.wslUnifiedLoop.mu.Unlock()
++		return
++	}
++	parent := context.Background()
++	if a.ctx != nil {
++		parent = a.ctx
++	}
++	loopCtx, cancel := context.WithCancel(parent)
++	done := make(chan struct{})
++	a.wslUnifiedLoop.cancel = cancel
++	a.wslUnifiedLoop.done = done
++	a.wslUnifiedLoop.mu.Unlock()
++	go func() {
++		// 自然退出（ctx 取消/换代自退）时按 done 令牌原子清理自身槽：不清
++		// 后起新循环的槽，也绝不让旧循环占据启动位（后续同 App 重新 enable
++		// 能再起新循环）。stop() 显式停止时槽已被清，令牌不匹配即 no-op。
++		defer close(done)
++		defer a.wslUnifiedLoopRetire(done)
++		a.wslUnifiedReconcileLoop(loopCtx)
++	}()
++}
++
++// wslUnifiedLoopRetire 按 done 令牌清理循环槽（仅当槽仍属于该循环实例；
++// stop 已接管或后起新循环时不动）。
++func (a *App) wslUnifiedLoopRetire(done chan struct{}) {
++	a.wslUnifiedLoop.mu.Lock()
++	if a.wslUnifiedLoop.done == done {
++		a.wslUnifiedLoop.cancel = nil
++		a.wslUnifiedLoop.done = nil
++	}
++	a.wslUnifiedLoop.mu.Unlock()
++}
++
++// stopWSLUnifiedReconcileLoop 停止后台对账循环并清空延期补推标记（幂等；
++// 等待循环真正退出后返回——之后不再产生循环侧推送调度，防泄漏）。
++func (a *App) stopWSLUnifiedReconcileLoop() {
++	if a == nil {
++		return
++	}
++	a.wslUnifiedLoop.mu.Lock()
++	cancel, done := a.wslUnifiedLoop.cancel, a.wslUnifiedLoop.done
++	a.wslUnifiedLoop.cancel, a.wslUnifiedLoop.done = nil, nil
++	a.wslUnifiedLoop.pushPending = false
++	a.wslUnifiedLoop.mu.Unlock()
++	if cancel != nil {
++		cancel()
++	}
++	if done != nil {
++		<-done
++	}
++}
++
++// wslUnifiedReconcileLoop 是统一管理的后台对账循环（单实例；有节制调度）：
++//   - pending 心跳：被活动会话挡下的推送在会话归零后自动补推（F2——只查
++//     会话状态与标记，不唤醒停机 distro、不写目标）；
++//   - rescan 心跳：有界重扫技能与 Claude/Codex 资源来源（F1——首次扫描后
++//     新增/修改条目随真实对账周期自动跟随，无需高级面板显式检查；来源
++//     删除仍按 source-deleted 既有保护，不自动删目标）。
++//
++// 扫描完成回调（既有机制）→ scheduleWSLSupplyPush → 对账消费快照；推送
++// 永不触发重扫，不存在「扫描完成→推送→再扫描」循环。ctx 取消（应用关闭）
++// 即退出；统一管理停用（Disable 显式停）或换代（UnifiedCached=false）时
++// 心跳返回 false 自行退出。
++func (a *App) wslUnifiedReconcileLoop(ctx context.Context) {
++	// 节拍在启动时快照（测试可在 Enable 前注入短周期；循环运行期不再读
++	// 全局变量，避免与清理还原竞态）。
++	pendingEvery, rescanEvery := wslUnifiedPendingTickInterval, wslUnifiedRescanInterval
++	pending := time.NewTicker(pendingEvery)
++	defer pending.Stop()
++	rescan := time.NewTimer(rescanEvery)
++	defer rescan.Stop()
++	for {
++		select {
++		case <-ctx.Done():
++			return
++		case <-pending.C:
++			if !a.wslUnifiedPendingTick() {
++				return
++			}
++		case <-rescan.C:
++			if !a.wslUnifiedRescanTick() {
++				return
++			}
++			rescan.Reset(rescanEvery)
++		}
++	}
++}
++
++// wslUnifiedPendingTick 处理一次延期补推心跳；返回 false 表示循环应退出
++//（统一管理已停用/换代失效）。distro 暂不可解析时保持循环但不动作。
++func (a *App) wslUnifiedPendingTick() bool {
++	distro := a.wslDefaultDistro()
++	if distro == "" {
++		return true // 目标暂不可解析：保持循环，下个心跳再试
++	}
++	if !a.wslUnifiedCached(distro) {
++		return false
++	}
++	if !a.wslUnifiedTakePendingPush() {
++		return true // 无延期任务，或活动会话仍未归零（标记保留）
+ 	}
+ 	a.scheduleWSLSupplyPush()
++	return true
++}
++
++// wslUnifiedRescanTick 处理一次来源重扫心跳；返回 false 表示循环应退出。
++// 重扫有界且只读 Windows 来源目录；完成回调触发推送时由 doPushWSLSupply
++// 的既有守卫（停机不唤醒/活动会话不写）把守。
++func (a *App) wslUnifiedRescanTick() bool {
++	distro := a.wslDefaultDistro()
++	if distro == "" {
++		return true
++	}
++	if !a.wslUnifiedCached(distro) {
++		return false
++	}
++	if c := a.wslSkillsCoordinator(); c != nil {
++		c.RescanSkills()
++	}
++	if c := a.wslCliSupplyCoordinator(); c != nil {
++		c.RescanCliResources(wslsupply.CLIClaude)
++		c.RescanCliResources(wslsupply.CLICodex)
++	}
++	return true
++}
++
++// wslUnifiedMarkPushPending 记录一次被挡下的推送（doPushWSLSupply 活动会话
++// 早退路径调用；F2）。
++func (a *App) wslUnifiedMarkPushPending() {
++	a.wslUnifiedLoop.mu.Lock()
++	a.wslUnifiedLoop.pushPending = true
++	a.wslUnifiedLoop.mu.Unlock()
++}
++
++// wslUnifiedTakePendingPush 原子消费延期补推标记：无标记或活动会话仍未
++// 归零返回 false；否则清标记返回 true（调用方随后调度推送——推送自身的
++// 守卫若再次被挡会重新置标记，竞态安全）。
++func (a *App) wslUnifiedTakePendingPush() bool {
++	a.wslUnifiedLoop.mu.Lock()
++	pending := a.wslUnifiedLoop.pushPending
++	a.wslUnifiedLoop.mu.Unlock()
++	if !pending {
++		return false
++	}
++	if a.hasActiveSessionsForWSLPush() {
++		return false
++	}
++	a.wslUnifiedLoop.mu.Lock()
++	a.wslUnifiedLoop.pushPending = false
++	a.wslUnifiedLoop.mu.Unlock()
++	return true
+ }
+ 
+ // wslUnifiedOnScanDone 是扫描完成回调（协调器扫描 goroutine 内触发，必须
+@@ -244,6 +452,51 @@ func wslFindUnitStatus(st wslsupply.TargetStatus, unit wslsupply.UnitID) *wslsup
+ 	return nil
+ }
+ 
++// ---------------------------------------------------------------------------
++// P4-F3：固定单元初始化的幂等续接（统一管理对账内）
++// ---------------------------------------------------------------------------
++
++// reconcileWSLUnifiedFixedUnits 在每次统一对账前幂等续接固定单元初始化：
++// EnableWSLUnifiedSupply 可能在 SetTargetUnified 已持久化后因某分组
++// ResolveTarget/state.mutate 短暂失败而部分返回（Unified=true 但剩余固定
++// 单元从未授权，UI 隐藏启用入口）。这里对未就绪分组补 AutoConsentIfUnified
++// 与选择集物化——同代已授权与 detached 一律跳过（不复活保留本地、不动
++// hash 基线、无需用户再次敏感授权）；写入由本推送后续分支（pi/shared/键级
++// 单元）执行。全部就绪的分组零探测成本跳过（读状态缓存，不 spawn）。
++func (a *App) reconcileWSLUnifiedFixedUnits(distro string) {
++	coord := a.wslUnifiedCoordinator()
++	if coord == nil || !a.wslUnifiedCached(distro) {
++		return
++	}
++	for _, group := range wslUnifiedFixedUnits {
++		units := wslSupplyUnitsFiltered(a.WSLSupply, group.Units...)
++		if len(units) == 0 || a.wslUnifiedFixedUnitsSettled(distro, group.CLI, units) {
++			continue
++		}
++		if _, err := coord.AutoConsentIfUnified(context.Background(), distro, group.CLI, units); err != nil {
++			a.Log.Warn("wslsupply", "统一管理固定单元授权续接失败（下次对账重试）", fmt.Sprintf("cli=%s: %v", group.CLI, err))
++			continue
++		}
++		if len(wslUnifiedSelectionUnits(group.CLI)) > 0 {
++			a.materializeWSLUnifiedSelections(context.Background(), distro, group.CLI)
++		}
++	}
++}
++
++// wslUnifiedFixedUnitsSettled 报告该固定分组在当前展示代是否已全部处置
++//（同代已同意，或已保留本地 detached）；登记缺失或未同意均视为未就绪。
++// 只读状态快照，不探测目标。
++func (a *App) wslUnifiedFixedUnitsSettled(distro string, cli wslsupply.CLI, units []wslsupply.UnitID) bool {
++	status := a.wslSupplyStatus(distro, cli)
++	for _, unit := range units {
++		entry := wslFindUnitStatus(status, unit)
++		if entry == nil || (!entry.Consented && !entry.Detached) {
++			return false
++		}
++	}
++	return true
++}
++
+ // ---------------------------------------------------------------------------
+ // 保存推送增量 + 资源对账（doPushWSLSupply 在 pi/shared 之后调用）
+ // ---------------------------------------------------------------------------
+diff --git a/app_wsl_unified_test.go b/app_wsl_unified_test.go
+index 6321146..ad9fee8 100644
+--- a/app_wsl_unified_test.go
++++ b/app_wsl_unified_test.go
+@@ -17,6 +17,7 @@ import (
+ 	"time"
+ 
+ 	"amagi-codebox/internal/platform"
++	"amagi-codebox/internal/session"
+ 	"amagi-codebox/internal/wslsupply"
+ )
+ 
+@@ -25,13 +26,50 @@ import (
+ // ---------------------------------------------------------------------------
+ 
+ type unifiedTestProbes struct {
++	mu       sync.Mutex
+ 	identity platform.WSLUserIdentity
+ 	uncRoot  string
++	// failFromCall：第 N 次身份探测起返回失败（模拟 UNC/身份短暂不可达；
++	// 0=永不失败）。recovered 置位后恢复——用于验证部分启用失败后的自动续接。
++	failFromCall int
++	calls        int
++	recovered    bool
++}
++
++// ident 返回当前身份（带计数与故障注入；并发安全）。
++func (p *unifiedTestProbes) ident() platform.WSLUserIdentity {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.calls++
++	if p.failFromCall > 0 && p.calls >= p.failFromCall && !p.recovered {
++		return platform.WSLUserIdentity{}
++	}
++	return p.identity
++}
++
++func (p *unifiedTestProbes) setIdent(id platform.WSLUserIdentity) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.identity = id
++}
++
++// setIdentFailureFrom 设置从第 N 次调用起的身份故障（N≥1）。
++func (p *unifiedTestProbes) setIdentFailureFrom(n int) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.failFromCall = n
++}
++
++// recoverIdent 恢复身份探测（环境恢复）。
++func (p *unifiedTestProbes) recoverIdent() {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.recovered = true
+ }
+ 
+ func (p *unifiedTestProbes) probes() wslsupply.Probes {
+ 	return wslsupply.Probes{
+-		Identity: func(context.Context, string) platform.WSLUserIdentity { return p.identity },
++		Identity: func(context.Context, string) platform.WSLUserIdentity { return p.ident() },
+ 		ToUNC: func(_, linuxPath string) string {
+ 			return filepath.Join(p.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ 		},
+@@ -47,7 +85,9 @@ func (p *unifiedTestProbes) probes() wslsupply.Probes {
+ 		StatMode: func(_ context.Context, _, linuxPath string) (string, bool) {
+ 			unc := filepath.Join(p.uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
+ 			info, err := os.Stat(unc)
+-			if err != nil || !info.Mode().IsRegular() {
++			// 目录也要返回真实权限位：敏感提交的 .amagi-staging 隔离验证（0700）
++			// 与文件位（0600）同一探测面。
++			if err != nil || (!info.Mode().IsRegular() && !info.IsDir()) {
+ 				return "", false
+ 			}
+ 			return fmt.Sprintf("%o", info.Mode().Perm()), true
+@@ -59,8 +99,9 @@ func (p *unifiedTestProbes) probes() wslsupply.Probes {
+ // 能力面，App 的接口断言照常命中）。
+ type recordingCoordinator struct {
+ 	*wslsupply.Coordinator
+-	mu    sync.Mutex
+-	calls []string
++	mu      sync.Mutex
++	calls   []string
++	rescans int
+ }
+ 
+ func (r *recordingCoordinator) RunUnits(ctx context.Context, distro string, cli wslsupply.CLI, reason wslsupply.Reason, units []wslsupply.UnitID) (wslsupply.RunResult, error) {
+@@ -70,6 +111,20 @@ func (r *recordingCoordinator) RunUnits(ctx context.Context, distro string, cli
+ 	return r.Coordinator.RunUnits(ctx, distro, cli, reason, units)
+ }
+ 
++// RescanSkills 计数后台循环触发的技能重扫（F1 有节制调度断言）。
++func (r *recordingCoordinator) RescanSkills() bool {
++	r.mu.Lock()
++	r.rescans++
++	r.mu.Unlock()
++	return r.Coordinator.RescanSkills()
++}
++
++func (r *recordingCoordinator) rescanCount() int {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return r.rescans
++}
++
+ func (r *recordingCoordinator) snapshot() []string {
+ 	r.mu.Lock()
+ 	defer r.mu.Unlock()
+@@ -99,7 +154,7 @@ type unifiedFixture struct {
+ // setIdentity 模拟目标身份变化（machine-id/Home 变化 → 新代；可选新 HOME），
+ // 并重算目标落点。
+ func (f *unifiedFixture) setIdentity(machineID, home string) {
+-	f.probes.identity = platform.WSLUserIdentity{UID: "1000", Home: home, MachineID: machineID, OK: true}
++	f.probes.setIdent(platform.WSLUserIdentity{UID: "1000", Home: home, MachineID: machineID, OK: true})
+ 	f.target = filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(home, "/")))
+ }
+ 
+@@ -141,16 +196,20 @@ func newUnifiedFixture(t *testing.T) *unifiedFixture {
+ 	wslS4HomeDirFn = func() (string, error) { return home, nil }
+ 	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
+ 	wslDistroRunningFn = func(string) bool { return true }
+-	// 确定性收尾：先排空本夹具调度的全部后台推送，再还原全局接缝与临时目录
+-	//（避免后台 goroutine 触碰下一个测试的临时目录/接缝）。t.Cleanup 后进先出。
++	// 确定性收尾：先停统一管理后台循环（join 后不再有循环侧调度），再排空
++	// 本夹具调度的全部后台推送，最后还原全局接缝与临时目录（t.Cleanup 后进
++	// 先出——LIFO 保证下述顺序）。
+ 	t.Cleanup(waitForWSLSupplyPushIdleForTest)
+ 
+ 	app := newTestApp(t)
++	t.Cleanup(app.stopWSLUnifiedReconcileLoop)
+ 	stateDir := t.TempDir()
+ 	coord := &recordingCoordinator{Coordinator: wslsupply.NewCoordinator(stateDir, nil, probes.probes())}
+ 	registerS4Adapters(coord.Coordinator, app)
+ 	coord.RegisterSkills(wslsupply.NewSkillsScope(filepath.Join(home, ".agents", "skills"), wslsupply.DefaultSkillsScanLimits()))
+ 	app.WSLSupply = coord
++	// 与生产装配（newWSLSupplyCoordinator）一致：扫描完成回调触发统一对账推送。
++	coord.SetScanCompletionCallback(app.wslUnifiedOnScanDone)
+ 	return &unifiedFixture{app: app, coord: coord, probes: probes, home: home, uncRoot: target, target: filepath.Join(target, "home", "u"), state: filepath.Join(stateDir, wslsupply.StateFileName)}
+ }
+ 
+@@ -454,3 +513,270 @@ func TestWSLUnifiedScanCompletionTriggersReconcile(t *testing.T) {
+ 		t.Fatalf("skills scan must have completed: %+v", snap.Progress)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// P4 修复回归：F1 周期重扫跟随 / F2 会话阻挡延期补推 / F3 部分启用失败
++// 自动续接 / 直接换代不继承
++// ---------------------------------------------------------------------------
++
++// setWSLUnifiedLoopIntervalsForTest 注入统一管理后台循环节拍（测试缩短；
++// 注册还原清理）。必须在 Enable/启动对账之前调用（循环启动时快照节拍）。
++func setWSLUnifiedLoopIntervalsForTest(t *testing.T, pendingTick, rescan time.Duration) {
++	t.Helper()
++	origPending, origRescan := wslUnifiedPendingTickInterval, wslUnifiedRescanInterval
++	wslUnifiedPendingTickInterval, wslUnifiedRescanInterval = pendingTick, rescan
++	t.Cleanup(func() {
++		wslUnifiedPendingTickInterval, wslUnifiedRescanInterval = origPending, origRescan
++	})
++}
++
++// fakeUnifiedVisionSource 是固定分组 #2（视觉清单共享）的测试内来源
++//（不读真实导出文件；字节由测试提供）。
++type fakeUnifiedVisionSource struct{ bytes []byte }
++
++func (s fakeUnifiedVisionSource) VisionExportBytes() ([]byte, error) { return s.bytes, nil }
++func (s fakeUnifiedVisionSource) ModalityKBBytes() ([]byte, error)  { return nil, nil }
++
++// TestWSLUnifiedPeriodicRescanFollowsSourceChanges（F1）：首次扫描完成后，
++// Windows 侧修改 + 新增技能与 Claude 资源——不点任何显式「检查」，仅靠真实
++// 后台对账周期重扫来源自动跟随；来源删除仍按既有保护（不自动删目标副本）；
++// 调度有节制（重扫只由定时器驱动，无「扫描完成→推送→再扫描」循环）。
++func TestWSLUnifiedPeriodicRescanFollowsSourceChanges(t *testing.T) {
++	f := newUnifiedFixture(t)
++	setWSLUnifiedLoopIntervalsForTest(t, 10*time.Minute, 200*time.Millisecond)
++	if _, err := f.app.EnableWSLUnifiedSupply(); err != nil {
++		t.Fatalf("enable: %v", err)
++	}
++	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
++		"initial scan-completion reconcile must supply alpha")
++
++	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "alpha", "SKILL.md"), "# alpha v2")
++	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "beta", "SKILL.md"), "# beta")
++	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "CLAUDE.md"), "# claude global v2")
++	waitUntil(t, func() bool {
++		data, err := os.ReadFile(filepath.Join(f.target, ".agents", "skills", "alpha", "SKILL.md"))
++		return err == nil && string(data) == "# alpha v2"
++	}, "modified skill must follow via the automatic rescan cycle (no explicit check)")
++	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/beta/SKILL.md") },
++		"new skill must be auto-imported by the automatic rescan cycle")
++	waitUntil(t, func() bool {
++		data, err := os.ReadFile(filepath.Join(f.target, ".claude", "CLAUDE.md"))
++		return err == nil && string(data) == "# claude global v2"
++	}, "modified claude resource must follow via the automatic rescan cycle")
++
++	// 来源删除：快照刷新后自动对账只遍历新快照——已托管旧单元不自动删除
++	//（source-deleted 删除需确认，既有保护不变）。
++	if err := os.RemoveAll(filepath.Join(f.home, ".agents", "skills", "beta")); err != nil {
++		t.Fatal(err)
++	}
++	waitUntil(t, func() bool {
++		for _, m := range f.coord.SkillsSnapshot().Skills {
++			if m.Name == "beta" {
++				return false
++			}
++		}
++		return true
++	}, "automatic rescan must refresh the snapshot (beta dropped after source deletion)")
++	time.Sleep(600 * time.Millisecond) // 覆盖至少两个重扫周期后的对账
++	if !unifiedTargetExists(f, ".agents/skills/beta/SKILL.md") {
++		t.Fatal("source-deleted managed skill must stay in WSL (deletion needs confirmation)")
++	}
++
++	// 有节制调度：收敛后重扫计数只按定时器节拍增长（若推送触发重扫形成
++	// 循环，计数会爆炸）。
++	base := f.coord.rescanCount()
++	time.Sleep(900 * time.Millisecond)
++	got := f.coord.rescanCount()
++	if got < base+1 {
++		t.Fatalf("periodic rescan must keep running (real automatic cycle): base=%d got=%d", base, got)
++	}
++	if got > base+6 {
++		t.Fatalf("rescan cadence must stay timer-bounded (no scan→push→scan loop): base=%d got=%d", base, got)
++	}
++}
++
++// TestWSLUnifiedPushDeferredUntilActiveSessionsEnd（F2）：任一内嵌会话 running
++// 时，启用推送与扫描完成推送都被守卫挡下且不写目标；会话退出后不触发任何
++// 新的保存，延期对账由后台心跳自动补齐收敛。
++func TestWSLUnifiedPushDeferredUntilActiveSessionsEnd(t *testing.T) {
++	f := newUnifiedFixture(t)
++	setWSLUnifiedLoopIntervalsForTest(t, 80*time.Millisecond, 10*time.Minute)
++	sess := f.app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "m", session.ModeEmbedded, t.TempDir())
++	if _, err := f.app.EnableWSLUnifiedSupply(); err != nil {
++		t.Fatalf("enable: %v", err)
++	}
++	waitUntil(t, func() bool {
++		snap := f.coord.SkillsSnapshot()
++		return snap.Started && !snap.Running
++	}, "background scans must complete while the session is running")
++	waitForWSLSupplyPushIdleForTest() // 启用推送 + 扫描完成推送均已执行并被挡下
++	time.Sleep(200 * time.Millisecond) // pending 心跳空转窗口：活动会话仍不得写入
++	for _, rel := range []string{".agents/skills/alpha/SKILL.md", ".claude/CLAUDE.md"} {
++		if unifiedTargetExists(f, rel) {
++			t.Fatalf("active session must block background writes: %s", rel)
++		}
++	}
++	if _, ok := mcpServerURL(f, "web"); ok {
++		t.Fatal("active session must block claude keyed-unit writes")
++	}
++	// 会话退出：无需另一次保存，延期对账自动补齐。
++	f.app.Sessions.MarkExited(sess.ID)
++	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
++		"deferred reconcile must supply skills after session end without another save")
++	waitUntil(t, func() bool { _, ok := mcpServerURL(f, "web"); return ok },
++		"deferred reconcile must supply keyed units after session end")
++}
++
++// TestWSLUnifiedPartialEnableFailureAutoContinues（F3）：SetTargetUnified 已提交
++// 后第二固定分组（视觉清单）身份短暂失败 → 部分启用失败但 Unified 标记保持；
++// 环境恢复后不重新启用、不额外敏感授权，固定单元随自动对账幂等续接收敛；
++// detached 单元不被续接复活。
++func TestWSLUnifiedPartialEnableFailureAutoContinues(t *testing.T) {
++	f := newUnifiedFixture(t)
++	f.coord.RegisterProjection(wslsupply.NewVisionExportAdapter(
++		fakeUnifiedVisionSource{bytes: []byte(`{"schemaVersion":1,"providers":[]}`)}))
++	setWSLUnifiedLoopIntervalsForTest(t, 80*time.Millisecond, 200*time.Millisecond)
++	// 探测 #1（SetTargetUnified）成功；从 #2 起（固定分组授权）身份不可达。
++	f.probes.setIdentFailureFrom(2)
++	outcomes, err := f.app.EnableWSLUnifiedSupply()
++	if err == nil || !strings.Contains(err.Error(), "部分授权失败") {
++		t.Fatalf("partial enable must fail loudly, err=%v", err)
++	}
++	if !f.app.GetWSLConfigSupplyStatus().Unified {
++		t.Fatal("unified flag must stay persisted after partial failure (no destructive rollback)")
++	}
++	if len(outcomes) == 0 {
++		t.Fatal("partial enable must still return per-unit outcomes")
++	}
++	// 环境恢复：自动续接（无需重新启用/重新授权）。
++	f.probes.recoverIdent()
++	waitUntil(t, func() bool {
++		data, err := os.ReadFile(filepath.Join(f.target, ".agents", "amagi-media-models.json"))
++		return err == nil && strings.Contains(string(data), "schemaVersion")
++	}, "fixed group #2 (vision) must be auto-continued after recovery without re-enable")
++	waitUntil(t, func() bool { _, ok := mcpServerURL(f, "web"); return ok },
++		"later fixed groups (claude) must be auto-continued after recovery")
++	waitUntil(t, func() bool {
++		data, err := os.ReadFile(filepath.Join(f.target, ".codex", "config.toml"))
++		return err == nil && strings.Contains(string(data), "mcp_servers.web")
++	}, "codex fixed group must be auto-continued after recovery")
++	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
++		"tree reconcile must resume after recovery")
++	// 续接不复活 detached：保留本地的单元在后续自动周期中不被重新授权/改写。
++	if err := f.app.KeepWSLCliConfigUnitLocal("claude", "claude/settings"); err != nil {
++		t.Fatalf("keep local: %v", err)
++	}
++	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "settings.json"), `{"model": "opus"}`)
++	time.Sleep(700 * time.Millisecond) // 覆盖多个自动周期
++	if settings := readUnifiedTargetJSON(t, f, ".claude/settings.json"); settings["model"] != "sonnet" {
++		t.Fatalf("detached unit must stay frozen through automatic continuation, got %v", settings["model"])
++	}
++	detached := false
++	for _, u := range f.app.GetWSLCliSupplyStatus("claude").Units {
++		if u.Unit == "claude/settings" && u.State == "detached" {
++			detached = true
++		}
++	}
++	if !detached {
++		t.Fatal("claude/settings must remain detached (not revived by continuation)")
++	}
++}
++
++// TestWSLUnifiedGenerationChangeWhileEnabledDoesNotInherit：授权仍开启时直接
++// 换代（未先停用，重装后新 HOME）：旧代授权不写新身份——自动周期与手动应用
++// 都不继承；换代后重新启用能重启后台周期（自然退出的旧循环不占启动槽）并
++// 仅靠自动周期跟随；Disable 后循环同步收敛退出（防泄漏）。
++func TestWSLUnifiedGenerationChangeWhileEnabledDoesNotInherit(t *testing.T) {
++	f := newUnifiedFixture(t)
++	setWSLUnifiedLoopIntervalsForTest(t, 100*time.Millisecond, 200*time.Millisecond)
++	if _, err := f.app.EnableWSLUnifiedSupply(); err != nil {
++		t.Fatalf("enable: %v", err)
++	}
++	waitUntil(t, func() bool { _, ok := mcpServerURL(f, "web"); return ok },
++		"claude mcp must be supplied while enabled")
++	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
++		"tree units must be supplied while enabled before the flip")
++	oldTarget := f.target
++	oldMCPRel := filepath.FromSlash(".claude.json")
++	// 直接换代（machine-id 变化 = 重装/换身份，新 HOME，不先停用）。
++	f.setIdentity("machine-direct-flip", "/home/u2")
++	waitUntil(t, func() bool { return f.target != oldTarget }, "fixture target must track the new home")
++	waitForWSLSupplyPushIdleForTest() // 排空换代前在途推送（其已按旧代解析）
++	// 来源继续变化：自动周期仍在跑，但新身份无同代授权 → 旧目标不被改写、
++	// 新目标不教写入。
++	writeUnifiedFile(t, filepath.Join(f.home, ".claude.json"),
++		`{"mcpServers": {"web": {"url": "https://direct-flip.example/sse"}}}`)
++	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "alpha", "SKILL.md"), "# alpha flipped")
++	time.Sleep(700 * time.Millisecond)
++	oldData, rerr := os.ReadFile(filepath.Join(oldTarget, oldMCPRel))
++	if rerr != nil || !strings.Contains(string(oldData), "https://mcp.example/sse") {
++		t.Fatalf("old-generation consent must not follow source changes after generation flip: err=%v data=%s", rerr, oldData)
++	}
++	if unifiedTargetExists(f, ".claude.json") {
++		t.Fatal("new identity must not receive writes without same-generation consent")
++	}
++	// 手动应用同样不继承旧代授权（新代 awaiting-consent，不写）。
++	if out := f.app.ApplyWSLCliConfigSupply("claude"); len(out) == 0 {
++		t.Fatal("manual apply should report per-unit outcomes")
++	}
++	if unifiedTargetExists(f, ".claude.json") {
++		t.Fatal("manual apply on the new generation must not write without fresh consent")
++	}
++	// 换代后重新启用：自然退出的旧循环不得占据启动槽——新周期必须跑起来，
++	// 且后续来源变化仅靠自动周期跟随（无任何手动保存/检查）。
++	if _, err := f.app.EnableWSLUnifiedSupply(); err != nil {
++		t.Fatalf("re-enable on new generation: %v", err)
++	}
++	waitUntil(t, func() bool {
++		f.app.wslUnifiedLoop.mu.Lock()
++		defer f.app.wslUnifiedLoop.mu.Unlock()
++		return f.app.wslUnifiedLoop.cancel != nil
++	}, "re-enable must restart the reconcile loop after natural exit")
++	writeUnifiedFile(t, filepath.Join(f.home, ".claude.json"),
++		`{"mcpServers": {"web": {"url": "https://reenabled.example/sse"}}}`)
++	waitUntil(t, func() bool {
++		url, ok := mcpServerURL(f, "web")
++		return ok && url == "https://reenabled.example/sse"
++	}, "re-enabled automatic cycle must follow source changes on the new generation")
++	waitUntil(t, func() bool {
++		data, err := os.ReadFile(filepath.Join(f.target, ".agents", "skills", "alpha", "SKILL.md"))
++		return err == nil && string(data) == "# alpha flipped"
++	}, "re-enabled automatic cycle must follow tree units on the new generation")
++	// 自然退出后重新启用（steer 回归）：统一标记关闭（不经 App.Disable 的
++	// 显式停止）→ 循环自行退出并按 done 令牌清槽；重新 enable 必须能再起新
++	// 循环，且后续来源变化仅靠新周期跟随。
++	if err := f.coord.SetTargetUnified(context.Background(), "Ubuntu", false); err != nil {
++		t.Fatalf("toggle unified off: %v", err)
++	}
++	waitUntil(t, func() bool {
++		f.app.wslUnifiedLoop.mu.Lock()
++		defer f.app.wslUnifiedLoop.mu.Unlock()
++		return f.app.wslUnifiedLoop.cancel == nil
++	}, "loop must self-exit and retire its slots when unified turns off")
++	if _, err := f.app.EnableWSLUnifiedSupply(); err != nil {
++		t.Fatalf("re-enable after natural exit: %v", err)
++	}
++	waitUntil(t, func() bool {
++		f.app.wslUnifiedLoop.mu.Lock()
++		defer f.app.wslUnifiedLoop.mu.Unlock()
++		return f.app.wslUnifiedLoop.cancel != nil
++	}, "re-enable after natural exit must start a fresh loop (stale slot would block it)")
++	// 启用后的下一笔来源变化：enable 的即时推送已过去，只有新周期的重扫→
++	// 推送链路能交付（证明周期真正继续运行）。
++	writeUnifiedFile(t, filepath.Join(f.home, ".claude.json"),
++		`{"mcpServers": {"web": {"url": "https://natural-exit.example/sse"}}}`)
++	waitUntil(t, func() bool {
++		url, ok := mcpServerURL(f, "web")
++		return ok && url == "https://natural-exit.example/sse"
++	}, "restarted loop must resume the automatic cycle after natural exit (no stale slot)")
++	// 停用路径收敛：Disable 同步停止后台循环（cancel/done 槽清空）。
++	if err := f.app.DisableWSLUnifiedSupply(); err != nil {
++		t.Fatalf("disable: %v", err)
++	}
++	f.app.wslUnifiedLoop.mu.Lock()
++	stopped := f.app.wslUnifiedLoop.cancel == nil
++	f.app.wslUnifiedLoop.mu.Unlock()
++	if !stopped {
++		t.Fatal("disable must stop the reconcile loop synchronously (no goroutine leak)")
++	}
++}
