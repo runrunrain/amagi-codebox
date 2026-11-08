@@ -839,27 +839,10 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 
 	var effects []launchplan.EffectSpec
 	var secrets *launchplan.EphemeralSecretBundle
-	wslLaunch := spec.BootstrapMode == platform.BootstrapWSL && appType == session.AppTypePi
-	if wslLaunch {
-		// P3-S2（remote 计划接入）：WSL 会话消费 distro 内 models.json，Windows
-		// 侧 ConfigMutation 不再随 remote 启动写入（Windows 文件旧由 providerSync
-		// 拥有）；选中 provider 经托管分发到达目标（与桌面 runWSLManagedModelsAtLaunch
-		// 同单元同闸门——effect 按协调器能力过滤）。选中 provider 构建失败已在
-		// 上方 BuildPlan 阶段 fail（与桌面 WSL 阻断语义一致）。
-		effects = append(effects, launchplan.EffectSpec{
-			Kind: launchplan.EffectWSLConfigSupply,
-			WSLSupply: &launchplan.WSLConfigSupplySpec{
-				CLI:    string(wslsupply.CLIPi),
-				Reason: string(wslsupply.ReasonLaunch),
-				Units: []string{
-					string(wslsupply.UnitPiManagedModels),
-					string(wslsupply.UnitPiSettings),
-					string(wslsupply.UnitPiAmagi),
-					string(wslsupply.UnitPiMCP),
-				},
-			},
-		})
-	} else if hasConfigMutation {
+	// WSL 内 pi 共享 Windows agent 根（主上裁定 2026-10）：WSL 与原生同一路径——
+	// Windows 侧 ConfigMutation 写 models.json（pi 读同一份），不再携带 distro
+	// 供给 effect；凭据 admission 同样携带（共享 canonical 凭据）。
+	if hasConfigMutation {
 		secrets = launchplan.NewEphemeralSecretBundle(configBuf)
 		effects = append(effects, launchplan.EffectSpec{
 			Kind: launchplan.EffectConfigMutation,
@@ -871,9 +854,9 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 	}
 	// Claude 订阅账号轮换（design §6.3）：Pi 会话使用 canonical ~/.pi/agent
 	// 根（启动时 provider 无关，运行中可 /login），受管时保守持有凭据
-	// admission；OMP（~/.omp 独立根）不携带。WSL 目标（distro 独立根）不携带。
+	// admission；OMP（~/.omp 独立根）不携带。
 	var piAdmissions []launchplan.SharedAdmissionSpec
-	if appType == session.AppTypePi && !wslLaunch {
+	if appType == session.AppTypePi {
 		if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
 			if secrets != nil {
 				secrets.Dispose()

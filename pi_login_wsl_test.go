@@ -46,13 +46,14 @@ func (*piLoginWSLShellResolver) ResolveExecutable(cmd string, args []string, env
 	return fakeCLIResolver{}.ResolveExecutable(cmd, args, env)
 }
 
-// TestPiLoginPlannerWSLGateLifted：WSL spec 的登录计划不再 fail-closed——
-// env 剥离 PI_CODING_AGENT_DIR（Windows 路径不跨界），StartupCommand 只剩
-// env -u 前缀 + 单引号 CLI + exec bash -li（P3-S0：cmp/cp 同步片段退役，凭据
-// 字节永不进入命令行），并在 PTY 之前携带 EffectWSLConfigSupply（计划只带
-// 待供给描述：distro 留空、Apply 时解析，BuildPlan 保持纯读零 spawn）。
+// TestPiLoginPlannerWSLGateLifted：WSL spec 的登录计划共享 Windows agent 根——
+// 计划不再携带 EffectWSLConfigSupply（无 distro 凭据副本/同步），
+// PI_CODING_AGENT_DIR 钉为 Windows canonical 目录并登记为路径放行键（躲过剥离 +
+// WSLENV /p 翻译），StartupCommand 只剩 env -u 凭据键前缀 + 单引号 CLI +
+// exec bash -li（凭据字节永不进入命令行）。
 func TestPiLoginPlannerWSLGateLifted(t *testing.T) {
 	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
+	stubWSLEnvGate(t)
 	home := isolatedHome(t)
 	dir := t.TempDir()
 	cfg := config.NewConfigService(dir)
@@ -82,78 +83,56 @@ func TestPiLoginPlannerWSLGateLifted(t *testing.T) {
 		t.Fatalf("WSL login recipe lost: %+v", plan.Recipe)
 	}
 
-	// 供给 effect：在 PTY 之前、只带描述（无候选正文、无 distro 探测结果）。
-	supplyIdx, ptyIdx := -1, -1
+	// 共享 Windows agent 根：计划不携带任何 distro 供给 effect。
+	ptyIdx := -1
 	for i, eff := range plan.Effects {
 		if eff.Kind == launchplan.EffectWSLConfigSupply {
-			supplyIdx = i
-			if eff.WSLSupply == nil {
-				t.Fatal("supply effect missing spec")
-			}
-			spec := eff.WSLSupply
-			if spec.CLI != string(wslsupply.CLIPi) {
-				t.Fatalf("supply cli = %q, want pi", spec.CLI)
-			}
-			if spec.Distro != "" {
-				t.Fatalf("supply distro must stay empty for Apply-time resolution (BuildPlan purity): %q", spec.Distro)
-			}
-			// P3-S1：登录供给计划携带 A2 + 托管 models.json；P3-S2：三个键级配置
-			// 投影（settings/amagi/mcp）同批随登录启动补漏（执行器按协调器能力
-			// 过滤，裸协调器自动降级 A2-only）。
-			want := []string{
-				string(wslsupply.UnitPiA2Auth), string(wslsupply.UnitPiManagedModels),
-				string(wslsupply.UnitPiSettings), string(wslsupply.UnitPiAmagi), string(wslsupply.UnitPiMCP),
-			}
-			if len(spec.Units) != len(want) {
-				t.Fatalf("supply units = %v, want %v", spec.Units, want)
-			}
-			for i, u := range want {
-				if spec.Units[i] != u {
-					t.Fatalf("supply units = %v, want %v", spec.Units, want)
-				}
-			}
+			t.Fatalf("WSL pi login plan must not carry distro supply (shared Windows root): effect %d", i)
 		}
 		if eff.Kind == launchplan.EffectPTYStart {
 			ptyIdx = i
 		}
 	}
-	if supplyIdx < 0 {
-		t.Fatal("WSL login plan missing EffectWSLConfigSupply")
-	}
-	if ptyIdx < 0 || supplyIdx > ptyIdx {
-		t.Fatalf("supply effect must precede PTY: supply=%d pty=%d", supplyIdx, ptyIdx)
+	if ptyIdx < 0 {
+		t.Fatal("plan missing PTY effect")
 	}
 
 	spec := plan.Effects[ptyIdx].Process.Resolved
 	if spec.BootstrapMode != platform.BootstrapWSL {
 		t.Fatalf("bootstrap mode mutated: %q", spec.BootstrapMode)
 	}
-	// R2 分叉（WSL 侧）：Windows 路径钉定被剥离，不进 WSLENV 转发面。
+	// 共享根：PI_CODING_AGENT_DIR 钉为 Windows canonical 目录，且登记为路径放行键。
 	envMap := map[string]string{}
 	for _, kv := range spec.Env.Variables {
 		k, v, _ := strings.Cut(kv, "=")
 		envMap[k] = v
 	}
-	if _, ok := envMap["PI_CODING_AGENT_DIR"]; ok {
-		t.Fatalf("PI_CODING_AGENT_DIR leaked into WSL spec env: %q", envMap["PI_CODING_AGENT_DIR"])
+	if got, want := envMap["PI_CODING_AGENT_DIR"], filepath.Join(home, ".pi", "agent"); got != want {
+		t.Fatalf("PI_CODING_AGENT_DIR = %q, want Windows canonical root %q", got, want)
 	}
-	if wslenv := envMap["WSLENV"]; wslenv != "" && strings.Contains(strings.ToUpper(wslenv), "PI_CODING_AGENT_DIR") {
-		t.Fatalf("PI_CODING_AGENT_DIR still in WSLENV list: %q", wslenv)
+	pathFlagged := false
+	for _, k := range resolver.request.EnvPathFlagKeys {
+		if strings.EqualFold(k, "PI_CODING_AGENT_DIR") {
+			pathFlagged = true
+		}
 	}
-	// 载荷（P3-S0 退役同步片段后）：只剩 env -u 前缀（凭据键 + agent dir）→
-	// 单引号 CLI 与参数 → exec bash -li；不得再含 cmp/cp/stat/chmod 同步逻辑
-	// 与任何 auth.json 路径字节。
+	// 路径放行标志只对 Windows 盘符值生效（macOS/Linux CI 的 home 是 POSIX 路径，
+	// 值原样透传不加标志；盘符形态见 launcher.TestApplyWSLSharedPiAgentRoot）。
+	if isWin := strings.Contains(envMap["PI_CODING_AGENT_DIR"], `:\`); isWin && !pathFlagged {
+		t.Fatalf("PI_CODING_AGENT_DIR must be path-flagged for WSLENV /p translation: %v", resolver.request.EnvPathFlagKeys)
+	}
+	// 载荷：只剩 env -u 凭据键前缀 → 单引号 CLI 与参数 → exec bash -li；
+	// 不得含 cmp/cp/stat/chmod 同步逻辑与任何 auth.json 路径字节。
 	cmd := spec.StartupCommand
-	for _, banned := range []string{"cmp -s", "cp --", "stat -c %Y", "chmod 600", "auth.json", "mkdir -p"} {
+	for _, banned := range []string{"cmp -s", "cp --", "stat -c %Y", "chmod 600", "auth.json", "mkdir -p", "PI_CODING_AGENT_DIR"} {
 		if strings.Contains(cmd, banned) {
-			t.Fatalf("retired auth-sync machinery leaked into payload (%q): %s", banned, cmd)
+			t.Fatalf("unexpected machinery in payload (%q): %s", banned, cmd)
 		}
 	}
 	envPrefix := "env"
 	for _, k := range piLoginCredentialEnvKeys {
 		envPrefix += " -u " + k
 	}
-	envPrefix += " -u PI_CODING_AGENT_DIR"
 	if !strings.Contains(cmd, envPrefix+" 'pi' '--provider' 'openai-codex' '--model' 'native-model' '--thinking' 'max'") {
 		t.Fatalf("payload missing re-anchor prefix + quoted cli: %s", cmd)
 	}
@@ -183,11 +162,12 @@ func TestPiLoginWSLPayloadSkipsAgentDirPin(t *testing.T) {
 	if terminal.StartupCommand != "" {
 		t.Fatalf("pure terminal WSL spec must not gain a payload: %q", terminal.StartupCommand)
 	}
-	if hasEnvEntryForTest(terminal.Env.Variables, "PI_CODING_AGENT_DIR") {
-		t.Fatalf("agent dir not stripped for pure terminal WSL spec: %v", terminal.Env.Variables)
+	// 共享 Windows agent 根：PI_CODING_AGENT_DIR 与 WSLENV 条目原样保留（不再剥离）。
+	if !hasEnvEntryForTest(terminal.Env.Variables, "PI_CODING_AGENT_DIR") {
+		t.Fatalf("shared agent root must be kept for WSL spec: %v", terminal.Env.Variables)
 	}
-	if wslenv := envValue(terminal.Env.Variables, "WSLENV"); wslenv != "PATH" {
-		t.Fatalf("WSLENV not pruned: %q", wslenv)
+	if wslenv := envValue(terminal.Env.Variables, "WSLENV"); wslenv != "PI_CODING_AGENT_DIR/u:PATH" {
+		t.Fatalf("WSLENV must be preserved: %q", wslenv)
 	}
 }
 
@@ -368,89 +348,31 @@ func TestWSLLoginSupplyDistroFallbackAndUnresolved(t *testing.T) {
 	}
 }
 
-// TestPiLoginDesktopWSLGateSync：桌面闸门在 WSL 登录会话放行前调用统一供给，
-// 并按 verdict 分叉：失败且 distro 无副本 → 中文报错拒绝；降级/成功 → 放行
-// 到 PTY 层（后续 control 未接线自然失败，不触达 PTY spawn）。
+// TestPiLoginDesktopWSLGateSync：WSL 内 pi 共享 Windows agent 根——桌面启动不再
+// 调用 distro 凭据同步闸门（runWSLLoginSupplyFn），直接放行到 PTY 层（后续
+// control 未接线自然失败，不触达 PTY spawn）。
 func TestPiLoginDesktopWSLGateSync(t *testing.T) {
 	unsetInheritedProxyEnv(t) // 桌面链 env 合入宿主环境；隔离代理 marker，保留产品门语义
-	stubRun := func(outcome launcher.SyncWSLPiLoginAuthOutcome, err error) *[]string {
-		calls := &[]string{}
-		runWSLLoginSupplyFn = func(_ context.Context, _ wslsupply.Runner, distro string) (wslsupply.RunResult, error) {
-			*calls = append(*calls, distro)
-			return wslsupply.RunResult{Target: wslsupply.TargetRef{Distro: "Ubuntu"}, Results: []wslsupply.UnitResult{{
-				Unit: wslsupply.UnitPiA2Auth, Policy: wslsupply.PolicyA2Auth, Outcome: unitOutcomeForA2(outcome),
-				A2: &wslsupply.A2Result{Outcome: outcome, Err: err},
-			}}}, nil
-		}
-		t.Cleanup(func() { runWSLLoginSupplyFn = defaultRunWSLLoginSupply })
-		return calls
+	calls := 0
+	runWSLLoginSupplyFn = func(_ context.Context, _ wslsupply.Runner, _ string) (wslsupply.RunResult, error) {
+		calls++
+		return wslsupply.RunResult{}, errors.New("distro supply must not be consulted")
 	}
-	launchWithFixture := func(t *testing.T) error {
-		t.Helper()
-		home := isolatedHome(t)
-		app := newTestApp(t)
-		app.ctx = t.Context()
-		app.Capabilities = fakePlatformCaps()
-		_, key, _ := piLoginFixture(t, app.Config)
-		resolver := &piLoginWSLShellResolver{}
-		app.CLIResolver = resolver
-		_, err := app.LaunchPiSession(key, config.PiLoginProviderID("openai-codex"), "embedded", home, "")
-		return err
+	t.Cleanup(func() { runWSLLoginSupplyFn = defaultRunWSLLoginSupply })
+
+	home := isolatedHome(t)
+	app := newTestApp(t)
+	app.ctx = t.Context()
+	app.Capabilities = fakePlatformCaps()
+	_, key, _ := piLoginFixture(t, app.Config)
+	app.CLIResolver = &piLoginWSLShellResolver{}
+	_, err := app.LaunchPiSession(key, config.PiLoginProviderID("openai-codex"), "embedded", home, "")
+	if err == nil || !strings.Contains(err.Error(), "start pi pty") {
+		t.Fatalf("expected launch to pass through to PTY layer, got %v", err)
 	}
-
-	t.Run("no auth both sides fails closed in chinese", func(t *testing.T) {
-		calls := stubRun(launcher.SyncWSLPiLoginAuthDistroNoAuth, errors.New("chmod failed"))
-		err := launchWithFixture(t)
-		if err == nil || !strings.Contains(err.Error(), "WSL 内没有可用的 Pi 登录凭据") {
-			t.Fatalf("expected chinese fail-closed error, got %v", err)
-		}
-		if len(*calls) != 1 {
-			t.Fatalf("supply not consulted once: %v", *calls)
-		}
-	})
-
-	t.Run("source missing keeps login-invalid semantics", func(t *testing.T) {
-		stubRun(launcher.SyncWSLPiLoginAuthDistroNoAuth, launcher.ErrWSLPiLoginSourceMissing)
-		err := launchWithFixture(t)
-		if err == nil || !strings.Contains(err.Error(), "Pi 登录已失效") {
-			t.Fatalf("expected login-invalid error, got %v", err)
-		}
-	})
-
-	t.Run("stale distro copy degrades with warn", func(t *testing.T) {
-		stubRun(launcher.SyncWSLPiLoginAuthDistroHasCopy, errors.New("UNC unreachable"))
-		err := launchWithFixture(t)
-		if err == nil || !strings.Contains(err.Error(), "start pi pty") {
-			t.Fatalf("expected gate to pass through to PTY layer, got %v", err)
-		}
-	})
-
-	t.Run("fresh copy passes gate", func(t *testing.T) {
-		calls := stubRun(launcher.SyncWSLPiLoginAuthFresh, nil)
-		err := launchWithFixture(t)
-		if err == nil || !strings.Contains(err.Error(), "start pi pty") {
-			t.Fatalf("expected gate to pass through to PTY layer, got %v", err)
-		}
-		if len(*calls) != 1 {
-			t.Fatalf("supply not consulted once: %v", *calls)
-		}
-	})
-
-	t.Run("distro newer reverse-sync passes gate", func(t *testing.T) {
-		stubRun(launcher.SyncWSLPiLoginAuthDistroNewer, nil)
-		err := launchWithFixture(t)
-		if err == nil || !strings.Contains(err.Error(), "start pi pty") {
-			t.Fatalf("expected gate to pass through to PTY layer, got %v", err)
-		}
-	})
-
-	t.Run("mtime tie kept passes gate", func(t *testing.T) {
-		stubRun(launcher.SyncWSLPiLoginAuthDistroTieKept, nil)
-		err := launchWithFixture(t)
-		if err == nil || !strings.Contains(err.Error(), "start pi pty") {
-			t.Fatalf("expected gate to pass through to PTY layer, got %v", err)
-		}
-	})
+	if calls != 0 {
+		t.Fatalf("distro login supply consulted %d times, want 0 (shared Windows root)", calls)
+	}
 }
 
 // unitOutcomeForA2 把 launcher outcome 映射为协调器单元分类（与生产 classifyA2
@@ -465,30 +387,6 @@ func unitOutcomeForA2(outcome launcher.SyncWSLPiLoginAuthOutcome) wslsupply.Unit
 		return wslsupply.UnitFailed
 	default:
 		return wslsupply.UnitApplied
-	}
-}
-
-// TestPiLoginStripAgentDirForWSL：WSL spec 环境清理——键大小写不敏感、
-// WSLENV 清单（含 /flags 形态）同步剪除、清单空则整体移除、无关变量不动。
-func TestPiLoginStripAgentDirForWSL(t *testing.T) {
-	env := []string{
-		"PI_CODING_AGENT_DIR=" + `C:\Users\u\.pi\agent`,
-		"pi_coding_agent_dir=dup",
-		"WSLENV=PI_CODING_AGENT_DIR/u:PATH:pi_coding_agent_dir",
-		"LANG=en_US.UTF-8",
-	}
-	got := piLoginStripAgentDirForWSL(env)
-	want := []string{"WSLENV=PATH", "LANG=en_US.UTF-8"}
-	if len(got) != len(want) {
-		t.Fatalf("strip result = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("strip result = %v, want %v", got, want)
-		}
-	}
-	if all := piLoginStripAgentDirForWSL([]string{"WSLENV=PI_CODING_AGENT_DIR/u"}); len(all) != 0 {
-		t.Fatalf("empty WSLENV list must drop the variable entirely: %v", all)
 	}
 }
 

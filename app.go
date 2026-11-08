@@ -2465,6 +2465,13 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	// 门条件经 launchTargetsWSLFn（launch_workdir.go）：与 planner.resolveLaunch
 	// 共用同一谓词/接缝，两入口判定永不分叉。
 	if launchTargetsWSLFn(mode, shellPath) {
+		// pi 共享 Windows agent 根（WSL 只提供运行环境）：钉定 PI_CODING_AGENT_DIR
+		// 为 Windows ~/.pi/agent 并登记为路径放行键（躲过剥离 + WSLENV /p 翻译）。
+		if appType == session.AppTypePi {
+			env, req.EnvPathFlagKeys = launcher.ApplyWSLSharedPiAgentRoot(env, defaultPiAgentDir(), req.EnvPathFlagKeys)
+			req.Env = env
+			a.Log.Info("session", "WSL 内 pi 共享 Windows agent 根", defaultPiAgentDir())
+		}
 		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)
 		if len(allowedPath) > 0 {
 			a.Log.Info("session", "已放行跨界路径值环境变量（per-key 放行 + /p 路径翻译）", strings.Join(allowedPath, ","))
@@ -3791,9 +3798,8 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		return "", credErr
 	}
 	defer func() { claudeCredentials.release(a) }()
-	if claudeCredentials != nil && !claudeCredentials.absent && loginPreset != nil && wslDistro != "" {
-		return "", errors.New("UNSUPPORTED_PLATFORM: 已启用 Claude 订阅账号管理，WSL Pi 登录会话暂不支持（v1），请使用宿主侧 Pi 登录")
-	}
+	// WSL 内 pi 共享 Windows agent 根（WSL 只提供运行环境）：登录凭据与 Windows 侧
+	// 同一份 auth.json，Claude 订阅账号管理与宿主侧 Pi 登录同语义，不再拒绝。
 
 	launchSettings := piLaunchSettings{
 		Model: strings.TrimSpace(modelName),
@@ -3854,12 +3860,8 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	// models.json（旧 distro 不重装即获得托管更新；损坏目标在此阻断，后续
 	// overlay 的宽松 merge 不再触碰损坏文件）。登录路径的托管分发并入 A2
 	// 闸门同一供给运行（defaultRunWSLLoginSupply）。
-	if wslDistro != "" && loginPreset == nil && providerID != "" {
-		if err := a.runWSLManagedModelsAtLaunch(wslDistro); err != nil {
-			a.Log.Error("pi", "WSL 托管 provider 配置分发阻断启动", err.Error())
-			return "", err
-		}
-	}
+	// WSL 内 pi 共享 Windows agent 根：models.json 直接写 Windows 侧，不再向 distro
+	// 分发托管 provider 配置（runWSLManagedModelsAtLaunch 对 pi 退役）。
 	if loginPreset == nil && providerID != "" {
 		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
 		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
@@ -3867,7 +3869,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		//（内部 defer Unlock）——任何 return 路径（含 WSL 构建失败阻断）不再
 		// 泄漏锁；v1.3.13 事故同位置的结构性防再犯。
 		var writeErr error
-		launchSettings, writeErr = a.writePiProviderModelsAtLaunch(providerID, launchSettings, presetParams, wslDistro, envOverrides)
+		launchSettings, writeErr = a.writePiProviderModelsAtLaunch(providerID, launchSettings, presetParams, "", envOverrides)
 		if writeErr != nil {
 			return "", writeErr
 		}
@@ -3950,32 +3952,13 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		}
 		workDir = spec.WorkDir
 
-		// Claude 订阅账号轮换：spec 定谳后的目标判据——WSL（distro 独立根）
-		// 不持有凭据 lease；WSL 登录在入口已拒绝，此处兑底不可达分支。
-		if spec.BootstrapMode == platform.BootstrapWSL && claudeCredentials != nil {
-			if loginPreset != nil && !claudeCredentials.absent {
-				err := errors.New("UNSUPPORTED_PLATFORM: 已启用 Claude 订阅账号管理，WSL Pi 登录会话暂不支持（v1）")
-				a.Sessions.MarkFailed(sess.ID, err.Error())
-				return "", err
-			}
-			a.Log.Info("claude-accounts", "WSL Pi 会话不持有凭据 lease（distro 独立根）", "id="+sess.ID)
-			claudeCredentials.release(a)
-			claudeCredentials = nil
-		}
-
+		// WSL 内 pi 共享 Windows agent 根：凭据 lease、auth.json 与 Windows 侧同一份，
+		// 不再按 spec 目标释放 lease，也不再做 distro 凭据副本同步。
 		if loginPreset != nil {
 			if spec.BootstrapMode == platform.BootstrapWSL {
-				// A2 闸门解除（主上裁定 2026-10-16，推翻 docs/developer/
-				// pi-login-providers.md 「WSL 拒绝」旧契约）：WSL 会话消费 distro
-				// 内凭据副本。放行前先经 wslsupply 协调器做惰性同步校验（Windows 侧
-				// auth.json ↔ distro 双向新者为准；失败降级/报错语义见
-				// syncWSLPiLoginAuthAtLaunch），再以 WSL 锚定变体重锚（载荷只剩
-				// env -u 重锚，P3-S0 起桌面/remote 共用同一执行边界）。
-				if err := a.syncWSLPiLoginAuthAtLaunch(wslDistro); err != nil {
-					a.Sessions.MarkFailed(sess.ID, err.Error())
-					return "", err
-				}
-				spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
+				// WSL：PI_CODING_AGENT_DIR 已由 resolveEmbeddedLaunchSpec 钉到 Windows 根
+				// （/p 翻译）；最终边界只剥离会被登录会话误用的凭据变量。
+				spec = piLoginWSLReAnchorSpec(spec, login.AgentDir, claudeLoginManagedExtraKeys(claudeCredentials)...)
 			} else {
 				// R3：POSIX shell startup 文件在 CLI 之前运行，可能重导出覆盖变量；
 				// 在最终执行边界重新锚定 canonical root 并剥离凭据。受管时追加

@@ -120,6 +120,33 @@ func TestAppendWSLENVForwardingWebUI(t *testing.T) {
 	}
 }
 
+// TestAppendWSLENVForwardingSharedPiAgentRoot：共享 Windows agent 根经 PI_ 前缀
+// 转发，路径放行键在 WSLENV 清单获得 /p 翻译（C:\… → /mnt/c/…）。
+func TestAppendWSLENVForwardingSharedPiAgentRoot(t *testing.T) {
+	env := appendWSLENVForwardingWithPaths(
+		[]string{`PI_CODING_AGENT_DIR=C:\Users\u\.pi\agent`, "PI_OFFLINE=1"},
+		nil, []string{"PI_CODING_AGENT_DIR"})
+	var wslenv string
+	for _, e := range env {
+		if strings.HasPrefix(e, "WSLENV=") {
+			wslenv = strings.TrimPrefix(e, "WSLENV=")
+		}
+	}
+	entries := strings.Split(wslenv, ":")
+	hasRoot, hasOffline := false, false
+	for _, e := range entries {
+		switch e {
+		case "PI_CODING_AGENT_DIR/p":
+			hasRoot = true
+		case "PI_OFFLINE":
+			hasOffline = true
+		}
+	}
+	if !hasRoot || !hasOffline {
+		t.Fatalf("WSLENV = %q, want PI_CODING_AGENT_DIR/p and plain PI_OFFLINE", wslenv)
+	}
+}
+
 // TestShouldForwardToWSLExtraKeys pins the exported forward-face predicate used
 // by the launcher-side pre-forwarding strip (StripWSLHostPathEnv): extra custom
 // keys (envvars.json) join the face case-insensitively, reserved keys never do,

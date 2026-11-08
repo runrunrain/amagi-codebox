@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.126] - 2026-11-08
+
+### Changed
+
+- **WSL 内 Pi 默认共享 Windows agent 根（WSL 只提供运行环境）**：落在 WSL 发行版内的 Pi 会话不再使用发行版自己的 `~/.pi/agent`，而是把 `PI_CODING_AGENT_DIR` 钉到 Windows `~/.pi/agent`（经 WSLENV `/p` 由 wsl.exe 翻译为 `/mnt/<盘符>/…`），`settings.json`、`models.json`、`auth.json`、已装插件（含 amagi-pi 及其 Web UI）、技能与注册表全部与 Windows 侧同一份。桌面启动与 remote 创建/重启同源：provider 配置直接写 Windows `models.json`，不再向发行版分发托管配置、不再做登录凭据副本同步，登录会话与受管 Claude 订阅账号不再因 WSL 被拒绝。新增 `launcher.ApplyWSLSharedPiAgentRoot`（钉定 + 路径放行键，躲过 1.3.59 的盘符路径剥离）及对应回归测试。注意：Windows 侧 npm/git 插件若含原生二进制依赖，在 WSL 内无法运行；`/mnt/c` 读取较慢会拉长冷启动。OMP 与其它 CLI 的 WSL 行为不变。
+
 ## [1.3.125] - 2026-11-08
 
 ### Fixed

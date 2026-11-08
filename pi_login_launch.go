@@ -257,87 +257,39 @@ func wslLoginA2Verdict(a2 *wslsupply.UnitResult, distro string) wslLoginSupplyVe
 	}
 }
 
-// piLoginWSLReAnchorSpec 是 R3 的 WSL 变体，也是 R2 锚定语义的 WSL/非 WSL
-// 分叉点（A2 主上裁定 2026-10-16；P3-S0 起凭据同步片段退役）：
-//   - 非 WSL（piLoginReAnchorSpec）：PI_CODING_AGENT_DIR 钉 CodeBox 进程
-//     Home 的 canonical 目录，shell startup 后重钉同值（R2/R3 原文不变）。
-//   - WSL（本函数）：不钉 Windows 路径，载荷以 env -u PI_CODING_AGENT_DIR
-//     收尾——pi 在 distro 内读取自己的 $HOME/.pi/agent，凭据副本由启动时
-//     同步保障。P3-S0 统一执行边界：凭据同步不再内嵌 bash cmp/cp 片段
-//     （旧 shell 实现无原子写、无 fail-closed 分类，设计 §一/§九点名），改由
-//     wslsupply 协调器的 EffectWSLConfigSupply 在 PTY 之前执行同一 Go 侧
-//     A2 适配器（launcher.SyncWSLPiLoginAuth，判定语义零变化）；本函数只
-//     保留 agent root 与凭据 env 重锚（env -u 剥离误用面）。
+// piLoginWSLReAnchorSpec 是 R3 的 WSL 变体（pi 共享 Windows agent 根，主上
+// 裁定 2026-10：WSL 只提供运行环境）：
+//   - WSL 内 pi 与 Windows 侧同一 agent 根——PI_CODING_AGENT_DIR 由解析漏斗
+//     （resolveEmbeddedLaunchSpec / appLaunchPlanner.resolveLaunch）钉为 Windows
+//     canonical 目录，经 WSLENV /p 由 wsl.exe 翻译为 /mnt/<盘符>/…；auth.json
+//     就是 Windows 侧那份，不再有 distro 凭据副本与启动期同步（旧 A2 同步退役）。
+//   - 本函数只在最终执行边界剥离会被登录会话误用的凭据变量（distro 的 bash
+//     startup 文件可能重导出 API key；受管 Claude 订阅时追加身份覆盖键）。
 //
 // 载荷落在 spec.StartupCommand；pty 层 buildWSLCommandLine 对非空
 // StartupCommand 的 WSL spec 以其为权威 bash payload（替代缺省 CLI 拼装）。
-func piLoginWSLReAnchorSpec(spec platform.ResolvedLaunchSpec, windowsAgentDir string) platform.ResolvedLaunchSpec {
+func piLoginWSLReAnchorSpec(spec platform.ResolvedLaunchSpec, windowsAgentDir string, extraUnsetKeys ...string) platform.ResolvedLaunchSpec {
 	if spec.BootstrapMode != platform.BootstrapWSL {
 		return spec
 	}
-	spec.Env.Variables = piLoginStripAgentDirForWSL(spec.Env.Variables)
 	cli := strings.TrimSpace(spec.CLI.Path)
 	if cli == "" {
 		return spec // 纯终端 WSL 会话：无 CLI 执行边界，无锚定面。
 	}
-	_ = windowsAgentDir // 同步源不再进入载荷（凭据字节永不跨界进命令行）；参数保留以钉住调用契约。
+	_ = windowsAgentDir // 根由解析漏斗经 env 钉定；参数保留以钉住调用契约。
 	envTokens := []string{"env"}
 	for _, key := range piLoginCredentialEnvKeys {
 		envTokens = append(envTokens, "-u", key)
 	}
-	envTokens = append(envTokens, "-u", "PI_CODING_AGENT_DIR")
+	for _, key := range extraUnsetKeys {
+		envTokens = append(envTokens, "-u", key)
+	}
 	cliTokens := []string{strings.Join(envTokens, " ") + " " + shellSingleQuote(cli)}
 	for _, arg := range spec.CLI.Args {
 		cliTokens = append(cliTokens, shellSingleQuote(arg))
 	}
 	spec.StartupCommand = strings.Join(cliTokens, " ") + "; exec bash -li"
 	return spec
-}
-
-// piLoginStripAgentDirForWSL 从 WSL spec 的进程环境里移除 PI_CODING_AGENT_DIR
-// 及其在 WSLENV 转发清单中的引用。R2 的钉定值是 Windows 路径，跨界后对
-// distro 内的 pi 是非法路径（1.3.59 PI_* 泄漏事故形态）；桌面链路通常已在
-// resolveEmbeddedLaunchSpec 的 StripWSLHostPathEnv 处剥离（伴随 WARN），
-// planner 链路无该前置防线，这里统一兑底。凭据键在 BuildEnv 期已被空值
-// 删除，不会进入转发面。
-func piLoginStripAgentDirForWSL(env []string) []string {
-	const key = "PI_CODING_AGENT_DIR"
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			out = append(out, kv)
-			continue
-		}
-		if strings.EqualFold(k, key) {
-			continue
-		}
-		if strings.EqualFold(k, "WSLENV") {
-			if cleaned := stripWSLENVToken(v, key); cleaned != "" {
-				out = append(out, "WSLENV="+cleaned)
-			}
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// stripWSLENVToken 从 WSLENV 冒号清单中移除指定键（兼容 name/flags 形态），
-// 清单空时返回空串（变量整体移除）。
-func stripWSLENVToken(wslenv, key string) string {
-	kept := make([]string, 0, 8)
-	for _, name := range strings.Split(wslenv, ":") {
-		base := strings.TrimSpace(name)
-		if idx := strings.Index(base, "/"); idx >= 0 {
-			base = base[:idx]
-		}
-		if base == "" || strings.EqualFold(base, key) {
-			continue
-		}
-		kept = append(kept, name)
-	}
-	return strings.Join(kept, ":")
 }
 
 func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req launchplan.BuildRequest) (*launchplan.Plan, *launchplan.BuildFailure) {
@@ -360,12 +312,10 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	recipe.ProviderRef = config.PiLoginProviderID(preset.Provider)
 	recipe.PresetRef = recipe.ModelRef
 	// Claude 订阅账号轮换（design §6.3 + 任务 F，F07 提前到 env 构建前）：先取
-	// 凭据 admission 描述（blocked → 计划构建失败，入口关闭）。受管状态下
-	// WSL 登录会话消费 canonical 凭据的 distro 副本，v1 不支持——spec 解析后
-	// 明确拒绝，不动现有 WSL 同步逻辑；非 WSL 登录会话消费 canonical
-	// auth.json，携带 admission，并在 env 构建与最终执行边界同步剥离身份/
-	// 认证覆盖变量（与桌面 LaunchPiSession 同一键集，remote create/restart
-	// 不能漏）。
+	// 凭据 admission 描述（blocked → 计划构建失败，入口关闭）。登录会话（含 WSL，
+	// 共享 Windows agent 根）消费 canonical auth.json，携带 admission，并在 env
+	// 构建与最终执行边界同步剥离身份/认证覆盖变量（与桌面 LaunchPiSession 同一
+	// 键集，remote create/restart 不能漏）。
 	managedExtra := []string(nil)
 	credSpec, credManaged, credErr := p.claudeCredentialAdmissionSpec()
 	if credErr != nil {
@@ -386,47 +336,23 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	if err != nil {
 		return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
 	}
-	// A2 闸门解除（主上裁定 2026-10-16）：WSL spec 不再 fail，改走 WSL 锚定
-	// 变体（P3-S0 起仅 env -u 重锚，凭据同步片段退役）+ 前置供给 effect。
-	// 登录预设 contextWindow 覆写也不在 BuildPlan 写盘：remote adapter 契约
-	// 要求 BuildPlan 纯读零副作用（remote_session_adapter.go「BuildPlan
-	// (pure read, zero side effects)」、launch_planner.go 头注 no process
-	// spawn）。WSL 凭据同步同样不进 BuildPlan：计划只携带待供给描述
-	//（EffectWSLConfigSupply，distro 留空到 Apply 阶段解析，与 PTY 构建同源），
-	// Inspect/Plan/Apply 全部在执行器 Apply 阶段经 wslsupply 协调器执行。
-	// 覆写统一在预设保存/删除时同步写入 canonical root 的
-	// models.json（ConfigService.SetPiLoginPresetChangeListener + app 装配注入），
-	// 桌面 LaunchPiSession 另有启动兜底；本路径（remote/restart）读已落盘的目标态。
+	// WSL 内 pi 共享 Windows agent 根（主上裁定 2026-10）：WSL spec 与原生同样
+	// 消费 Windows canonical root 的 auth.json（PI_CODING_AGENT_DIR 由解析漏斗经
+	// /p 翻译钉定），不再携带 distro 供给 effect，也不再拒绝受管 Claude 订阅。
+	// 登录预设 contextWindow 覆写不在 BuildPlan 写盘（BuildPlan 纯读零副作用）：
+	// 统一在预设保存/删除时同步写入 canonical root 的 models.json
+	// （ConfigService.SetPiLoginPresetChangeListener + app 装配注入），桌面
+	// LaunchPiSession 另有启动兜底；本路径（remote/restart）读已落盘的目标态。
 	// Shared execution-boundary constraint: pin the canonical root after any
 	// shell startup. No ConfigMutation, secret lookup, managed provider or
 	// auth write on this path.
 	var effects []launchplan.EffectSpec
 	var loginAdmissions []launchplan.SharedAdmissionSpec
 	if credManaged {
-		if spec.BootstrapMode == platform.BootstrapWSL {
-			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
-		}
 		loginAdmissions = append(loginAdmissions, credSpec)
 	}
 	if spec.BootstrapMode == platform.BootstrapWSL {
-		spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
-		// P3-S1：登录供给一并携带 pi/managed-models（登录 contextWindow 补齐 +
-		// amagi-* 期望集；执行器按协调器能力过滤——裸协调器自动降级 A2-only）。
-		// P3-S2：三个键级配置投影同批补漏（可选偏好面，失败告警放行）。
-		effects = append(effects, launchplan.EffectSpec{
-			Kind: launchplan.EffectWSLConfigSupply,
-			WSLSupply: &launchplan.WSLConfigSupplySpec{
-				CLI:    string(wslsupply.CLIPi),
-				Reason: string(wslsupply.ReasonLaunch),
-				Units: []string{
-					string(wslsupply.UnitPiA2Auth),
-					string(wslsupply.UnitPiManagedModels),
-					string(wslsupply.UnitPiSettings),
-					string(wslsupply.UnitPiAmagi),
-					string(wslsupply.UnitPiMCP),
-				},
-			},
-		})
+		spec = piLoginWSLReAnchorSpec(spec, login.AgentDir, managedExtra...)
 	} else {
 		spec = piLoginReAnchorSpec(spec, login.AgentDir, managedExtra...)
 	}

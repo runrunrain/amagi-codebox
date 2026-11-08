@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"amagi-codebox/internal/aiproxy"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
+	"amagi-codebox/internal/session"
 )
 
 // Desktop-only facade. Credentials and raw nodes never enter Wails bindings.
@@ -109,6 +111,14 @@ func (p *appLaunchPlanner) resolveLaunch(req platform.ResolveRequest) (platform.
 		req.EnvPathFlagKeys = p.envVars.PathAllowKeys()
 	}
 	if launchTargetsWSLFn(req.LaunchMode, req.RequestedShellPath) {
+		// pi 共享 Windows agent 根（与桌面 resolveEmbeddedLaunchSpec 同源）。
+		if strings.EqualFold(strings.TrimSpace(req.AppType), string(session.AppTypePi)) {
+			agentDir := defaultPiAgentDir()
+			if strings.TrimSpace(p.homeDir) != "" {
+				agentDir = filepath.Join(p.homeDir, ".pi", "agent")
+			}
+			req.Env, req.EnvPathFlagKeys = launcher.ApplyWSLSharedPiAgentRoot(req.Env, agentDir, req.EnvPathFlagKeys)
+		}
 		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(req.Env, req.EnvForwardKeys, req.EnvPathFlagKeys)
 		if p.envObserver != nil {
 			if len(allowedPath) > 0 {

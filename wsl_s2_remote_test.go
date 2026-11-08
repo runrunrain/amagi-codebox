@@ -32,7 +32,7 @@ import (
 // remote 计划：pi API-provider WSL
 // ---------------------------------------------------------------------------
 
-func TestRemotePiAPIProviderWSLPlanCarriesSupply(t *testing.T) {
+func TestRemotePiAPIProviderWSLPlanSharesWindowsRoot(t *testing.T) {
 	unsetInheritedProxyEnv(t) // 宿主代理 marker 会经 MergeWithSystem 触发 NAT 门，与本用例无关
 	home := isolatedHome(t)
 	dir := t.TempDir()
@@ -69,36 +69,21 @@ func TestRemotePiAPIProviderWSLPlanCarriesSupply(t *testing.T) {
 	}
 	defer plan.Secrets.Dispose()
 
-	supplyIdx, ptyIdx, configIdx := -1, -1, -1
+	// 共享 Windows agent 根：WSL pi 计划与原生同形——ConfigMutation 写 Windows
+	// models.json（pi 读同一份），不携带任何 distro 供给 effect。
+	ptyIdx, configIdx := -1, -1
 	for i, eff := range plan.Effects {
 		switch eff.Kind {
 		case launchplan.EffectWSLConfigSupply:
-			supplyIdx = i
-			spec := eff.WSLSupply
-			if spec == nil || spec.CLI != string(wslsupply.CLIPi) {
-				t.Fatalf("supply spec wrong: %+v", spec)
-			}
-			want := []string{
-				string(wslsupply.UnitPiManagedModels),
-				string(wslsupply.UnitPiSettings), string(wslsupply.UnitPiAmagi), string(wslsupply.UnitPiMCP),
-			}
-			if strings.Join(spec.Units, ",") != strings.Join(want, ",") {
-				t.Fatalf("supply units = %v, want %v", spec.Units, want)
-			}
-			if spec.Distro != "" {
-				t.Fatalf("supply distro must stay empty (Apply-time resolution): %q", spec.Distro)
-			}
+			t.Fatalf("WSL pi plan must not carry distro supply (shared Windows root): effect %d", i)
 		case launchplan.EffectPTYStart:
 			ptyIdx = i
 		case launchplan.EffectConfigMutation:
 			configIdx = i
 		}
 	}
-	if supplyIdx < 0 || ptyIdx < 0 || supplyIdx > ptyIdx {
-		t.Fatalf("supply effect must precede PTY: supply=%d pty=%d", supplyIdx, ptyIdx)
-	}
-	if configIdx >= 0 {
-		t.Fatalf("WSL pi plan must not mutate Windows models.json at launch (providerSync owns it): effect %d", configIdx)
+	if ptyIdx < 0 || configIdx < 0 || configIdx > ptyIdx {
+		t.Fatalf("WSL pi plan must mutate Windows models.json before PTY: config=%d pty=%d", configIdx, ptyIdx)
 	}
 
 	// 对照：非 WSL 计划仍走 ConfigMutation（既有语义不变）。
