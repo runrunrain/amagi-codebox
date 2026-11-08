@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"amagi-codebox/internal/launcher"
 )
 
 // cfWrite 写一个合成夹具文件（MkdirAll 父目录）。
@@ -280,7 +278,7 @@ func TestConsistencyWrongRootReconcileKeepsSharedPending(t *testing.T) {
 func cfSkillEnv(t *testing.T) (*Coordinator, *fakeProbes, UnitID, string) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
 	host := t.TempDir()
 	cfWrite(t, filepath.Join(host, "demo", "SKILL.md"), "# NEW", 0o644)
 	scope := NewSkillsScope(host, DefaultSkillsScanLimits())
@@ -712,77 +710,6 @@ func TestConsistencyPluginCrossSourcePendingKept(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 11. a2-final-save：结果、observation、状态页与磁盘摘要同事实
-// ---------------------------------------------------------------------------
-
-type consistencyA2Sabotage struct{ c *Coordinator }
-
-func (a consistencyA2Sabotage) Files() []string { return []string{"auth.json"} }
-func (a consistencyA2Sabotage) Sync(ctx context.Context, tr TargetRef) (launcher.SyncWSLPiLoginAuthOutcome, error) {
-	// 同步成功后破坏 state 保存（持久失败：路径换成目录）。
-	if err := os.Remove(a.c.state.path); err != nil && !os.IsNotExist(err) {
-		return launcher.SyncWSLPiLoginAuthDistroNoAuth, err
-	}
-	if err := os.Mkdir(a.c.state.path, 0o700); err != nil {
-		return launcher.SyncWSLPiLoginAuthDistroNoAuth, err
-	}
-	return launcher.SyncWSLPiLoginAuthCopied, nil
-}
-
-// TestConsistencyA2FinalSaveFailureReportsUnconfirmed：state save 持续失败 →
-// 内容事实保留（applied，token 不回滚），但 Registration=pending（不得
-// confirmed）、PendingOperationFact=true、observation 记 a2-state-unpersisted、
-// pending 摘要 intent 在盘（状态页可见）。摘要无 auth 正文/hash。
-func TestConsistencyA2FinalSaveFailureReportsUnconfirmed(t *testing.T) {
-	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
-	c.SetA2Adapter(consistencyA2Sabotage{c: c})
-	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := res.Results[0]
-	if r.Outcome != UnitApplied {
-		t.Fatalf("content fact must stay applied (token not rolled back), got %+v", r)
-	}
-	if r.Registration != OpRegistrationPending {
-		t.Fatalf("registration must be pending when state save fails, got %q", r.Registration)
-	}
-	if r.Detail != "a2-state-unpersisted" {
-		t.Fatalf("detail must be a2-state-unpersisted, got %q", r.Detail)
-	}
-	if !r.PendingOperationFact() {
-		t.Fatal("result must carry the pending-operation fact (dirty must not count success)")
-	}
-	if ob, ok := c.observations.forOp(r.OperationID); !ok || ob.ErrorCode != "a2-state-unpersisted" {
-		t.Fatalf("observation must record the unpersisted fact, got %+v ok=%v", ob, ok)
-	}
-	// 磁盘摘要（pending intent）在盘且无秘密：重建 Coordinator 的状态页可见。
-	cfgDir := filepath.Dir(c.state.path)
-	if err := os.RemoveAll(c.state.path); err != nil { // 恢复存储可读
-		t.Fatal(err)
-	}
-	c2 := NewCoordinator(cfgDir, nil, fp.probes())
-	s := c2.GetStatus("Ubuntu", CLIPi)
-	found := false
-	for _, pi := range s.PendingIntents {
-		if pi.Kind == OpKindA2Sync {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("pending a2 summary must be visible in status (no write needed first), got %+v", s.PendingIntents)
-	}
-	if _, still, _ := c2.state.readIntent(r.OperationID); !still {
-		t.Fatal("a2 summary intent must survive on disk")
-	}
-	data, rerr := os.ReadFile(pendingIntentPath(cfgDir, r.OperationID))
-	if rerr != nil || strings.Contains(string(data), "sk-") || strings.Contains(string(data), "beforeHash") {
-		t.Fatalf("a2 summary must carry no secret material, err=%v", rerr)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 12. status-without-target：只读状态查询必须展示待确认事实与健康错误
 // ---------------------------------------------------------------------------
 
@@ -797,7 +724,13 @@ func TestConsistencyStatusWithoutTargetShowsPendingAndHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.saveA2PendingSummary(tr, newOpID()); err != nil {
+	// 直落一个 pending intent（OpKindA2Sync：同时钉住旧版本遗留 a2 摘要的
+	// 兼容面——读取不报错、状态页照常展示）。
+	if err := c.state.saveIntent(OperationIntent{
+		OpID: newOpID(), Kind: OpKindA2Sync, TargetKey: targetKeyOf(tr),
+		TargetDistro: tr.Distro, TargetHome: tr.Home, TargetCLI: string(tr.CLI),
+		Unit: "pi/a2-auth", RelPath: "auth.json", Sensitive: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	c2 := NewCoordinator(dir, nil, fp.probes())

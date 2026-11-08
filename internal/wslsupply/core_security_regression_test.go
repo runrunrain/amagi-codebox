@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -261,40 +260,30 @@ func TestLegacyEntriesQuarantined(t *testing.T) {
 // SA-06/SA-07：敏感提交原语。
 // ---------------------------------------------------------------------------
 
-// 敏感 chmod 失败必须发生在 rename 之前：已有混合配置（含用户自有内容）
-// 原样保留，绝不整文件删除（ManagedNamespace 语义：目标被外部改写仍允许
-// 更新，与审计 CHMOD_FAILURE 反例同构）。
+// 敏感 chmod 失败必须发生在 rename 之前：已提交内容（上轮写入的敏感文件）
+// 原样保留，绝不整文件删除（旧实现 rename 后才 chmod，失败时会连同已落盘
+// 内容一起丢失；原 Pi managed-models 用例已退役，语义改由敏感桩投影钉住）。
 func TestSensitiveChmodFailurePreservesMixedConfig(t *testing.T) {
 	fp := newCoreProbes(t)
-	dir := filepath.Join(fp.uncRoot, "Ubuntu", "home/u/.pi/agent")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	src := `{"secret":1}`
+	c := newCoreCoord(t, fp, &src, true)
+	if res := coreRun(t, c, CLIPi, "pi/core-stub"); res.Results[0].Outcome != UnitApplied {
+		t.Fatalf("first publish: %+v", res.Results[0])
+	}
+	target := filepath.Join(fp.uncRoot, "Ubuntu/home/u/.pi/agent/core-stub.json")
+	before, err := os.ReadFile(target)
+	if err != nil {
 		t.Fatal(err)
 	}
-	mixed := `{"providers":{"local-user":{"models":[]}},"userSetting":true}`
-	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(mixed), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c := NewCoordinator(t.TempDir(), nil, fp.probes())
-	c.RegisterProjection(NewPiManagedModelsAdapter(coreManagedSource{}))
+	src = `{"secret":2}` // 来源变化 → 触发重写 → chmod 阶段失败
 	fp.chmodErr = errors.New("injected chmod failure")
-	res := coreRun(t, c, CLIPi, UnitPiManagedModels)
+	res := coreRun(t, c, CLIPi, "pi/core-stub")
 	if res.Results[0].Outcome != UnitFailed {
 		t.Fatalf("chmod failure must fail the unit: %+v", res.Results[0])
 	}
-	got, readErr := os.ReadFile(filepath.Join(dir, "models.json"))
-	if readErr != nil || string(got) != mixed {
-		t.Fatalf("pre-existing user content must be preserved on chmod failure, got %q err=%v", got, readErr)
-	}
-}
-
-// coreManagedSource 是托管 models 期望集的合成源（无真实密钥）。
-type coreManagedSource struct{}
-
-func (coreManagedSource) DesiredPiManagedModels() PiManagedModelsSpec {
-	return PiManagedModelsSpec{
-		Providers: map[string]any{"providers": map[string]any{
-			"amagi-demo": map[string]any{"apiKey": "SYNTHETIC-NOT-A-KEY", "baseURL": "https://example.invalid/v1", "models": []any{map[string]any{"name": "demo"}}},
-		}},
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || string(got) != string(before) {
+		t.Fatalf("pre-existing content must be preserved on chmod failure, got %q err=%v", got, readErr)
 	}
 }
 
@@ -561,17 +550,5 @@ func TestVisionExportTransientSourceErrorKeepsCopy(t *testing.T) {
 	}
 	if _, statErr := os.Stat(uncFile); statErr != nil {
 		t.Fatal("transient source error must keep the published copy")
-	}
-}
-
-// 钉住 A2 分类映射在修复中不被破坏（回归护栏）。
-func TestA2ClassificationStillIntact(t *testing.T) {
-	res := classifyA2(context.Background(), UnitPiA2Auth, launcher.SyncWSLPiLoginAuthDistroHasCopy, errors.New("x"))
-	if res.Outcome != UnitWarnDegraded {
-		t.Fatalf("A2 HasCopy must stay degraded, got %s", res.Outcome)
-	}
-	res = classifyA2(context.Background(), UnitPiA2Auth, launcher.SyncWSLPiLoginAuthFresh, nil)
-	if res.Outcome != UnitFresh {
-		t.Fatalf("A2 Fresh must stay fresh, got %s", res.Outcome)
 	}
 }

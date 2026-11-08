@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -64,7 +63,6 @@ func TestCompensateApplySerialized(t *testing.T) {
 		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m1", OK: true},
 	}}
 	c := NewCoordinator(t.TempDir(), nil, op.probes())
-	c.SetA2Adapter(&stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
 
 	var content atomic.Value // []byte
 	content.Store([]byte(`{"rev":1}`))
@@ -128,7 +126,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 
 	t.Run("update restores preimage", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		src := `{"rev":1}`
 		c.RegisterProjection(&stubProjection{unit: "pi/prefs", rel: "prefs.json",
 			source: func() []byte { return []byte(src) }, sensitive: false})
@@ -151,7 +149,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 	t.Run("first create removes half-committed file", func(t *testing.T) {
 		fp := newFakeProbes(t)
 		fp.chmodErr = fmt.Errorf("wsl.exe dead")
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		c.RegisterProjection(&stubProjection{unit: "pi/prefs", rel: "prefs.json",
 			source: func() []byte { return []byte(`{"a":1}`) }, sensitive: false})
 		res := runUnit(t, c, CLIPi, "pi/prefs")
@@ -165,7 +163,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 
 	t.Run("sensitive unit fails before rename keeps preimage", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		src := `{"rev":1}`
 		c.RegisterProjection(&stubProjection{unit: "pi/prefs", rel: "prefs.json",
 			source: func() []byte { return []byte(src) }, sensitive: true})
@@ -198,7 +196,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 
 	t.Run("distinct files never collide", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		agentDir := filepath.Join(fp.uncRoot, "home/u/.pi/agent")
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -239,7 +237,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 
 	t.Run("same file unique staging tolerates transient sharing violation", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		agentDir := filepath.Join(fp.uncRoot, "home/u/.pi/agent")
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -283,7 +281,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 	t.Run("chmod failure under concurrency stays consistent", func(t *testing.T) {
 		fp := newFakeProbes(t)
 		fp.chmodErr = fmt.Errorf("wsl.exe dead")
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		agentDir := filepath.Join(fp.uncRoot, "home/u/.pi/agent")
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			t.Fatal(err)

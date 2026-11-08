@@ -37,6 +37,7 @@ frontend/qa-*.log
 # Agent outputs
 .amagi/
 .amagi-worktrees/
+amagi-task/
 
 # 历史备份，已脱离维护（工作区保留，不入库）
 frontend/src_legacy_backup/

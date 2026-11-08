@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -67,7 +66,7 @@ const legacyVisionCopy = `{"version":1,"api_key":"SYNTHETIC-OLD-COPY"}`
 func newVisionCoordinator(t *testing.T, vision func() ([]byte, error)) (*Coordinator, *fakeProbes) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(NewVisionExportAdapter(&stubSharedSource{vision: vision, modality: func() ([]byte, error) { return nil, nil }}))
 	return c, fp
 }
@@ -510,11 +509,11 @@ type reviewAdapter struct {
 	source func() []byte
 }
 
-func (a *reviewAdapter) Unit() UnitID            { return UnitID("pi/review") }
-func (a *reviewAdapter) Policy() Policy          { return PolicyTrackedProjection }
-func (a *reviewAdapter) Sensitive() bool         { return false }
-func (a *reviewAdapter) RequiresConsent() bool   { return false }
-func (a *reviewAdapter) Files() []string         { return []string{a.rel} }
+func (a *reviewAdapter) Unit() UnitID          { return UnitID("pi/review") }
+func (a *reviewAdapter) Policy() Policy        { return PolicyTrackedProjection }
+func (a *reviewAdapter) Sensitive() bool       { return false }
+func (a *reviewAdapter) RequiresConsent() bool { return false }
+func (a *reviewAdapter) Files() []string       { return []string{a.rel} }
 func (a *reviewAdapter) Plan(_ SupplyRequest, s *Snapshot, _ *StateEntry) (PlannedUnit, error) {
 	m, _ := s.File(a.rel)
 	return PlannedUnit{Action: ActionWriteProjection, RelPath: a.rel, ExpectedTargetHash: m.Hash}, nil
@@ -655,7 +654,7 @@ func TestReviewFixPR04SetUnitSelectionTargetsResolvedGeneration(t *testing.T) {
 // content-committed-state-unpersisted；内存不冒充已持久化；写入内容保留。
 func TestReviewFixPR05StateSaveFailureNotApplied(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte {
 		// 候选生成（提交前）后、登记落盘前把清单路径换成目录（rename 确定失败）。
 		_ = os.Remove(c.state.path)
@@ -727,11 +726,11 @@ func TestReviewFixPR06SnapshotDeepCopyIsolation(t *testing.T) {
 }
 
 // TestReviewFixPR06ConcurrentPlanApplyNoRace：并发 Plan（读快照）与 Apply
-//（写状态）——修复前 TestCompensateApplySerialized 报真实数据竞争（write
+// （写状态）——修复前 TestCompensateApplySerialized 报真实数据竞争（write
 // upsertEntry vs read entryFor）；此处再钉一个直接读写对，配合 -race。
 func TestReviewFixPR06ConcurrentPlanApplyNoRace(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	var content atomicValue
 	content.Store([]byte(`{"rev":1}`))
 	c.RegisterProjection(&reviewAdapter{rel: "prefs.json", source: func() []byte {
@@ -805,7 +804,7 @@ func TestReviewFixPR07CanceledSkillTakeoverZeroWrites(t *testing.T) {
 	scope.Scan()
 	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
 		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "fixture", OK: true}}
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
 	c.RegisterSkills(scope)
 	unit := SkillUnitID("demo")
 	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {
@@ -829,7 +828,7 @@ func TestReviewFixPR07CanceledSkillTakeoverZeroWrites(t *testing.T) {
 // 受取消门约束（等锁后检查覆盖；RunUnits 主循环既有 SA16 逐单元检查）。
 func TestReviewFixPR07CanceledResourceTakeoverAndUnits(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte { return []byte(`{"v":1}`) }})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

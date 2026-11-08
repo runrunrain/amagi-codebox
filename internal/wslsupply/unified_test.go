@@ -18,18 +18,16 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
 // newUnifiedClaudeFixture 构造带 claude 两单元与独立 configDir 的协调器
-//（返回 statePath 供降级断言直读清单）。
+// （返回 statePath 供降级断言直读清单）。
 func newUnifiedClaudeFixture(t *testing.T) (*Coordinator, *fakeProbes, *stubClaudeConfigSource, *stubFactsSource, string) {
 	t.Helper()
 	fp := newFakeProbes(t)
 	configDir := t.TempDir()
 	c := NewCoordinator(configDir, nil, fp.probes())
-	c.SetA2Adapter(&stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
 	src := &stubClaudeConfigSource{}
 	facts := &stubFactsSource{}
 	facts.set(TransformFacts{
@@ -167,7 +165,7 @@ func TestAutoConsentIfUnifiedGrantsAndSkips(t *testing.T) {
 		}
 	}
 	// 不可接受同意的单元（未注册适配器）直接报错，不猜策略。
-	if _, err := c.AutoConsentIfUnified(context.Background(), "Ubuntu", CLIPi, []UnitID{UnitPiSettings}); err == nil {
+	if _, err := c.AutoConsentIfUnified(context.Background(), "Ubuntu", CLIPi, []UnitID{"pi/retired"}); err == nil {
 		t.Fatal("unknown/unacceptable unit must be rejected")
 	}
 }
@@ -392,7 +390,7 @@ trusted = ["C:\\proj"]
 		t.Fatal("non-managed scope must not appear in source keys")
 	}
 	// 非键级单元（A2）没有来源键面。
-	if _, err := c.UnitSourceKeys(UnitPiA2Auth); err == nil {
+	if _, err := c.UnitSourceKeys(UnitSharedVisionExport); err == nil {
 		t.Fatal("non-keyed unit must be rejected")
 	}
 }

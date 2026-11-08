@@ -306,7 +306,7 @@ func TestPluginOpsUnreachableFromLaunchAndSave(t *testing.T) {
 	// 启动闸门单元清单不含任何插件面（插件不在 RunUnits 词汇表；真协调器
 	// 对插件形态单元的拒绝钉在 wslsupply 包 TestRunUnitsRejectsPluginShapedUnits）。
 	units := wslSupplyUnitsFiltered(app.WSLSupply,
-		wslsupply.UnitPiA2Auth, wslsupply.UnitPiManagedModels, wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
+		wslsupply.UnitSharedVisionExport, wslsupply.UnitSharedModalityKB)
 	for _, u := range units {
 		if strings.HasPrefix(string(u), "pi/plugin") {
 			t.Fatalf("launch units must never include plugin ops: %s", u)

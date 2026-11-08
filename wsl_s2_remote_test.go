@@ -14,8 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,7 +23,6 @@ import (
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/settings"
-	"amagi-codebox/internal/wslsupply"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,9 +163,6 @@ func TestRemoteOpenCodeWSLPlanCarriesLayer(t *testing.T) {
 			if spec == nil || spec.OpenCodeLayer == nil {
 				t.Fatalf("supply spec must carry opencode layer: %+v", spec)
 			}
-			if len(spec.Units) != 0 {
-				t.Fatalf("layer-only supply must carry no units: %v", spec.Units)
-			}
 			content, ok := plan.Secrets.Buffer(spec.OpenCodeLayer.Content)
 			if !ok || !strings.Contains(string(content), "https://oc.example/v1") {
 				t.Fatalf("layer content must come from the secret buffer with provider config")
@@ -182,149 +176,6 @@ func TestRemoteOpenCodeWSLPlanCarriesLayer(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 双链路：桌面闸门 vs remote effect（同一协调器、同一目标）
-// ---------------------------------------------------------------------------
-
-// fakePiConfigSourceForDualLink 是双链路测试的 PiConfigSource 桩。
-type fakePiConfigSourceForDualLink struct {
-	amagi []byte
-}
-
-func (s fakePiConfigSourceForDualLink) SettingsJSON() ([]byte, error) { return nil, nil }
-func (s fakePiConfigSourceForDualLink) AmagiJSON() ([]byte, error)    { return s.amagi, nil }
-func (s fakePiConfigSourceForDualLink) MCPJSON() ([]byte, error)      { return nil, nil }
-func (s fakePiConfigSourceForDualLink) KnownProviderIDs() ([]string, error) {
-	return []string{"amagi-glm"}, nil
-}
-
-// stubFactsForDualLink 固定事实：npx 已验证。
-type stubFactsForDualLink struct{}
-
-func (stubFactsForDualLink) TransformFacts(_ context.Context, _ wslsupply.TargetRef) (wslsupply.TransformFacts, error) {
-	return wslsupply.TransformFacts{ResolvedCommands: map[string]string{"npx": "/usr/bin/npx"}}, nil
-}
-
-func TestWSLPiConfigSupplyDualLinkDesktopVsRemote(t *testing.T) {
-	// 同一目标（假探测面）：先经桌面闸门运行一轮建立登记，再清空目标重演——
-	// 桌面路径与 remote effect 路径必须产出逐字节相同的结果。
-	buildCoord := func(t *testing.T) *wslsupply.Coordinator {
-		c := fakeSupplyCoordinatorWithUnit(t)
-		c.RegisterProjection(wslsupply.NewPiManagedModelsAdapter(stubPiManagedSourceForTest{
-			spec: wslsupply.PiManagedModelsSpec{Providers: map[string]any{"providers": map[string]any{
-				"amagi-x": map[string]any{"baseUrl": "https://x.example"},
-			}}},
-		}))
-		src := fakePiConfigSourceForDualLink{amagi: []byte(`{"profile": "tiered"}`)}
-		c.RegisterProjection(wslsupply.NewPiAmagiAdapter(src, stubFactsForDualLink{}))
-		// F-3：键级单元需 per-target 同意（双链路在同意后的投影结果上比对）。
-		if err := c.GrantUnitConsent(context.Background(), "Ubuntu", wslsupply.CLIPi, wslsupply.UnitPiAmagi); err != nil {
-			t.Fatalf("grant consent: %v", err)
-		}
-		return c
-	}
-
-	runDesktop := func(t *testing.T) string {
-		app := newTestApp(t)
-		app.WSLSupply = buildCoord(t)
-		if err := app.runWSLManagedModelsAtLaunch("Ubuntu"); err != nil {
-			t.Fatalf("desktop gate: %v", err)
-		}
-		return dualLinkTargetBytes(t, app.WSLSupply)
-	}
-	runRemote := func(t *testing.T) string {
-		coord := buildCoord(t)
-		effect := &wslConfigSupplyEffect{
-			deps: launchExecutorDeps{wslSupply: coord}, distro: "Ubuntu",
-			cli: wslsupply.CLIPi, reason: wslsupply.ReasonLaunch,
-			units: []wslsupply.UnitID{wslsupply.UnitPiManagedModels, wslsupply.UnitPiAmagi},
-		}
-		if _, err := effect.Apply(context.Background()); err != nil {
-			t.Fatalf("remote effect: %v", err)
-		}
-		return dualLinkTargetBytes(t, coord)
-	}
-
-	desktop := runDesktop(t)
-	remote := runRemote(t)
-	if len(desktop) == 0 {
-		t.Fatal("desktop run produced no target files")
-	}
-	if desktop != remote {
-		t.Fatalf("dual-link divergence:\n--- desktop ---\n%s\n--- remote ---\n%s", desktop, remote)
-	}
-}
-
-// dualLinkTargetBytes 汇总目标根下全部投影文件的字节（确定性排序）。
-func dualLinkTargetBytes(t *testing.T, runner wslsupply.Runner) string {
-	t.Helper()
-	coord, ok := runner.(*wslsupply.Coordinator)
-	if !ok {
-		t.Fatal("runner is not a coordinator")
-	}
-	target, err := coord.ResolveTarget(context.Background(), "Ubuntu", wslsupply.CLIPi)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var files []string
-	err = filepath.Walk(target.UNCRoot, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sb strings.Builder
-	for _, f := range files {
-		data, _ := os.ReadFile(f)
-		rel := strings.TrimPrefix(f, target.UNCRoot)
-		sb.WriteString(rel + "\n" + string(data) + "\x00")
-	}
-	return sb.String()
-}
-
-// 双链路 · 闸门一致性：corrupt 阻断 / 其余告警，两条链路判定相同。
-func TestWSLPiConfigSupplyGateConsistencyBothLinks(t *testing.T) {
-	corruptResult := wslsupply.RunResult{Target: platformTargetRef("Ubuntu"), Results: []wslsupply.UnitResult{{
-		Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFailed, Detail: "target-corrupt",
-		Err: errors.New("corrupt"),
-	}}}
-	// 桌面闸门。
-	app := newTestApp(t)
-	desktopErr := app.gateWSLPiConfigSupplyResult(corruptResult, nil, "Ubuntu")
-	if desktopErr == nil || !strings.Contains(desktopErr.Error(), "已损坏") {
-		t.Fatalf("desktop corrupt gate must block, got %v", desktopErr)
-	}
-	// remote effect 判定（同一纯 verdict）。
-	launchErr, warnMsg, _ := verdictForWSLPiConfigSupply(corruptResult, nil)
-	if launchErr == nil || !strings.Contains(launchErr.Error(), "已损坏") {
-		t.Fatalf("remote corrupt verdict must block, got %v / warn %q", launchErr, warnMsg)
-	}
-	if warnMsg != "" {
-		t.Fatalf("corrupt must not also warn: %q", warnMsg)
-	}
-	// 键级单元冻结 → 两条链路都只告警放行。
-	frozenResult := wslsupply.RunResult{Target: platformTargetRef("Ubuntu"), Results: []wslsupply.UnitResult{{
-		Unit: wslsupply.UnitPiAmagi, Outcome: wslsupply.UnitBlocked,
-		Detail: "both-changed-frozen; 键 profile：双侧均有修改",
-	}}}
-	if err := app.gateWSLPiConfigSupplyResult(frozenResult, nil, "Ubuntu"); err != nil {
-		t.Fatalf("frozen keyed unit must not block desktop: %v", err)
-	}
-	// 冻结属预期态：两条链路一致地静默放行（状态页可见，不刷启动告警）。
-	launchErr, warnMsg, _ = verdictForWSLPiConfigSupply(frozenResult, nil)
-	if launchErr != nil || warnMsg != "" {
-		t.Fatalf("frozen keyed unit must pass silently on remote (same as desktop): %v %q", launchErr, warnMsg)
-	}
-}
-
-func platformTargetRef(distro string) wslsupply.TargetRef {
-	return wslsupply.TargetRef{Distro: distro, CLI: wslsupply.CLIPi}
-}
-
-// ---------------------------------------------------------------------------
 // OpenCode 层 effect：失败阻断 / 成功重锚 PTY env
 // ---------------------------------------------------------------------------
 
@@ -351,14 +202,12 @@ func TestOpenCodeLayerEffectAnchorsPTYEnv(t *testing.T) {
 	}
 	effect := &wslConfigSupplyEffect{
 		deps: launchExecutorDeps{}, distro: "Ubuntu",
-		cli: "opencode", reason: wslsupply.ReasonLaunch,
 		openCodeLayer: append([]byte(nil), content...), layerPrep: prep, ptyRef: &pty,
 	}
 	// 层失败 → effect 失败（启动阻断，与桌面 prepareWSLOpenCodeLayer 同语义）。
 	pty2 := &ptyStartEffect{deps: launchExecutorDeps{}, spec: spec}
 	failEffect := &wslConfigSupplyEffect{
 		deps: launchExecutorDeps{}, distro: "Ubuntu",
-		cli: "opencode", reason: wslsupply.ReasonLaunch,
 		openCodeLayer: []byte("{not-json"), layerPrep: prep, ptyRef: &pty2,
 	}
 	if _, err := failEffect.Apply(context.Background()); err == nil {
@@ -391,75 +240,9 @@ func TestOpenCodeLayerEffectAnchorsPTYEnv(t *testing.T) {
 	pty3 := &ptyStartEffect{deps: launchExecutorDeps{}, spec: spec, applied: true}
 	lateEffect := &wslConfigSupplyEffect{
 		deps: launchExecutorDeps{}, distro: "Ubuntu",
-		cli: "opencode", reason: wslsupply.ReasonLaunch,
 		openCodeLayer: content, layerPrep: prep, ptyRef: &pty3,
 	}
 	if _, err := lateEffect.Apply(context.Background()); err == nil {
 		t.Fatal("layer after PTY start must be rejected")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 面板保存 → pi-config 标脏（异步推送/启动补漏的触发源）
-// ---------------------------------------------------------------------------
-
-func TestSaveAmagiConfigMarksPiConfigDirty(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_DIR", dir)
-	app := newTestApp(t)
-	runner := &stubSupplyRunner{}
-	app.WSLSupply = runner
-	// PR09：保存触发异步推送——cleanup 必须等推送生命周期退出，避免泄入
-	// 下一个测试与其全局接缝写入竞争。
-	t.Cleanup(waitForWSLSupplyPushIdleForTest)
-	if err := app.SaveAmagiConfig(`{"profile": "tiered"}`); err != nil {
-		t.Fatalf("SaveAmagiConfig: %v", err)
-	}
-	dirty := runner.dirty_()
-	if len(dirty) != 1 || dirty[0] != wslsupply.DirtySourcePiConfig {
-		t.Fatalf("pi-config dirty source must be marked once, got %v", dirty)
-	}
-	// 保存失败不标脏（宿主保存与 WSL 同步是两个结果）。
-	if err := app.SaveAmagiConfig(`{invalid-json`); err == nil {
-		t.Fatal("expected save failure on invalid content")
-	}
-	if got := runner.dirty_(); len(got) != 1 {
-		t.Fatalf("failed save must not mark dirty, got %v", got)
-	}
-}
-
-// EnableWSLPiConfigSupply（F-3 同意入口）：未接线拒绝；已接线对三单元授权并
-// 触发一次异步推送。
-func TestEnableWSLPiConfigSupply(t *testing.T) {
-	app := newTestApp(t)
-	app.WSLSupply = &stubSupplyRunner{} // 无 GrantUnitConsent 能力
-	if err := app.EnableWSLPiConfigSupply(); err == nil {
-		t.Fatal("incapable runner must reject enable")
-	}
-
-	c := fakeSupplyCoordinatorWithUnit(t)
-	src := fakePiConfigSourceForDualLink{amagi: []byte(`{"profile": "tiered"}`)}
-	c.RegisterProjection(wslsupply.NewPiSettingsAdapter(src, stubFactsForDualLink{}))
-	c.RegisterProjection(wslsupply.NewPiAmagiAdapter(src, stubFactsForDualLink{}))
-	c.RegisterProjection(wslsupply.NewPiMCPAdapter(src, stubFactsForDualLink{}))
-	app.WSLSupply = c
-	origDefault := wslDefaultDistroFn
-	t.Cleanup(func() {
-		// PR09：先等异步推送生命周期真正退出再还原全局接缝（不 sleep 碰运气；
-		// 否则下一个测试与后台 goroutine 竞争 wslDefaultDistroFn/wslDistroRunningFn）。
-		waitForWSLSupplyPushIdleForTest()
-		wslDefaultDistroFn = origDefault
-	})
-	// 防御：前置排水——等任何先前测试泄漏的推送退出后再写接缝。
-	waitForWSLSupplyPushIdleForTest()
-	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
-	if err := app.EnableWSLPiConfigSupply(); err != nil {
-		t.Fatalf("enable with capable coordinator: %v", err)
-	}
-	st := c.GetStatus("Ubuntu", wslsupply.CLIPi)
-	for _, u := range st.Units {
-		if u.Unit == wslsupply.UnitPiAmagi && !u.Consented {
-			t.Fatalf("pi/amagi must be consented after enable")
-		}
 	}
 }

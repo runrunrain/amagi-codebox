@@ -1,13 +1,12 @@
 package wslsupply
 
-// coordinator_test.go — S0 骨架的行为钉子：目标解析与 generation、批量只读
-// Inspect、Plan 纯读零副作用、A2 适配器委托与结果分类、状态清单落盘与脱敏
-// GetStatus、MarkDirty 只标脏不探测、目标复核拒绝旧计划。全部经注入的假探测
+// coordinator_test.go — 骨架的行为钉子：目标解析与 generation、批量只读
+// Inspect、Plan 纯读零副作用、状态清单落盘与脱敏 GetStatus、MarkDirty 只标脏
+// 不探测、目标复核拒绝旧计划、已退役 Pi 单元旧登记的忽略。全部经注入的假探测
 // 面运行，不触达真实 WSL。
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,8 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -65,7 +64,7 @@ func (f *fakeProbes) probes() Probes {
 				unc := filepath.Join(f.uncRoot, filepath.FromSlash(strings.TrimPrefix(p, "/")))
 				if _, serr := os.Lstat(unc); serr != nil {
 					f.mu.Unlock()
-					return fmt.Errorf("synthetic chmod: ENOENT %s", p)
+					return &os.PathError{Op: "synthetic chmod", Path: p, Err: os.ErrNotExist}
 				}
 			}
 			for _, p := range paths {
@@ -117,32 +116,14 @@ func newFakeProbes(t *testing.T) *fakeProbes {
 	}
 }
 
-// stubA2 固定返回结果的 A2 适配器。
-type stubA2 struct {
-	outcome launcher.SyncWSLPiLoginAuthOutcome
-	err     error
-	calls   int32
-}
-
-func (s *stubA2) Files() []string { return []string{"auth.json"} }
-
-func (s *stubA2) Sync(context.Context, TargetRef) (launcher.SyncWSLPiLoginAuthOutcome, error) {
-	atomic.AddInt32(&s.calls, 1)
-	return s.outcome, s.err
-}
-
-func newCoordinatorWith(t *testing.T, fp *fakeProbes, a2 A2Adapter) *Coordinator {
+func newCoordinatorWith(t *testing.T, fp *fakeProbes) *Coordinator {
 	t.Helper()
-	c := NewCoordinator(t.TempDir(), nil, fp.probes())
-	if a2 != nil {
-		c.SetA2Adapter(a2)
-	}
-	return c
+	return NewCoordinator(t.TempDir(), nil, fp.probes())
 }
 
 func TestResolveTargetGeneration(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
 	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
@@ -178,18 +159,30 @@ func TestResolveTargetGeneration(t *testing.T) {
 	}
 }
 
-func TestInspectReadonlySnapshot(t *testing.T) {
+// newStubProjectionCoordinator 注册一个固定内容的桩投影单元（驱动 Inspect/
+// Plan/Apply 链路的最小生产面）。
+func newStubProjectionCoordinator(t *testing.T) (*Coordinator, *fakeProbes, *stubProjection) {
+	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
+	stub := &stubProjection{unit: "pi/stub-prefs", rel: "stub-prefs.json", source: func() []byte {
+		return []byte(`{"v":1}`)
+	}}
+	c.RegisterProjection(stub)
+	return c, fp, stub
+}
+
+func TestInspectReadonlySnapshot(t *testing.T) {
+	c, fp, _ := newStubProjectionCoordinator(t)
 	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// distro 侧已有一份 auth.json（经假 UNC 根落本地）。
+	// distro 侧已有一份目标文件（经假 UNC 根落本地）。
 	if err := os.MkdirAll(filepath.Join(fp.uncRoot, "home/u/.pi/agent"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(fp.uncRoot, "home/u/.pi/agent/auth.json"), []byte(`{"x":{"type":"oauth"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(fp.uncRoot, "home/u/.pi/agent/stub-prefs.json"), []byte(`{"x":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	uncBefore := fp.uncRoot
@@ -197,23 +190,22 @@ func TestInspectReadonlySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, ok := snap.File("auth.json")
+	meta, ok := snap.File("stub-prefs.json")
 	if !ok || !meta.Exists || meta.Size == 0 {
-		t.Fatalf("auth.json probe missing: %+v ok=%v", meta, ok)
+		t.Fatalf("stub file probe missing: %+v ok=%v", meta, ok)
 	}
-	if meta.Hash != "" {
-		t.Fatalf("A2 credential hash must never enter the snapshot, got %q", meta.Hash)
+	if meta.Hash == "" {
+		t.Fatalf("tracked projection file must carry a content hash, got %+v", meta)
 	}
 	// 只读断言：UNC 根内容不变（不写任何文件）。
 	entries, err := os.ReadDir(filepath.Join(uncBefore, "home/u/.pi/agent"))
-	if err != nil || len(entries) != 1 || entries[0].Name() != "auth.json" {
+	if err != nil || len(entries) != 1 || entries[0].Name() != "stub-prefs.json" {
 		t.Fatalf("inspect must not write targets: entries=%v err=%v", entries, err)
 	}
 }
 
 func TestPlanIsPureComputation(t *testing.T) {
-	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c, fp, _ := newStubProjectionCoordinator(t)
 	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
 	if err != nil {
 		t.Fatal(err)
@@ -223,22 +215,22 @@ func TestPlanIsPureComputation(t *testing.T) {
 		t.Fatal(err)
 	}
 	identityBefore := atomic.LoadInt32(&fp.identityCalls)
-	plan, err := c.Plan(SupplyRequest{Target: target, Reason: ReasonLaunch, SelectedUnits: []UnitID{UnitPiA2Auth}}, snap)
+	plan, err := c.Plan(SupplyRequest{Target: target, Reason: ReasonLaunch, SelectedUnits: []UnitID{"pi/stub-prefs"}}, snap)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Units) != 1 || plan.Units[0].Action != ActionSyncA2 {
-		t.Fatalf("a2 plan unit = %+v", plan.Units)
+	if len(plan.Units) != 1 || plan.Units[0].Action != ActionWriteProjection {
+		t.Fatalf("plan unit = %+v", plan.Units)
 	}
 	// 纯读断言：Plan 不触发身份探测（不 spawn）、不写任何目标文件。
 	if got := atomic.LoadInt32(&fp.identityCalls); got != identityBefore {
 		t.Fatalf("Plan spawned identity probes: %d -> %d", identityBefore, got)
 	}
-	if plan.Units[0].ExpectedTargetHash != "" || plan.Units[0].CandidateSize != 0 {
-		t.Fatalf("a2 plan unit must not carry hashes/candidates: %+v", plan.Units[0])
+	if plan.Units[0].RelPath != "stub-prefs.json" {
+		t.Fatalf("plan unit must carry rel path, got %+v", plan.Units[0])
 	}
 	// 快照/目标不匹配、空单元、未知单元拒绝。
-	if _, err := c.Plan(SupplyRequest{Target: TargetRef{Distro: "Other", CLI: CLIPi, LinuxRoot: "/x"}, SelectedUnits: []UnitID{UnitPiA2Auth}}, snap); err == nil {
+	if _, err := c.Plan(SupplyRequest{Target: TargetRef{Distro: "Other", CLI: CLIPi, LinuxRoot: "/x"}, SelectedUnits: []UnitID{"pi/stub-prefs"}}, snap); err == nil {
 		t.Fatal("snapshot/request mismatch must be rejected")
 	}
 	if _, err := c.Plan(SupplyRequest{Target: target, SelectedUnits: nil}, snap); err == nil {
@@ -247,69 +239,14 @@ func TestPlanIsPureComputation(t *testing.T) {
 	if _, err := c.Plan(SupplyRequest{Target: target, SelectedUnits: []UnitID{"pi/nope"}}, snap); err == nil {
 		t.Fatal("unknown unit must be rejected")
 	}
-}
-
-func TestApplyA2DelegatesAndRecordsState(t *testing.T) {
-	fp := newFakeProbes(t)
-	for _, tc := range []struct {
-		name        string
-		outcome     launcher.SyncWSLPiLoginAuthOutcome
-		wantUnit    UnitOutcome
-		wantSuccess bool
-	}{
-		{"copied", launcher.SyncWSLPiLoginAuthCopied, UnitApplied, true},
-		{"fresh", launcher.SyncWSLPiLoginAuthFresh, UnitFresh, true},
-		{"distro newer", launcher.SyncWSLPiLoginAuthDistroNewer, UnitApplied, true},
-		{"tie kept", launcher.SyncWSLPiLoginAuthDistroTieKept, UnitApplied, true},
-		{"has copy degrades", launcher.SyncWSLPiLoginAuthDistroHasCopy, UnitWarnDegraded, false},
-		{"no auth fails", launcher.SyncWSLPiLoginAuthDistroNoAuth, UnitFailed, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a2 := &stubA2{outcome: tc.outcome, err: errors.New("boom")}
-			c := newCoordinatorWith(t, fp, a2)
-			res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
-			if err != nil {
-				t.Fatalf("RunUnits: %v", err)
-			}
-			if a2.calls != 1 {
-				t.Fatalf("a2 adapter calls = %d", a2.calls)
-			}
-			if len(res.Results) != 1 || res.Results[0].Outcome != tc.wantUnit {
-				t.Fatalf("unit result = %+v, want outcome %v", res.Results, tc.wantUnit)
-			}
-			if res.Results[0].A2 == nil || res.Results[0].A2.Outcome != tc.outcome {
-				t.Fatalf("a2 outcome not propagated: %+v", res.Results[0].A2)
-			}
-			// 状态登记：outcome 与 LastSuccess；A2 永不记录任何 hash。
-			st := c.GetStatus("Ubuntu", CLIPi)
-			if !st.Checked {
-				t.Fatal("status must be checked after a run")
-			}
-			if len(st.Units) != 1 || st.Units[0].Unit != UnitPiA2Auth {
-				t.Fatalf("status units = %+v", st.Units)
-			}
-			if tc.wantSuccess && st.Units[0].LastSuccess.IsZero() {
-				t.Fatalf("LastSuccess must be recorded for %v", tc.outcome)
-			}
-			raw, err := os.ReadFile(filepath.Join(c.state.path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			body := string(raw)
-			if strings.Contains(body, "sourceHash") || strings.Contains(body, "lastWrittenHash") {
-				t.Fatalf("A2 unit must never persist credential hashes: %s", body)
-			}
-			// Undo：A2 凭据刷新不携带撤销能力。
-			if res.Results[0].Undo != nil {
-				t.Fatal("a2 result must not carry an undo handle")
-			}
-		})
+	// 已退役的 Pi 供给单元同样按 unknown 拒绝（不再有生产路径）。
+	if _, err := c.Plan(SupplyRequest{Target: target, SelectedUnits: []UnitID{"pi/a2-auth"}}, snap); err == nil {
+		t.Fatal("retired pi unit must be rejected as unknown")
 	}
 }
 
 func TestApplyRefusesStalePlanWhenTargetChanged(t *testing.T) {
-	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c, fp, _ := newStubProjectionCoordinator(t)
 	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +255,7 @@ func TestApplyRefusesStalePlanWhenTargetChanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := c.Plan(SupplyRequest{Target: target, Reason: ReasonLaunch, SelectedUnits: []UnitID{UnitPiA2Auth}}, snap)
+	plan, err := c.Plan(SupplyRequest{Target: target, Reason: ReasonLaunch, SelectedUnits: []UnitID{"pi/stub-prefs"}}, snap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +272,7 @@ func TestApplyRefusesStalePlanWhenTargetChanged(t *testing.T) {
 
 func TestMarkDirtyMergesAndPersistsWithoutProbing(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
 	before := atomic.LoadInt32(&fp.identityCalls)
 	if err := c.MarkDirty("providers", 5); err != nil {
 		t.Fatal(err)
@@ -343,7 +280,7 @@ func TestMarkDirtyMergesAndPersistsWithoutProbing(t *testing.T) {
 	if err := c.MarkDirty("providers", 3); err != nil { // 旧 revision 不回退
 		t.Fatal(err)
 	}
-	if err := c.MarkDirty("pi-login-presets", 9); err != nil {
+	if err := c.MarkDirty("skills", 9); err != nil {
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&fp.identityCalls); got != before {
@@ -353,7 +290,7 @@ func TestMarkDirtyMergesAndPersistsWithoutProbing(t *testing.T) {
 	if st.Checked {
 		t.Fatal("MarkDirty alone must not mark the target checked")
 	}
-	if st.DesiredRevision != 9 || st.PendingSources["providers"] != 5 || st.PendingSources["pi-login-presets"] != 9 {
+	if st.DesiredRevision != 9 || st.PendingSources["providers"] != 5 || st.PendingSources["skills"] != 9 {
 		t.Fatalf("dirty revisions wrong: %+v", st)
 	}
 	if err := c.MarkDirty("", 1); err == nil {
@@ -362,9 +299,8 @@ func TestMarkDirtyMergesAndPersistsWithoutProbing(t *testing.T) {
 }
 
 func TestGetStatusSanitizedAndTargetScoped(t *testing.T) {
-	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthCopied})
-	if _, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth}); err != nil {
+	c, _, _ := newStubProjectionCoordinator(t)
+	if _, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{"pi/stub-prefs"}); err != nil {
 		t.Fatal(err)
 	}
 	st := c.GetStatus("Ubuntu", CLIPi)
@@ -396,7 +332,7 @@ func TestGetStatusSanitizedAndTargetScoped(t *testing.T) {
 
 func TestRunUnitsValidatesUnits(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
 	if _, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, nil); err == nil {
 		t.Fatal("empty units must be rejected")
 	}
@@ -407,17 +343,19 @@ func TestRunUnitsValidatesUnits(t *testing.T) {
 
 func TestCorruptStateFileFallsBackToUnmanaged(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
+	stub := &stubProjection{unit: "pi/stub-prefs", rel: "stub-prefs.json", source: func() []byte {
+		return []byte(`{"v":1}`)
+	}}
+	c.RegisterProjection(stub)
 	if err := os.WriteFile(c.state.path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// 攻坚契约：main 损坏 → store-health 错误、停止新写、不把空默认值覆盖
 	// 原文件；目标文件不被重置。修复存储后重新读入再操作。
-	a2 := &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh}
-	c.SetA2Adapter(a2)
-	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
+	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{"pi/stub-prefs"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("RunUnits: %v", err)
 	}
 	if res.Results[0].Outcome != UnitBlocked || res.Results[0].Detail != "store-unhealthy" {
 		t.Fatalf("corrupt manifest must stop new writes, got %+v", res.Results[0])
@@ -433,12 +371,58 @@ func TestCorruptStateFileFallsBackToUnmanaged(t *testing.T) {
 	if err := os.Remove(c.state.path); err != nil {
 		t.Fatal(err)
 	}
-	c2 := newCoordinatorWith(t, fp, a2)
-	if _, err := c2.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth}); err != nil {
+	c2 := newCoordinatorWith(t, fp)
+	c2.RegisterProjection(stub)
+	if _, err := c2.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{"pi/stub-prefs"}); err != nil {
 		t.Fatal(err)
 	}
 	st := c2.GetStatus("Ubuntu", CLIPi)
 	if len(st.Units) != 1 {
 		t.Fatalf("re-run after corrupt state must re-record unit: %+v", st.Units)
+	}
+}
+
+// TestRetiredPiUnitEntriesIgnored：升级兼容——旧状态文件里残留的已退役 Pi
+// 供给单元登记与 Pi 保存源必须被忽略/丢弃：GetStatus 不展示、不报错、不
+// panic；retired 脏源不再点亮 pendingPush。
+func TestRetiredPiUnitEntriesIgnored(t *testing.T) {
+	fp := newFakeProbes(t)
+	c := newCoordinatorWith(t, fp)
+	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.state.mutate(func(st *StateFile) {
+		if st.Targets == nil {
+			st.Targets = map[string]TargetRecord{}
+		}
+		rec := st.Targets[target.Generation]
+		rec.Distro = "Ubuntu"
+		rec.UID = target.UID
+		rec.Home = target.Home
+		if rec.InspectedAt == nil {
+			rec.InspectedAt = map[CLI]time.Time{}
+		}
+		rec.InspectedAt[CLIPi] = time.Now()
+		st.Targets[target.Generation] = rec
+		for _, unit := range []UnitID{"pi/a2-auth", "pi/managed-models", "pi/settings", "pi/amagi", "pi/mcp", "pi/stub-prefs"} {
+			st.upsertEntry(StateEntry{Unit: unit, Generation: target.Generation, LastOutcome: "written", LastWrittenHash: "h", Consented: true}, target.Generation)
+		}
+		st.PendingSources = map[string]uint64{"pi-login-presets": 7, "pi-config": 3, "providers": 5}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := c.GetStatus("Ubuntu", CLIPi)
+	if len(st.Units) != 1 || st.Units[0].Unit != "pi/stub-prefs" {
+		t.Fatalf("retired pi units must be hidden, got %+v", st.Units)
+	}
+	if _, ok := st.PendingSources["pi-login-presets"]; ok {
+		t.Fatalf("retired pi dirty source must be dropped, got %+v", st.PendingSources)
+	}
+	if _, ok := st.PendingSources["pi-config"]; ok {
+		t.Fatalf("retired pi dirty source must be dropped, got %+v", st.PendingSources)
+	}
+	if st.PendingSources["providers"] != 5 || len(st.PendingSources) != 1 {
+		t.Fatalf("live sources must survive alone, got %+v", st.PendingSources)
 	}
 }

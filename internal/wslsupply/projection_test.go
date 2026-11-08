@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"amagi-codebox/internal/launcher"
 )
 
 // stubProjection 是最小 TrackedProjection 桩：候选正文来自 source 闭包，
@@ -70,7 +68,7 @@ func (p *stubProjection) Plan(_ SupplyRequest, snap *Snapshot, state *StateEntry
 func newProjectionCoordinator(t *testing.T, source func() []byte) (*Coordinator, *fakeProbes, *stubProjection) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	stub := &stubProjection{unit: "pi/stub-prefs", rel: "stub-prefs.json", source: source}
 	c.RegisterProjection(stub)
 	return c, fp, stub
@@ -165,7 +163,7 @@ func TestConcurrentApplyUniqueStagingNames(t *testing.T) {
 	// 并发供给不同单元文件（各自投影）不得撞 staging 名：全部成功、目标齐全、
 	// 无 .amagi-supply-* 残留。同一协调器的 applyMu 串行化同一目标上的 Apply。
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	const writers = 8
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -209,7 +207,7 @@ func TestConcurrentApplyUniqueStagingNames(t *testing.T) {
 func TestSubmitFileChmodFailureFailsClosed(t *testing.T) {
 	fp := newFakeProbes(t)
 	fp.chmodErr = fmt.Errorf("wsl.exe dead")
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(&stubProjection{unit: "pi/stub-prefs", rel: "stub-prefs.json",
 		source: func() []byte { return []byte(`{"secret":"k"}`) }})
 	res := runProjection(t, c)
@@ -280,21 +278,4 @@ func TestCompensateCAS(t *testing.T) {
 			t.Fatal("created file must be removed on compensation")
 		}
 	})
-}
-
-func TestA2NeverCompensates(t *testing.T) {
-	// A2 凭据刷新是持久认证状态：结果永不携带 Undo（effect 的 Abort 不得把
-	// distro/Windows 侧凭据回滚成旧 token）。该语义由「无 Undo 句柄」钉住。
-	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthDistroNewer})
-	res, err := c.RunUnits(context.Background(), "Ubuntu", CLIPi, ReasonLaunch, []UnitID{UnitPiA2Auth})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Results[0].Undo != nil {
-		t.Fatal("a2 credential refresh must never carry compensation")
-	}
-	if got := c.Compensate(context.Background()); len(got) != 0 {
-		t.Fatalf("compensating nothing must be a no-op, got %+v", got)
-	}
 }

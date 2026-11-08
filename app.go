@@ -534,8 +534,9 @@ func NewApp(mobileAssets embed.FS) *App {
 		WSLSetup:            wslsetup.NewService(log),
 		DockerWSL:           dockerwsl.NewService(log),
 	}
-	// P3-S1：WSL 供给协调器携带托管面适配器（pi/managed-models + 共享小文件）；
-	// 业务快照源闭包引用 app，在字面量之后装配。
+	// WSL 供给协调器携带 shared 小文件与 S4 键级投影适配器（Pi 的供给单元已随
+	// 1.3.126「WSL 内 Pi 共享 Windows agent 根」退役）；业务快照源闭包引用
+	// app，在字面量之后装配。
 	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
 	// Claude 订阅账号轮换（design §6.3/§7.2）：装配 1a 领域服务（Keychain 池
 	// 后端、canonical 原生适配器、MutationGate/Quiescence 生产实现）。启动
@@ -618,8 +619,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw, maxTokens); err != nil {
 			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
 		}
-		// P3-S0：配置保存事件 → WSL 供给标脏（只发布 revision，不调度；S1 接分发）。
-		app.markWSLSupplyDirty(wslsupply.DirtySourcePiLoginPresets)
 	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
@@ -3856,20 +3855,15 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, loginPreset.MaxTokens, login.AgentDir))
 		}
 	}
-	// P3-S1 启动 lazy：WSL API-provider 会话在构建/写入前先经协调器分发托管
-	// models.json（旧 distro 不重装即获得托管更新；损坏目标在此阻断，后续
-	// overlay 的宽松 merge 不再触碰损坏文件）。登录路径的托管分发并入 A2
-	// 闸门同一供给运行（defaultRunWSLLoginSupply）。
-	// WSL 内 pi 共享 Windows agent 根：models.json 直接写 Windows 侧，不再向 distro
-	// 分发托管 provider 配置（runWSLManagedModelsAtLaunch 对 pi 退役）。
+	// WSL 内 pi 共享 Windows agent 根：models.json 直接写 Windows 侧，不向 distro 分发。
 	if loginPreset == nil && providerID != "" {
 		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
 		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
 		// 锁纪律（S1 diting F1）：临界区整体收进 writePiProviderModelsAtLaunch
-		//（内部 defer Unlock）——任何 return 路径（含 WSL 构建失败阻断）不再
+		//（内部 defer Unlock）——任何 return 路径不再
 		// 泄漏锁；v1.3.13 事故同位置的结构性防再犯。
 		var writeErr error
-		launchSettings, writeErr = a.writePiProviderModelsAtLaunch(providerID, launchSettings, presetParams, "", envOverrides)
+		launchSettings, writeErr = a.writePiProviderModelsAtLaunch(providerID, launchSettings, presetParams, envOverrides)
 		if writeErr != nil {
 			return "", writeErr
 		}
@@ -4070,38 +4064,6 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 	}(sess.ID)
 
 	return sess.ID, nil
-}
-
-// syncWSLPiLoginAuthAtLaunch 是 WSL Pi 登录会话的启动闸门（A2 主上裁定
-// 2026-10-16；P3-S0 起改经 wslsupply 协调器，判定语义与日志文案不变）：
-// 放行前先做惰性同步校验。语义：
-//   - 同步成功（Copied/Fresh）→ 放行；
-//   - 同步失败但 distro 侧已有（可能陈旧的）auth.json 副本 → 记 WARN 降级
-//     放行（旧凭据可能仍可用）；
-//   - 同步失败且 distro 侧无副本（或状态不可探明）→ 中文报错拒绝启动
-//     （C5：保留错误路径文案中文化）；
-//   - Windows 侧 auth.json 缺失 → 登录失效语义（正常路径下
-//     resolvePiLoginLaunch→RequirePiLogin 已先行拒绝，此处只兑容启动中途
-//     退出登录的极端时序）。
-//
-// distro 为空时重深一次 DefaultWSLDistro（B6 类镜像/spec 分叉兑底）；
-// 供给经 runWSLLoginSupplyFn 接缝满入（统一 TargetRef/Apply 原语），单测可
-// 替换；闸门判定与 remote effect 共用 verdictForWSLLoginSupply（两链路一致）。
-func (a *App) syncWSLPiLoginAuthAtLaunch(distro string) error {
-	if strings.TrimSpace(distro) == "" {
-		distro = platform.DefaultWSLDistro(nil)
-	}
-	res, err := runWSLLoginSupplyFn(context.Background(), a.WSLSupply, distro)
-	verdict := verdictForWSLLoginSupply(res, err)
-	if verdict.launchErr != nil {
-		return verdict.launchErr
-	}
-	if verdict.warn {
-		a.Log.Warn("pi", verdict.message, verdict.detail)
-	} else if verdict.info {
-		a.Log.Info("pi", verdict.message, verdict.detail)
-	}
-	return nil
 }
 
 // markWSLSupplyDirty 在 providerSync/配置保存事件后向 WSL 供给状态发布来源
@@ -5223,16 +5185,15 @@ func buildCodexCLIArgs(settings codexLaunchSettings) []string {
 }
 
 // writePiProviderModelsAtLaunch 承担 LaunchPiSession 的 providerSyncMu 临界区：
-// 构建 + 合并写入 models.json（WSL/Windows 两侧）+ API key env 兜底注入，返回
-// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。WSL 路径
-// 错误两种，均阻断启动（S1 构建失败 + D5 写入失败，调用方直接上抛）；
-// Windows 路径维持既有回退语义。
+// 构建 + 合并写入 Windows 侧 models.json + API key env 兜底注入，返回可能更新的
+// launchSettings。provider 不可读时原样返回（既有行为）；构建/写入失败回退
+// piProviderMapping 兜底。
 //
 // 锁纪律（S1 diting F1）：本函数是临界区的唯一形态，defer Unlock 保证全部
 // return 路径释放锁——修复前 WSL 构建失败分支在 Lock/Unlock 区间内直接
 // return，providerSyncMu 永久持有，此后 provider 保存/Pi 启动/SaveOpenCodeConfig
 // 全部挂死。
-func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunchSettings, presetParams config.Parameters, wslDistro string, envOverrides map[string]string) (piLaunchSettings, error) {
+func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunchSettings, presetParams config.Parameters, envOverrides map[string]string) (piLaunchSettings, error) {
 	a.providerSyncMu.Lock()
 	defer a.providerSyncMu.Unlock()
 
@@ -5244,44 +5205,26 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
 
 	// 合并写入 pi 标准 agent 目录的 models.json。
-	// 成功写入时改写 settings.Provider 为 amagi-<name>；Windows 路径失败则回退
-	// piProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/写入
-	// 失败均阻断（见下方分支，不静默换非等价身份）。presetParams 透传
+	// 成功写入时改写 settings.Provider 为 amagi-<name>；失败则回退
+	// piProviderMapping 旧兜底（保持向后兼容，不阻断启动）。presetParams 透传
 	// contextWindow/maxTokens/thinking 到 pi model 配置。presetModels：该 provider
 	// 在 openai 公共预设桶（pi/omp 消费的桶）下的全部预设模型。启动写入是托管
 	// 条目的整体替换语义，漏注会把统一同步写入的同 provider 其他预设模型挤掉。
 	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 	if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, settings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-		// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
-		//（Windows 侧文件对 WSL 内的 pi 不可见）；非 WSL 路径行为不变。
+		// WSL 内 pi 与 Windows 共享 agent 根（PI_CODING_AGENT_DIR 经 /p 翻译），
+		// 故 WSL/原生统一写 Windows 侧 models.json。
 		wroteProvider := false
-		if wslDistro != "" {
-			// 保留 WSL 侧 models.json 中已有 provider（merge 在
-			// WriteWSLPiAgentConfig 内能对 UNC 路径完成），原子写 + chmod 补偿。
-			wslAgentDir, wErr := launcher.WriteWSLPiAgentConfig(wslDistro, piCfg)
-			if wErr == nil {
-				wroteProvider = true
-				a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
-					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
-			} else {
-				// D5：WSL 路径写入失败与构建失败同判阻断——piProviderMapping
-				// 回退会丢自定义 baseURL，distro 内 pi 将以第三方 key 误打官方
-				// endpoint（401/错误计费面）。典型诱因：distro 停机 / 9P 异常。
-				return settings, wslPiProviderWriteError(providerID, wErr)
-			}
+		agentDir := defaultPiAgentDir()
+		// 保留用户 models.json 中已有的 provider 和其他顶层配置，
+		// 当次 amagi 生成的同名 provider 优先。
+		piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
+		if writeErr := launcher.WritePiAgentConfig(agentDir, piCfg); writeErr == nil {
+			wroteProvider = true
+			a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
+				launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
 		} else {
-			agentDir := defaultPiAgentDir()
-			// 保留用户 models.json 中已有的 provider 和其他顶层配置，
-			// 当次 amagi 生成的同名 provider 优先。
-			piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
-			writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
-			if writeErr == nil {
-				wroteProvider = true
-				a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
-					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
-			} else {
-				a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
-			}
+			a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
 		}
 		if wroteProvider {
 			settings.Provider = launcher.PiProviderID(providerID)
@@ -5289,13 +5232,6 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 			settings.Provider, _ = piProviderMapping(*provider)
 		}
 	} else {
-		// P3-S1（已批准的行为变更，WSL 路径）：当前选中 provider 不可构建 →
-		// 阻断该启动（中文报错，不静默换默认模型——piProviderMapping 会丢
-		// baseURL 误打官方 endpoint，非等价回退）。Windows 路径维持既有回退
-		// 语义（不在本批写面内）。
-		if wslDistro != "" {
-			return settings, wslPiProviderBuildError(providerID, cfgErr)
-		}
 		a.Log.Warn("pi", "生成 pi models.json 失败，回退内置 provider", cfgErr.Error())
 		settings.Provider, _ = piProviderMapping(*provider)
 	}
@@ -5308,19 +5244,6 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 		}
 	}
 	return settings, nil
-}
-
-// wslPiProviderBuildError 是 WSL 路径「选中 provider 不可构建 → 阻断启动」的
-// 中文报错（P3-S1 已批准语义：不静默换默认模型）。独立成函数供单测钉文案。
-func wslPiProviderBuildError(providerID string, cfgErr error) error {
-	return fmt.Errorf("无法构建 Pi 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
-}
-
-// wslPiProviderWriteError 是 WSL 路径「选中 provider 写入失败 → 阻断启动」的
-// 中文报错（D5：与构建失败同判，不静默回退会丢自定义 baseURL 的
-// piProviderMapping 兜底）。独立成函数供单测钉文案。
-func wslPiProviderWriteError(providerID string, writeErr error) error {
-	return fmt.Errorf("无法写入 Pi 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
 }
 
 // writeOmpProviderModelsAtLaunch 承担 LaunchOmpSession 的 providerSyncMu 临界区
@@ -5350,7 +5273,7 @@ func (a *App) writeOmpProviderModelsAtLaunch(providerID string, launchSettings o
 	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 	if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
 		// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
-		//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
+		//（提交走与 WriteWSLOmpAgentConfig 同族的 SA-06 staging 原语）；非 WSL 路径不变。
 		wroteProvider := false
 		if wslDistro != "" {
 			wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
@@ -6833,14 +6756,10 @@ func (a *App) GetAmagiConfig() (string, error) {
 	return a.PiConfig.GetAmagiConfig()
 }
 
-// SaveAmagiConfig 校验并保存 amagi.json（原子写入）。保存后向 WSL 供给发布
-// 来源变更（P3-S2：pi-config 标脏，驱动异步推送/下次启动补漏）。
+// SaveAmagiConfig 校验并保存 amagi.json（原子写入）。WSL 内 pi 共享 Windows
+// agent 根（1.3.126），无需再向 distro 供给标脏。
 func (a *App) SaveAmagiConfig(content string) error {
-	err := a.PiConfig.SaveAmagiConfig(content)
-	if err == nil {
-		a.markWSLSupplyDirty(wslsupply.DirtySourcePiConfig)
-	}
-	return err
+	return a.PiConfig.SaveAmagiConfig(content)
 }
 
 // GetAmagiConfigPath 返回 amagi.json 的绝对路径，供前端展示。
@@ -6859,14 +6778,10 @@ func (a *App) GetPiModelsConfig() (string, error) {
 	return a.PiConfig.GetModelsConfig()
 }
 
-// SavePiModelsConfig 校验并保存 models.json（原子写入）。保存后向 WSL 供给
-// 发布 pi-config 来源变更（P3-S2：amagi 引用诊断的比对宇宙随之变化）。
+// SavePiModelsConfig 校验并保存 models.json（原子写入）。WSL 内 pi 共享
+// Windows agent 根（1.3.126），无需再向 distro 供给标脏。
 func (a *App) SavePiModelsConfig(content string) error {
-	err := a.PiConfig.SaveModelsConfig(content)
-	if err == nil {
-		a.markWSLSupplyDirty(wslsupply.DirtySourcePiConfig)
-	}
-	return err
+	return a.PiConfig.SaveModelsConfig(content)
 }
 
 // GetPiModelsConfigPath 返回 models.json 的绝对路径，供前端展示。

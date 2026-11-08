@@ -350,8 +350,8 @@ func (s *Service) installOrUpdate(tool string, mode opMode) (*InstallResult, err
 		} else {
 			res.Message = fmt.Sprintf("%s installed in WSL (%s)", key, v)
 		}
-		// P3-S0：不再 cp -r 整树播种 ~/.pi/agent（证据 T1/T3）；Pi 登录凭据
-		// 由启动时 wslsupply A2 惰性同步保障，安装成功语义与配置供给解耦。
+		// P3-S0：不再 cp -r 整树播种 ~/.pi/agent（证据 T1/T3）；Pi 在 WSL 内
+		// 共享 Windows agent 根（1.3.126），登录凭据无需安装期处理。
 		// Final effectiveness check: a plain login shell (no artificial PATH)
 		// must resolve the CLI into $HOME/.npm-global/bin, otherwise launched
 		// sessions silently run the Windows-side CLI via /mnt/c interop.

@@ -1086,10 +1086,11 @@ func TestRunUnitsRejectsPluginShapedUnits(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown wsl supply unit") {
 		t.Fatalf("plugin-shaped unit must be rejected from RunUnits vocabulary: %v", err)
 	}
-	// 已知单元保持原样（裸协调器无 S1/S2 适配器：A2 恒在即代表单元面不受
-	// S5 影响）。
-	if !c.HasUnit(UnitPiA2Auth) {
-		t.Fatalf("a2 unit must stay known")
+	// 技能单元词汇表在注册了技能作用域的协调器上保持可用（代表非插件单元
+	// 面不受 S5 影响；裸协调器无技能作用域时按 unknown 拒绝）。
+	c.RegisterSkills(NewSkillsScope(t.TempDir(), DefaultSkillsScanLimits()))
+	if !c.HasUnit("shared/skill/whatever") {
+		t.Fatalf("skill-shaped unit must stay known on coordinator with skills scope")
 	}
 	if c.HasUnit("pi/plugin/npm:foo") {
 		t.Fatalf("plugin-shaped unit must not be a known unit")

@@ -52,8 +52,8 @@
         <div class="unified-row">
           <template v-if="!supply.unified">
             <span class="supply-detail">
-              统一管理：一次启用后，Windows 侧配置自动同步到 WSL，无需重复预览/勾选——Pi
-              settings/amagi/mcp、Claude MCP 服务器与设置白名单、Codex MCP/profile、共享技能与
+              统一管理：一次启用后，Windows 侧配置自动同步到 WSL，无需重复预览/勾选——
+              Claude MCP 服务器与设置白名单、Codex MCP/profile、共享技能与
               CLAUDE.md/commands/agents/AGENTS.md、视觉清单；新条目随下次对账自动纳入。
               MCP env 与视觉清单含密钥副本，按 0600 写入；WSL 手改与已有同名项不会被覆盖。
             </span>
@@ -92,46 +92,6 @@
           >
             {{ consentBusy ? '授权中…' : '同意共享到 WSL' }}
           </AppButton>
-        </div>
-        <!-- P3-S2：Pi 配置键级投影（settings/amagi/mcp）逐单元状态与动作面
-            （D4 动作分离：检查/预览/应用安全更新/保留本地/确认接管） -->
-        <div v-if="piUnits.length" class="pi-units">
-          <h4>Pi 配置投影（Windows 面板 → WSL）</h4>
-          <div v-if="anyUnitAwaitingConsent && !supply?.unified" class="consent-row">
-            <span class="supply-detail">
-              向 WSL 投影 Windows 侧的 settings/amagi/mcp（mcp env 可能含密钥副本，
-              文件以 0600 写入）需要你的明确同意；未手改的条目将跟随 Windows 面板。
-            </span>
-            <AppButton variant="primary" size="small" :disabled="unitBusy" @click="enableSupply">
-              {{ unitBusy ? '启用中…' : '启用投影' }}
-            </AppButton>
-          </div>
-          <div v-for="u in piUnits" :key="u.unit" class="pi-unit-row">
-            <label class="mono">{{ u.relPath }}</label>
-            <span class="badge" :class="unitBadgeClass(u.state)">{{ unitStateText(u.state) }}</span>
-            <span class="supply-detail">{{ u.detail }}</span>
-            <div class="unit-actions">
-              <AppButton v-if="u.actions.includes('preview')" variant="ghost" size="small" :disabled="unitBusy" @click="previewUnit(u.unit)">预览</AppButton>
-              <AppButton v-if="u.actions.includes('apply')" variant="ghost" size="small" :disabled="unitBusy" @click="applyUnit(u.unit)">应用安全更新</AppButton>
-              <AppButton v-if="u.actions.includes('keep-local')" variant="ghost" size="small" :disabled="unitBusy" @click="keepLocalUnit(u.unit)">保留本地</AppButton>
-              <AppButton
-                v-if="u.actions.includes('takeover') && previewHash(u.unit)"
-                variant="primary" size="small" :disabled="unitBusy"
-                @click="takeOverUnit(u.unit)"
-              >确认接管</AppButton>
-            </div>
-            <!-- 预览结果：逐键方向（脱敏：仅键名/动作/原因） -->
-            <div v-if="previewFor(u.unit)" class="unit-preview">
-              <div v-for="k in previewFor(u.unit)?.keys ?? []" :key="k.key" class="key-row">
-                <span class="mono">{{ k.key }}</span>
-                <span class="badge" :class="keyBadgeClass(k.action)">{{ k.action }}</span>
-                <span class="supply-detail">{{ k.reason }}</span>
-              </div>
-              <div v-if="(previewFor(u.unit)?.notes ?? []).length" class="supply-detail">
-                {{ (previewFor(u.unit)?.notes ?? []).join('；') }}
-              </div>
-            </div>
-          </div>
         </div>
         <!-- P3-S3：共享技能面（扫描/预览/勾选导入/保留本地/接管） -->
         <div v-if="skills !== null" class="pi-units skills-section">
@@ -322,13 +282,8 @@ import { getWSLCLIStatus, installCLIToWSL, updateCLIInWSL, type WSLStatus } from
 import {
   getWSLConfigSupplyStatus,
   grantWSLVisionConsent,
-  enableWSLPiConfigSupply,
   enableWSLUnifiedSupply,
   disableWSLUnifiedSupply,
-  previewWSLPiConfigSupply,
-  applyWSLPiConfigSupply,
-  keepWSLPiConfigUnitLocal,
-  takeOverWSLPiConfigUnit,
   type WSLConfigSupplyStatus,
   type WSLConfigSupplyFace,
   type WSLConfigUnitPreview,
@@ -513,31 +468,6 @@ function watchFaces(): void {
   refreshConsentFlag()
 }
 
-// ---------------------------------------------------------------------------
-// P3-S2：Pi 配置键级投影动作面
-// ---------------------------------------------------------------------------
-const unitBusy = ref(false)
-const unitPreviews = ref<Record<string, WSLConfigUnitPreview>>({})
-
-const piUnits = computed(() => supply.value?.units ?? [])
-const anyUnitAwaitingConsent = computed(() =>
-  piUnits.value.some((u) => u.state === 'awaiting-consent'),
-)
-
-async function enableSupply(): Promise<void> {
-  if (unitBusy.value) return
-  unitBusy.value = true
-  try {
-    await enableWSLPiConfigSupply()
-    showSuccess('已启用 Pi 配置投影（未手改条目跟随 Windows 面板；WSL 手改条目冻结保留）')
-    await refreshStatus()
-  } catch (err: any) {
-    showError('启用失败: ' + (err?.message || err))
-  } finally {
-    unitBusy.value = false
-  }
-}
-
 function unitStateText(state: string): string {
   switch (state) {
     case 'synced': return '已同步'
@@ -566,88 +496,12 @@ function keyBadgeClass(action: string): string {
     default: return 'badge-missing'
   }
 }
-function previewFor(unit: string): WSLConfigUnitPreview | undefined {
-  return unitPreviews.value[unit]
-}
-function previewHash(unit: string): string {
-  return previewFor(unit)?.targetHash ?? ''
-}
-
 async function refreshStatus(): Promise<void> {
   try {
     supply.value = await getWSLConfigSupplyStatus()
     refreshConsentFlag()
   } catch {
     // 只读快照失败：保持现状（下次加载重试）
-  }
-}
-
-async function previewUnit(unit: string): Promise<void> {
-  if (unitBusy.value) return
-  unitBusy.value = true
-  try {
-    const rows = await previewWSLPiConfigSupply()
-    const next: Record<string, WSLConfigUnitPreview> = {}
-    for (const row of rows) next[row.unit] = row
-    unitPreviews.value = next
-    const row = next[unit]
-    if (row) showInfo(`预览完成：${row.blockedReason || row.action}${row.keys.length ? `（${row.keys.length} 项）` : ''}`)
-  } catch (err: any) {
-    showError('预览失败: ' + (err?.message || err))
-  } finally {
-    unitBusy.value = false
-  }
-}
-
-async function applyUnit(_unit: string): Promise<void> {
-  if (unitBusy.value) return
-  unitBusy.value = true
-  try {
-    const outcomes = await applyWSLPiConfigSupply()
-    const failed = outcomes.filter((o) => o.outcome === 'failed' || o.outcome === 'blocked')
-    if (failed.length) {
-      showInfo(`安全更新完成：${failed.length} 个单元保持现状（详见预览）`)
-    } else {
-      showSuccess('安全更新完成（冻结/未托管条目保持 WSL 现状）')
-    }
-    await refreshStatus()
-  } catch (err: any) {
-    showError('应用失败: ' + (err?.message || err))
-  } finally {
-    unitBusy.value = false
-  }
-}
-
-async function keepLocalUnit(unit: string): Promise<void> {
-  if (unitBusy.value) return
-  unitBusy.value = true
-  try {
-    await keepWSLPiConfigUnitLocal(unit)
-    showInfo('已保留 WSL 本地配置（停跟随）')
-    await refreshStatus()
-  } catch (err: any) {
-    showError('停跟随失败: ' + (err?.message || err))
-  } finally {
-    unitBusy.value = false
-  }
-}
-
-async function takeOverUnit(unit: string): Promise<void> {
-  const token = previewHash(unit)
-  if (!token && token !== '') {
-    showError('请先预览该单元再确认接管')
-    return
-  }
-  if (unitBusy.value) return
-  unitBusy.value = true
-  try {
-    await takeOverWSLPiConfigUnit(unit, token)
-    showSuccess('已按预览确认接管（托管域已按 Windows 当前内容重建基准）')
-    await refreshStatus()
-  } catch (err: any) {
-    showError('接管失败: ' + (err?.message || err))
-  } finally {
-    unitBusy.value = false
   }
 }
 

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"amagi-codebox/internal/config"
@@ -12,7 +10,6 @@ import (
 	"amagi-codebox/internal/piconfig"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
-	"amagi-codebox/internal/wslsupply"
 )
 
 // piLoginPresetResolver is the config-facing slice the login launch chain needs.
@@ -23,9 +20,9 @@ type piLoginPresetResolver interface {
 // piLoginLaunch is the resolved login launch contract shared by desktop,
 // v1/restart planner and (via env overrides) the external launcher path.
 // AgentDir is the canonical standard root the login check actually validated;
-// 非 WSL 执行边界钉住它（R2）并在 POSIX shell startup 后重锚（R3），WSL 执行
-// 边界则以它为同步源、锚定 distro 内 $HOME/.pi/agent（A2 解除后的分叉，
-// 见 piLoginWSLReAnchorSpec）。它永不携带或复制凭据本体。
+// 执行边界钉住它（R2）并在 shell startup 后重锚（R3；WSL 变体见
+// piLoginWSLReAnchorSpec——PI_CODING_AGENT_DIR 由解析漏斗指向 Windows canonical
+// 根，不再向 distro 同步）。它永不携带或复制凭据本体。
 type piLoginLaunch struct {
 	Preset   *config.PiLoginPreset
 	AgentDir string
@@ -34,12 +31,12 @@ type piLoginLaunch struct {
 // resolvePiLoginLaunch never lets a login selection fall through to
 // API-provider/default-model resolution; a stale login selection fails closed.
 //
-// A2 闸门解除（主上裁定 2026-10-16）：不再向 piconfig.RequirePiLogin 传
-// wsl=true 拒绝 WSL——Windows 侧 auth.json 始终是登录源与同步源，无论会话
-// 落在哪侧都先对它校验（退出登录/预设删除仍 fail closed）。WSL 会话凭据
-// 的可达性由启动路径的惰性同步（launcher.SyncWSLPiLoginAuth + payload 内
-// 同步片段）保障；锚定语义的 WSL/非 WSL 分叉在 spec 层（见
-// piLoginWSLReAnchorSpec）而不是这里。
+// A2 闸门解除（主上裁定 2026-10-16）+ WSL 共享 agent 根（2026-10）：不再向
+// piconfig.RequirePiLogin 传 wsl=true 拒绝 WSL——Windows 侧 auth.json 始终是
+// 登录源，无论会话落在哪侧都先对它校验（退出登录/预设删除仍 fail closed）。
+// WSL 会话经 PI_CODING_AGENT_DIR /p 翻译直接消费同一份 canonical auth.json
+// （启动期 distro 凭据同步已退役）；锚定语义的 WSL/非 WSL 分叉在 spec 层
+// （见 piLoginWSLReAnchorSpec）而不是这里。
 func resolvePiLoginLaunch(resolver piLoginPresetResolver, modelRef, providerRef string) (*piLoginLaunch, error) {
 	if resolver == nil {
 		return nil, errors.New("Pi login resolver unavailable")
@@ -136,125 +133,6 @@ func piLoginReAnchorSpec(spec platform.ResolvedLaunchSpec, agentDir string, extr
 	prefix := strings.Join(parts, " ") + " "
 	spec.StartupCommand = prefix + spec.StartupCommand
 	return spec
-}
-
-// runWSLLoginSupplyFn 是桌面启动闸门调用的供给执行接缝（单测替换；生产经
-// wslsupply 协调器 RunUnits 执行 pi/a2-auth 单元，A2 判定语义零变化）。
-// P3-S0 取代旧 syncWSLPiLoginAuthFn：桌面与 remote effect 共用同一入口。
-var runWSLLoginSupplyFn = defaultRunWSLLoginSupply
-
-// defaultRunWSLLoginSupply 经协调器执行 pi 登录供给（A2 单元必需；distro
-// 交由闸门上层解析后传入）。runner 缺位时 fail closed（不得静默放行无凭据
-// 会话）。P3-S1：协调器已注册托管面适配器时一并运行 pi/managed-models（登录
-// contextWindow 补齐 + amagi-* 期望集随登录启动 lazy 兑现；裸协调器——如单
-// 测——自动降级为 A2-only）。P3-S2：三个键级配置投影（settings/amagi/mcp）
-// 同批随登录启动补漏（可选偏好面，失败仅告警）。
-func defaultRunWSLLoginSupply(ctx context.Context, runner wslsupply.Runner, distro string) (wslsupply.RunResult, error) {
-	if runner == nil {
-		return wslsupply.RunResult{Results: []wslsupply.UnitResult{{
-			Unit: wslsupply.UnitPiA2Auth, Policy: wslsupply.PolicyA2Auth,
-			Outcome: wslsupply.UnitFailed, Detail: "supply-runner-unavailable",
-			Err: errors.New("wsl supply coordinator unavailable"),
-		}}}, nil
-	}
-	units := wslSupplyUnitsFiltered(runner,
-		wslsupply.UnitPiA2Auth, wslsupply.UnitPiManagedModels,
-		wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
-	return runner.RunUnits(ctx, distro, wslsupply.CLIPi, wslsupply.ReasonLaunch, units)
-}
-
-// wslLoginSupplyVerdict 是一次 pi 登录供给结果的启动闸门判定（P3-S0 统一
-// 执行边界：桌面闸门与 remote effect 共用同一映射，保证两链路结果一致）。
-type wslLoginSupplyVerdict struct {
-	info      bool
-	warn      bool
-	message   string // 日志消息（不含凭据内容）
-	detail    string
-	launchErr error // 非 nil → 拒绝启动（中文文案，与桌面既有文案逐字一致）
-}
-
-// verdictForWSLLoginSupply 把供给结果映射为闸门判定。语义与 A2 解除后的桌面
-// 闸门一致：Copied/DistroNewer 记 INFO 放行；Fresh 静默放行；TieKept WARN 放行；
-// DistroHasCopy WARN 降级放行；DistroNoAuth/阻断 fail closed（源缺失 → 登录
-// 失效文案，其余 → 同步失败文案）。
-// verdictForWSLLoginSupply 把供给结果映射为闸门判定。语义与 A2 解除后的桌面
-// 闸门一致：Copied/DistroNewer 记 INFO 放行；Fresh 静默放行；TieKept WARN 放行；
-// DistroHasCopy WARN 降级放行；DistroNoAuth/阻断 fail closed（源缺失 → 登录
-// 失效文案，其余 → 同步失败文案）。攻坚契约（启动聚合）：先确认本次 A2 资格，
-// 再处理可选项——不能因前面的可选 Failed/awaiting-consent 提前 return 跳过
-// A2 安全资格。
-func verdictForWSLLoginSupply(res wslsupply.RunResult, runErr error) wslLoginSupplyVerdict {
-	if runErr != nil {
-		return wslLoginFailClosed(runErr)
-	}
-	// 1) A2 资格优先。
-	a2 := res.A2Unit()
-	if a2 == nil || a2.A2 == nil {
-		return wslLoginFailClosed(errors.New("supply produced no a2 result"))
-	}
-	a2Verdict := wslLoginA2Verdict(a2, res.Target.Distro)
-	if a2Verdict.launchErr != nil {
-		return a2Verdict
-	}
-	// 2) A2 资格确认后再处理可选单元（首个非 A2 阻断/失败项）。
-	if blocked := res.LaunchBlocked(); blocked != nil && blocked.A2 == nil {
-		if blocked.Unit == wslsupply.UnitPiA2Auth {
-			return wslLoginFailClosed(blocked.Err)
-		} else if blocked.Unit == wslsupply.UnitPiManagedModels {
-			// P3-S1：托管 models.json 属可选普通托管面——失败/阻断仅告警放行
-			//（design §六「可选普通设置同步失败，旧 WSL 配置可读且安全 → 启动
-			// 继续」），A2 语义不受影响；未知单元仍 fail closed（保守）。
-			return wslLoginSupplyVerdict{warn: true,
-				message: "WSL 托管 provider 配置同步未完成，本次沿用 WSL 现有配置",
-				detail:  fmt.Sprintf("detail=%s", blocked.Detail)}
-		} else if blocked.Unit == wslsupply.UnitPiSettings || blocked.Unit == wslsupply.UnitPiAmagi || blocked.Unit == wslsupply.UnitPiMCP {
-			// P3-S2：键级配置投影同为可选偏好面（冻结/未托管/转换受阻均为
-			// 预期态）——告警放行，A2 语义不受影响。F-3（S2 diting）：未同意
-			//（awaiting-consent）是启用前的预期态，静默放行——授权入口在配置
-			// 状态页，不在每次登录刷告警。
-			if blocked.Detail == "awaiting-consent" {
-				return wslLoginSupplyVerdict{}
-			}
-			return wslLoginSupplyVerdict{warn: true,
-				message: "WSL Pi 配置投影未全部应用（保留 WSL 现状的条目见配置状态页）",
-				detail:  fmt.Sprintf("unit=%s detail=%s", blocked.Unit, blocked.Detail)}
-		} else {
-			return wslLoginFailClosed(blocked.Err)
-		}
-	}
-	return a2Verdict
-}
-
-// wslLoginFailClosed 构造登录供给的 fail-closed 判定（统一中文文案）。
-func wslLoginFailClosed(err error) wslLoginSupplyVerdict {
-	return wslLoginSupplyVerdict{launchErr: fmt.Errorf("WSL 内没有可用的 Pi 登录凭据，且同步失败：%v；请确认 WSL 发行版状态后重试", err)}
-}
-
-// wslLoginA2Verdict 把 A2 结果映射为闸门判定（Copied/DistroNewer 记 INFO
-// 放行；Fresh 静默放行；TieKept WARN 放行；HasCopy WARN 降级放行；
-// NoAuth/未知 fail closed——源缺失 → 登录失效文案）。
-func wslLoginA2Verdict(a2 *wslsupply.UnitResult, distro string) wslLoginSupplyVerdict {
-	switch a2.A2.Outcome {
-	case launcher.SyncWSLPiLoginAuthCopied:
-		return wslLoginSupplyVerdict{info: true, message: "已同步 Pi 登录凭据到 WSL", detail: fmt.Sprintf("distro=%s", distro)}
-	case launcher.SyncWSLPiLoginAuthFresh:
-		return wslLoginSupplyVerdict{}
-	case launcher.SyncWSLPiLoginAuthDistroNewer:
-		// M-1：WSL 内 pi 轮转出的新凭据已回同步 Windows 侧。
-		return wslLoginSupplyVerdict{info: true, message: "已从 WSL 回同步登录凭据", detail: fmt.Sprintf("distro=%s", distro)}
-	case launcher.SyncWSLPiLoginAuthDistroTieKept:
-		return wslLoginSupplyVerdict{warn: true, message: "两侧 Pi 登录凭据时间戳不可判，保守按 WSL 侧同步", detail: fmt.Sprintf("distro=%s", distro)}
-	case launcher.SyncWSLPiLoginAuthDistroHasCopy:
-		return wslLoginSupplyVerdict{warn: true, message: "WSL Pi 登录凭据同步失败，降级使用 WSL 内既有副本", detail: errStringForLog(a2.A2.Err)}
-	default: // DistroNoAuth/未知：fail closed
-		if a2.A2.Err != nil && errors.Is(a2.A2.Err, launcher.ErrWSLPiLoginSourceMissing) {
-			return wslLoginSupplyVerdict{launchErr: errors.New("Pi 登录已失效：Windows 侧未找到登录凭据，请刷新服务提供商并重新登录 Pi")}
-		}
-		if a2.A2.Err != nil {
-			return wslLoginFailClosed(a2.A2.Err)
-		}
-		return wslLoginFailClosed(errors.New("no usable credentials on either side"))
-	}
 }
 
 // piLoginWSLReAnchorSpec 是 R3 的 WSL 变体（pi 共享 Windows agent 根，主上

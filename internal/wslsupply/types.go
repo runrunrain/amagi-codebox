@@ -2,9 +2,10 @@
 //
 // 责任边界（design p3-config-supply §七组件责任表）：只做策略、清单、计划、
 // 状态与调度骨架；不导入 App/Wails/插件 UI；不决定模型业务语义、不解析 OAuth
-// token。S0 的 Plan/Apply 单元范围只有一类：A2 凭据（auth.json 经 A2Auth 策略
-// 适配器，判定算法与安全写由 internal/launcher 承担，语义零变化）；普通配置的
-// TrackedProjection 单元只留接缝与测试桩，不实现分发（S1+）。
+// token。Pi 的登录凭据/托管配置向 WSL distro 分发已在 1.3.126 起整体退役
+// （WSL 内 pi 共享 Windows agent 根，见 internal/launcher/wsl_shared_agent_root.go）；
+// 本包现存生产单元是 shared 小文件、claude/codex 用户配置导入、技能与资源
+// 目录、插件重放。
 //
 // 执行边界统一：桌面启动闸门与 remote/v1 effect 共用本协调器（RunUnits），
 // 字节走 UNC 不进 wsl.exe 命令行；remote 链路 BuildPlan 保持纯读，计划只携带
@@ -14,14 +15,13 @@ package wslsupply
 import (
 	"errors"
 	"time"
-
-	"amagi-codebox/internal/launcher"
 )
 
-// CLI 是供给目标的 CLI 标识。S0 只有 pi；S1 增加共享作用域。
+// CLI 是供给目标的 CLI 标识。
 type CLI string
 
-// CLIPi 是 Pi（登录凭据 A2 + 托管 models.json 分发）。
+// CLIPi 是 Pi 作用域（插件 WSL 目标重放与统一管理目标解析仍需要它；Pi 的
+// 凭据/配置供给单元已随「WSL 共享 Windows agent 根」退役）。
 const CLIPi CLI = "pi"
 
 // CLICommon 是共享 ~/.agents 小文件的作用域（provider 无关的跨 CLI 资产：
@@ -62,15 +62,8 @@ const GenerationUnknown = "unknown"
 // UnitID 是最小登记单元标识（CLI 作用域内唯一）。
 type UnitID string
 
-// UnitPiA2Auth 是 Pi 登录凭据（auth.json）的 A2 双向新鲜度单元——唯一自动
-// 「双向新者为准」对象（design §三归属策略表）。
-const UnitPiA2Auth UnitID = "pi/a2-auth"
-
 // S1 托管面单元（design §四/§八批次 S1）：
 const (
-	// UnitPiManagedModels：distro models.json 的 amagi-* provider 期望集 +
-	// 登录预设 contextWindow 窄字段托管（ManagedNamespace）。
-	UnitPiManagedModels UnitID = "pi/managed-models"
 	// UnitSharedVisionExport：~/.agents/amagi-media-models.json 单向受管导出
 	//（内嵌 api_key，per-target 首次发布须明确同意）。
 	UnitSharedVisionExport UnitID = "shared/vision-export"
@@ -92,17 +85,37 @@ const (
 	UnitCodexConfig UnitID = "codex/config"
 )
 
+// retiredPiUnits 是已退役的 Pi 供给单元全集（1.3.126「WSL 内 Pi 共享 Windows
+// agent 根」后不再有生产者/消费者）。旧状态文件里仍可能残留这些登记——读取
+// 一律忽略（GetStatus 不展示、不再驱动任何判定），不得报错或 panic。
+var retiredPiUnits = map[UnitID]bool{
+	"pi/a2-auth":        true,
+	"pi/managed-models": true,
+	"pi/settings":       true,
+	"pi/amagi":          true,
+	"pi/mcp":            true,
+}
+
+// retiredPiUnit 报告单元是否属于已退役的 Pi 供给面（升级后旧登记按未知处理）。
+func retiredPiUnit(unit UnitID) bool { return retiredPiUnits[unit] }
+
+// retiredPiDirtySources 是已退役的 Pi 保存事件来源名：旧状态 PendingSources
+// 中可能仍残留（其滋养单元已全部退役，永远不会满足清除条件）——状态展示时
+// 丢弃，避免 pendingPush 永久点亮。
+var retiredPiDirtySources = map[string]bool{
+	"pi-login-presets": true,
+	"pi-config":        true,
+}
+
 // Policy 是单元归属策略名（design §三）。
 type Policy string
 
 const (
-	// PolicyA2Auth：Pi auth.json 专属，沿用 A2 双向 hash+mtime。
-	PolicyA2Auth Policy = "A2Auth"
-	// PolicyTrackedProjection：普通配置投影（S0 仅接缝与测试桩，S1+ 分发）。
+	// PolicyTrackedProjection：普通配置投影（server 级/字段级/目录级白名单）。
 	PolicyTrackedProjection Policy = "TrackedProjection"
-	// PolicyManagedNamespace：CodeBox 拥有的命名空间托管（amagi-* provider、
-	// 已声明的托管文件）——从业务源生成、保留域外字段、按既有所有权更新，
-	// mtime 不决定方向（design §三归属策略表）。
+	// PolicyManagedNamespace：CodeBox 拥有的命名空间托管（已声明的托管文件）
+	// ——从业务源生成、保留域外字段、按既有所有权更新，mtime 不决定方向
+	//（design §三归属策略表）。
 	PolicyManagedNamespace Policy = "ManagedNamespace"
 )
 
@@ -151,9 +164,8 @@ func (t TargetRef) SameIdentity(other TargetRef) bool {
 }
 
 // FileMeta 是 Inspect 批量探测得到的单文件元数据。ModTime 为 UNC 视图呈现值，
-// 仅作展示与普通单元辅助信息；A2 新陈判定的权威 mtime 仍在适配器内经 distro
-// 内 stat 读取。Hash 仅对普通（TrackedProjection）单元文件计算且只存在干
-// 内存快照；A2 凭据文件恒空——凭据 hash 不进快照、计划、状态或任何 API。
+// 仅作展示与普通单元辅助信息。Hash 仅对普通（TrackedProjection）单元文件计算
+// 且只存在干内存快照。
 type FileMeta struct {
 	RelPath string
 	Exists  bool
@@ -186,10 +198,7 @@ type Action uint8
 const (
 	// ActionNone：无需动作（快照与登记一致或单元未选中）。
 	ActionNone Action = iota
-	// ActionSyncA2：A2 适配器同步；新陈判定在适配器 Apply 时进行（S0 唯一
-	// 生产单元动作，判定语义零变化）。
-	ActionSyncA2
-	// ActionWriteProjection：TrackedProjection 写入（S0 仅测试桩可达）。
+	// ActionWriteProjection：TrackedProjection 写入。
 	ActionWriteProjection
 	// ActionBlocked：阻断项，原因见 BlockedReason。
 	ActionBlocked
@@ -210,10 +219,9 @@ type PlannedUnit struct {
 	// 阶段把冻结原因记入状态清单（GetStatus 供 UI 显示「冻结」；ManagedNamespace
 	// 单元恒 false——命名空间内不存在冻结条件）。
 	Freeze bool
-	// RelPath 是投影单元的目标相对路径（A2 单元为空，路径由适配器固定）。
+	// RelPath 是投影单元的目标相对路径。
 	RelPath string
-	// TrackedProjection 单元（含测试桩）的预期目标 hash（hex）与候选字节数；
-	// A2 单元恒为空——凭据 hash 不进计划、不进状态、不进任何 API。
+	// TrackedProjection 单元的预期目标 hash（hex）与候选字节数。
 	ExpectedTargetHash string
 	CandidateSize      int64
 }
@@ -242,8 +250,7 @@ const (
 	UnitApplied UnitOutcome = iota
 	// UnitFresh：无需动作（内容一致）。
 	UnitFresh
-	// UnitWarnDegraded：降级放行（A2 DistroHasCopy：distro 已有副本，可能是
-	// 旧凭据；不宣称凭据有效）。
+	// UnitWarnDegraded：降级放行（旧副本仍可用；不宣称内容有效）。
 	UnitWarnDegraded
 	// UnitFailed：失败（含 fail-closed 分类；Detail/Err 不含凭据内容）。
 	UnitFailed
@@ -268,13 +275,6 @@ func (o UnitOutcome) String() string {
 	}
 }
 
-// A2Result 原样透传 launcher 的 A2 同步结果（outcome 枚举与错误），供启动闸门
-// 映射；统一的是执行边界，不是算法。
-type A2Result struct {
-	Outcome launcher.SyncWSLPiLoginAuthOutcome
-	Err     error
-}
-
 // UnitResult 是 Apply 返回的逐项结果（design §七 Apply 契约：可部分成功但
 // 不得虚报整批成功）。
 type UnitResult struct {
@@ -283,10 +283,8 @@ type UnitResult struct {
 	Outcome UnitOutcome
 	Detail  string
 	Err     error
-	// A2 非空时携带 A2 结果（outcome/err）。
-	A2 *A2Result
 	// Undo 非 nil 时表示本次产生了可条件撤销的普通文件写入（hash 仍匹配才
-	// 撤销）；A2 凭据刷新是持久认证状态，永不携带 Undo（design §七）。
+	// 撤销）。
 	Undo *CompensationHandle
 	// OperationID/Effect/Registration/Recovery 是本次操作的持久事实回执
 	//（攻坚契约：错误路径 receipt 不丢；启动门消费事实而不是字符串）。
@@ -313,18 +311,8 @@ type RunResult struct {
 	Results []UnitResult
 }
 
-// A2Unit 返回 A2 单元结果（未运行返回 nil）。
-func (r RunResult) A2Unit() *UnitResult {
-	for i := range r.Results {
-		if r.Results[i].A2 != nil {
-			return &r.Results[i]
-		}
-	}
-	return nil
-}
-
-// LaunchBlocked 报告本次供给是否存在阻断启动的失败单元（required 语义由
-// 调用方判定；pi/a2-auth 在登录链路恒为必需）。
+// LaunchBlocked 报告本次供给是否存在失败/阻断单元（required 语义由调用方
+// 判定）。
 func (r RunResult) LaunchBlocked() *UnitResult {
 	for i := range r.Results {
 		if r.Results[i].Outcome == UnitFailed || r.Results[i].Outcome == UnitBlocked {

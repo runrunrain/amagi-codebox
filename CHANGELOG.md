@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.127] - 2026-11-08
+
+### Removed
+
+- **清理 Pi 的 WSL 供给遗留代码（1.3.126 共享 Windows agent 根的后续）**：删除「向 WSL distro 内独立 Pi 根供给/同步配置与登录凭据」整套已失效机制——登录凭据 A2 双向同步（`launcher.SyncWSLPiLoginAuth*`）、WSL 托管 `models.json` 分发（`WriteWSLPiAgentConfig` / `BuildWSLPiManagedModelsCandidate` / `pi/managed-models` 单元）、`pi/settings` / `pi/amagi` / `pi/mcp` 三个键级投影单元及其 App 动作面（`Check/Preview/Apply/Keep/TakeOver/EnableWSLPiConfigSupply`）、启动闸门与 remote effect 的 Pi 分支、统一管理固定单元集与状态页「托管 Provider (Pi)」卡中的 Pi 行。旧状态文件中的退役 Pi 单元登记与保存源读取时直接忽略，不报错；OpenCode 附加层（`EffectWSLConfigSupply`）、Claude/Codex 用户配置导入、共享视觉清单/学习层、技能与插件 WSL 重放行为不变。前端同步移除 Pi 配置投影区块与对应 API 封装（wailsjs 生成物待下次 `wails build` 重生）。
+
 ## [1.3.126] - 2026-11-08
 
 ### Changed

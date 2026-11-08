@@ -957,11 +957,11 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 	}
 	parts = append(parts, "--", "bash", "-lic")
 
-	// A2（WSL Pi 登录）：StartupCommand 非空时它是权威 bash payload——上游
-	//（pi_login_launch.go 的 WSL 重锚）在载荷内只嵌 env -u 前缀重锚（凭据同步
-	// 已于 P3-S0 退役为 wslsupply 协调器 + EffectWSLConfigSupply 统一执行边界，
-	// 不再内嵌 cmp/cp 同步片段），替代缺省的 CLI 拼装。resolver 的 WSL 分支不产
-	// StartupCommand，该覆盖面当前只有登录重锚一个生产写入方。
+	// WSL Pi 登录：StartupCommand 非空时它是权威 bash payload——上游
+	//（pi_login_launch.go 的 WSL 重锚）在载荷内只嵌 env -u 凭据键前缀重锚
+	//（WSL 内 pi 共享 Windows agent 根，1.3.126 起 distro 凭据同步已整体退役），
+	// 替代缺省的 CLI 拼装。resolver 的 WSL 分支不产 StartupCommand，该覆盖面
+	// 当前只有登录重锚一个生产写入方。
 	if strings.TrimSpace(spec.StartupCommand) != "" {
 		parts = append(parts, windowsQuoteArg(spec.StartupCommand))
 		return strings.Join(parts, " ")

@@ -111,9 +111,9 @@ func TestRegisterS4AdaptersWiresUnitsAndResources(t *testing.T) {
 			t.Fatalf("unit %s must be registered", unit)
 		}
 	}
-	// pi 单元不在 claude/codex 面（cliConfigUnits 固定清单）。
-	if isCliConfigUnit(wslsupply.CLIClaude, wslsupply.UnitPiMCP) {
-		t.Fatal("pi units must not appear in the claude S4 unit list")
+	// 已退役的 Pi 单元不在 claude/codex 面（cliConfigUnits 固定清单）。
+	if isCliConfigUnit(wslsupply.CLIClaude, "pi/mcp") {
+		t.Fatal("retired pi units must not appear in the claude S4 unit list")
 	}
 }
 

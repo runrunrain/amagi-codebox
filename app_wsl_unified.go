@@ -78,14 +78,13 @@ func (a *App) wslUnifiedCached(distro string) bool {
 }
 
 // wslUnifiedFixedUnits 是启用统一管理时一次性授权的固定单元集（direction
-// §1.3）：pi 三键级投影、共享视觉清单（密钥跨界，仍走 per-target 同意原语）、
-// Claude MCP/设置白名单、Codex MCP/profile。托管 models.json 与多模态学习层
-// 不需同意（既有启动/推送路径已自动运行）；pi 登录凭据（A2）走独立通道。
+// §1.3）：共享视觉清单（密钥跨界，仍走 per-target 同意原语）、Claude MCP/
+// 设置白名单、Codex MCP/profile。多模态学习层不需同意（既有启动/推送路径已
+// 自动运行）。Pi 的三键级投影已随「WSL 内 Pi 共享 Windows agent 根」退役。
 var wslUnifiedFixedUnits = []struct {
 	CLI   wslsupply.CLI
 	Units []wslsupply.UnitID
 }{
-	{wslsupply.CLIPi, []wslsupply.UnitID{wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP}},
 	{wslsupply.CLICommon, []wslsupply.UnitID{wslsupply.UnitSharedVisionExport}},
 	{wslsupply.CLIClaude, []wslsupply.UnitID{wslsupply.UnitClaudeMCP, wslsupply.UnitClaudeSettings}},
 	{wslsupply.CLICodex, []wslsupply.UnitID{wslsupply.UnitCodexConfig}},
@@ -99,7 +98,7 @@ func wslUnifiedSelectionUnits(cli wslsupply.CLI) []wslsupply.UnitID {
 // EnableWSLUnifiedSupply 执行一次明确启用：登记目标代 Unified 标记 → 对固定
 // 单元集补授 per-target 同意（跳过已授权/保留本地）→ 物化当前显式可导入键 →
 // 启动 skills/resources 后台扫描（完成回调再触发推送）→ 立即调度一次推送
-//（覆盖已完成的扫描与刚授权的单元）。逐单元返回结果，不汇总成单一成功。
+// （覆盖已完成的扫描与刚授权的单元）。逐单元返回结果，不汇总成单一成功。
 func (a *App) EnableWSLUnifiedSupply() ([]WSLConfigUnitOutcome, error) {
 	out := []WSLConfigUnitOutcome{}
 	if a == nil || a.WSLSupply == nil {
@@ -333,7 +332,7 @@ func (a *App) wslUnifiedReconcileLoop(ctx context.Context) {
 }
 
 // wslUnifiedPendingTick 处理一次延期补推心跳；返回 false 表示循环应退出
-//（统一管理已停用/换代失效）。distro 暂不可解析时保持循环但不动作。
+// （统一管理已停用/换代失效）。distro 暂不可解析时保持循环但不动作。
 func (a *App) wslUnifiedPendingTick() bool {
 	distro := a.wslDefaultDistro()
 	if distro == "" {
@@ -484,7 +483,7 @@ func (a *App) reconcileWSLUnifiedFixedUnits(distro string) {
 }
 
 // wslUnifiedFixedUnitsSettled 报告该固定分组在当前展示代是否已全部处置
-//（同代已同意，或已保留本地 detached）；登记缺失或未同意均视为未就绪。
+// （同代已同意，或已保留本地 detached）；登记缺失或未同意均视为未就绪。
 // 只读状态快照，不探测目标。
 func (a *App) wslUnifiedFixedUnitsSettled(distro string, cli wslsupply.CLI, units []wslsupply.UnitID) bool {
 	status := a.wslSupplyStatus(distro, cli)
@@ -526,7 +525,7 @@ func (a *App) pushWSLUnifiedCliConfig(ctx context.Context, distro string) {
 // reconcileWSLUnifiedResources 是统一管理的资源对账：扫描快照已完成时，对
 // 可移植的技能/资源单元自动授权（AutoConsentIfUnified 跳过 detached），再对
 // 「已同意且非 detached」的单元跑一轮 ReasonSave。扫描未启动/仍在跑 → 跳过
-//（完成回调会再触发推送，不在这里轮询等待）。资源新项在下一次对账纳入，
+// （完成回调会再触发推送，不在这里轮询等待）。资源新项在下一次对账纳入，
 // 不进会话启动扫描（SA-17）。
 func (a *App) reconcileWSLUnifiedResources(distro string) {
 	coord := a.wslUnifiedCoordinator()
@@ -626,8 +625,7 @@ func (a *App) logWSLUnifiedRunWarn(res wslsupply.RunResult, err error, scope str
 // 做一次 lazy 补漏：统一管理开启时先物化选择集（Windows 新增条目随下次启动
 // 纳入），再对「同代已同意且非 detached」的单元跑一轮 ReasonLaunch。没有
 // 授权就不调 RunUnits（不写 awaiting-consent 状态）；结果只告警不阻断——
-// 预期态（冻结/未托管/detached）不是启动告警面（与 verdictForWSLPiConfigSupply
-// 的可选单元口径一致）。
+// 预期态（冻结/未托管/detached）不是启动告警面（可选偏好单元口径一致）。
 func runWSLCliConfigAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, appType string) {
 	cli, ok := wslCliForLaunch(appType)
 	if !ok || runner == nil || strings.TrimSpace(distro) == "" {
@@ -683,8 +681,7 @@ func runWSLCliConfigAtLaunch(ctx context.Context, runner wslsupply.Runner, distr
 }
 
 // wslCliForLaunch 把启动 spec 的 appType 映射到统一启动补漏的 CLI 作用域
-//（pi 单元已有独立启动闸门 runWSLManagedModelsAtLaunch；opencode/omp 走各自
-// 附加层，不在本面）。
+// （opencode/omp 走各自附加层；pi 共享 Windows agent 根，均不在本面）。
 func wslCliForLaunch(appType string) (wslsupply.CLI, bool) {
 	switch appType {
 	case "claudecode":

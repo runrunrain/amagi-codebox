@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"amagi-codebox/internal/launcher"
 )
 
 type stubCodexConfigSource struct {
@@ -53,7 +51,7 @@ command = "setup.bat"
 func newS4CodexCoordinator(t *testing.T) (*Coordinator, *fakeProbes, *stubCodexConfigSource, *stubFactsSource) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	src := &stubCodexConfigSource{}
 	facts := &stubFactsSource{}
 	facts.set(TransformFacts{

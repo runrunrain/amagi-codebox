@@ -24,7 +24,8 @@ const (
 	// OpKindCompensate：补偿（ParentOpID 指向被补偿的原操作）。
 	OpKindCompensate OpKind = "compensate"
 	// OpKindA2Sync：A2 登录凭据同步的待确认摘要（无 hash/token，仅目标与
-	// 方向/阶段；重启重新真实判定，不按摘要重放）。
+	// 方向/阶段）。生产路径已随 Pi 凭据供给退役（1.3.126 共享 Windows agent
+	// 根）；保留枚举仅为兼容旧持久化 intent——reconcile 按摘要型跳过，不重放。
 	OpKindA2Sync OpKind = "a2-sync"
 	// OpKindPluginOp：插件原生 install/update/remove 的可能副作用摘要（无
 	// 秘密；不自动授予管理权，不自动重放）。
@@ -95,21 +96,21 @@ const (
 // 后读回验证才可改变目标。路径字段全部是相对目标根的内部生成相对路径，
 // 不接受客户端绝对路径。
 type OperationIntent struct {
-	Version     int       `json:"version"`
-	OpID        string    `json:"opId"`
-	Kind        OpKind    `json:"kind"`
-	TargetKey   string    `json:"targetKey"` // 完整身份（generation+CLI 作用域；unknown 代带 distro 前缀）
-	TargetDistro string   `json:"targetDistro"`
-	TargetHome  string    `json:"targetHome,omitempty"`
+	Version      int    `json:"version"`
+	OpID         string `json:"opId"`
+	Kind         OpKind `json:"kind"`
+	TargetKey    string `json:"targetKey"` // 完整身份（generation+CLI 作用域；unknown 代带 distro 前缀）
+	TargetDistro string `json:"targetDistro"`
+	TargetHome   string `json:"targetHome,omitempty"`
 	// TargetCLI 是目标 CLI 作用域（pi/shared/claude/codex）。同一 distro 身份的
 	// 多个 CLI 目标根（如 .pi/agent 与 .agents）共享 generation 但 RelPath 各自
 	// 相对各自根解释——reconcile/清理由它（或 Unit 前缀派生）验证落点归属，
 	// 不得拿当前调用者的目标根解释其它作用域的 RelPath。
-	TargetCLI   string    `json:"targetCli,omitempty"`
-	Unit        UnitID    `json:"unit,omitempty"`
-	RelPath     string    `json:"relPath,omitempty"`
-	Sensitive   bool      `json:"sensitive,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
+	TargetCLI string    `json:"targetCli,omitempty"`
+	Unit      UnitID    `json:"unit,omitempty"`
+	RelPath   string    `json:"relPath,omitempty"`
+	Sensitive bool      `json:"sensitive,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 	// 指纹（普通敏感单元按契约记录；A2 摘要恒空）。
 	BeforeExists bool   `json:"beforeExists"`
 	BeforeHash   string `json:"beforeHash,omitempty"`
@@ -132,26 +133,26 @@ type OperationIntent struct {
 // SettledOperation 是已确认操作结论（与对应 StateEntry 更新同次主清单保存；
 // 作为终结墓碑保留到材料清理完成）。
 type SettledOperation struct {
-	TargetKey     string    `json:"targetKey"`
-	Unit          UnitID    `json:"unit,omitempty"`
-	Disposition   string    `json:"disposition"` // committed/restored/removed/not-applied/user-resolved
-	RelatedOpIDs  []string  `json:"relatedOpIds,omitempty"`
-	SettledAt     time.Time `json:"settledAt"`
-	AfterHash     string    `json:"afterHash,omitempty"`
+	TargetKey    string    `json:"targetKey"`
+	Unit         UnitID    `json:"unit,omitempty"`
+	Disposition  string    `json:"disposition"` // committed/restored/removed/not-applied/user-resolved
+	RelatedOpIDs []string  `json:"relatedOpIds,omitempty"`
+	SettledAt    time.Time `json:"settledAt"`
+	AfterHash    string    `json:"afterHash,omitempty"`
 }
 
 // OperationObservation 是进程内对一次操作的当前观察（独立于 durable 清单；
 // 锁内深复制；重启由 intent+目标重建）。
 type OperationObservation struct {
-	OpID         string      `json:"opId"`
-	TargetKey    string      `json:"targetKey,omitempty"`
-	Unit         UnitID      `json:"unit,omitempty"`
-	Effect       OpEffect    `json:"effect"`
+	OpID         string         `json:"opId"`
+	TargetKey    string         `json:"targetKey,omitempty"`
+	Unit         UnitID         `json:"unit,omitempty"`
+	Effect       OpEffect       `json:"effect"`
 	Registration OpRegistration `json:"registration"`
-	Recovery     OpRecovery  `json:"recovery"`
-	ErrorCode    string      `json:"errorCode,omitempty"`
-	Detail       string      `json:"detail,omitempty"`
-	At           time.Time   `json:"at"`
+	Recovery     OpRecovery     `json:"recovery"`
+	ErrorCode    string         `json:"errorCode,omitempty"`
+	Detail       string         `json:"detail,omitempty"`
+	At           time.Time      `json:"at"`
 }
 
 // CommitRequest 是统一文件/目录提交请求（applyProjection、文件 TakeOver、
@@ -164,17 +165,17 @@ type CommitRequest struct {
 	Candidate      []byte
 	// Register 是 finalize 阶段的登记闭包（写 StateEntry；nil = 外部提交，
 	// 只写 settled）。与 settled 同次主清单保存。
-	Register       func(st *StateFile)
+	Register func(st *StateFile)
 	// PluginMeta：外部提交（插件 filters 等）的脱敏摘要元数据（无秘密）。
 	PluginMeta map[string]string
 	// SkipBeforeCAS：调用方已用自己的树 hash 形态完成 CAS（资源/技能目录
 	// 单元），commitFile 跳过字节级 ExpectedBefore 复核。
 	SkipBeforeCAS bool
-	Sensitive      bool
-	Kind           OpKind // 默认 write
+	Sensitive     bool
+	Kind          OpKind // 默认 write
 	// Dir 交换（submitDirUnit 路径）。
-	Dir        bool
-	DirFiles   []skillWriteFile
+	Dir         bool
+	DirFiles    []skillWriteFile
 	DirTreeHash string
 	// RegisterExternal：不写 StateEntry 但仍写 settled（插件 settings 等）。
 	RegisterExternal bool
@@ -216,7 +217,7 @@ func pendingIntentPath(configDir, opID string) string {
 // distro（避免所有 unknown 目标共享一个键位互相误伤）。CLI 作用域入键：
 // 同一 distro 身份的多个 CLI 目标根（pi/.pi/agent、shared/.agents 等）共享
 // generation——不带作用域的键会把 shared 的未决操作错投给 pi 的目标根解释
-//（RelPath 各自相对各自根），已证实会造成「pi reconcile 把 shared intent 判
+// （RelPath 各自相对各自根），已证实会造成「pi reconcile 把 shared intent 判
 // not-applied 并清未决」的错位。
 func targetKeyOf(t TargetRef) string {
 	scope := string(t.CLI)

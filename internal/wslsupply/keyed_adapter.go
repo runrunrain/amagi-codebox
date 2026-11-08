@@ -1,20 +1,14 @@
 package wslsupply
 
-// pi_config.go — Pi 配置白名单投影的三个 TrackedProjection 单元（P3-S2，
-// design §四 Pi 全景表 settings/amagi/mcp 行 + §三冲突表）。
+// keyed_adapter.go — 键级 TrackedProjection 通用适配器（原 pi_config.go 的
+// 引擎部分；S4 claude/codex 键级单元共用）。Pi 的三个键级投影单元（settings/
+// amagi/mcp）已随 1.3.126「WSL 内 Pi 共享 Windows agent 根」退役。
 //
-//   - pi/settings：settings.json 字段级白名单投影（packages 排除——插件走 S5
-//     重放；会话/机器字段与未知字段不导入；白名单内绝对路径值经映射转换或
-//     剔除该字段，绝不做任意正文替换）。
-//   - pi/amagi：amagi.json 的 profile/agents/compaction/concurrency/mcp 路由
-//     投影（沿用 piconfig 既有验证器；引用的 provider/server 不存在时报告
-//     未满足依赖，不伪造默认值）。
-//   - pi/mcp：mcp.json server 级投影（一个 MCP server 是原子导入单元：转换
-//     失败该单元不新增不更新，已有同名保持；MCP 形态经 transform.go 确定规则
-//     转换，事实在 Apply 阶段经 FactsSource 实测）。
-//
-// 三者共用 keyed.go 的逐键冲突引擎与本文件的通用适配器骨架；来源是 Windows
-// 侧真实文件（App 注入 PiConfigSource），目标候选只在内存存在。
+//   - 键集从 Windows 侧来源对象抽取（keyedShape.desired）；
+//   - 冲突判定复用 keyed.go 的逐键引擎；候选生成在 Apply 阶段合并目标现状
+//     （转换失败的键保持目标现状并记录诊断；冻结/未托管键原样保留）；
+//   - selectLeaf 单元（S4「仅用户选择的单元导入」）经用户选择集过滤；
+//   - 来源是 Windows 侧真实文件（App 注入 readSource），目标候选只在内存存在。
 
 import (
 	"context"
@@ -26,34 +20,6 @@ import (
 	"sort"
 	"strings"
 )
-
-// S2 单元 id 与转换版本。
-const (
-	UnitPiSettings UnitID = "pi/settings"
-	UnitPiAmagi    UnitID = "pi/amagi"
-	UnitPiMCP      UnitID = "pi/mcp"
-
-	piSettingsTransform = "pi-settings-v1"
-	piAmagiTransform    = "pi-amagi-v1"
-	piMCPTransform      = "pi-mcp-v1"
-
-	// PiSettingsFile / PiAmagiFile / PiMCPFile 是三个单元的目标文件（相对
-	// distro 内 .pi/agent）。
-	PiSettingsFile = "settings.json"
-	PiAmagiFile    = "amagi.json"
-	PiMCPFile      = "mcp.json"
-)
-
-// PiConfigSource 是 App 注入的 Windows 侧来源（真实文件读取；缺失返回
-// nil,nil——来源缺失是确定的「键集为空」，读失败才是 source-unavailable）。
-type PiConfigSource interface {
-	SettingsJSON() ([]byte, error)
-	AmagiJSON() ([]byte, error)
-	MCPJSON() ([]byte, error)
-	// KnownProviderIDs 返回 Windows 侧 provider 名全集（models.json 注册表 +
-	// 内置目录）——amagi.json 引用诊断的比对宇宙。
-	KnownProviderIDs() ([]string, error)
-}
 
 // keyedShape 描述一个键级投影单元的文件形态差异。
 type keyedShape struct {
@@ -71,15 +37,16 @@ type keyedShape struct {
 	convert func(key string, v any, facts TransformFacts) (any, bool, string)
 	// validateTarget 校验目标文档形态（不符即 target-corrupt：拒绝不覆盖）。
 	validateTarget func(obj map[string]any) error
-	// validateCandidate 对最终候选做既有验证器校验（amagi：piconfig）。
+	// validateCandidate 对最终候选做既有验证器校验（可选）。
 	validateCandidate func(content []byte) error
 	// summarizeEntry（S4 预览对照，可选）：键值的脱敏单行摘要（转换前/后）；
 	// After 传空 facts 下不可确定性转换时返回转换受阻说明。不含 env 值/密钥。
 	summarizeEntry func(key string, v any, facts TransformFacts) (before, after string)
+	// transformVersion 是本单元的转换版本标识（内容语义变化时递增）。
+	transformVersion string
 }
 
-// keyedProjectionAdapter 是键级投影单元的通用适配器（S2 Pi 三单元 + S4
-// Claude 两单元）。
+// keyedProjectionAdapter 是键级投影单元的通用适配器（S4 Claude/Codex 单元）。
 type keyedProjectionAdapter struct {
 	unitID          UnitID
 	facts           TransformFactsSource
@@ -87,60 +54,6 @@ type keyedProjectionAdapter struct {
 	requiresConsent bool
 	readSource      func() ([]byte, error)
 	depNotes        func(desired map[string]any) []string
-}
-
-// NewPiSettingsAdapter 创建 settings.json 字段级白名单投影单元（需 per-target
-// 同意后才开始投影，见 keyedProjectionAdapter.requiresConsent）。
-func NewPiSettingsAdapter(source PiConfigSource, facts TransformFactsSource) *keyedProjectionAdapter {
-	return &keyedProjectionAdapter{
-		unitID: UnitPiSettings, facts: facts,
-		shape:           piSettingsShape,
-		requiresConsent: true,
-		readSource:      source.SettingsJSON,
-	}
-}
-
-// NewPiAmagiAdapter 创建 amagi.json 投影单元（需 per-target 同意）。
-func NewPiAmagiAdapter(source PiConfigSource, facts TransformFactsSource) *keyedProjectionAdapter {
-	return &keyedProjectionAdapter{
-		unitID: UnitPiAmagi, facts: facts,
-		shape:           piAmagiShape,
-		requiresConsent: true,
-		readSource:      source.AmagiJSON,
-		depNotes: func(desired map[string]any) []string {
-			if source == nil {
-				return nil
-			}
-			providers := map[string]bool{}
-			if ids, err := source.KnownProviderIDs(); err == nil {
-				for _, id := range ids {
-					providers[id] = true
-				}
-			}
-			servers := map[string]bool{}
-			if mcpSrc, err := source.MCPJSON(); err == nil && len(mcpSrc) > 0 {
-				var root map[string]any
-				if json.Unmarshal(mcpSrc, &root) == nil {
-					if mcpServers, ok := root["mcpServers"].(map[string]any); ok {
-						for name := range mcpServers {
-							servers[name] = true
-						}
-					}
-				}
-			}
-			return amagiDepNotesFrom(desired, providers, servers)
-		},
-	}
-}
-
-// NewPiMCPAdapter 创建 mcp.json server 级投影单元（需 per-target 同意）。
-func NewPiMCPAdapter(source PiConfigSource, facts TransformFactsSource) *keyedProjectionAdapter {
-	return &keyedProjectionAdapter{
-		unitID: UnitPiMCP, facts: facts,
-		shape:           piMCPShape,
-		requiresConsent: true,
-		readSource:      source.MCPJSON,
-	}
 }
 
 func (a *keyedProjectionAdapter) Unit() UnitID          { return a.unitID }
@@ -255,7 +168,7 @@ func keyLeafName(key string) string {
 
 // importableSourceKeys 返回来源侧当前可导入键全集（全路径键；P2-B 统一
 // 管理的选择集物化面）。只读 Windows 侧来源，不探测目标、不解析转换事实
-//——不可转换的键仍列入（写入时的冻结/转换受阻保护独立于选择集生效）。
+// ——不可转换的键仍列入（写入时的冻结/转换受阻保护独立于选择集生效）。
 // 来源读失败返回错误（物化不猜键集）。
 func (a *keyedProjectionAdapter) importableSourceKeys() ([]string, error) {
 	src, err := a.readSourceSafe()
@@ -323,10 +236,10 @@ func (a *keyedProjectionAdapter) readTargetDoc(snap *Snapshot) (map[string]any, 
 // 登记；全部无变化 → 跳过。
 func (a *keyedProjectionAdapter) Plan(_ SupplyRequest, snap *Snapshot, state *StateEntry) (PlannedUnit, error) {
 	ana := a.analyze(snap, state)
-	return planFromKeyedDecisions(ana.blocked, ana.decisions, a.shape.relPath, a.transformVersion(), ana.targetHash), nil
+	return planFromKeyedDecisions(ana.blocked, ana.decisions, a.shape.relPath, a.shape.transformVersion, ana.targetHash), nil
 }
 
-// planFromKeyedDecisions 把逐键判定聚合为单元计划（S2/S4 键级适配器共用）。
+// planFromKeyedDecisions 把逐键判定聚合为单元计划（键级适配器共用）。
 func planFromKeyedDecisions(blocked string, decisions []keyedDecision, relPath, transformVersion, targetHash string) PlannedUnit {
 	unit := PlannedUnit{RelPath: relPath, TransformVersion: transformVersion}
 	switch blocked {
@@ -365,17 +278,6 @@ func planFromKeyedDecisions(blocked string, decisions []keyedDecision, relPath, 
 		unit.Action = ActionNone
 	}
 	return unit
-}
-
-func (a *keyedProjectionAdapter) transformVersion() string {
-	switch a.unitID {
-	case UnitPiSettings:
-		return piSettingsTransform
-	case UnitPiAmagi:
-		return piAmagiTransform
-	default:
-		return piMCPTransform
-	}
 }
 
 func keyedFrozenCode(kind keyedDecisionKind) string {
@@ -490,7 +392,7 @@ func (a *keyedProjectionAdapter) AdoptCandidate(ctx context.Context, target Targ
 func (a *keyedProjectionAdapter) buildCandidate(ctx context.Context, target TargetRef, state *StateEntry, adopt bool) (ProjectionCandidate, error) {
 	src, err := a.readSourceSafe()
 	if err != nil {
-		return ProjectionCandidate{}, fmt.Errorf("pi config source unavailable: %w", err)
+		return ProjectionCandidate{}, fmt.Errorf("keyed projection source unavailable: %w", err)
 	}
 	desired, notes, corrupt := a.desiredFrom(src)
 	if corrupt {
@@ -562,7 +464,7 @@ func (a *keyedProjectionAdapter) buildCandidate(ctx context.Context, target Targ
 	}
 
 	// 事实收集：仅存在可写键且形态需要时（mcp 恒需——shim 验证；settings 按
-	// 值预判；amagi 纯传递无需）。探测失败按「不可确认」处理：空事实 + 诊断
+	// 值预判）。探测失败按「不可确认」处理：空事实 + 诊断
 	//（转换自然保守拒绝，不生成未验证条目）。
 	facts := TransformFacts{}
 	needFacts := false
@@ -637,7 +539,7 @@ func (a *keyedProjectionAdapter) buildCandidate(ctx context.Context, target Targ
 	return ProjectionCandidate{
 		Content:          content,
 		SourceHash:       keyedAggregateHash(desired),
-		TransformVersion: a.transformVersion(),
+		TransformVersion: a.shape.transformVersion,
 		Notes:            notes,
 		Subs:             subs,
 		Outcome:          outcome,
@@ -675,7 +577,7 @@ func (a *keyedProjectionAdapter) noWriteReason(decisions []keyedDecision) string
 	return "conversion-blocked"
 }
 
-// marshalKeyedDoc 序列化合并文档（缩进 2 + 换行，与 pi 生态文件形态一致）。
+// marshalKeyedDoc 序列化合并文档（缩进 2 + 换行）。
 func marshalKeyedDoc(doc map[string]any) ([]byte, error) {
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -732,65 +634,6 @@ func anyContainsWindowsPath(v any) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// amagi 引用依赖诊断（design §四 amagi 行：不伪造默认值，报告未满足依赖）
-// ---------------------------------------------------------------------------
-
-// amagiDepNotesFrom 从已确认的 provider/server 宇宙推导引用依赖诊断。
-func amagiDepNotesFrom(desired map[string]any, providers, servers map[string]bool) []string {
-	var notes []string
-	for _, key := range sortedDesiredKeys(desired) {
-		if !strings.HasPrefix(key, "agents/") {
-			continue
-		}
-		role := strings.TrimPrefix(key, "agents/")
-		entry, _ := desired[key].(map[string]any)
-		model, _ := entry["model"].(string)
-		if provider, ok := modelProviderRef(model); ok && !providers[provider] {
-			notes = append(notes, fmt.Sprintf("角色 %s 引用的 provider %q 未在 Windows 侧模型目录中找到（未满足依赖，不伪造默认值）", role, provider))
-		}
-	}
-	if compaction, ok := desired["compaction"].(map[string]any); ok {
-		if model, _ := compaction["model"].(string); model != "" {
-			if provider, ok := modelProviderRef(model); ok && !providers[provider] {
-				notes = append(notes, fmt.Sprintf("压缩模型引用的 provider %q 未在 Windows 侧模型目录中找到", provider))
-			}
-		}
-	}
-	if concurrency, ok := desired["concurrency"].(map[string]any); ok {
-		if perProvider, ok := concurrency["providers"].(map[string]any); ok {
-			names := make([]string, 0, len(perProvider))
-			for name := range perProvider {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				if !providers[name] {
-					notes = append(notes, fmt.Sprintf("并发配置引用的 provider %q 未在 Windows 侧模型目录中找到", name))
-				}
-			}
-		}
-	}
-	referenced := map[string]bool{}
-	for _, key := range sortedDesiredKeys(desired) {
-		if !strings.HasPrefix(key, "mcp/") {
-			continue
-		}
-		appendServerRefList(desired[key], referenced)
-	}
-	names := make([]string, 0, len(referenced))
-	for name := range referenced {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if !servers[name] {
-			notes = append(notes, fmt.Sprintf("MCP 路由引用的 server %q 未在 mcp.json 中找到（若由插件提供，插件服务器校验属后续批次）", name))
-		}
-	}
-	return notes
-}
-
 // sortedDesiredKeys 返回期望键集的确定性排序视图。
 func sortedDesiredKeys(desired map[string]any) []string {
 	keys := make([]string, 0, len(desired))
@@ -799,32 +642,4 @@ func sortedDesiredKeys(desired map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// collectServerRefs 把一个扁平 mcp 路由键（default / agents/<role> / 其它
-// 列表键）的值并入引用名集合。
-
-func appendServerRefList(v any, out map[string]bool) {
-	list, ok := v.([]any)
-	if !ok {
-		return
-	}
-	for _, item := range list {
-		if s, ok := item.(string); ok {
-			out[s] = true
-		}
-	}
-}
-
-// modelProviderRef 从 "provider/model[:thinking]" 提取 provider 段。
-func modelProviderRef(model string) (string, bool) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return "", false
-	}
-	idx := strings.IndexByte(model, '/')
-	if idx <= 0 || idx == len(model)-1 {
-		return "", false
-	}
-	return model[:idx], true
 }

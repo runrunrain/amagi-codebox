@@ -3,9 +3,9 @@ package wslsupply
 // coordinator.go — 供给协调器核心：TargetRef 解析、批量只读 Inspect、纯计算
 // Plan、复核后写入的 Apply、保存事件 MarkDirty 与脱敏 GetStatus。
 //
-// S0 单元范围：A2 凭据（auth.json，经 A2Adapter 委托 launcher，判定语义零变化）
-// + TrackedProjection 接缝（测试桩经 RegisterProjection 注册后可驱动完整
-// Plan/Apply/Compensate 链路，生产不注册——S1+ 接真实分发）。
+// 单元范围：已注册的投影适配器（shared 小文件、claude/codex 键级单元）+
+// 技能/资源目录作用域 + 插件重放。Pi 的供给单元已随「WSL 共享 Windows
+// agent 根」退役；旧状态文件中的退役登记由 GetStatus 直接忽略。
 
 import (
 	"context"
@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -40,7 +39,6 @@ type Coordinator struct {
 	leaseMu      sync.Mutex
 	activeLeases map[string]bool
 
-	a2          A2Adapter
 	projections map[UnitID]ProjectionAdapter
 	// scanDoneMu/scanDone 是「扫描完成」通知回调（P2-B 统一管理：App 层对账
 	// 依赖扫描真正结束后再推送；SetScanCompletionCallback 注册）。
@@ -121,20 +119,6 @@ func (c *Coordinator) SetPluginCommandRunner(runner PluginCommandRunner) {
 	}
 }
 
-// SetA2Adapter 替换 A2 适配器（测试接缝；生产默认 DefaultA2Adapter）。
-func (c *Coordinator) SetA2Adapter(a A2Adapter) {
-	if a != nil {
-		c.a2 = a
-	}
-}
-
-func (c *Coordinator) a2Adapter() A2Adapter {
-	if c.a2 != nil {
-		return c.a2
-	}
-	return DefaultA2Adapter{}
-}
-
 // ---------------------------------------------------------------------------
 // TargetRef
 // ---------------------------------------------------------------------------
@@ -192,9 +176,8 @@ func (c *Coordinator) ResolveTarget(ctx context.Context, distro string, cli CLI)
 // ---------------------------------------------------------------------------
 
 // Inspect 对已解析目标做批量只读探测（文件元数据经 UNC os.Stat，不写、不
-// spawn）。快照 mtime 是 UNC 视图值；A2 权威 mtime 判定在适配器内。普通
-// （TrackedProjection）单元文件额外计算内容 hash（仅内存快照，供冲突判定）；
-// A2 凭据文件不计算 hash。
+// spawn）。快照 mtime 是 UNC 视图值。普通（TrackedProjection）单元文件额外
+// 计算内容 hash（仅内存快照，供冲突判定）。
 func (c *Coordinator) Inspect(ctx context.Context, target TargetRef) (*Snapshot, error) {
 	// PR07：取消的请求不做探测（与写入门同一生命周期）。
 	if err := ctx.Err(); err != nil {
@@ -263,7 +246,7 @@ func (c *Coordinator) Inspect(ctx context.Context, target TargetRef) (*Snapshot,
 }
 
 // projectionFiles 返回普通单元关心的目标相对路径集合（其文件在 Inspect 时
-// 计算内容 hash；A2 凭据文件不在内）。
+// 计算内容 hash）。
 func (c *Coordinator) projectionFiles(cli CLI) map[string]bool {
 	out := map[string]bool{}
 	prefix := string(cli) + "/"
@@ -281,9 +264,6 @@ func (c *Coordinator) projectionFiles(cli CLI) map[string]bool {
 func (c *Coordinator) unitFiles(cli CLI) []string {
 	var out []string
 	prefix := string(cli) + "/"
-	if strings.HasPrefix(string(UnitPiA2Auth), prefix) {
-		out = append(out, c.a2Adapter().Files()...)
-	}
 	for unit, adapter := range c.projections {
 		if strings.HasPrefix(string(unit), prefix) {
 			out = append(out, adapter.Files()...)
@@ -293,11 +273,11 @@ func (c *Coordinator) unitFiles(cli CLI) []string {
 	return out
 }
 
-// knownUnit 报告单元是否已注册（A2 恒 true；技能/资源单元随各自作用域注册
-// 动态可识别）。unknown 单元拒绝（design §七）。
+// knownUnit 报告单元是否已注册（技能/资源单元随各自作用域注册动态可识别）。
+// unknown 单元拒绝（design §七）；已退役的 Pi 单元恒拒绝（不再有生产路径）。
 func (c *Coordinator) knownUnit(unit UnitID) bool {
-	if unit == UnitPiA2Auth {
-		return true
+	if retiredPiUnit(unit) {
+		return false
 	}
 	if _, ok := ParseSkillUnit(unit); ok {
 		return c.skills != nil
@@ -314,8 +294,7 @@ func (c *Coordinator) knownUnit(unit UnitID) bool {
 // ---------------------------------------------------------------------------
 
 // Plan 是纯计算：由请求与快照推导逐单元动作；不写文件、不 spawn、不触碰探测面。
-// 计划不携带候选正文；A2 的新陈判定刻意延迟到适配器 Apply 时执行（语义零变化，
-// 计划只携带待供给描述）。
+// 计划不携带候选正文（敏感候选只在 Apply 阶段内存中存在）。
 func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, error) {
 	if snap == nil {
 		return nil, errors.New("plan requires a snapshot")
@@ -361,31 +340,24 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 			plan.Units = append(plan.Units, c.planResourceUnit(req.Target, unit, resCLI, resRel, &entry))
 			continue
 		}
-		switch unit {
-		case UnitPiA2Auth:
+		adapter := c.projections[unit]
+		entry := state.entryFor(unit, req.Target.Generation)
+		// 同意门：需要 per-target 明确同意的单元（视觉清单密钥跨界）在未授权前
+		// 恒为阻断待确认，不进入适配器归属判定（design §四）。
+		if adapter.RequiresConsent() && !entry.Consented {
 			plan.Units = append(plan.Units, PlannedUnit{
-				Unit: unit, Policy: PolicyA2Auth, Action: ActionSyncA2,
+				Unit: unit, Policy: adapter.Policy(), Action: ActionBlocked,
+				BlockedReason: "awaiting-consent",
 			})
-		default:
-			adapter := c.projections[unit]
-			entry := state.entryFor(unit, req.Target.Generation)
-			// 同意门：需要 per-target 明确同意的单元（视觉清单密钥跨界）在未授权前
-			// 恒为阻断待确认，不进入适配器归属判定（design §四）。
-			if adapter.RequiresConsent() && !entry.Consented {
-				plan.Units = append(plan.Units, PlannedUnit{
-					Unit: unit, Policy: adapter.Policy(), Action: ActionBlocked,
-					BlockedReason: "awaiting-consent",
-				})
-				continue
-			}
-			planned, err := adapter.Plan(req, snap, &entry)
-			if err != nil {
-				return nil, fmt.Errorf("plan unit %s: %w", string(unit), err)
-			}
-			planned.Unit = unit
-			planned.Policy = adapter.Policy()
-			plan.Units = append(plan.Units, planned)
+			continue
 		}
+		planned, err := adapter.Plan(req, snap, &entry)
+		if err != nil {
+			return nil, fmt.Errorf("plan unit %s: %w", string(unit), err)
+		}
+		planned.Unit = unit
+		planned.Policy = adapter.Policy()
+		plan.Units = append(plan.Units, planned)
 	}
 	return plan, nil
 }
@@ -395,8 +367,8 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 // ---------------------------------------------------------------------------
 
 // Apply 复核目标与 hash 后执行计划并返回逐项结果。目标身份变化拒绝旧计划；
-// A2 委托适配器（结果分类与既有闸门一致）；投影单元先复核当前 hash 仍等于
-// 计划预期值再经提交原语写入。部分失败不虚报整批成功。
+// 投影单元先复核当前 hash 仍等于计划预期值再经提交原语写入。部分失败不虚报
+// 整批成功。
 func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, error) {
 	if plan == nil || len(plan.Units) == 0 {
 		return RunResult{}, errors.New("apply requires a non-empty plan")
@@ -436,109 +408,66 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 			})
 			continue
 		}
-		switch unit.Unit {
-		case UnitPiA2Auth:
-			if unit.Action != ActionSyncA2 {
-				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
-					Detail: "planned-action-mismatch",
-					Err:    errors.New("a2 unit requires ActionSyncA2"),
-				})
-				continue
-			}
-			// 攻坚契约：首个可能改变 auth/权限的动作前保存无秘密 pending 摘要；
-			// 摘要写失败时不开始新的同步写。
-			a2OpID := newOpID()
-			if serr := c.saveA2PendingSummary(current, a2OpID); serr != nil {
-				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
-					Detail: "prepare-state-failed",
-					Err:    fmt.Errorf("a2 pending summary persist failed; no sync writes started: %w", serr),
-				})
-				continue
-			}
-			outcome, syncErr := c.a2Adapter().Sync(ctx, current)
-			unitResult := classifyA2(ctx, unit.Unit, outcome, syncErr)
-			unitResult.OperationID = a2OpID
-			committedOutcome := syncErr == nil && (outcome == launcher.SyncWSLPiLoginAuthCopied || outcome == launcher.SyncWSLPiLoginAuthDistroNewer || outcome == launcher.SyncWSLPiLoginAuthDistroTieKept)
-			// 一致性修正（a2-final-save）：登记确认只在真正持久化后才声明——
-			// 结果、observation、状态页与磁盘摘要同事实；state save 持续失败时
-			// Registration=pending（PendingOperationFact=true，dirty/聚合不误计成
-			// 功）；内容事实保留（不回滚新 token；不存 auth 正文/hash）。
-			if serr := c.finishA2Summary(current, a2OpID, unitResult, outcome); serr != nil {
-				unitResult.Registration = OpRegistrationPending
-				unitResult.Detail = "a2-state-unpersisted"
-				if committedOutcome {
-					unitResult.Effect = OpEffectCommitted
+		if isSkillUnitID(unit.Unit) {
+			result.Results = append(result.Results, c.applySkillPlanned(ctx, current, unit))
+			continue
+		}
+		if resCLI, resRel, isRes := ParseResourceUnit(unit.Unit); isRes {
+			result.Results = append(result.Results, c.applyResourcePlanned(ctx, current, unit, resCLI, resRel))
+			continue
+		}
+		adapter := c.projections[unit.Unit]
+		if adapter == nil {
+			result.Results = append(result.Results, UnitResult{
+				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
+				Detail: "unit-adapter-missing",
+				Err:    errors.New("projection adapter not registered"),
+			})
+			continue
+		}
+		switch unit.Action {
+		case ActionNone:
+			if adapter.Sensitive() {
+				// PR02：被选择消费的敏感既有副本（Fresh 零写入路径）统一验证
+				// 目标权限——unknown 不等于安全；先收紧后复验，仍不可证则以
+				// 失败上报（启动闸门据此阻断消费）；健康 0600 保持零字节重写。
+				if perr := c.ensureSensitiveTargetPerms(ctx, current, unit.RelPath); perr != nil {
+					result.Results = append(result.Results, UnitResult{
+						Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
+						Detail: "sensitive-permissions-unsafe", Err: perr,
+					})
+					continue
 				}
-			} else if committedOutcome {
-				unitResult.Effect = OpEffectCommitted
-				unitResult.Consumption = ConsumptionNotApplicable // A2 资格由 outcome+权限门表达
-				unitResult.Registration = OpRegistrationConfirmed
 			}
-			result.Results = append(result.Results, unitResult)
+			result.Results = append(result.Results, UnitResult{
+				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFresh, Detail: "no-change",
+			})
+		case ActionBlocked:
+			result.Results = append(result.Results, UnitResult{
+				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
+				Detail: unit.BlockedReason,
+			})
+			if unit.Freeze {
+				// 冻结态持久化（GetStatus 供 UI 显示；下次成功写入时清除）。
+				c.recordProjectionFreeze(current, unit.Unit, unit.Policy, unit.BlockedReason)
+			} else if unit.BlockedReason == "awaiting-consent" {
+				// 待同意态持久化：状态面需要可见「未授权」而非「未检查」。
+				c.recordProjectionPendingConsent(current, unit.Unit, unit.Policy)
+			} else {
+				// SA-15：非冻结阻断（如 source-unavailable）也逐单元登记——
+				// 状态页不得沿用上次「已同步」。
+				c.recordProjectionBlocked(current, unit.Unit, unit.Policy, unit.BlockedReason)
+			}
+		case ActionWriteProjection:
+			result.Results = append(result.Results, c.applyProjection(ctx, current, unit, adapter))
+		case ActionRemoveProjection:
+			result.Results = append(result.Results, c.applyWithdrawal(ctx, current, unit, adapter))
 		default:
-			if isSkillUnitID(unit.Unit) {
-				result.Results = append(result.Results, c.applySkillPlanned(ctx, current, unit))
-				continue
-			}
-			if resCLI, resRel, isRes := ParseResourceUnit(unit.Unit); isRes {
-				result.Results = append(result.Results, c.applyResourcePlanned(ctx, current, unit, resCLI, resRel))
-				continue
-			}
-			adapter := c.projections[unit.Unit]
-			if adapter == nil {
-				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
-					Detail: "unit-adapter-missing",
-					Err:    errors.New("projection adapter not registered"),
-				})
-				continue
-			}
-			switch unit.Action {
-			case ActionNone:
-				if adapter.Sensitive() {
-					// PR02：被选择消费的敏感既有副本（Fresh 零写入路径）统一验证
-					// 目标权限——unknown 不等于安全；先收紧后复验，仍不可证则以
-					// 失败上报（启动闸门据此阻断消费）；健康 0600 保持零字节重写。
-					if perr := c.ensureSensitiveTargetPerms(ctx, current, unit.RelPath); perr != nil {
-						result.Results = append(result.Results, UnitResult{
-							Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
-							Detail: "sensitive-permissions-unsafe", Err: perr,
-						})
-						continue
-					}
-				}
-				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFresh, Detail: "no-change",
-				})
-			case ActionBlocked:
-				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
-					Detail: unit.BlockedReason,
-				})
-				if unit.Freeze {
-					// 冻结态持久化（GetStatus 供 UI 显示；下次成功写入时清除）。
-					c.recordProjectionFreeze(current, unit.Unit, unit.Policy, unit.BlockedReason)
-				} else if unit.BlockedReason == "awaiting-consent" {
-					// 待同意态持久化：状态面需要可见「未授权」而非「未检查」。
-					c.recordProjectionPendingConsent(current, unit.Unit, unit.Policy)
-				} else {
-					// SA-15：非冻结阻断（如 source-unavailable）也逐单元登记——
-					// 状态页不得沿用上次「已同步」。
-					c.recordProjectionBlocked(current, unit.Unit, unit.Policy, unit.BlockedReason)
-				}
-			case ActionWriteProjection:
-				result.Results = append(result.Results, c.applyProjection(ctx, current, unit, adapter))
-			case ActionRemoveProjection:
-				result.Results = append(result.Results, c.applyWithdrawal(ctx, current, unit, adapter))
-			default:
-				result.Results = append(result.Results, UnitResult{
-					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
-					Detail: "planned-action-mismatch",
-					Err:    fmt.Errorf("unsupported projection action: %d", unit.Action),
-				})
-			}
+			result.Results = append(result.Results, UnitResult{
+				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
+				Detail: "planned-action-mismatch",
+				Err:    fmt.Errorf("unsupported projection action: %d", unit.Action),
+			})
 		}
 	}
 	c.clearSatisfiedDirtySources(result)
@@ -558,24 +487,17 @@ func canceledResult(plan *SupplyPlan) RunResult {
 }
 
 // DirtySource* 是保存事件来源名（App markWSLSupplyDirty 的调用方必须使用本
-// 常量——dirtySourceUnits 依此映射来源→它滋养的单元集）。
-const (
-	DirtySourceProviders      = "providers"
-	DirtySourcePiLoginPresets = "pi-login-presets"
-	// DirtySourcePiConfig（S2）：PiConfig 面板保存（amagi.json / models.json
-	// 手工编辑影响引用诊断宇宙）后发布；滋养三个键级投影单元。
-	DirtySourcePiConfig = "pi-config"
-)
+// 常量——dirtySourceUnits 依此映射来源→它滋养的单元集）。Pi 的两个保存源
+// （pi-login-presets / pi-config）已随 Pi 供给退役：旧状态残留按未知来源
+// 处理（不映射、永不重新点亮 pendingPush；types.go retiredPiDirtySources）。
+const DirtySourceProviders = "providers"
 
 // dirtySourceUnits 把保存事件的来源映射到其滋养的单元集（F2：推送/启动补漏
-// 完成后据此清除待同步标记）。provider 保存影响托管 models.json 与两份共享
-// 文件（视觉清单的 api_key/baseURL、学习层无直接关联但同批推送）；登录预设
-// 只影响托管 models.json 的 contextWindow 覆写。未知来源不映射（保守：其
+// 完成后据此清除待同步标记）。provider 保存影响两份共享文件（视觉清单的
+// api_key/baseURL、学习层无直接关联但同批推送）。未知来源不映射（保守：其
 // pending 标记不因任何单元成功而清除）。
 var dirtySourceUnits = map[string][]UnitID{
-	DirtySourceProviders:      {UnitPiManagedModels, UnitSharedVisionExport, UnitSharedModalityKB},
-	DirtySourcePiLoginPresets: {UnitPiManagedModels},
-	DirtySourcePiConfig:       {UnitPiSettings, UnitPiAmagi, UnitPiMCP},
+	DirtySourceProviders: {UnitSharedVisionExport, UnitSharedModalityKB},
 }
 
 // clearSatisfiedDirtySources 在一次 Apply 完成后推进/清除待同步来源（F2：
@@ -1078,7 +1000,7 @@ func (c *Coordinator) MarkDirty(source string, revision uint64) error {
 
 // GetStatus 返回脱敏目标状态：只读状态清单与缓存，不触发安装/同步/探测；
 // 无缓存返回未检查（Checked=false）。敏感 hash（sourceHash/lastWrittenHash）
-// 不出本接口；A2 单元从不持有 hash。SA-02：分区归属——按身份索引把请求
+// 不出本接口。SA-02：分区归属——按身份索引把请求
 // distro 的最近一代分区呈现出来；其它 distro 的登记（包括 legacy 隔离区与
 // unknown 槽）不串入本目标的展示。
 func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
@@ -1090,6 +1012,11 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 	if len(st.PendingSources) > 0 {
 		status.PendingSources = make(map[string]uint64, len(st.PendingSources))
 		for k, v := range st.PendingSources {
+			// 已退役的 Pi 保存源直接丢弃：其滋养单元已全部退役，永远不会满足
+			// 清除条件——不丢弃会让 pendingPush 永久点亮（旧状态升级兼容）。
+			if retiredPiDirtySources[k] {
+				continue
+			}
 			status.PendingSources[k] = v
 		}
 	}
@@ -1114,6 +1041,9 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 	for _, entry := range st.Units {
 		if entry.Generation != gen {
 			continue // 其它身份分区的登记不串入本目标（SA-02）。
+		}
+		if retiredPiUnit(entry.Unit) {
+			continue // 已退役的 Pi 供给单元：旧状态残留直接忽略，不再展示。
 		}
 		us := UnitStatus{
 			Unit: entry.Unit, Policy: entry.Policy, LastOutcome: entry.LastOutcome,
@@ -1290,8 +1220,8 @@ func (c *Coordinator) resourceUnitStale(entry StateEntry) bool {
 	return m != nil && m.SourceHash != entry.SourceHash
 }
 
-// HasUnit 报告单元是否已在协调器注册（A2 恒 true）。启动链据此按能力适配
-// 单元清单（裸协调器缺 S1 适配器时自动降级为 A2-only，不报 unknown unit）。
+// HasUnit 报告单元是否已在协调器注册。启动链据此按能力适配单元清单
+// （裸协调器缺适配器时自动降级为已注册单元，不报 unknown unit）。
 func (c *Coordinator) HasUnit(unit UnitID) bool { return c.knownUnit(unit) }
 
 // ---------------------------------------------------------------------------
@@ -1338,11 +1268,6 @@ func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, 
 	for _, unit := range units {
 		entry := state.entryFor(unit, target.Generation)
 		prev := UnitPreview{Unit: unit, Action: ActionNone}
-		if unit == UnitPiA2Auth {
-			prev.BlockedReason = "not-previewable"
-			out = append(out, prev)
-			continue
-		}
 		if name, isSkill := ParseSkillUnit(unit); isSkill {
 			out = append(out, c.previewSkillUnit(target, name, &entry))
 			continue
@@ -1640,7 +1565,7 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
 // ---------------------------------------------------------------------------
 
 // submitFile 经目标内提交原语提交一个文件，返回可条件撤销记录（普通文件
-// 写入专用；A2 不走本原语）。字节走 UNC，不进 wsl.exe 命令行。
+// 写入专用）。字节走 UNC，不进 wsl.exe 命令行。
 //
 // 敏感单元（内嵌密钥，SA-06/07）：
 //  1. 先在 distro 内建立目标根下的 .amagi-staging 私有目录，distro 内
@@ -1763,7 +1688,7 @@ func (c *Coordinator) compensateOne(requestCtx context.Context, h *CompensationH
 			OpID: compOpID, Kind: OpKindCompensate, TargetKey: h.targetKey,
 			TargetDistro: h.target.Distro, TargetHome: h.target.Home,
 			TargetCLI: string(h.target.CLI),
-			Unit: h.unit, RelPath: h.relPath, Sensitive: h.sensitive,
+			Unit:      h.unit, RelPath: h.relPath, Sensitive: h.sensitive,
 			BeforeExists: h.prevExisted, BeforeHash: hexHash(h.prev), AfterHash: h.writtenHash,
 			ParentOpID: h.opID, CreatedAt: time.Now(),
 		}); err != nil {
@@ -1966,7 +1891,7 @@ func (c *Coordinator) setLeaseActive(opID string, active bool) {
 func sha256Sum(b []byte) [32]byte { return sha256.Sum256(b) }
 
 // sanitizeErrorCode 截断错误链为状态码式短串（不含路径细节与任何内容；
-// launcher 的 A2 错误本就不含凭据内容，这里再加长度上限）。
+// 错误链本就不含凭据内容，这里再加长度上限）。
 func sanitizeErrorCode(err error) string {
 	if err == nil {
 		return ""

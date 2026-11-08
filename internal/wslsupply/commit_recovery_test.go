@@ -31,7 +31,7 @@ type commitTestEnv struct {
 func newCommitTestEnv(t *testing.T, sensitive bool, preimage []byte) *commitTestEnv {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: 0})
+	c := newCoordinatorWith(t, fp)
 	adapter := &reviewAdapter{rel: "prefs.json", source: func() []byte { return []byte(`{"v":2}`) }}
 	_ = adapter
 	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
@@ -338,7 +338,7 @@ func TestAttackDirMoveAsideCancelRestores(t *testing.T) {
 	scope.Scan()
 	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
 		identity: platformUserIdentityFixture()}
-	c := newCoordinatorWith(t, fp, nil)
+	c := newCoordinatorWith(t, fp)
 	c.RegisterSkills(scope)
 	unit := SkillUnitID("demo")
 	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {

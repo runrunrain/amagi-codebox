@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/platform"
 )
 
@@ -49,66 +48,7 @@ func TestManualRealWSLUserHome(t *testing.T) {
 	t.Logf("distro=%s home=%s unc=%s", distro, home, unc)
 }
 
-func TestManualRealWSLWritePiConfig(t *testing.T) {
-	if os.Getenv("AMAGI_WSL_E2E") == "" {
-		t.Skip("set AMAGI_WSL_E2E=1 to run the real-WSL end-to-end probe")
-	}
-	distro := manualWSLDistro(t)
-
-	// diting m4：写入前快照真实文件，t.Cleanup 自动恢复原内容+权限，
-	// 避免 amagi-wsltest（fake key）经 merge 驻留用户真实 WSL 侧配置。
-	linuxAgentDir, uncAgentDir := wslAgentDirsForTest(t, distro)
-	before, hadBefore := readWSLFileForTest(t, filepath.Join(uncAgentDir, "models.json"))
-	t.Cleanup(func() {
-		restoreWSLFileForTest(t, distro, linuxAgentDir, before, hadBefore)
-	})
-
-	provider := config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"}}
-	cfg, err := BuildPiModelsConfig("wsltest", provider, "wsltest-model", "sk-manual-e2e", config.Parameters{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	linuxDir, err := WriteWSLPiAgentConfig(distro, cfg)
-	if err != nil {
-		t.Fatalf("WriteWSLPiAgentConfig: %v", err)
-	}
-	t.Logf("written to %s (distro %s)", linuxDir, distro)
-
-	// 读回：内容与 Windows 侧产物同构（同一序列化代码路径）。
-	data, err := os.ReadFile(platform.WSLToUNC(distro, linuxDir+"/models.json"))
-	if err != nil {
-		t.Fatalf("read back via UNC: %v", err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, data)
-	}
-	providers, _ := got["providers"].(map[string]any)
-	if _, ok := providers["amagi-wsltest"]; !ok {
-		t.Fatalf("amagi-wsltest missing after write: %v", providers)
-	}
-	t.Logf("models.json content OK (%d bytes, providers: %v)", len(data), providerKeys(providers))
-}
-
-func providerKeys(providers map[string]any) []string {
-	keys := make([]string, 0, len(providers))
-	for k := range providers {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-// wslAgentDirsForTest 解析 pi agent 目录的 Linux/UNC 双形态（快照辅助）。
-func wslAgentDirsForTest(t *testing.T, distro string) (linuxDir, uncDir string) {
-	t.Helper()
-	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
-	if err != nil {
-		t.Fatalf("resolveWSLAgentTarget: %v", err)
-	}
-	return target.LinuxDir, target.UNCDir
-}
-
-// readWSLFileForTest 经 UNC 读取 WSL 侧文件；不存在时 ok=false。
+// readWSLFileForTest 读取 distro 内文件（不存在返回 ok=false；供 e2e 前后快照）。
 func readWSLFileForTest(t *testing.T, uncPath string) (data []byte, ok bool) {
 	t.Helper()
 	data, err := os.ReadFile(uncPath)
@@ -121,29 +61,6 @@ func readWSLFileForTest(t *testing.T, uncPath string) (data []byte, ok bool) {
 	return data, true
 }
 
-// restoreWSLFileForTest 把快照内容写回 WSL 侧并 chmod 600；快照不存在时
-// 删除测试写入的文件（目标态 = 测试前状态）。
-func restoreWSLFileForTest(t *testing.T, distro, linuxAgentDir string, before []byte, hadBefore bool) {
-	t.Helper()
-	uncPath := platform.WSLToUNC(distro, linuxAgentDir+"/models.json")
-	if !hadBefore {
-		if err := os.Remove(uncPath); err != nil && !os.IsNotExist(err) {
-			t.Logf("cleanup remove %s: %v", uncPath, err)
-		}
-		return
-	}
-	if err := os.WriteFile(uncPath, before, 0o600); err != nil {
-		t.Logf("cleanup restore %s: %v", uncPath, err)
-		return
-	}
-	if err := wslChmodFn(context.Background(), distro, "600", linuxAgentDir+"/models.json"); err != nil {
-		t.Logf("cleanup chmod 600: %v", err)
-	}
-}
-
-// TestManualRealWSLWriteOpenCodeConfig 真实 WSL 端到端实证 T4 路径载体：
-// distro 探测 → UNC 写 ~/.config/opencode/amagi-codebox.json → chmod 补偿 →
-// 读回比对。t.Cleanup 快照/恢复原文件（对齐 diting m4 策略）。
 func TestManualRealWSLWriteOpenCodeConfig(t *testing.T) {
 	if os.Getenv("AMAGI_WSL_E2E") == "" {
 		t.Skip("set AMAGI_WSL_E2E=1 to run the real-WSL end-to-end probe")

@@ -55,9 +55,10 @@ var claudeMCPShape = keyedShape{
 	// 敏感度取舍：.claude.json 携带大量用户自有状态（projects 等）——chmod
 	// 补偿失败时恢复前像（M2 普通单元语义，不整文件删除）；新文件场景的
 	// 半提交同样清理，密钥副本不在宽松权限下新落盘。
-	sensitive:   false,
-	alwaysFacts: true, // 任何写入都需 shim/路径事实
-	selectLeaf:  true, // 仅用户选择的 server 导入
+	sensitive:        false,
+	alwaysFacts:      true, // 任何写入都需 shim/路径事实
+	selectLeaf:       true, // 仅用户选择的 server 导入
+	transformVersion: "claude-mcp-v1",
 	desired: func(obj map[string]any) (map[string]any, []string) {
 		out := map[string]any{}
 		var notes []string
@@ -108,7 +109,8 @@ var claudeSettingsShape = keyedShape{
 	// 选择单元——否则该单元无任何授权入口（UI 只对勾选键走导入授权；
 	// SetUnitSelection 拒绝非 SelectionAware 单元，awaiting-consent 悬死）。
 	// 白名单本身不变：permissions/hooks/env 等不在白名单内，不可能被勾选。
-	selectLeaf: true,
+	selectLeaf:       true,
+	transformVersion: "claude-settings-v1",
 	desired: func(obj map[string]any) (map[string]any, []string) {
 		out := map[string]any{}
 		for _, field := range claudeSettingsWhitelist {

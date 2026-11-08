@@ -207,55 +207,35 @@ func (b *preparedEffectBuilder) buildConfigMutation(cfg *launchplan.ConfigMutati
 }
 
 func (b *preparedEffectBuilder) buildWSLConfigSupply(spec *launchplan.WSLConfigSupplySpec) (launchplan.PreparedEffect, error) {
-	hasUnits := len(spec.Units) > 0
-	if hasUnits && b.deps.wslSupply == nil {
-		return nil, errors.New("wsl supply effect: coordinator unavailable")
+	// 生产单元只剩 OpenCode 附加层（Pi 的供给单元已随「WSL 内 Pi 共享
+	// Windows agent 根」退役；shared 小文件与 claude/codex 键级单元的启动
+	// lazy 补漏走 PTY effect 内的 runWSLSharedFilesForSpec）。
+	if spec.OpenCodeLayer == nil {
+		return nil, errors.New("wsl supply effect: opencode layer spec is required")
 	}
-	if !hasUnits && spec.OpenCodeLayer == nil {
-		return nil, errors.New("wsl supply effect: cli and units are required")
+	if b.deps.openCodeLayerPrep == nil {
+		return nil, errors.New("wsl supply effect: opencode layer preparer unavailable")
 	}
-	if strings.TrimSpace(spec.CLI) == "" {
-		return nil, errors.New("wsl supply effect: cli is required")
+	content, ok := b.plan.Secrets.Buffer(spec.OpenCodeLayer.Content)
+	if !ok {
+		return nil, errors.New("wsl supply effect: opencode layer content buffer not found")
 	}
-	units := make([]wslsupply.UnitID, 0, len(spec.Units))
-	for _, u := range spec.Units {
-		if strings.TrimSpace(u) == "" {
-			return nil, errors.New("wsl supply effect: empty unit id")
+	hasPTY := false
+	for _, s := range b.plan.Effects {
+		if s.Kind == launchplan.EffectPTYStart {
+			hasPTY = true
+			break
 		}
-		units = append(units, wslsupply.UnitID(u))
 	}
-	reason := wslsupply.Reason(spec.Reason)
-	if reason == "" {
-		reason = wslsupply.ReasonLaunch
+	if !hasPTY {
+		return nil, errors.New("wsl supply effect: opencode layer requires a PTY effect")
 	}
-	effect := &wslConfigSupplyEffect{
-		deps: b.deps, distro: strings.TrimSpace(spec.Distro), cli: wslsupply.CLI(spec.CLI),
-		reason: reason, units: units,
-	}
-	if spec.OpenCodeLayer != nil {
-		if b.deps.openCodeLayerPrep == nil {
-			return nil, errors.New("wsl supply effect: opencode layer preparer unavailable")
-		}
-		content, ok := b.plan.Secrets.Buffer(spec.OpenCodeLayer.Content)
-		if !ok {
-			return nil, errors.New("wsl supply effect: opencode layer content buffer not found")
-		}
-		hasPTY := false
-		for _, s := range b.plan.Effects {
-			if s.Kind == launchplan.EffectPTYStart {
-				hasPTY = true
-				break
-			}
-		}
-		if !hasPTY {
-			return nil, errors.New("wsl supply effect: opencode layer requires a PTY effect")
-		}
-		effect.openCodeLayer = append([]byte(nil), content...)
-		effect.layerPrep = b.deps.openCodeLayerPrep
-		// 晚绑定：Prepare 循环完成后 b.ptyProcess 指向本计划的 PTY effect；
-		// 层注入必须发生在其 Apply 之前（计划序保证）。
-		effect.ptyRef = &b.ptyProcess
-	}
+	effect := &wslConfigSupplyEffect{deps: b.deps, distro: strings.TrimSpace(spec.Distro)}
+	effect.openCodeLayer = append([]byte(nil), content...)
+	effect.layerPrep = b.deps.openCodeLayerPrep
+	// 晚绑定：Prepare 循环完成后 b.ptyProcess 指向本计划的 PTY effect；
+	// 层注入必须发生在其 Apply 之前（计划序保证）。
+	effect.ptyRef = &b.ptyProcess
 	return effect, nil
 }
 
@@ -762,30 +742,24 @@ func (e *configMutationEffect) disposeSensitive() {
 // WSL config supply effect (P3-S0: unified desktop/remote credential boundary)
 // ---------------------------------------------------------------------------
 
-// wslConfigSupplyEffect 在 PTY 之前执行 WSL 配置供给：Apply 阶段经 wslsupply
-// 协调器 Inspect/Plan/Apply（BuildPlan 只携带描述，纯读零副作用）。闸门语义
-// 与桌面 syncWSLPiLoginAuthAtLaunch 完全同源（同一 verdictForWSLLoginSupply
-// 映射）：A2 DistroHasCopy 降级放行 + WARN；NoAuth/阻断 fail closed 拒绝启动。
-// Abort/补偿：A2 凭据刷新是持久认证状态，不随 PTY 启动失败回滚成旧 token；
-// 普通文件写入（S0 无生产单元）按 CAS 条件撤销（只恢复 hash 仍匹配的写入）。
+// wslConfigSupplyEffect 在 PTY 之前执行 WSL 配置供给。现役生产面是 OpenCode
+// 附加层（写入失败 → 启动失败，不再无 provider 静默启动）；Pi 的凭据/托管
+// 配置供给单元已随「WSL 内 Pi 共享 Windows agent 根」退役（1.3.126）。shared
+// 小文件与 claude/codex 键级单元的启动补漏在 PTY effect 内经
+// runWSLSharedFilesForSpec 执行。
 type wslConfigSupplyEffect struct {
 	deps   launchExecutorDeps
 	distro string
-	cli    wslsupply.CLI
-	reason wslsupply.Reason
-	units  []wslsupply.UnitID
 
-	// P3-S2 OpenCode 附加层（可选）：content 是 runtime config JSON 的独占副本
-	//（含 apiKey，随计划 SecretBuffer 生命周期）；layerPrep 由 App 注入（与桌面
+	// OpenCode 附加层：content 是 runtime config JSON 的独占副本（含 apiKey，
+	// 随计划 SecretBuffer 生命周期）；layerPrep 由 App 注入（与桌面
 	// prepareWSLOpenCodeLayer 同一实现）；ptyRef 晚绑定本计划的 PTY effect，
 	// 层注入必须发生在其 Apply 之前（计划序保证，Apply 时再校验）。
 	openCodeLayer []byte
 	layerPrep     func(ctx context.Context, distro string, cfg map[string]any) (string, error)
 	ptyRef        **ptyStartEffect
 
-	applied bool
-	results []wslsupply.UnitResult
-	undos   []*wslsupply.CompensationHandle
+	undos []*wslsupply.CompensationHandle
 }
 
 func (e *wslConfigSupplyEffect) Kind() launchplan.EffectKind { return launchplan.EffectWSLConfigSupply }
@@ -801,71 +775,13 @@ func (e *wslConfigSupplyEffect) Apply(ctx context.Context) (launchplan.EffectEvi
 			return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: no usable WSL distro for launch")
 		}
 	}
-	// P3-S2 OpenCode 附加层：与桌面同一准备函数（写入失败 → 启动失败，不再
+	// OpenCode 附加层：与桌面同一准备函数（写入失败 → 启动失败，不再
 	// 无 provider 静默启动）；成功后把 OPENCODE_CONFIG（Linux 路径）注入后续
 	// PTY effect 的 env 并追加进 WSLENV 转发清单。
 	if e.openCodeLayer != nil {
 		if err := e.applyOpenCodeLayer(ctx, distro); err != nil {
 			return launchplan.EffectEvidence{}, err
 		}
-	}
-	if len(e.units) == 0 {
-		return launchplan.EffectEvidence{}, nil
-	}
-	// P3-S1：计划是描述，执行按协调器能力适配——裸协调器（单测）缺 S1 托管面
-	// 适配器时自动降级为已注册单元（A2 恒在），不报 unknown unit。
-	units := e.units
-	if known, ok := e.deps.wslSupply.(interface {
-		HasUnit(wslsupply.UnitID) bool
-	}); ok {
-		filtered := make([]wslsupply.UnitID, 0, len(units))
-		for _, u := range units {
-			if known.HasUnit(u) {
-				filtered = append(filtered, u)
-			}
-		}
-		units = filtered
-	}
-	if len(units) == 0 {
-		return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: no runnable units for launch")
-	}
-	res, err := e.deps.wslSupply.RunUnits(ctx, distro, e.cli, e.reason, units)
-	if err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: %w", err)
-	}
-	e.applied = true
-	e.results = res.Results
-	for i := range res.Results {
-		if res.Results[i].Undo != nil {
-			e.undos = append(e.undos, res.Results[i].Undo)
-		}
-	}
-	// 闸门判定：登录供给（含 A2）沿用 S0 统一映射；纯配置供给（P3-S2
-	// API-provider 远程路径）与桌面 runWSLManagedModelsAtLaunch 同语义——仅
-	// managed-models 的 target-corrupt 阻断，其余失败/阻断告警放行。
-	hasA2 := false
-	for _, u := range units {
-		if u == wslsupply.UnitPiA2Auth {
-			hasA2 = true
-			break
-		}
-	}
-	if hasA2 {
-		if verdict := verdictForWSLLoginSupply(res, nil); verdict.launchErr != nil {
-			return launchplan.EffectEvidence{}, verdict.launchErr
-		} else if verdict.warn {
-			if e.deps.supplyLog != nil {
-				e.deps.supplyLog.Warn("wslsupply", verdict.message, verdict.detail)
-			}
-		} else if verdict.info && e.deps.supplyLog != nil {
-			e.deps.supplyLog.Info("wslsupply", verdict.message, verdict.detail)
-		}
-		return launchplan.EffectEvidence{}, nil
-	}
-	if launchErr, warnMsg, warnDetail := verdictForWSLPiConfigSupply(res, nil); launchErr != nil {
-		return launchplan.EffectEvidence{}, launchErr
-	} else if warnMsg != "" && e.deps.supplyLog != nil {
-		e.deps.supplyLog.Warn("wslsupply", warnMsg, warnDetail)
 	}
 	return launchplan.EffectEvidence{}, nil
 }

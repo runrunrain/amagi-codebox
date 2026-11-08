@@ -1,11 +1,13 @@
 package launcher
 
-// WSL 侧 pi/omp agent 配置写入（Bug B 修复主路径）。
+// WSL 侧 omp/opencode agent 配置写入（Bug B 修复主路径的存续部分）。
 //
-// 问题：CodeBox 是 Windows 进程，历史上把 models.json/models.yml 写到
-// Windows 侧 ~/.pi/agent；WSL 终端模式下 pi/omp 在 distro 内运行，读的是
-// WSL 侧 $HOME/.pi/agent——两个文件系统，配置从未到达 CLI，--provider
-// amagi-<name> 命中 WSL 内旧配置 → 401。
+// 问题：CodeBox 是 Windows 进程，历史上把 models.yml 写到 Windows 侧
+// ~/.omp/agent；WSL 终端模式下 omp 在 distro 内运行，读的是 WSL 侧
+// $HOME/.omp/agent——两个文件系统，配置从未到达 CLI，--provider
+// amagi-<name> 命中 WSL 内旧配置 → 401。（pi 的同族写入已随 1.3.126
+// 「WSL 内 pi 共享 Windows agent 根」退役——pi 在 WSL 内直接读 Windows 侧
+// ~/.pi/agent，不再向 distro 分发 models.json。）
 //
 // 修复：WSL 模式启动时把合并后的配置写到 WSL 侧 agent root：
 //
@@ -52,8 +54,8 @@ import (
 // WSL 探测接缝：生产实现指向 platform 包，单测可在 launcher 包内替换
 // （platform 的探测 var 未导出，跨包不可注入）。探测接缝一律为 ctx 形态
 // （G0：ctx 必须贯通到真实 exec.CommandContext；旧无 ctx 入口以
-// context.Background() 包装，语义不变）；wslUserHomeFn/wslToUNCFn 仅服务
-// 旧 resolveWSLAgentTarget（cachedHome）路径，A2 的 Context 入口不再使用。
+// context.Background() 包装，语义不变）；wslTargetIdentityContextFn 此前
+// 服务 Pi 登录凭据同步的身份复核（已退役），现保留为通用探测面。
 // wslStatModeFn 是敏感提交的隔离验证探测（SA-06，wsl-goal-closure）。
 var (
 	wslUserHomeFn              = platform.WSLUserHome
@@ -84,7 +86,7 @@ type WSLAgentTarget struct {
 	Home      string // distro 默认用户 $HOME（Linux 路径，如 /home/u）
 	LinuxDir  string // agent 根（Linux 路径，如 /home/u/.pi/agent）
 	UNCDir    string // agent 根（Windows UNC，如 \\wsl.localhost\Ubuntu\home\u\.pi\agent）
-	UID       string // distro 默认用户 uid（A2 目标身份复核用；同步时必须与当次探测一致）
+	UID       string // distro 默认用户 uid（目标身份描述；写路径当前不消费）
 	MachineID string // /etc/machine-id（可为空＝发行版无此文件；非空时必须与当次探测一致）
 }
 
@@ -273,44 +275,9 @@ func wslRetighten600(distro, linuxFile string) error {
 	return wslRetighten600Context(context.Background(), distro, linuxFile)
 }
 
-// WriteWSLPiAgentConfig 把 pi models.json 合并写入 WSL 侧 agent root。
-// 合并语义与 Windows 侧一致（MergePiAgentConfig：保留已有 providers 与
-// 顶层字段，amagi-<name> 当次条目优先），原子写（WritePiAgentConfig 的
-// tmp+Rename 范式在 UNC 上同样成立）后经 WSLChmod 补偿 0700/0600。
-// 成功返回 WSL 内 Linux 路径的 agent 目录（供日志/诊断）。
-//
-// P3-S1 零写入路径：合并结果与既有文件字节一致时跳过落盘；但已存在副本
-// 的权限被改宽时也要安全修复或阻断（SA-06：无变化路径不得绕过权限检查）。
-// 敏感提交走 SA-06 staging 原语：0600 在 rename 前落位，chmod 失败发生在
-// 任何既有混合内容被替换之前（不再删整文件，SA-07）。
-func WriteWSLPiAgentConfig(distro string, cfg map[string]any) (string, error) {
-	target, err := resolveWSLAgentTarget(distro, ".pi/agent")
-	if err != nil {
-		return "", err
-	}
-	wslAgentConfigMu.Lock()
-	defer wslAgentConfigMu.Unlock()
-	merged := MergePiAgentConfig(cfg, target.UNCDir)
-	content, mErr := json.MarshalIndent(merged, "", "  ")
-	if mErr != nil {
-		return "", fmt.Errorf("marshal pi agent config: %w", mErr)
-	}
-	content = append(content, '\n')
-	if existing, rErr := os.ReadFile(filepath.Join(target.UNCDir, "models.json")); rErr == nil && bytes.Equal(existing, content) {
-		if err := wslRetighten600(target.Distro, target.LinuxDir+"/models.json"); err != nil {
-			return "", err
-		}
-		return target.LinuxDir, nil // 零写入：内容一致且权限安全
-	}
-	if err := writeWSLAgentFileStaged(target, "models.json", content); err != nil {
-		return "", err
-	}
-	return target.LinuxDir, nil
-}
-
-// WriteWSLOmpAgentConfig 是 WriteWSLPiAgentConfig 的 omp 对称实现
-// （.omp/agent/models.yml，YAML 序列化与合并沿用 omp_config.go；提交走同一
-// SA-06 staging 原语）。
+// WriteWSLOmpAgentConfig 把 omp models.yml 合并写入 WSL 侧 agent root
+// （.omp/agent，YAML 序列化与合并沿用 omp_config.go；提交走 SA-06 staging
+// 原语——pi 版已随「WSL 内 pi 共享 Windows agent 根」退役，1.3.126）。
 func WriteWSLOmpAgentConfig(distro string, cfg map[string]any) (string, error) {
 	target, err := resolveWSLAgentTarget(distro, ".omp/agent")
 	if err != nil {

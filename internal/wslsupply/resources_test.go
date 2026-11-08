@@ -11,14 +11,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"amagi-codebox/internal/launcher"
 )
 
 func newS4ResourceCoordinator(t *testing.T) (*Coordinator, *fakeProbes, string) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	hostRoot := t.TempDir()
 	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
 		HostRoot:     hostRoot,
@@ -204,11 +202,11 @@ func TestResourceClaudeLeafMarkdownUnits(t *testing.T) {
 	c, fp, hostRoot := newS4ResourceCoordinator(t)
 	// 布局对齐生产（commands/agents 声明顶层 md 文件单元；skills 目录单元）。
 	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
-		HostRoot:     hostRoot,
-		Files:        []string{"CLAUDE.md"},
-		DirUnits:     []string{"commands", "agents", "skills"},
+		HostRoot:      hostRoot,
+		Files:         []string{"CLAUDE.md"},
+		DirUnits:      []string{"commands", "agents", "skills"},
 		FileLeafUnits: []string{"commands", "agents"},
-		TargetPrefix: ".claude/",
+		TargetPrefix:  ".claude/",
 	}, DefaultSkillsScanLimits()))
 	writeHostResource(t, hostRoot, "commands/review.md", "# /review\n")
 	writeHostResource(t, hostRoot, "agents/helper.md", "# helper agent\n")
@@ -258,7 +256,7 @@ func TestResourceClaudeLeafMarkdownUnits(t *testing.T) {
 // TestResourceCodexSkillsNoLeafFileUnits（SA-10 消费边界标注）：codex skills 按
 // 目录发现——顶层散落 md 不入清单（不虚构 CLI 未定义的文件单元语义）。
 func TestResourceCodexSkillsNoLeafFileUnits(t *testing.T) {
-	c := newCoordinatorWith(t, newFakeProbes(t), nil)
+	c := newCoordinatorWith(t, newFakeProbes(t))
 	hostRoot := t.TempDir()
 	c.RegisterResources(NewResourceScope(CLICodex, ResourceLayout{
 		HostRoot: hostRoot,
@@ -276,7 +274,7 @@ func TestResourceCodexSkillsNoLeafFileUnits(t *testing.T) {
 }
 
 // TestResourceScopeScanIdempotentAndRescan（SA-17）：资源扫描完成后 Get 不重启
-//（StartScanAsync 幂等）；显式 RescanAsync 才重扫。
+// （StartScanAsync 幂等）；显式 RescanAsync 才重扫。
 func TestResourceScopeScanIdempotentAndRescan(t *testing.T) {
 	hostRoot := t.TempDir()
 	writeHostResource(t, hostRoot, "CLAUDE.md", "# v1\n")

@@ -21,7 +21,6 @@ import (
 	"strings"
 	"testing"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -229,4 +228,3 @@ func s4E2EAssertNoCredentialFiles(t *testing.T, distro, cliDir string) {
 }
 
 // 编译期引用钉（保持与 s1 e2e 相同的依赖面）。
-var _ = launcher.SyncWSLPiLoginAuthFresh

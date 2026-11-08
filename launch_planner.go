@@ -31,7 +31,6 @@ import (
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
-	"amagi-codebox/internal/wslsupply"
 )
 
 // launchConfigPort is the narrow read-only interface over config.ConfigService
@@ -467,8 +466,6 @@ resolve:
 		effects = append(effects, launchplan.EffectSpec{
 			Kind: launchplan.EffectWSLConfigSupply,
 			WSLSupply: &launchplan.WSLConfigSupplySpec{
-				CLI:           "opencode",
-				Reason:        string(wslsupply.ReasonLaunch),
 				OpenCodeLayer: &launchplan.OpenCodeLayerSpec{Content: launchplan.SecretBufferRef{Index: 0}},
 			},
 		})

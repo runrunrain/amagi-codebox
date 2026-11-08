@@ -48,10 +48,10 @@ func TestPlanRejectsProcessDuplicationAndOutOfOrderEffects(t *testing.T) {
 }
 
 // TestPlanValidateWSLConfigSupplyEffect（P3-S0）：供给 effect 必须在 PTY 之前
-//（rank 8 < 16）、必须携带 WSLSupply 描述且与其他 spec 互斥。
+// （rank 8 < 16）、必须携带 WSLSupply 描述且与其他 spec 互斥。
 func TestPlanValidateWSLConfigSupplyEffect(t *testing.T) {
 	supply := EffectSpec{Kind: EffectWSLConfigSupply, WSLSupply: &WSLConfigSupplySpec{
-		CLI: "pi", Reason: "launch", Units: []string{"pi/a2-auth"},
+		OpenCodeLayer: &OpenCodeLayerSpec{Content: SecretBufferRef{Index: 0}},
 	}}
 	pty := EffectSpec{Kind: EffectPTYStart, Process: &ProcessStartSpec{Mode: ModeEmbedded}}
 	plan := &Plan{Recipe: StableRecipe{CLIType: contract.CLITypePi, Workdir: "/work"}, Effects: []EffectSpec{supply, pty}}

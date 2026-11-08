@@ -114,20 +114,18 @@ type BootstrapWriteSpec struct {
 	StartupCommand string // canonical startup command (e.g. "claude", "codex")
 }
 
-// WSLConfigSupplySpec 描述一次 WSL 配置供给（P3-S0）：计划只携带待供给描述，
+// WSLConfigSupplySpec 描述一次 WSL 配置供给：计划只携带待供给描述，
 // 不含候选正文与副作用；实际 Inspect/Plan/Apply 在执行器的 Apply 阶段经
 // wslsupply 协调器执行，顺序在 PTY 之前。Distro 为空表示 Apply 时解析默认
-// distro（与 PTY 构建同源），保证计划纯读零 spawn。Units 为 wslsupply 单元 id
-// （S0 生产仅 "pi/a2-auth"）。
+// distro（与 PTY 构建同源），保证计划纯读零 spawn。现役生产形态是
+// OpenCodeLayer（Pi 的供给单元已随「WSL 内 Pi 共享 Windows agent 根」退役；
+// shared 小文件与 claude/codex 键级单元的启动补漏在 PTY effect 内执行）。
 type WSLConfigSupplySpec struct {
 	Distro string
-	CLI    string
-	Reason string
-	Units  []string
-	// OpenCodeLayer（P3-S2）：非空时本 effect 额外在目标 distro 准备 OpenCode
+	// OpenCodeLayer（P3-S2）：非空时本 effect 在目标 distro 准备 OpenCode
 	// 附加层（MCP 形态检查 + 写入 ~/.config/opencode/amagi-codebox.json +
 	// OPENCODE_CONFIG 重锄到后续 PTY effect 的 env）。层内容含 apiKey，经计划
-	// 的 SecretBuffer 生命周期管理；Units 为层专属时可空（层即供给描述）。
+	// 的 SecretBuffer 生命周期管理。
 	OpenCodeLayer *OpenCodeLayerSpec
 }
 
