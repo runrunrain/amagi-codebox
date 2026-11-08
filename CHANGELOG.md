@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.125] - 2026-11-08
+
+### Fixed
+
+- **WSL 转发 pi Web UI 端口与令牌**：环境变量白名单精确放行 `AMAGI_WEBUI_PORT` 与 `AMAGI_WEBUI_TOKEN`，不开放 `AMAGI_` 前缀避免内部标记泄漏；补充 WSLENV 转发回归测试，验证 Web UI 变量传入 WSL 且内部变量被排除。
+- **发布工作流锁定 Wails 版本**：Wails CLI 改用 go.mod 锁定版本安装，修复 latest CLI 已要求 Go 1.26 而构建基线为 Go 1.25 的漂移；手动 dispatch 明确 checkout 已有标签并发布到同一标签，支持原标签重建且不移动既有标签。
+
 ## [1.3.124] - 2026-11-01
 
 ### Added
