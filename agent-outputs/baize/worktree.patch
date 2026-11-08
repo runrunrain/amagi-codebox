@@ -1,0 +1,631 @@
+diff --git a/app_wsl_supply.go b/app_wsl_supply.go
+index f4ef18d..9dcc70b 100644
+--- a/app_wsl_supply.go
++++ b/app_wsl_supply.go
+@@ -1530,7 +1530,6 @@ func wslSkillSummary(m *wslsupply.SkillManifest, entry wslsupply.UnitStatus, has
+ 
+ // wslSkillRegisteredState 派生已登记技能的状态面（TrackedProjection 语义）。
+ func wslSkillRegisteredState(entry wslsupply.UnitStatus) (state, detail string, actions []string) {
+-	actions = []string{"preview"}
+ 	switch {
+ 	case entry.Detached:
+ 		return "detached", "已保留 WSL 本地（停跟随）；确认接管可重新启用", []string{"preview", "takeover"}
+diff --git a/app_wsl_unified_test.go b/app_wsl_unified_test.go
+index ad9fee8..62f1b74 100644
+--- a/app_wsl_unified_test.go
++++ b/app_wsl_unified_test.go
+@@ -252,13 +252,6 @@ func unifiedTargetExists(f *unifiedFixture, rel string) bool {
+ 	return err == nil
+ }
+ 
+-func targetMCPServers(t *testing.T, f *unifiedFixture) map[string]any {
+-	t.Helper()
+-	root := readUnifiedTargetJSON(t, f, ".claude.json")
+-	servers, _ := root["mcpServers"].(map[string]any)
+-	return servers
+-}
+-
+ // mcpServerURL 是轮询友好的非致命取值。
+ func mcpServerURL(f *unifiedFixture, name string) (string, bool) {
+ 	root, ok := unifiedTargetJSONOk(f, ".claude.json")
+diff --git a/claude_accounts_facade.go b/claude_accounts_facade.go
+index 7502c18..247565b 100644
+--- a/claude_accounts_facade.go
++++ b/claude_accounts_facade.go
+@@ -224,7 +224,6 @@ func (a *App) claudeOpBegin(kind, requestID, paramsDigest string, generation uin
+ 					}
+ 				}
+ 				evicted = true
+-				break
+ 			default:
+ 				// 运行中：跳过，试次旧者（不放回队尾避免死循环）。
+ 			}
+diff --git a/internal/aiproxy/router/manager.go b/internal/aiproxy/router/manager.go
+index cd4e920..379c875 100644
+--- a/internal/aiproxy/router/manager.go
++++ b/internal/aiproxy/router/manager.go
+@@ -67,8 +67,10 @@ func (b *logBuffer) Write(p []byte) (int, error) {
+ func (b *logBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return string(b.data) }
+ 
+ type process struct {
+-	cmd  *exec.Cmd
+-	job  uintptr
++	cmd *exec.Cmd
++	// job 仅 Windows 的 tie/release（kill-on-close Job Object）使用，其它
++	// GOOS 恒零值；字段按平台使用（build tags 隔离），不能删。
++	job  uintptr //nolint:unused // used on windows only, see process_windows.go
+ 	done chan struct{}
+ 	err  error
+ }
+diff --git a/internal/aiproxy/router/orphan_windows.go b/internal/aiproxy/router/orphan_windows.go
+index 32bcb25..3631270 100644
+--- a/internal/aiproxy/router/orphan_windows.go
++++ b/internal/aiproxy/router/orphan_windows.go
+@@ -44,7 +44,7 @@ func snapshotProcesses() map[uint32]processEntryW {
+ 	if snap == 0 || snap == invalidHandle {
+ 		return nil
+ 	}
+-	defer procCloseHandle.Call(snap)
++	defer func() { _ = closeHandle(snap) }()
+ 	procs := map[uint32]processEntryW{}
+ 	entry := processEntryW{Size: uint32(unsafe.Sizeof(processEntryW{}))}
+ 	next := func(first bool) bool {
+diff --git a/internal/aiproxy/router/process_windows.go b/internal/aiproxy/router/process_windows.go
+index c60ce53..1b03920 100644
+--- a/internal/aiproxy/router/process_windows.go
++++ b/internal/aiproxy/router/process_windows.go
+@@ -3,6 +3,7 @@
+ package router
+ 
+ import (
++	"errors"
+ 	"os"
+ 	"syscall"
+ 	"unsafe"
+@@ -52,6 +53,18 @@ type jobObjectExtendedLimitInformation struct {
+ 
+ func interruptCore(p *os.Process) { _ = p.Kill() }
+ 
++// closeHandle 关闭句柄，失败返回错误。LazyProc.Call 的第三返回值（lastErr）
++// 即使成功也可能非 nil（它反映 GetLastError，成功调用不重置该值），因此
++// 失败只按 BOOL 返回值 r1==0 判定，绝不用 lastErr 当失败信号。清理路径的
++// 调用方按尽力清理惯例显式丢弃（`_ =`，与仓内 windows.CloseHandle 惯例一致）。
++func closeHandle(h uintptr) error {
++	r1, _, _ := procCloseHandle.Call(h)
++	if r1 == 0 {
++		return errors.New("CloseHandle failed")
++	}
++	return nil
++}
++
+ // tie 把内核子进程绑进 kill-on-close 的 Job Object：CodeBox 无论以何种方式退出
+ // （正常关闭、崩溃、被强杀、被更新器替换），Windows 内核都会在最后一个 job
+ // 句柄关闭时连带终止 sing-box，从根上杜绝孤儿占住代理端口。
+@@ -65,7 +78,7 @@ func (p *process) tie() {
+ 	if h == 0 {
+ 		return
+ 	}
+-	defer procCloseHandle.Call(h)
++	defer func() { _ = closeHandle(h) }()
+ 	job, _, _ := procCreateJobObjectW.Call(0, 0)
+ 	if job == 0 {
+ 		return
+@@ -75,7 +88,7 @@ func (p *process) tie() {
+ 	_, _, _ = procSetInformationJobObject.Call(job, jobObjectExtendedLimitInfoClass,
+ 		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info))
+ 	if r, _, _ := procAssignProcessToJobObject.Call(job, h); r == 0 {
+-		procCloseHandle.Call(job)
++		_ = closeHandle(job)
+ 		return
+ 	}
+ 	p.job = job
+@@ -85,7 +98,7 @@ func (p *process) tie() {
+ // 再触发终止）；CodeBox 自身异常退出时句柄由内核回收，正好触发连带终止。
+ func (p *process) release() {
+ 	if p.job != 0 {
+-		procCloseHandle.Call(p.job)
++		_ = closeHandle(p.job)
+ 		p.job = 0
+ 	}
+ }
+diff --git a/internal/claudeaccounts/fakes_test.go b/internal/claudeaccounts/fakes_test.go
+index f4ee09e..86c0cda 100644
+--- a/internal/claudeaccounts/fakes_test.go
++++ b/internal/claudeaccounts/fakes_test.go
+@@ -336,12 +336,6 @@ func (f *fakeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+ 	return handler(req)
+ }
+ 
+-func (f *fakeTransport) callCount() int {
+-	f.mu.Lock()
+-	defer f.mu.Unlock()
+-	return len(f.calls)
+-}
+-
+ func httpResponse(status int, body string) *http.Response {
+ 	return &http.Response{
+ 		StatusCode: status,
+diff --git a/internal/claudeaccounts/identity.go b/internal/claudeaccounts/identity.go
+index 4cff013..c0a2f1f 100644
+--- a/internal/claudeaccounts/identity.go
++++ b/internal/claudeaccounts/identity.go
+@@ -83,11 +83,7 @@ func (p *HTTPIdentityProvider) FetchProfile(ctx context.Context, accessToken str
+ 	if parsed.AccountUUID == "" {
+ 		return ProfileIdentity{}, NewErr(ReasonIdentityUnverified, "身份响应缺少账号 UUID")
+ 	}
+-	return ProfileIdentity{
+-		AccountUUID:      parsed.AccountUUID,
+-		OrganizationUUID: parsed.OrganizationUUID,
+-		SeatTier:         parsed.SeatTier,
+-	}, nil
++	return ProfileIdentity(parsed), nil
+ }
+ 
+ // VerifyPairedIdentities 做双 grant 身份配对校验（design §4.2）：两个独立
+diff --git a/internal/claudeaccounts/lock.go b/internal/claudeaccounts/lock.go
+index e3493ed..09f2da2 100644
+--- a/internal/claudeaccounts/lock.go
++++ b/internal/claudeaccounts/lock.go
+@@ -27,12 +27,9 @@ func DefaultPoolMarkerPath() (string, error) {
+ 	return filepath.Join(home, ".amagi-codebox", "claude-accounts.pool-initialized"), nil
+ }
+ 
+-// crossProcessLock 是进程间互斥锁句柄；获取/释放的平台实现见 lock_unix.go
+-// 与 lock_windows.go。
+-type crossProcessLock struct {
+-	path string
+-	file fileHandle
+-}
++// crossProcessLock 是进程间互斥锁句柄；结构体与获取/释放的平台实现见
++// lock_unix.go 与 lock_windows.go（Unix 形态持有锁文件路径，Windows v1
++// 获取一律 unsupported、无需路径字段）。
+ 
+ // release 释放跨进程锁（幂等）。
+ func (l *crossProcessLock) release() {
+diff --git a/internal/claudeaccounts/lock_unix.go b/internal/claudeaccounts/lock_unix.go
+index 83357fb..e3e3d36 100644
+--- a/internal/claudeaccounts/lock_unix.go
++++ b/internal/claudeaccounts/lock_unix.go
+@@ -11,6 +11,12 @@ import (
+ // fileHandle 抽象平台文件句柄。
+ type fileHandle = *os.File
+ 
++// crossProcessLock 是进程间互斥锁句柄（Unix 形态：flock 依赖锁文件路径）。
++type crossProcessLock struct {
++	path string
++	file fileHandle
++}
++
+ // acquireFileLock 用 flock 系统调用获取跨进程互斥锁（design §3.3：使用系统
+ // 调用能力，不引第三方库）。非阻塞；被他人持有时返回 POOL_LOCKED。
+ func acquireFileLock(path string) (*crossProcessLock, error) {
+diff --git a/internal/claudeaccounts/lock_windows.go b/internal/claudeaccounts/lock_windows.go
+index 7690591..40c28fa 100644
+--- a/internal/claudeaccounts/lock_windows.go
++++ b/internal/claudeaccounts/lock_windows.go
+@@ -7,6 +7,12 @@ import "os"
+ // fileHandle 抽象平台文件句柄。
+ type fileHandle = *os.File
+ 
++// crossProcessLock 是进程间互斥锁句柄（Windows v1 形态：获取一律
++// UNSUPPORTED_PLATFORM，永不持有锁文件路径）。
++type crossProcessLock struct {
++	file fileHandle
++}
++
+ // acquireFileLock 在 Windows 上返回 UNSUPPORTED_PLATFORM：设计 §8 规定 v1
+ // macOS only，Windows 的账号池 mutation 一律 unsupported。
+ func acquireFileLock(path string) (*crossProcessLock, error) {
+diff --git a/internal/claudeaccounts/service.go b/internal/claudeaccounts/service.go
+index b97f9b0..3bd0fbb 100644
+--- a/internal/claudeaccounts/service.go
++++ b/internal/claudeaccounts/service.go
+@@ -640,17 +640,5 @@ func projectionsEqual(a, b OwnedProjections) bool {
+ 	return ccOK && idOK && equalJSON(a.PiAnthropic, b.PiAnthropic)
+ }
+ 
+-func bytesEqual(a, b []byte) bool {
+-	if len(a) != len(b) {
+-		return false
+-	}
+-	for i := range a {
+-		if a[i] != b[i] {
+-			return false
+-		}
+-	}
+-	return true
+-}
+-
+ // newRandomID 生成随机 UUID（事务 ID 复用同一生成器）。
+ func newRandomID() (string, error) { return NewLocalAccountID() }
+diff --git a/internal/envcheck/uninstall_tool_test.go b/internal/envcheck/uninstall_tool_test.go
+index fe28c4e..e368c85 100644
+--- a/internal/envcheck/uninstall_tool_test.go
++++ b/internal/envcheck/uninstall_tool_test.go
+@@ -481,12 +481,11 @@ func TestUninstallToolAddsNoExportedServiceMethods(t *testing.T) {
+ 		}
+ 	}
+ 	// The private entry must exist instead (reachable via RunFixAction).
+-	// reflect cannot see unexported methods, so existence is proven by this
+-	// compile-time reference; if the method disappears the build breaks.
+-	var entry func(*Service, CLITool) (*OperationState, error) = (*Service).startUninstallTool
+-	if entry == nil {
+-		t.Fatal("unreachable")
+-	}
++	// reflect cannot see unexported methods, so existence (and the exact
++	// signature) is proven by this compile-time reference; if the method
++	// disappears or changes shape the build breaks. A method value is never
++	// nil, so no runtime nil check is possible or needed.
++	var _ func(*Service, CLITool) (*OperationState, error) = (*Service).startUninstallTool
+ }
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/internal/launcher/wsl_agent_config.go b/internal/launcher/wsl_agent_config.go
+index c4f68e4..7e0217a 100644
+--- a/internal/launcher/wsl_agent_config.go
++++ b/internal/launcher/wsl_agent_config.go
+@@ -142,11 +142,6 @@ func wslEnsurePrivateStagingContext(ctx context.Context, target WSLAgentTarget)
+ 	return uncDir, linuxDir, nil
+ }
+ 
+-// wslEnsurePrivateStaging（旧无 ctx 入口）以 Background 包装 ctx 核心。
+-func wslEnsurePrivateStaging(target WSLAgentTarget) (uncDir, linuxDir string, err error) {
+-	return wslEnsurePrivateStagingContext(context.Background(), target)
+-}
+-
+ // writeWSLAgentFileStaged 是 WSL 侧敏感配置文件的提交原语（SA-06/07，
+ // wsl-goal-closure）：
+ //  1. agent 根先在 distro 内收紧 0700（失败即中止，未写任何字节）；
+diff --git a/internal/launcher/wsl_managed_models_test.go b/internal/launcher/wsl_managed_models_test.go
+index db1eb01..61017a3 100644
+--- a/internal/launcher/wsl_managed_models_test.go
++++ b/internal/launcher/wsl_managed_models_test.go
+@@ -6,22 +6,10 @@ package launcher
+ import (
+ 	"encoding/json"
+ 	"errors"
+-	"os"
+-	"path/filepath"
+ 	"strings"
+ 	"testing"
+ )
+ 
+-func mustWriteFile(t *testing.T, path string, content string) {
+-	t.Helper()
+-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+-		t.Fatal(err)
+-	}
+-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+-		t.Fatal(err)
+-	}
+-}
+-
+ func parseJSONMap(t *testing.T, b []byte) map[string]any {
+ 	t.Helper()
+ 	var m map[string]any
+diff --git a/internal/platform/drvfs_advisory_test.go b/internal/platform/drvfs_advisory_test.go
+index a55e296..83e0aba 100644
+--- a/internal/platform/drvfs_advisory_test.go
++++ b/internal/platform/drvfs_advisory_test.go
+@@ -70,7 +70,6 @@ func TestDrvFSAdvisorySnapshotIsCopy(t *testing.T) {
+ 
+ 	snap := DrvFSAdvisories()
+ 	snap[0].Detail = "mutated"
+-	snap = snap[:0]
+ 
+ 	again := DrvFSAdvisories()
+ 	if len(again) != 1 || again[0].Detail != "" {
+diff --git a/internal/platform/move_no_replace.go b/internal/platform/move_no_replace.go
+index 8aa4cbe..ebd7403 100644
+--- a/internal/platform/move_no_replace.go
++++ b/internal/platform/move_no_replace.go
+@@ -32,12 +32,6 @@ import (
+ 	"os"
+ )
+ 
+-// fmtMoveNoReplaceUnsupported 把底层「无此原语」errno 包装为不支持错误
+-// （保留原始 errno 供诊断）。
+-func fmtMoveNoReplaceUnsupported(err error) error {
+-	return fmt.Errorf("%w: %w", ErrMoveNoReplaceUnsupported, err)
+-}
+-
+ // ErrMoveNoReplaceUnsupported 报告当前 GOOS/文件系统不支持原子 no-replace
+ // 移动。调用方必须按「能力不可用」处理：保留 source 与既有目标，不得退化
+ // 为覆盖式移动。
+diff --git a/internal/platform/move_no_replace_linux.go b/internal/platform/move_no_replace_linux.go
+index 61727db..e574907 100644
+--- a/internal/platform/move_no_replace_linux.go
++++ b/internal/platform/move_no_replace_linux.go
+@@ -3,6 +3,8 @@
+ package platform
+ 
+ import (
++	"fmt"
++
+ 	"golang.org/x/sys/unix"
+ )
+ 
+@@ -17,3 +19,10 @@ func moveNoReplaceOS(source, destination string) error {
+ 	}
+ 	return err
+ }
++
++// fmtMoveNoReplaceUnsupported 把底层「无此原语」errno 包装为不支持错误
++// （保留原始 errno 供诊断）。仅 Linux 实现需要（darwin/windows 有原生原语），
++// 随本文件按平台持有，避免在未使用它的 GOOS 上成为死代码。
++func fmtMoveNoReplaceUnsupported(err error) error {
++	return fmt.Errorf("%w: %w", ErrMoveNoReplaceUnsupported, err)
++}
+diff --git a/internal/wslsupply/a2_consumption_test.go b/internal/wslsupply/a2_consumption_test.go
+index 36a9d9c..4410363 100644
+--- a/internal/wslsupply/a2_consumption_test.go
++++ b/internal/wslsupply/a2_consumption_test.go
+@@ -19,7 +19,6 @@ import (
+ // countingA2 记录 Sync 调用的 A2 适配器。
+ type countingA2 struct {
+ 	inner  A2Adapter
+-	calls  int32
+ 	called *int32
+ }
+ 
+diff --git a/internal/wslsupply/claude_adapter.go b/internal/wslsupply/claude_adapter.go
+index fd17350..cdf5493 100644
+--- a/internal/wslsupply/claude_adapter.go
++++ b/internal/wslsupply/claude_adapter.go
+@@ -30,9 +30,6 @@ const (
+ 	ClaudeJSONFile = ".claude.json"
+ 	// ClaudeSettingsFile：~/.claude/settings.json。
+ 	ClaudeSettingsFile = ".claude/settings.json"
+-
+-	claudeMCPTransform      = "claude-mcp-v1"
+-	claudeSettingsTransform = "claude-settings-v1"
+ )
+ 
+ // ClaudeConfigSource 是 App 注入的 Windows 侧来源（真实文件读取；缺失返回
+diff --git a/internal/wslsupply/codex_adapter.go b/internal/wslsupply/codex_adapter.go
+index 3cf2358..e9db6ad 100644
+--- a/internal/wslsupply/codex_adapter.go
++++ b/internal/wslsupply/codex_adapter.go
+@@ -325,18 +325,6 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
+ 	return out, ""
+ }
+ 
+-func toMapKeys(v any) []string {
+-	m, ok := v.(map[string]any)
+-	if !ok {
+-		return nil
+-	}
+-	out := make([]string, 0, len(m))
+-	for k := range m {
+-		out = append(out, k)
+-	}
+-	return out
+-}
+-
+ func strconvItoa(n int) string { return fmt.Sprintf("%d", n) }
+ 
+ // codexProfileBefore 生成 profile 键的脱敏预览摘要：总键数与其中不导入的
+@@ -369,7 +357,7 @@ func (a *codexConfigAdapter) AdoptCandidate(ctx context.Context, target TargetRe
+ func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRef, state *StateEntry, adopt bool) (ProjectionCandidate, error) {
+ 	// SA-11：Detached 只阻断普通供给路径；显式「预览后确认接管」（adopt=true，
+ 	// 协调器已过 CAS/同怠门）是唯一声明的恢复入口，必须放行重建基准（与 Pi
+-	// 键级适配器同构；接管成功后 recordProjectionState 重建条目即解除 Detached）。
++	// 键级适配器同构；接管成功后 Register 闭包经 registerProjectionEntryIn 重建条目即解除 Detached）。
+ 	if state != nil && state.Detached && !adopt {
+ 		return ProjectionCandidate{}, errors.New("unit is detached (keep-local); takeover required to re-enable")
+ 	}
+diff --git a/internal/wslsupply/coordinator.go b/internal/wslsupply/coordinator.go
+index a33e218..cc5955a 100644
+--- a/internal/wslsupply/coordinator.go
++++ b/internal/wslsupply/coordinator.go
+@@ -798,15 +798,6 @@ func (c *Coordinator) applyWithdrawal(ctx context.Context, target TargetRef, pla
+ 	return res
+ }
+ 
+-// withdrawnUnpersistedResult 构造「副本已处理但登记未落盘」的降级结果
+-// （PR05）：撤回的用户可见目标（密钥副本移除）已达成，但清单未持久化——
+-// 不报 applied 成功；下次运行会幂等重确认（already-absent / 重新撤回）。
+-func (c *Coordinator) withdrawnUnpersistedResult(planned PlannedUnit, werr error) UnitResult {
+-	return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitWarnDegraded,
+-		Detail: "withdrawn-state-unpersisted",
+-		Err:    fmt.Errorf("target copy withdrawn but state registration failed to persist (re-runs re-confirm idempotently): %w", werr)}
+-}
+-
+ // recordProjectionWithdrawn 登记撤回终态：清空写入基准（下次发布按首次发布
+ // 判定），保留同意/选择集/停跟随等跨写入字段。PR05：返回持久化错误。
+ // PR01：撤回确认副本已移除——同时清除该 distro 的 v1 迁移遗留风险标记。
+@@ -944,18 +935,6 @@ func resolveLegacyEvidenceIn(st *StateFile, unit UnitID, targetKey, disposition
+ 	}
+ }
+ 
+-// recordProjectionState 更新投影单元登记（独立登记路径；提交路径经
+-// CommitRequest.Register 同次保存）。
+-func (c *Coordinator) recordProjectionState(target TargetRef, unit UnitID, policy Policy, sourceHash, writtenHash, transformVersion string, subs map[string]SubHash, outcome string) error {
+-	err := c.state.mutate(func(st *StateFile) {
+-		registerProjectionEntryIn(st, target, unit, policy, sourceHash, writtenHash, transformVersion, subs, outcome)
+-	})
+-	if err != nil {
+-		logWarn(c.log, "wslsupply", "投影单元状态登记失败（内容已提交，下次视为待核实）", err.Error())
+-	}
+-	return err
+-}
+-
+ // recordProjectionPendingConsent 把「待同意」态写入登记（Consented=false，
+ // LastOutcome=awaiting-consent）；授权后由 GrantUnitConsent 覆写。基线字段
+ // （Subs/SelectedKeys/hash）仅同代保留——跨代复制会把旧代键级基准泄漏到
+@@ -986,7 +965,7 @@ func (c *Coordinator) recordProjectionPendingConsent(target TargetRef, unit Unit
+ 
+ // recordProjectionFreeze 把冻结态写入登记（仅同代保留既有 hash/同意标记/
+ // 键级基准/选择集/停跟随标记，仅置 Frozen 与原因）；后续成功写入时由
+-// recordProjectionState 的全新条目清除冻结。F-1（S2 diting）：Subs 必须
++// registerProjectionEntryIn 的全新条目清除冻结。F-1（S2 diting）：Subs 必须
+ // 保留——键级单元的部分键冻结不得摧毁其余健康键的登记（否则下轮全部沦为
+ // unmanaged-existing，永久停跟随）。
+ func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, policy Policy, reason string) {
+diff --git a/internal/wslsupply/intent_store.go b/internal/wslsupply/intent_store.go
+index ad4459b..4041fea 100644
+--- a/internal/wslsupply/intent_store.go
++++ b/internal/wslsupply/intent_store.go
+@@ -12,7 +12,6 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
+-	"sort"
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+@@ -204,14 +203,6 @@ func (r *observationRegistry) record(ob OperationObservation) {
+ 	}
+ }
+ 
+-// latestForUnit 返回目标+单元的最新观察（深复制）。
+-func (r *observationRegistry) latestForUnit(targetKey string, unit UnitID) (OperationObservation, bool) {
+-	r.mu.Lock()
+-	defer r.mu.Unlock()
+-	ob, ok := r.latest[obUnitKey(targetKey, unit)]
+-	return ob, ok
+-}
+-
+ // forOp 返回某操作的观察（深复制）。
+ func (r *observationRegistry) forOp(opID string) (OperationObservation, bool) {
+ 	r.mu.Lock()
+@@ -220,18 +211,6 @@ func (r *observationRegistry) forOp(opID string) (OperationObservation, bool) {
+ 	return ob, ok
+ }
+ 
+-// snapshot 返回全部观察的深复制（GetStatus 合并用）。
+-func (r *observationRegistry) snapshot() []OperationObservation {
+-	r.mu.Lock()
+-	defer r.mu.Unlock()
+-	out := make([]OperationObservation, 0, len(r.byOp))
+-	for _, ob := range r.byOp {
+-		out = append(out, ob)
+-	}
+-	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+-	return out
+-}
+-
+ func obUnitKey(targetKey string, unit UnitID) string { return targetKey + "|" + string(unit) }
+ 
+ // recordObservation 是协调器侧入口（同步写注册表）。
+diff --git a/internal/wslsupply/plugins.go b/internal/wslsupply/plugins.go
+index f104e4e..996265c 100644
+--- a/internal/wslsupply/plugins.go
++++ b/internal/wslsupply/plugins.go
+@@ -1287,7 +1287,7 @@ func (p *PluginScope) runInstall(ctx context.Context, target TargetRef, op Plugi
+ 		return fail(PluginErrVerifyFailed, fmt.Sprintf("实体版本 %q 与锚定版本 %q 不一致", facts.version, pinned))
+ 	}
+ 	if spec.Type == "git" && refKind == string(PluginRefGitCommit) && facts.commit != "" && facts.commit != pinned {
+-		return fail(PluginErrVerifyFailed, fmt.Sprintf("实体 HEAD 与锚定 commit 不一致"))
++		return fail(PluginErrVerifyFailed, "实体 HEAD 与锚定 commit 不一致")
+ 	}
+ 	entry := PluginStateEntry{
+ 		Source: replaySource, Identity: identity, SourceType: spec.Type, Generation: target.Generation,
+diff --git a/internal/wslsupply/probes.go b/internal/wslsupply/probes.go
+index 0fb0e28..a1e307d 100644
+--- a/internal/wslsupply/probes.go
++++ b/internal/wslsupply/probes.go
+@@ -62,14 +62,7 @@ func DefaultProbes() Probes {
+ 	}
+ }
+ 
+-// logInfo/logWarn 是 nil 安全的日志出口。
+-func logInfo(log Logger, scope, msg, detail string) {
+-	if log == nil {
+-		return
+-	}
+-	log.Info(scope, msg, detail)
+-}
+-
++// logWarn 是 nil 安全的日志出口。
+ func logWarn(log Logger, scope, msg, detail string) {
+ 	if log == nil {
+ 		return
+diff --git a/internal/wslsupply/review_fixes_test.go b/internal/wslsupply/review_fixes_test.go
+index fde8f1f..fbb3308 100644
+--- a/internal/wslsupply/review_fixes_test.go
++++ b/internal/wslsupply/review_fixes_test.go
+@@ -183,8 +183,10 @@ func TestReviewFixPR01LegacySensitiveRiskPending(t *testing.T) {
+ 		if res := runUnit(t, c2, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
+ 			t.Fatalf("publish: %+v", res.Results[0])
+ 		}
+-		if !c2.LegacySensitiveCopyPending("Ubuntu") {
+-			// 发布后风险已由当前受管状态接管（标记清除是合法终态）。
++		// 发布后风险已由当前受管状态接管（与上一子测试同语义：成功写入必须
++		// 接管并清除 v1 遗留风险标记——本子测试随后的撤回才会清零）。
++		if c2.LegacySensitiveCopyPending("Ubuntu") {
++			t.Fatal("successful publish must take over the legacy risk marker before withdrawal")
+ 		}
+ 		// 关闭宿主导出 → 撤回确认副本移除 → 无任何遗留风险。
+ 		c3, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
+diff --git a/internal/wslsupply/skills.go b/internal/wslsupply/skills.go
+index e1616a9..bb1aee9 100644
+--- a/internal/wslsupply/skills.go
++++ b/internal/wslsupply/skills.go
+@@ -453,12 +453,3 @@ func (c *Coordinator) applySkillPlanned(ctx context.Context, target TargetRef, u
+ 			Err:    fmt.Errorf("unsupported skill action: %d", unit.Action)}
+ 	}
+ }
+-
+-// skillIncompatDetail 把不兼容项拼为脱敏明细行（相对路径 + 原因）。
+-func skillIncompatDetail(items []SkillIncompat) []string {
+-	out := make([]string, 0, len(items))
+-	for _, it := range items {
+-		out = append(out, fmt.Sprintf("%s：%s", it.RelPath, it.Reason))
+-	}
+-	return out
+-}
+diff --git a/internal/wslsupply/skills_submit.go b/internal/wslsupply/skills_submit.go
+index c892f5f..9e0978c 100644
+--- a/internal/wslsupply/skills_submit.go
++++ b/internal/wslsupply/skills_submit.go
+@@ -553,19 +553,6 @@ func relDirsOf(rel string) string {
+ 	return rel[:i]
+ }
+ 
+-// reserveHiddenName 在 parent 下保留一个唯一隐藏名（先 MkdirTemp 占位再删除，
+-// rename 落位）。失败返回错误。
+-func reserveHiddenName(parent, pattern string) (string, error) {
+-	d, err := os.MkdirTemp(parent, pattern)
+-	if err != nil {
+-		return "", err
+-	}
+-	if err := os.Remove(d); err != nil {
+-		return "", err
+-	}
+-	return d, nil
+-}
+-
+ // chmodTree 批量 distro chmod 补偿（文件 644 / 目录 755；分批防命令行超长）。
+ // relDir 是目标相对目录（如 "skills/foo"、".claude/commands/foo"）。
+ func (c *Coordinator) chmodTree(ctx context.Context, target TargetRef, relDir string, files []skillWriteFile, dirs map[string]bool) error {
+diff --git a/internal/wslsupply/toml_edit.go b/internal/wslsupply/toml_edit.go
+index 488d4e6..aecddbe 100644
+--- a/internal/wslsupply/toml_edit.go
++++ b/internal/wslsupply/toml_edit.go
+@@ -268,11 +268,10 @@ func parseTOMLKV(lines []string, idx int, currentPath []string, scopeSet map[str
+ 		if !scopeSet[currentPath[0]] {
+ 			return "", nil, 0, nil // 非受管表内的键值：不解析
+ 		}
+-		kp, kerr := splitTOMLKeyPath(keyPart)
+-		if kerr != nil {
++		// 表内键值只需可解析校验；path 仅在根键分支消费，此处不构建。
++		if _, kerr := splitTOMLKeyPath(keyPart); kerr != nil {
+ 			return "", nil, 0, fmt.Errorf("key in managed table: %w", kerr)
+ 		}
+-		path = append(append([]string{}, currentPath...), kp...)
+ 	}
+ 	// 值解析（多行数组逐行拼接直到可完整解析或耗尽）。
+ 	joined := strings.TrimSpace(line[eq+1:])
+diff --git a/launch_planner.go b/launch_planner.go
+index 627ba11..8849d15 100644
+--- a/launch_planner.go
++++ b/launch_planner.go
+@@ -859,7 +859,6 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
+ 				},
+ 			},
+ 		})
+-		hasConfigMutation = false
+ 	} else if hasConfigMutation {
+ 		secrets = launchplan.NewEphemeralSecretBundle(configBuf)
+ 		effects = append(effects, launchplan.EffectSpec{

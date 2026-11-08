@@ -1,0 +1,4 @@
+{"id":"461f73fd","role":"user","paths":[],"sourceDigest":"10b8c0e1c96f7b3731e80ce8b41bf64dd19ce0ad5d22f7ec87b7ed62ca5ab39b"}
+Windows 是统一配置入口；选择 WSL 后，应用在 Linux 中运行，但不需要用户重新配置。允许后台存在必要的兼容副本
+同时通过该应用安装或者升级时，会同步安装或者升级Linux 版应用
+使用编排模式实现

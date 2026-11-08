@@ -1,0 +1,44 @@
+{"id":"251364f8","role":"user","paths":[],"sourceDigest":"c4c5db8ac48280a0fd3184fc6e343b6e10d4e6de0357498c2b180e306bc999c4"}
+[task_submit 完成 baize/7a8bf586] 状态: done｜任务: 「只读调查：用户讨论 Windows 设备选择 WSL 模式启动会话时，能否加载 Windows 」
+# 结论索引（三态：观察 O / 推断 I / 未覆盖 U）
+
+| # | 主张 | 态 | 锚点 |
+|---|------|----|------|
+| 1 | WSL 模式 = 在 distro 内跑 **Linux 原生 CLI，独立 npm 安装**（非调 Windows exe） | O | `internal/platform/resolver.go:126-171`；`internal/wslsetup/service.go:14-19`；`docs/user/faq.md:164` |
+| 2 | 配置不直读 Windows，而是**托管分发副本**：启动惰性刷新 + 保存推送 + 键级导入 | O | `internal/launcher/wsl_agent_config.go:1-33`；`app_wsl_supply.go:174-186`；`app_wsl_supply_s4.go:118-133` |
+| 3 | 凭据两条通道：env **实时跨界**（WSLENV 白名单）；文件副本（auth.json 双向同步/同意门） | O | `internal/platform/wsl.go:419-449`；`internal/launcher/wsl_pi_login_sync.go:1-25`；`internal/wslsupply/coordinator.go:333-373` |
+| 4 | 副本内 Windows 路径/命令被 wslpath、npx.cmd→npx 转换；**数据文件经 /mnt/c 仍共享** | O | `app_wsl_supply_s4.go:123-157`；`internal/launcher/wsl_opencode_mcp.go:9,38` |
+| 5 | 「WSL 零副本直读 Windows 配置」无实现；且有工程约束证据反对 | O+I | `internal/platform/wsl_home.go:14-18`；`app_drvfs_advisory.go:1-9`；`launch_workdir.go:31-34` |
+| 6 | 「从 WSL 调 Windows CLI」（interop）无支持，设计明确相反 | O | `resolver.go:126-146`（短路理由即“CLI 仅装在 WSL 是核心场景”） |
+
+## 三个讨论问题的简要回答
+
+**① 当前 WSL 是否独立 CLI 与配置？** 是，但配置是**受管镜像而非孤儿副本**。CLI（claude/opencode/codex/pi）经 envcheck「WSL 内的 CLI」卡片以 npm 包装进 distro（`wslsetup/service_windows.go:148-217`）；配置由 CodeBox 单向投影到 distro `$HOME`（pi/omp `~/.pi/agent/models.json`、opencode `~/.config/opencode/amagi-codebox.json`、Claude/Codex 键级导入+skills/commands 选中复制，`resources.go:1-10`），插件不复制实体、在 distro 内原生重放 `pi install`（`plugins.go:1-13` 规则2）。用户不需要手工维护第二份——启动时自动补漏/刷新。
+
+**② 复用 Windows 配置的边界在哪？** 实时复用的只有：API key/代理/CLAUDE_/PI_ 等**环境变量**（WSLENV 每次启动注入，无副本落盘，`wsl.go:419-426`）与 pi OAuth `auth.json`（双向新者为准同步，`wsl_pi_login_sync.go:6-16`）。其余均为**转换后的副本**：MCP server 路径转 /mnt/c、settings 只导白名单标量（permissions/hooks/env 明确排除，`claude_adapter.go:49-66`），`.claude.json` 的 projects 等机器状态“永不跨界”（`claude_adapter.go:41-43`）。
+
+**③ 完全不装 Linux CLI 的语义差别？** 那只能走 WSL interop 调 Windows exe（`claude.exe` 在 Windows 文件系统上读 Windows 配置）——仓库无此路径，且与现有架构相反（resolver 短路 + wslsetup 安装卡）。直读方案还有实证约束：9P/UNC 写入无 POSIX 权限位（0600 不可表达，`wsl_home.go:14-18`）、DrvFS 挂载有性能/行为 advisory（`app_drvfs_advisory.go:1-9`）、跨界 env 中 Windows 盘符路径值必须剥离（`wsl_agent_config.go:30-35` 证据 B3/T6）——这三点均与“把 HOME/配置指到 /mnt/c 直读”冲突。
+
+## 可行性结论（推断，供下游裁决）
+- 用户目标中“**效果上不重复维护配置**”：已基本实现（托管分发自动化），差距只在副本语义带来的延迟/冻结边界（WSL 手改冻结、启动才刷新）。
+- 字面目标“**WSL 会话直接加载 Windows 侧配置文件**”：未实现；需新增 HOME 重定向/软链或 interop 调 exe 方案，且会绕开现有密钥同意门（`coordinator.go:333-373`）与权限/路径防线，属架构级变更。
+
+**待核验**：U—Windows 实机行为（本次为 macOS 只读仓内调查）；U—agent-outputs 中 p3-config-supply 设计文档全文；U—前端 WSL 供给 UI 细节。
+
+ACHIEVEMENT:
+- 只读调查 WSL 会话启动机制 → resolver.go/wslsetup 证据，未改任何文件 → ✅
+- 区分“Linux CLI 复用 Windows 配置 vs 从 WSL 调 Windows CLI” → 主张 #1/#6 + ③ 段 → ✅
+- 输出可行性/现状/差距/限制并给行号 → 结论索引表 + 三问答 → ✅
+- 不落盘长报告 → 仅对话交付 → ✅
+
+<!--AMAGI:DONE-->
+
+[产物摘要] 改动范围供抽查，非验收替代
+路径基准：主仓 /Users/run.mao/workpace/amagi-codebox
+• 净变化（vs 任务启动快照）：新增 0 · 修改 0 · 删除 0；登记命中 0，窗口内未归因 0，↔sib 0，⚠ext 0
+  基线已有 3 处未提交改动（已入启动快照基准，不计入净变化）；diff 段仍为 vs HEAD 口径。
+• diff（共享树全量口径，无法独立归责；净增量见「任务净变化」段）：无 tracked 改动
+• 未跟踪新文件 3 处（git status ?? 条目，共享树全量口径——本任务写日志缺失）:
+[采集详情] /Users/run.mao/.pi/agent/amagi/artifacts/7a8bf586-e249-4800-825f-26af89a0ed28/evidence.md（按需 read；检查日志仍由回执引用）
+[内核视图 v1] taskId=7a8bf586 stateSeq=9 revision=0 execution=done settlement=ready acceptance=unreviewed 承诺=guarded receipt=receipt-6488aace-a6ba-4a36-acb9-ea12d07dc87e(ready/unreviewed)（sync 返回与后台完成通知同版内核投影，K5a）
+[子任务用量] 入 79.1k 出 10.0k 缓存读 410.6k 缓存写 0 调用 13

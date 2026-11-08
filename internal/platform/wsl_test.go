@@ -89,6 +89,37 @@ func TestShouldForwardToWSL(t *testing.T) {
 	}
 }
 
+// TestAppendWSLENVForwardingWebUI pins the pi Web UI 注入通道：端口与 capability
+// token 必须跨 Windows→WSL 边界（否则 distro 内 pi 自选端口+自生成 token，
+// CodeBox 发现不了 Web 平面）；其它 AMAGI_ 内部键不得顺带泄漏。
+func TestAppendWSLENVForwardingWebUI(t *testing.T) {
+	for _, k := range []string{"AMAGI_WEBUI_PORT", "AMAGI_WEBUI_TOKEN"} {
+		if !ShouldForwardToWSL(k) {
+			t.Errorf("%s must be forwarded to WSL", k)
+		}
+	}
+	for _, k := range []string{"AMAGI_CODEBOX_AI_PROXY", "AMAGI_WEBUI", "AMAGI_WEBUI_OFF"} {
+		if ShouldForwardToWSL(k) {
+			t.Errorf("%s must NOT be forwarded to WSL", k)
+		}
+	}
+	env := appendWSLENVForwarding([]string{"AMAGI_WEBUI_PORT=47001", "AMAGI_WEBUI_TOKEN=tok", "AMAGI_CODEBOX_AI_PROXY=1"})
+	var wslenv string
+	for _, e := range env {
+		if strings.HasPrefix(e, "WSLENV=") {
+			wslenv = e
+		}
+	}
+	for _, want := range []string{"AMAGI_WEBUI_PORT", "AMAGI_WEBUI_TOKEN"} {
+		if !strings.Contains(wslenv, want) {
+			t.Errorf("WSLENV %q missing %s", wslenv, want)
+		}
+	}
+	if strings.Contains(wslenv, "AMAGI_CODEBOX_AI_PROXY") {
+		t.Errorf("WSLENV %q must not carry AMAGI_CODEBOX_AI_PROXY", wslenv)
+	}
+}
+
 // TestShouldForwardToWSLExtraKeys pins the exported forward-face predicate used
 // by the launcher-side pre-forwarding strip (StripWSLHostPathEnv): extra custom
 // keys (envvars.json) join the face case-insensitively, reserved keys never do,

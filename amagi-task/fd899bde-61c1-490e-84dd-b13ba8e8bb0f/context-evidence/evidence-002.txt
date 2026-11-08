@@ -1,0 +1,2 @@
+{"id":"567544dd","role":"assistant","paths":[],"sourceDigest":"ae1ca4cbd0116d331f4e18f707db479e4437c306380ff8135a47c5914f6d7d6c"}
+主上，我先核对 `pi-black` 的安装与 OAuth 刷新链路，区分插件兼容、代理网络和 Pi 本身的问题，再针对根因修复并验证；不会输出认证令牌。

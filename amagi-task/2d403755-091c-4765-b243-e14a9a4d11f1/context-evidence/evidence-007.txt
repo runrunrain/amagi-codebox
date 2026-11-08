@@ -1,0 +1,7 @@
+{"id":"4259cbee","role":"toolResult","toolCallId":"call_8dcfcb2560034f75a542fc5a590d446f|fc_043bb80b48745316016ae7529337c8819ab4c92beca41dd543","paths":[],"sourceDigest":"3adfe6c1715b1e602d9f993b6a25b2e633a57e86f8f14d34f0bb42b2bc0e765a"}
+工具 task_control {}
+[details surfaceVersion=2 viewVersion=1 taskId=7a8bf586-e249-4800-825f-26af89a0ed28 revision=0 execution=done settlement=ready acceptance=accepted 承诺=guarded receiptRef=receipt-8bf32f5f-428e-484c-b455-5694bb0b7de6 nextActions=[] degraded=[]]
+
+[task_control accept 7a8bf586] acceptance=accepted receiptSeq=2（已接受（新回执 receiptSeq=2，沿用证据不重跑；settlement 保持原值））
+[输入归一] receiptId="latest" → 当前回执 receipt-6488aace-a6ba-4a36-acb9-ea12d07dc87e
+[内核视图 v1] taskId=7a8bf586 stateSeq=10 revision=0 execution=done settlement=ready acceptance=accepted 承诺=guarded receipt=receipt-8bf32f5f-428e-484c-b455-5694bb0b7de6(ready/accepted)（sync 返回与后台完成通知同版内核投影，K5a）

@@ -1,0 +1,5 @@
+{"id":"839a543d","role":"user","paths":[],"sourceDigest":"6e9f5d1a9596b3ae53b08074b7d4cc4f45a8a71d309ba151a891067df31f12e7"}
+关联工作路径：/Users/run.mao/workpace/amagi-codebox
+在win设备工作时，若选择wsl模式启动会话，同样可以正确加载win环境中相关配置
+而不是在wsl中独立有一份配置或应用（pi，claudecode等）
+是否可以实现以上需求？先讨论

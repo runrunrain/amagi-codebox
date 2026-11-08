@@ -1,0 +1,42 @@
+{"id":"a6c83949","role":"user","paths":[],"sourceDigest":"b4349c55e6aa2edd95471f125bef1653462aa55e5b75bd94418ef1904f409567"}
+[task_submit 完成 baize/2d403755] 状态: done｜任务: 「实现前定向调查，complex workflow。用户已确认：Windows统一配置入口；WSL」
+报告已落盘：`agent-outputs/workflow/windows-wsl-unified/research.md`
+
+**核心结论**（详见报告结论索引 14 条）：
+
+- **已实现**：五 CLI Windows 安装/升级完整；WSL 四 CLI 手动安装（claude/opencode/codex/pi）；pi/omp/opencode 启动即写 provider 配置；pi 登录凭据双向同步；provider/配置保存推送（single-flight、停机不唤醒）；混合架构预警（含 omp）。
+- **核心缺口**（本轮新增工作量的全部来源）：
+  1. Windows 安装/升级 → WSL **零联动**（envcheck 无任何 wslsetup 调用，唯一桥是搜索工具回调）；
+  2. WSL 侧**无升级路径**（InstallTool 对已装 CLI 短路 AlreadyOK，「重新安装」按钮名不副实）；
+  3. **omp 无 WSL 安装面**——且这是 2026-10-16 主上裁定 B7「关闭不修」的残留，与新需求「五 CLI 全覆盖」**冲突，需主上一句确认撤销**（锚点 `wsl-session-friction/workflow.md:24`）。
+- **最小切片**（3 片，全部复用现有机制）：① wslsetup 补 omp（map 一行 + GetStatus 一项）；② wslsetup 新增 UpdateTool（`npm i -g @latest` + 复用验证链，不改 InstallTool 签名）；③ envcheck 成功路径注入 WSL 同步回调（复制 `SetWSLSearchToolsInstaller` 注入模式，App 装配处 `app.go:642-651` 旁接线，失败只告警不污染 Windows 结果）。
+- **风险**：app.go 巨型共享文件需声明精确行段；wailsjs 须再生成不能手改；真机 WSL 行为全部标 U（本会话 macOS 只读）。
+
+ACADEMIC PROTOCOL:
+
+ACADEVEMENT:
+
+| 验收 | 证据 | 状态 |
+|---|---|---|
+| 读 wsl-goal-closure/workflow.md 及相关实现 | workflow.md 全文 + resolver/wslsetup/envcheck/wslsupply/launcher/app_wsl_supply* 定向读取，锚点均在报告 | ✅ |
+| 五 CLI 安装/升级入口→envcheck→wslsupply 链路调查 | 报告 §2.1-2.3，逐链路文件：符号锚点 | ✅ |
+| 发行版选择/启用策略 | 报告 §2.4（DefaultWSLDistro 首个非保留 + 默认 shell 短路） | ✅ |
+| 启动供给/保存推送/剩余手动边界 | 报告 §2.5-2.7（分层矩阵 + 7 项手动清单） | ✅ |
+| 最小实现切片建议（文件/符号/测试/冲突/风险） | 报告 §4 三切片，含接缝选型与验证基线 | ✅ |
+| 区分已实现/缺失/未验证；注释不冒充可用 | §5 三态汇总；全部主张带代码行号锚点；真机项标 U | ✅ |
+| 禁止安装/升级 CLI、不改用户配置、不改代码 | 全程只读（read/grep/git status），唯一写入是报告文件本身 | ✅ |
+| 报告落位 agent-outputs/workflow/windows-wsl-unified/research.md | 已写入（17.6KB） | ✅ |
+
+<!--AMAGI:DONE-->
+
+[产物摘要] 改动范围供抽查，非验收替代
+路径基准：主仓 /Users/run.mao/workpace/amagi-codebox
+• 净变化（vs 任务启动快照）：新增 1 · 修改 0 · 删除 0；登记命中 0，窗口内未归因 1，↔sib 0，⚠ext 0
+  声明写面 vs 实测：登记 1 处（仓库内 1 · 仓库外 0）→ 命中 0；未命中 1（内容未变或被 git 忽略不可见）
+  未归因/仅兄弟登记的变化不能视为本任务独立产出。
+  基线已有 4 处未提交改动（已入启动快照基准，不计入净变化）；diff 段仍为 vs HEAD 口径。
+• diff（任务写面登记 1 处，登记覆盖有限；相对 HEAD（含派发前已有改动），净增量见净变化段）：无 tracked 改动
+• 未跟踪新文件 1 处（git status ?? 条目 ∩ 本任务写面登记；共享树其余未跟踪改动不列入）:
+[采集详情] /Users/run.mao/.pi/agent/amagi/artifacts/2d403755-091c-4765-b243-e14a9a4d11f1/evidence.md（按需 read；检查日志仍由回执引用）
+[内核视图 v1] taskId=2d403755 stateSeq=9 revision=0 execution=done settlement=ready acceptance=unreviewed 承诺=guarded receipt=receipt-0981701e-fce7-44af-a4f4-818b5c3bc1f2(ready/unreviewed)（sync 返回与后台完成通知同版内核投影，K5a）
+[子任务用量] 入 191.7k 出 18.1k 缓存读 4329.5k 缓存写 0 调用 56

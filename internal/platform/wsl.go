@@ -434,6 +434,11 @@ var wslENVForwardPrefixes = []string{
 // OPENCODE_CONFIG_CONTENT). The env-content carrier OPENCODE_CONFIG_CONTENT
 // has no OPENCODE_ prefix in the whitelist and never crosses the boundary,
 // which is exactly why the path carrier exists (evidence T4).
+// AMAGI_WEBUI_PORT/AMAGI_WEBUI_TOKEN：pi Web UI 壳集成的端口与 capability
+// token 注入（internal/webui，契约 v1.0.2 §7.2 通道 1）。不转发则 distro 内
+// 的 pi 扩展自选端口 + 自生成 token，且注册表写在 distro 内 ~/.pi（Windows 侧
+// 探测读不到），CodeBox 永远发现不了 Web 平面。只放行这两个精确键，不开放
+// AMAGI_ 前缀（避免 AMAGI_CODEBOX_AI_PROXY 等内部标记泄漏进 Linux 环境）。
 // ALL_PROXY/all_proxy（m-5）：socks 类 scheme 与仅认 ALL_PROXY 的实现依赖它；
 // aiproxy 分流注入同时携带两键，缺它则 distro 内只见 HTTP(S)_PROXY/NO_PROXY。
 // 其值是 URL，经 ShouldForwardToWSL 命中后路径值剥离判据自动生效。
@@ -447,6 +452,9 @@ var wslENVForwardExact = map[string]struct{}{
 	"ALL_PROXY":       {},
 	"all_proxy":       {},
 	"OPENCODE_CONFIG": {},
+
+	"AMAGI_WEBUI_PORT":  {},
+	"AMAGI_WEBUI_TOKEN": {},
 }
 
 // ShouldForwardToWSL reports whether an env key would be listed by

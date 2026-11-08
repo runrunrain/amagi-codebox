@@ -1,0 +1,43 @@
+{"id":"e6de88e2","role":"assistant","paths":[],"sourceDigest":"56d1004b55e7d3f4fe73cce01f07f0eca34e4d6aca8ece044ab13bf3037cc4b4"}
+主上，**可以实现“Windows 统一管理配置，切换 WSL 后无需重新配置”的体验**。但“配置不用维护两份”和“应用也只安装一份”需要分开讨论。
+
+我核对了项目代码，目前已有部分基础，并不是完全从零做。
+
+### 两种需求的区别
+
+| 方向 | 实际效果 | 判断 |
+|---|---|---|
+| **WSL 运行 Linux 版 CLI，复用 Windows 配置** | pi、Claude Code 等仍装在 WSL，但配置由 Windows 统一管理、自动转换供给 | 可行，更符合 WSL 模式的用途 |
+| **WSL 直接调用 Windows 版 CLI** | 不再安装 Linux 版应用，继续读 Windows 配置 | 可以探索，但应用仍是 Windows 进程，不等于原生 WSL 运行 |
+
+第二种尤其要注意：**终端在 WSL，不代表 AI 执行命令、加载插件和访问路径时都获得了 Linux 环境。** Windows CLI 能否可靠使用 WSL 项目、工具链，需要逐个应用验证。
+
+### 项目目前是什么情况？
+
+现在采用第一种路线：
+
+- WSL 内运行独立的 Linux CLI。
+- CodeBox 管理的模型、服务商等配置会向 WSL 供给。
+- 部分配置会做 Windows → Linux 路径、命令转换。
+- Pi 登录凭据已有双向同步逻辑。
+- **并非所有 Windows 原生配置都会完整复用**；Hooks、插件、MCP、机器本地状态等有各自边界。
+
+对应代码主要在：
+`internal/platform/resolver.go`、`internal/launcher/wsl_agent_config.go`。
+
+因此，现有代码已经朝“用户不用维护第二份配置”推进，但不能据此保证所有配置都已覆盖，更没有做本次 Windows 实机验证。
+
+### 我的建议
+
+优先把目标定成：
+
+> **Windows 是统一配置入口；选择 WSL 后，应用在 Linux 中运行，但不需要用户重新配置。允许后台存在必要的兼容副本。**
+
+不建议简单把整个 Windows 配置目录挂给 WSL 直接使用：里面的 Windows 路径、脚本、插件依赖、文件权限未必适用于 Linux，两边同时写登录状态也可能冲突。
+
+**先确认一个关键点：主上更在意哪一种？**
+
+- **A：不想重复维护配置**，可以接受 WSL 自动安装 Linux 版应用、后台生成兼容配置。
+- **B：连应用也不想安装两份**，希望直接复用 Windows 已安装的 pi、Claude Code 等。
+
+如果是 A，现有路线可以继续完善；如果是 B，就需要重新明确“WSL 模式”到底要提供哪些 Linux 能力。

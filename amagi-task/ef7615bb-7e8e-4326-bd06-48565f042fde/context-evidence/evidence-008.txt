@@ -1,0 +1,350 @@
+{"id":"62e259f2","role":"toolResult","toolCallId":"call_7897b1380904491eb75dc320a9088e5a|fc_043bb80b48745316016ae756aef198819ab2ec088940b6592d","paths":[],"sourceDigest":"f85200e39d592694f446fd0ef28210ae4adbeb8851f0402debc3bd57687b3e90"}
+工具 codemode {}
+Script completed
+Wall time 0.1 seconds
+Output:
+
+==> text 1/3 <==
+---
+name: agent-document-output
+description: |
+  Agent文档输出与 artifact 持久化规范。任何 Agent 完成任务、阶段交接、失败中止、报告产出、implementation report、review report、handoff note、save output、document artifact、persist output、metadata.json 写入时都应使用本技能。用于把主文档、metadata、路径命名和索引更新统一落盘。不要用于普通聊天回复、未形成可复用 artifact 的临时说明，或替代具体业务技能的执行流程。
+version: "3.1"
+author: amagi
+allowed-tools: write read bash
+compatibility: pi
+---
+
+> pi 适配：canonical 资源用 `amagi_resource` 工具按资源 ID 读取（pi 不自动展开 `@` 引用）。SubAgent 是独立 pi 进程，派发由 Leader 经 task_submit 等任务工具完成，协作信息都经 Leader 中转。
+
+# Agent 文档输出
+
+这个技能帮你把工作成果落成下游能直接接手的文档。好的 artifact 让下一位 Agent 不必重新调查一遍：它按路径回源，就能看到你的结论、证据和没做完的部分。
+
+适用于所有五个角色：白泽 baize / 鲁班 luban / 洛神 luoshen / 谛听 diting / 伏羲 fuxi。
+
+## 先看你在哪种场景
+
+| 场景 | 你要做的 | 不用做的 |
+|---|---|---|
+| **派发链内**（你是被 task 派发的 SubAgent，最常见） | ① 把主文档写到任务书给定的路径，保证内容完整；② 终稿按下文「摘要返回格式」声明主文档路径与上游 artifact 引用 | metadata.json：harness 在任务终态自动落盘 `result.md + metadata.json` 到 `<agentDir>/amagi/artifacts/<taskId>/`，并从任务文本自动采集 `upstreamArtifactReferences`（无引用时为空数组）。不必手写、复制或在对话里粘贴它 |
+| **手动/归档场景**（不在派发链内，或 Leader 要求落盘到 projects-memory 归档树） | 按下文 STEP 1–5 落主文档，并手写 metadata.json | — |
+
+两种场景都按 task_tier 决定落盘程度（见 STEP 4）。
+
+## 各角色的主文档
+
+| 角色（归档目录名 = 角色 ID） | 触发时机 | 主文档 | 模板 |
+|---|---|---|---|
+| 白泽（`baize/`） | 证据收集、事实供给完成 | `research-report.md` | templates/explorer-report.md |
+| 鲁班（`luban/`） | 实现闭环完成（代码/测试/文档/迁移/Git 收尾） | `self-test-report.md`（可按产物带 `test-report.md`/`document.md` 等副文档） | templates/coder-self-test.md |
+| 洛神（`luoshen/`） | 视觉/体验实现与走查完成 | `design-impl-report.md` | 按任务类型选或新建 |
+| 谛听（`diting/`） | 审核（quick/full）完成 | `review-report.md` | 按任务类型选或新建 |
+| 伏羲（`fuxi/`） | 设计态方向 / 攻坚态根因 / 反思态沉淀完成 | `design-doc.md` / `reflection-report.md` | 按任务类型选或新建 |
+
+角色 ID 与 harness 写入 metadata 的 `agent` 字段、任务派发用的角色名一致；角色卡 frontmatter 的 `name`（explorer/coder/designer/reviewer/architect）只是功能别名，不作目录名。历史目录（explorer/coder/designer/reviewer/architect、puti，以及 writer/optimizer/manager/thinker/tester/researcher/master 等旧岗位）仍可读，不必迁移；新产出按上表五个目录归档。旧产物类型（如 commit-summary、research-findings）归入对应主文档或作为副文档。
+
+---
+
+## 执行步骤（手动/归档场景）
+
+### STEP 1：推导路径
+
+1. 从当前工作路径向上查找 `projects-memory/projects/registry.json`，它所在的目录就是 WORKSPACE_ROOT。
+2. 派生：
+   - PROJECTS_MEMORY_ROOT = {WORKSPACE_ROOT}/projects-memory
+   - PROJECTS_DIR = {PROJECTS_MEMORY_ROOT}/projects
+   - PROJECT_META_ROOT = {PROJECTS_DIR}/{activeProject}
+3. 从 {PROJECTS_DIR}/registry.json 读 activeProject 和 projectPath。
+4. 向上找不到 registry（不在 projects-memory 工作区）时，PROJECT_META_ROOT 取任务工作目录（项目根），即落 `<项目根>/agent-outputs/...`。
+
+路径都从当前位置推导，不写死绝对路径——这样换机器、换工作区时同一份流程照样可用。
+
+### STEP 2：生成任务 ID
+
+- 时间戳：`YYYYMMDD-HHmmss`（如 20260115-143000）
+- 任务简述：kebab-case（如 analyze-combat-system，命名建议见 reference/naming-conventions.md）
+- 任务 ID：`{timestamp}-{task-brief}`
+
+### STEP 3：创建输出目录
+
+`{PROJECT_META_ROOT}/agent-outputs/{角色 ID}/{task-id}/`（角色 ID 见上表，如 `fuxi`），用 `mkdir -p "<完整路径>"` 创建。任务书给了路径时以任务书为准；execution-plan、workflow 等技能规定了自己的目录时以该技能为准。
+
+### STEP 4：按 task_tier 写主文档和 metadata
+
+| tier | 主文档 | metadata.json | plan-registry.json |
+|------|--------|---------------|---------------------|
+| simple | 不强制（Leader 显式要求 `output_form=落盘` 时写） | 不强制 | 跳过 |
+| medium | 落盘 | 落盘（完整字段） | 跳过 |
+| complex | 落盘 | 落盘（完整字段） | 执行 STEP 5 |
+
+- `task_tier` 由 Task Contract 或派发上下文携带（定义见 `resources/core/collaboration/workflow-rules.md`）。缺失时按 **medium** 处理——宁可多留一份文档，也不让下游无据可查。
+- Leader 显式要求落盘时，任何 tier 都落盘（Leader 的意图优先）。
+- simple 档被要求落盘时，最小 metadata 即可：`taskId` / `timestamp` / `agent` / `projectId` / `taskBrief` / `status`。
+- simple 档不落盘时，对话摘要里的「Artifact 路径」可省。
+
+### STEP 5：更新计划注册表（仅 complex 档的 requirement-analysis / execution-plan）
+
+只在输出类型是 requirement-analysis 或 execution-plan **且** `task_tier=complex` 时执行；其他情况跳过。注册表让后续任务能快速找到当前生效的计划。
+
+1. 读 `{PROJECT_META_ROOT}/agent-outputs/plan-registry.json`；不存在就以空数组 `[]` 新建，继续往下走。
+2. 把同 `type` 下所有 `status: "active"` 的条目改为 `"superseded"`。
+3. 在末尾追加新条目：
+   ```json
+   {
+     "id": "{type}-{timestamp}",
+     "type": "requirement-analysis | execution-plan",
+     "path": "主文档实际所在目录（如 {PROJECT_META_ROOT}/agent-outputs/execution-plan/{task-id}/）",
+     "timestamp": "ISO 8601格式时间戳",
+     "status": "active",
+     "summary": "关键摘要（200 字内）",
+     "phases": [],
+     "relatedPlanId": ""
+   }
+   ```
+   - requirement-analysis 的 `phases` 为 `[]`；
+   - execution-plan 的 `phases` 形如 `[{"phase": "Phase 1: xxx", "taskCount": N, "status": "pending"}]`；
+   - `relatedPlanId` 填另一类型的当前活跃条目 id（如有）。
+4. 写回文件。
+
+summary 控制在 200 字内、每条记录 500 字内，保持注册表轻量易读。summary 建议包含：
+
+| 类型 | summary 内容 |
+|------|----------------|
+| requirement-analysis | 问题定义一句话、子需求数量、P0 需求列表、关键技术约束 |
+| execution-plan | 总 Phase 数、总任务数、关键里程碑、预估工时 |
+
+---
+
+## 目录结构
+
+所有路径基于 WORKSPACE_ROOT（从当前路径向上推导），不是项目代码路径。目录名用角色 ID（baize/luban/luoshen/diting/fuxi）。
+
+```
+{PROJECT_META_ROOT}/agent-outputs/
+  ├── baize/{timestamp}-{task-brief}/          -- 白泽
+  │   ├── research-report.md
+  │   └── metadata.json
+  ├── luban/{timestamp}-{task-brief}/          -- 鲁班（测试/文档/Git 收尾产物也放这里）
+  │   ├── self-test-report.md
+  │   └── metadata.json
+  ├── luoshen/{timestamp}-{task-brief}/        -- 洛神
+  │   ├── design-impl-report.md
+  │   └── metadata.json
+  ├── diting/{timestamp}-{task-brief}/         -- 谛听（quick/full 同目录）
+  │   ├── review-report.md
+  │   └── metadata.json
+  └── fuxi/{timestamp}-{task-brief}/           -- 伏羲（设计/攻坚/反思三态）
+      ├── design-doc.md / reflection-report.md
+      └── metadata.json
+```
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| {WORKSPACE_ROOT} | 向上查找 projects-memory/projects/registry.json 所在目录 | /Users/user/workspace |
+| {PROJECT_META_ROOT} | {WORKSPACE_ROOT}/projects-memory/projects/{project-id} | /Users/user/workspace/projects-memory/projects/zhanzhai |
+| {project-id} | registry.json 的 activeProject | zhanzhai |
+| {timestamp} | YYYYMMDD-HHmmss | 20260115-143000 |
+| {task-brief} | kebab-case 任务简述 | analyze-combat-system |
+| {reflection-id} | REF-{timestamp} | REF-20260115-143000 |
+
+---
+
+## metadata.json 格式（手动/归档场景）
+
+派发链内的 metadata 由 harness 写（字段见 `reference/metadata-schema.md` 的 harness 托管段），这里是手写场景用的格式：
+
+```json
+{
+  "taskId": "{timestamp}-{task-brief}",
+  "timestamp": "2026-01-15T14:30:00Z",
+  "agent": "baize|luban|luoshen|diting|fuxi",
+  "projectId": "zhanzhai",
+  "taskBrief": "任务简述",
+  "status": "completed|in-progress|failed",
+  "upstreamArtifactReferences": [
+    "引用的上游 artifact 完整路径（如 requirement-analysis、architecture-design 文档）"
+  ],
+  "validationEvidence": {
+    "buildStatus": "passed|failed|not_applicable",
+    "testStatus": "passed|failed|not_applicable",
+    "browserVerification": "verified|not_applicable",
+    "commands": [
+      {"command": "执行的验证命令", "exitCode": 0, "summary": "结果摘要"}
+    ]
+  },
+  "tags": ["标签1", "标签2"],
+  "relatedFiles": ["相关文件路径"],
+  "nextSteps": {
+    "suggestedAgent": "下一个Agent",
+    "suggestedAction": "建议的下一步行动"
+  }
+}
+```
+
+必填：taskId、timestamp、agent、projectId、taskBrief、status、upstreamArtifactReferences（没有上游引用就写空数组）。时间戳统一用上面的格式，下游检索和排序都依赖它。旧岗位目录的历史 metadata 读侧兼容，字段见 reference/metadata-schema.md。
+
+---
+
+## 验证证据怎么写
+
+写清命令和关键输出，让下游能重跑或核对。一句「已验证」下游没法复核；写明“跑了什么、在哪跑、结果如何”，你的结论才站得住。没跑或跑不通的，如实写出来同样有价值。
+
+| 类型 | 记录方式 | 常见于 |
+|------|---------|-----------|
+| 命令验证 | 命令、工作目录、退出状态、关键输出摘要 | 所有执行命令的 Agent |
+| 结构检查 | 检查脚本、匹配规则、命中数量 | 鲁班、洛神 |
+| 浏览器验证 | 页面、操作步骤、观察结果、截图路径 | 洛神、谛听 |
+| 只读调研 | 读取路径、行号或 URL、未覆盖范围 | 白泽 |
+| 禁改文件检查 | 禁改文件的匹配结果 | 谛听、伏羲（反思态） |
+
+各角色通常需要的验证：
+
+| 角色 | 验证重点 |
+|-------|---------|
+| 鲁班 | 编译/构建、功能测试、边界测试 |
+| 洛神 | 真实浏览器交互验证（工具按任务选）、关键状态覆盖（加载/空/错误/成功） |
+| 谛听 | 审核清单完成度、问题分级、关键命令抽检 |
+| 伏羲 | 设计决策完整性、接口一致性；反思态另附真实证据与可迁移性说明 |
+| 白泽 | 文件覆盖范围、信息完整性声明 |
+
+---
+
+## SubAgent 摘要返回格式
+
+完整报告放在 artifact 文件里，对话只返回摘要和路径。这样上下文保持轻量，下游也总能回源看到全文。
+
+```markdown
+## 摘要
+- [3-5 句话说明完成内容、核心判断、是否达成验收]
+
+## Artifact 路径
+- {output_artifact_full_path}
+
+## 引用上游 artifact
+- {upstream_artifact_path_1}
+
+## 验证/自检结果
+- 构建：PASS/FAIL/不适用，{命令与关键输出}
+- 测试：PASS/FAIL/不适用，{命令与关键输出}
+- 自检：PASS/FAIL，{失败项说明}
+
+## 建议下一步
+- [交给 Leader 判断的后续动作]
+```
+
+Artifact 路径和上游引用两节请都保留：下游 Agent 靠这两样回源和追溯，缺了只能重新调查一遍。
+
+---
+
+## 遇到问题时
+
+| 情况 | 处理 |
+|------|----------|
+| 找不到 registry.json / WORKSPACE_ROOT 推导失败 | 确认当前目录在项目工作区内（向上存在 projects-memory/projects/registry.json）；派发链内可直接用任务书给的路径 |
+| 项目 ID 读取失败 | 检查 registry.json 的存在和 JSON 格式 |
+| 目录创建失败 | `mkdir -p` 确保父目录存在，再看权限与路径拼写 |
+| metadata.json 格式错误 | 用 `node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' <file>` 之类的方式校验 |
+| 上游 artifact 缺失 | 把缺失清单记进 metadata.json 或报告，照常保存当前输出 |
+
+---
+
+## 参考资源
+
+- 元数据 Schema：reference/metadata-schema.md
+- 命名约定：reference/naming-conventions.md
+- Task Contract 派发模板：`resources/core/collaboration/subagent-mode.md`
+- Artifact Contract 规则：`resources/core/collaboration/workflow-rules.md`
+- 验证证据规范：`resources/core/common/quality-standards.md`
+==> text 2/3 <==
+---
+name: execution-plan
+description: |
+  执行计划制定技能。complex/P0 或用户明确要求多阶段计划时使用；medium 由 Leader 判断；simple 禁用。把已澄清需求拆成可并行执行、可追溯、可验收的完整切片。
+  触发词：制定执行计划、拆 Phase、任务清单、implementation plan、execution plan。
+  不要用于：需求仍模糊、单步小修、直接编码或代替执行计划本身。
+version: "2.0"
+author: amagi
+compatibility: pi
+---
+
+# 执行计划
+
+产物是**可直接派发的任务图**，不是代码、实现过程或固定模板填空。一份好计划让 Leader 能逐行生成任务书、一次批量派发，省掉反复澄清。
+
+先读 requirement-analysis artifact、现有设计/代码证据与项目约定。文件、接口、工时都以证据为准；拿不准的标成“未知/待确认”，比猜一个数更有用。
+
+## 规划原则
+
+- 一个任务 = 一个 Agent 可一次调查、实现并自验的完整纵向切片；不按分钟、文件或“实现→审核”切碎。
+- 每个切片写明：需求编号、目标、Agent、scope/非目标、required artifacts、输出、前置依赖、可执行验收、验证、worktree 判断。
+- 无真实依赖的节点同一批并行；B 必须消费 A 的数据/契约/文件时才串行。仅共享写入冲突时用 worktree，不以串行掩盖冲突。
+- 复用现有方向。仅父任务缺少方向且有公共契约/核心模型/不可逆跨模块取舍时，安排一次 fuxi 设计态，共享同一 artifact；攻坚/反思态要显式指定。
+- 仅高风险大阶段在全部实现、集成、验证后安排一次 diting（快审 #qreview）；低风险由 Leader 验收。少量 findings Leader 直修，问题多合并一个修复批次；Critical/Major 或范围实质变化才允许一次增量复审。
+- 不把反思沉淀、文档、提交、全量回归设为固定尾链；由需求与风险触发。
+
+## 输出结构
+
+```markdown
+# 执行计划
+
+## 基线
+- 目标：
+- 输入 artifact：
+- 范围 / 非目标：
+- 总验收：
+
+## Phase N：{阶段名}
+目标：{阶段结束时的可观察状态}
+协作：{批量并行 | 串行依赖 | group/DAG}
+集成 Gate：{证据与进入下一阶段条件}
+
+| ID | 需求 | 完整切片 / Agent | 前置依赖与输入 | 输出 | 验收与验证 | 隔离 |
+|---|---|---|---|---|---|---|
+| P1-A | R1 | … / luban | 无；… | changed files + artifact | 命令/场景与预期 | 否 |
+
+## 专家预算
+| 父任务/大阶段 | fuxi | diting | 触发证据 |
+|---|---|---|---|
+
+## 风险与回滚
+| 风险/触发条件 | 影响 | 预防、验证或回滚 |
+|---|---|---|
+
+## 需求追溯
+| 需求 ID | 任务 ID | 验收证据 |
+|---|---|---|
+```
+
+## Task Contract 可生成性检查
+
+计划中的每一行，最好能直接生成派发契约：
+- **Target**：具体文件/符号或可定位范围，以及明确非目标。
+- **Change**：行为、接口、状态和迁移要求；不替执行者虚构实现细节。
+- **Acceptance**：可由执行者运行的命令/真实场景与预期结果。
+- **Contract**：并行切片共享的接口、schema、路径和所有权在批次前定下来，并行节点才不会各自猜一套。
+- 写操作注明先定位并读取现状；失败先诊断原错。项目级 lint/全套测试统一放在阶段集成后跑，切片中途只跑相关测试——并行节点各自跑全套会互相抢资源，也容易撞上兄弟节点的中间态。
+
+## 模式选择
+
+- **批量 SubAgent**：默认；独立切片共享 context，一次派发。
+- **串行 SubAgent**：后一切片必须消费前一产物。
+- **group/DAG**：多节点依赖、统一 Gate 或取消传播确有价值时；仍无成员 P2P/递归。
+- **Leader 直做**：信息完备、工作量小、风险可由当前验证覆盖。
+
+## 持久化
+
+正式计划保存到：
+`agent-outputs/execution-plan/{timestamp}-{task-brief}/execution-plan.md`（相对项目根；projects-memory 工作区为 `{PROJECT_META_ROOT}/…`）
+
+随后按 `agent-document-output` 规则更新 `plan-registry.json`，至少记录文档路径、Phase/任务数、各 Phase 状态和需求追溯。若任务只要求对话内简要计划且未启用项目知识体系，不制造空 registry。
+
+## 完成检查
+
+- 每条需求映射到至少一个任务与验收证据；非目标明确。
+- 任务切片完整，Agent/依赖/artifact/验收/隔离均明确。
+- 并行度来自依赖图；没有为专家 Gate 制造叶子循环。
+- 风险与回滚对应具体触发条件；未知项如实标出。
+- 计划只规划，不执行其中步骤。
+==> text 3/3 <==
+{"output":"?? agent-outputs/baize/\n?? amagi-task/7a8bf586-e249-4800-825f-26af89a0ed28/\n?? amagi-task/fd899bde-61c1-490e-84dd-b13ba8e8bb0f/\na2_consumption_test.go\na2.go\nclaude_adapter.go\nclaude_config_test.go\ncodex_adapter.go\ncodex_config_test.go\ncommit_recovery_test.go\ncommit.go\ncompensation.go\nconsistency_fixes_test.go\ncoordinator_test.go\ncoordinator.go\ncore_security_regression_test.go\ncore_staging_e2e_windows_test.go\nintent_store.go\nkeyed.go\nlegacy_assess.go\nlegacy_evidence_test.go\nmanaged_models.go\noperation.go\npi_config_test.go\npi_config.go\npi_shapes.go\nplugins_api.go\nplugins_ctx_test.go\nplugins_test.go\nplugins.go\nprobes.go\nprojection_test.go\nprojection.go\nreconcile.go\nresources_test.go\nresources.go\nreview_fixes_test.go\nrunner.go\ns1_adapters_test.go\ns1_e2e_windows_test.go\ns1_fix_round_test.go\ns3_skills_e2e_windows_test.go\ns4_e2e_windows_test.go\nselection_keys_test.go\nshared_files.go\nskills_scan_test.go\nskills_scan.go\nskills_submit.go\nskills_test.go\nskills.go\nstate.go\nsubmit_primitive_test.go\ntoml_edit_test.go\ntoml_edit.go\ntransform_test.go\ntransform.go\ntypes.go\nwsl_supply_e2e_windows_test.go\n20261017-envcheck-repair\nanthropic-preset-harness-sync\nfix-extensions-flash-and-wsl-pi-config\npi-webui\nprovider-center-layout-redesign\nremote-real-sessions-fix\nremote-webui-plane\nwsl-goal-closure\nwsl-session-friction\n","truncated":false,"exit_code":0,"wall_time_seconds":0.1}

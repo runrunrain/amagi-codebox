@@ -1,0 +1,15 @@
+{"id":"82995cec","role":"toolResult","toolCallId":"call_f320c2a9b81b452096140f93fbf3a85a|fc_043bb80b48745316016ae751c7f3d8819aa805fd093af82d80","paths":[],"sourceDigest":"887c0131f5da7a2c23df8810175096244e97c23c81cd501af8295bb84dfa23b1"}
+工具 task_submit {}
+[details surfaceVersion=2 viewVersion=1 taskId=7a8bf586-e249-4800-825f-26af89a0ed28 revision=0 execution=running settlement=pending acceptance=unreviewed 承诺=guarded nextActions=[observe,cancel] degraded=[]]
+
+[task_submit 7a8bf586 baize · handle 已启动] 完成后自动通知（无需轮询；期间可并行推进无关任务）
+上下文: selected · 任务交接 v2 · 1 条 · 549B · 估算 163 tokens · sha256:9ae532a605f3（过滤 deny=0/凭据来源=0/来源未知=0/来源变化=0/噪音行=0/重复=0/预算=0/长行预算外移=0）
+[验证预检] 已解析入口（非通过）：go test ./...；cwd=.；来源=go.mod；runner解析=system。
+验证策略: objectMode=snapshot，dependencyMode=copy-local，allowSharedFallback=true；当前有效对象模式=snapshot。
+依赖根: 已发现本地捕获根；捕获完整性和期间漂移仍为 unknown。
+资源环境: 未声明；宿主 NODE_OPTIONS 等资源环境不继承，使用 runner/Node 默认。
+写面 runner: 非 node --test 直跑/无 scripts.test，不安全构造子集，保守全量。
+测试预算: 120000ms（来源=defaults）；预算是否足够须实际执行才能确定。
+项目预算配置片段（当前值，核实后合并到 amagi.json；不自动写入）：{"evidenceTimeouts":{"testMs":120000}}。如需固定已探测入口（声明后执行完整入口，不再构造写面子集），核实后可合并：{"verification":{"testCommand":{"argv":["go","test","./..."]}}}；运行环境与预算仍需核实。
+捕获、依赖冻结、runner 运行时与任务完成后的写面子集：未验证（unknown）；是否执行还取决于任务结果与实际代码产物。预检不产生检查事实，不改变 required/missing。
+句柄: 7a8bf586-e249-4800-825f-26af89a0ed28（wait/cancel 用 task_control；三轴用 task_query）

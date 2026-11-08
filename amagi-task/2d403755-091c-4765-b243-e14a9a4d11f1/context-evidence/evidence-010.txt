@@ -1,0 +1,65 @@
+{"id":"c6225a95","role":"toolResult","toolCallId":"call_8b9b9698f7d34e6d850ea32a8c5e2bce|fc_043bb80b48745316016ae756a807ac819a8b4b5cd65d14db05","paths":["/Users/run.mao/workpace/amagi-pi/skills/workflow/SKILL.md"],"sourceDigest":"e9cbaa5cd1b9c3dc523fda61610eea64ce1d779e1092b609f6e9c2ebe2aa52dc"}
+工具 read {"path":"/Users/run.mao/workpace/amagi-pi/skills/workflow/SKILL.md"}
+---
+name: workflow
+description: |
+  workflow 模式编排技能——面向大需求、复杂问题和疑难 Bug 的活计划。Leader 按真实依赖编写、执行并修订 workflow；不是固定流水线。
+  触发词：用 workflow、编排一下、团队开发、自主跑、自主运行、大需求、复杂问题攻坚、疑难 Bug、"不用问我"、"跑完再说"、"我去睡了"。
+  不要用于：单步小任务、日常问答、一个 Agent 可独立闭环的任务。
+version: "1.0"
+author: amagi
+compatibility: pi
+---
+
+# workflow 模式
+
+目标：用最少的阶段和 Gate（阶段间的验收关口）管理真实依赖、并行切片、artifact 与验收。workflow 是你自己的导航图：它让你在长任务和上下文压缩之后，仍能一眼看清哪些做完了、哪些在等什么。需要细则时按需读取：
+- 路由/专家预算/Artifact Contract：`resources/core/collaboration/workflow-rules.md`
+- Task Contract：`resources/core/collaboration/subagent-mode.md`
+- group/DAG：`resources/core/collaboration/agent-teams-mode.md`
+- 模板：`templates/workflow-template.md`
+
+## 何时建立 workflow
+
+任务确实有多个阶段、多个完整交付切片或阶段 Gate 时再建。一个 Agent 就能调查、实现并自验的任务，直接分派更快——流程本身也有维护成本，只在它帮得上忙时使用。
+
+建议路径：`agent-outputs/workflow/{task-brief}/workflow.md`（相对项目根；projects-memory 工作区为 `{PROJECT_META_ROOT}/…`）。这是活文档：事实或依赖变了就顺手修订并记一句原因，比收尾时凭记忆补写准确得多。
+
+## 最小结构
+
+1. **目标与总验收**：用户可观察的完成定义。
+2. **Phase 表**：每个阶段的目标、完整切片、执行 Agent、依赖、输入/输出 artifact、可执行验收、状态。
+3. **跨边界链路清单**：文件边界≠调用链边界。横跨切片的运行时链路逐条列谁→谁/传什么关键身份与状态/失败路径/端到端责任（现有节点或 Leader 集成批，不加 Agent）/真实用户入口验收证据；无跨界填不适用+一句理由。
+4. **并行与隔离**：无真实依赖的切片同一 `task_batch` 批量；共享写入有冲突才 worktree；有数据/契约依赖才串行。
+5. **专家 Gate**：父任务无方向且有重大跨模块取舍时 fuxi 设计态一次（攻坚/反思态要显式指定）；高风险大阶段集成并验证后 diting 一次。专家节点挂在父任务或大阶段上，不必给每个叶子切片复制一份。
+6. **自治级别**：`interactive` 或 `unattended`。
+7. **风险、决策与修订日志**。
+
+每个任务是一次可完成的纵向切片，含 required artifacts、文件/职责边界、验收与自验。按固定时长或“实现→审核”切碎会多出交接和等待，按完整交付切更省。
+
+## 执行循环
+
+1. 读取当前 workflow 与上游 artifact，选择所有已就绪节点。
+2. 将独立节点一次批量派发；等待真实依赖，不串行化可并行工作。
+3. 验收每个回流：artifact、改动与验证证据。少量明确问题 Leader 直修；问题多时合并一次 resume/批量回派。
+4. 阶段集成验证：有跨界链路时，至少一条真实用户入口（UI/CLI/API）端到端用例，不只内部直驱；只有计划标记的高风险阶段才进 diting。
+5. 更新状态、决策与偏差，继续下一批；blocked 节点不妨碍无依赖节点。
+6. 最后逐条对照总验收，列出 met / partial / missed；可补救项合并成一个批次。
+
+## Artifact 与上下文
+
+- 终态回流由运行时归档到 `<agentDir>/amagi/artifacts/<taskId>/`；workflow 记录路径，不复制长报告。
+- Gate 需要的 artifact 缺失时，把节点标为 blocked 并写明缺什么；摘要替代不了 required artifact，下游需要的是可回源的原文。
+- 主会话只保留决策、状态和短证据；长输出落盘。压缩后先读 workflow 当前状态就能接上，不必重读全部历史。
+- 任务书输出路径派发前展开为具体文件名（如 c2a-report.md），不留未展开的占位符——子 Agent 会照字面落盘，占位符容易变成断掉的路径；batch 可用 nodes[].reportPath 注入。
+
+## unattended
+
+主上明确“不用问/跑完再说”时：
+- 需要确认的歧义，采用最安全、最小范围的解释并记下决策；不可逆、且没有安全解释的动作仍标 blocked，留给主上回来定。
+- 优先级：安全 > 正确性 > 可维护性 > 性能；质量、验证和专家预算不降级。
+- 关键阻塞记录后继续无依赖节点；最终单列自主决策与未完成项。
+
+## 收口输出
+
+执行摘要；Phase/任务状态与 artifact；总验收矩阵；实际验证；阻塞/未覆盖（partial/missed 如实列出，这正是主上最需要的信息）；unattended 决策；changed files。反思沉淀（fuxi 反思态）、文档、提交仅在真实需要或主上要求时追加，不作为固定尾链。

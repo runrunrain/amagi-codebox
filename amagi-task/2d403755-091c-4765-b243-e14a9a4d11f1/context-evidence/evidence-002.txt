@@ -1,0 +1,2 @@
+{"id":"5ea84c5e","role":"assistant","paths":[],"sourceDigest":"4a1054e66c54b92eee81c3e22a405500d2e5e758d9879bfafd34b7bb083d0b06"}
+主上，我先核对项目里 WSL 启动和配置加载的实现，再讨论哪些配置能直接复用、哪些需要做兼容转换；先不改代码。
