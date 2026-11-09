@@ -49,9 +49,19 @@ type WSLSharedSkillsLinkResult struct {
 	Detail  string // 失败原因/备注
 }
 
-// wslSharedSkillsScript 在 distro 内核验/修复受管符号链接。
+// wslSharedSkillsScript 在 distro 内核验/修复受管符号链接（事务化：不跟随
+// 目标目录的原子发布 + 唯一备份槽 + 终验）。
 // 输出行：OK-LINKED / BACKED-UP:<path> / REPLACED-LINK / LINKED /
-// FAIL-MKDIR / FAIL-MOVE / FAIL-RM / FAIL-LN（TARGET-MISSING 为附注行）。
+// FAIL-MKDIR / FAIL-BACKUP-SLOT / FAIL-MOVE / FAIL-MOVE-LOST / FAIL-RM /
+// FAIL-LN / FAIL-PUBLISH / FAIL-VERIFY（TARGET-MISSING 为附注行）。
+//
+// 并发安全（R1-F01/F02）：
+//   - 发布不用 `ln -s T L`——L 已是目录符号链接时 ln 会穿透把链接写进目标
+//     目录（宿主技能根）内；改为临时名建链后 `mv -T` 原子改名（rename(2)，
+//     不解析目标，竞争者已发布时本次替换为同目标链接，幂等收敛）；
+//   - 备份槽不覆用：同秒碰撞时追加序号寻空槽，`mv -n` 不覆写已存在目的，
+//     事后校验前像确实落位（no-clobber 静默让位则 FAIL-MOVE-LOST 如实报错）；
+//   - 终验 readlink——任何路径下未确认指向目标一律 FAIL-*，不冒充成功。
 func wslSharedSkillsScript(linuxTarget string) string {
 	t := wslShQuote(linuxTarget)
 	return strings.Join([]string{
@@ -60,16 +70,37 @@ func wslSharedSkillsScript(linuxTarget string) string {
 		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
 		`mkdir -p "$HOME/.agents" 2>/dev/null || { printf 'FAIL-MKDIR\n'; exit 1; }`,
 		`if [ -e "$L" ] && [ ! -L "$L" ]; then`,
-		`  B="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S)"`,
-		`  mv "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		`  B=""`,
+		`  i=0`,
+		`  while [ "$i" -lt 50 ]; do`,
+		`    C="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$i"`,
+		`    if [ ! -e "$C" ]; then B="$C"; break; fi`,
+		`    i=$((i+1))`,
+		`  done`,
+		`  if [ -z "$B" ]; then printf 'FAIL-BACKUP-SLOT\n'; exit 1; fi`,
+		`  mv -n "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		`  if [ ! -e "$B" ]; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
 		`  printf 'BACKED-UP:%s\n' "$B"`,
 		`elif [ -L "$L" ]; then`,
 		`  rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
 		`  printf 'REPLACED-LINK\n'`,
 		`fi`,
-		`ln -s "$T" "$L" || { printf 'FAIL-LN\n'; exit 1; }`,
-		`if [ ! -d "$T" ]; then printf 'TARGET-MISSING\n'; fi`,
-		`printf 'LINKED\n'`,
+		`N="$HOME/.agents/.skills-link.$$.tmp"`,
+		`rm -f "$N"`,
+		`ln -s "$T" "$N" || { rm -f "$N"; printf 'FAIL-LN\n'; exit 1; }`,
+		`if mv -T "$N" "$L" 2>/dev/null; then`,
+		`  :`,
+		`else`,
+		`  rm -f "$N"`,
+		`  if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
+		`  printf 'FAIL-PUBLISH\n'; exit 1`,
+		`fi`,
+		`if [ "$(readlink "$L")" = "$T" ]; then`,
+		`  if [ ! -d "$T" ]; then printf 'TARGET-MISSING\n'; fi`,
+		`  printf 'LINKED\n'`,
+		`else`,
+		`  printf 'FAIL-VERIFY\n'; exit 1`,
+		`fi`,
 	}, "\n")
 }
 
@@ -96,10 +127,15 @@ func WSLEnsureSharedAgentsSkillsLink(distro, hostSkillsDir string) WSLSharedSkil
 		res.Detail = "非 Windows 宿主不适用"
 		return res
 	}
-	// 目标路径须经 distro 内 wslpath 实测翻译（存在才算数——不盲信所有
-	// distro 都挂 /mnt，与 WSLTranslatePaths 同口径）。
-	mapped := WSLTranslatePaths(distro, hostSkillsDir)
+	// 目标路径须经 distro 内 wslpath 实测翻译；执行失败（distro 不可达等）与
+	//「确认目标不存在」分开报告（R1-F07：不把运行故障冒充宿主缺失）。
+	mapped, terr := wslTranslatePathsCore(distro, hostSkillsDir)
 	linuxTarget := mapped[normalizeWindowsPathKey(hostSkillsDir)]
+	if terr != nil {
+		res.State = WSLSkillsFailed
+		res.Detail = fmt.Sprintf("路径翻译探测失败：%v", terr)
+		return res
+	}
 	if linuxTarget == "" {
 		res.State = WSLSkillsHostMissing
 		res.Detail = "Windows 技能根在 distro 内不可达（不存在或未挂载）"

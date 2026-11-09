@@ -55,8 +55,29 @@ type WSLSharedSkillsRootStatus struct {
 // wslSharedSkillsLinkFn 是共享技能根供给的接缝（生产 platform 实现；测试注入）。
 var wslSharedSkillsLinkFn = platform.WSLEnsureSharedAgentsSkillsLink
 
+var wslSharedSkillsRunMu sync.Mutex
+var wslSharedSkillsRunning = map[string]bool{} // distro → 正在执行（单飞）
+
 // runWSLSharedSkillsRoot 执行一轮核验/修复并登记（funnel 与显式动作共用）。
+// R1-F01：每 distro 单飞——同 distro 并发的会话漏斗/显式检查串行化，后到者
+// 直接复用前者结果（already-linked 幂等收敛）；跨进程安全由 distro 内脚本的
+// 原子发布语义保证（wslSharedSkillsScript 注释）。
 func (a *App) runWSLSharedSkillsRoot(distro string) platform.WSLSharedSkillsLinkResult {
+	wslSharedSkillsRunMu.Lock()
+	if wslSharedSkillsRunning[distro] {
+		wslSharedSkillsRunMu.Unlock()
+		if rec, ok := lookupWSLSharedSkillsRoot(distro); ok {
+			return rec.Res
+		}
+		return platform.WSLSharedSkillsLinkResult{State: platform.WSLSkillsFailed, Link: "~/.agents/skills", Detail: "同 distro 的共享技能根核验正在执行，稍后重试"}
+	}
+	wslSharedSkillsRunning[distro] = true
+	wslSharedSkillsRunMu.Unlock()
+	defer func() {
+		wslSharedSkillsRunMu.Lock()
+		delete(wslSharedSkillsRunning, distro)
+		wslSharedSkillsRunMu.Unlock()
+	}()
 	res := wslSharedSkillsLinkFn(distro, wslSkillsHostRoot())
 	recordWSLSharedSkillsRoot(distro, res)
 	if a != nil && a.Log != nil {
@@ -114,22 +135,15 @@ func (a *App) EnsureWSLSharedSkillsRoot() WSLSharedSkillsRootStatus {
 }
 
 // wslSharedSkillsFace 聚合「共享技能根」卡片（配置状态区第五面；替代已退役
-// 的 P3-S3 技能投影面）。只读缓存，不触发探测。
-func wslSharedSkillsFace() WSLConfigSupplyFace {
+// 的 P3-S3 技能投影面）。只读缓存，不触发探测。R1-F05：只读当前 distro 的
+// 缓存记录（不拿其它 distro 的最新结果冒充本 distro 状态）。
+func wslSharedSkillsFace(distro string) WSLConfigSupplyFace {
 	face := WSLConfigSupplyFace{Key: "skills", Label: "共享技能（Skills）", State: "unchecked", Detail: "尚未检查（启动 WSL pi 会话或点检查后核验符号链接）"}
-	wslSharedSkillsRootMu.Lock()
-	latest := wslSharedSkillsRootRecord{}
-	found := false
-	for _, rec := range wslSharedSkillsRoots {
-		if !found || rec.At.After(latest.At) {
-			latest = rec
-			found = true
-		}
-	}
-	wslSharedSkillsRootMu.Unlock()
+	rec, found := lookupWSLSharedSkillsRoot(distro)
 	if !found {
 		return face
 	}
+	latest := rec
 	face.LastCheck = latest.At.Format(time.RFC3339)
 	switch latest.Res.State {
 	case platform.WSLSkillsAlreadyLinked, platform.WSLSkillsLinked, platform.WSLSkillsBackedUp, platform.WSLSkillsReplacedLink:
@@ -139,7 +153,8 @@ func wslSharedSkillsFace() WSLConfigSupplyFace {
 			face.Detail += "；旧目录已备份"
 		}
 	case platform.WSLSkillsHostMissing:
-		face.State = "unchecked"
+		// R1-F08：已检查但宿主根不可达是独立状态，不与「从未检查」混同。
+		face.State = "host-missing"
 		face.Detail = "Windows 技能根在 distro 内不可达（不存在或未挂载）"
 	case platform.WSLSkillsFailed:
 		face.State = "failed"

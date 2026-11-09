@@ -351,6 +351,7 @@ function faceStateText(state: string): string {
     case 'scanning': return '扫描中'
     case 'incompatible': return '有不兼容项'
     case 'pending-op': return '待确认'
+    case 'host-missing': return '宿主根不可达'
     default: return '未检查'
   }
 }
@@ -358,7 +359,7 @@ function faceBadgeClass(state: string): string {
   switch (state) {
     case 'synced': return 'badge-ok'
     case 'failed': case 'incompatible': return 'badge-missing'
-    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': case 'pending-op': return 'badge-warn'
+    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': case 'pending-op': case 'host-missing': return 'badge-warn'
     default: return ''
   }
 }

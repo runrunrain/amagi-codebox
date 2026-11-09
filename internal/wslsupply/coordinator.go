@@ -1016,8 +1016,8 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 		if entry.Generation != gen {
 			continue // 其它身份分区的登记不串入本目标（SA-02）。
 		}
-		if retiredPiUnit(entry.Unit) {
-			continue // 已退役的 Pi 供给单元：旧状态残留直接忽略，不再展示。
+		if retiredPiUnit(entry.Unit) || retiredSkillUnit(entry.Unit) {
+			continue // 已退役的供给单元（Pi 键级/共享技能投影）：旧状态残留直接忽略，不再展示。
 		}
 		us := UnitStatus{
 			Unit: entry.Unit, Policy: entry.Policy, LastOutcome: entry.LastOutcome,

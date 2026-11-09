@@ -94,7 +94,7 @@ const implementations = {
     version: operation?.result?.wsl?.status === 'succeeded' ? '1.0.1' : '',
   }] }),
   GetWSLConfigSupplyStatus: () => ({ distro: 'Ubuntu', unified: false, faces: [], units: [] }),
-  GetWSLSkillsSupplyStatus: () => ({ available: true, skills: [], scanRunning: false }),
+  EnsureWSLSharedSkillsRoot: () => ({ distro: 'Ubuntu', state: 'unchecked', detail: 'TEST_ONLY_UNCHECKED', checked: false }),
   GetWSLCliSupplyStatus: () => ({ available: true, units: [], resources: { skills: [], scanRunning: false } }),
   GetWSLOpenCodeMCPPreview: () => [],
   GetEnvCheckSnapshot: () => {

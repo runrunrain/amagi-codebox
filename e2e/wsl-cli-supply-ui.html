@@ -47,12 +47,7 @@ const impls = {
   },
   DisableWSLUnifiedSupply: () => { unified = false; },
   GrantWSLVisionConsent: () => null,
-  GetWSLSkillsSupplyStatus: () => ({ ...resStatus }),
-  CheckWSLSkillsSupply: () => ({ ...resStatus }),
-  PreviewWSLSkillsSupply: () => [],
-  ApplyWSLSkillsSupply: () => [],
-  KeepWSLSkillLocal: () => null,
-  TakeOverWSLSkill: () => null,
+  EnsureWSLSharedSkillsRoot: () => ({ distro: 'Ubuntu', state: 'linked', target: '/mnt/c/Users/u/.agents/skills', backup: '', detail: 'TEST_ONLY_LINKED', checked: true }),
   GetWSLCliSupplyStatus: (cli) => ({ distro: 'Ubuntu', available: true, units: cliUnits(cli), resources: { ...resStatus, scanRunning: cli === 'claude' } }),
   PreviewWSLCliConfigSupply: (cli) => [{
     unit: cli === 'claude' ? 'claude/mcp' : 'codex/config',

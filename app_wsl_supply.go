@@ -489,7 +489,7 @@ func (a *App) GetWSLConfigSupplyStatus() WSLConfigSupplyStatus {
 		wslVisionFace(sharedStatus, out.PendingPush),
 		wslFaceFromUnit("modality-kb", "多模态学习层", sharedStatus, wslsupply.UnitSharedModalityKB, out.PendingPush),
 		wslOpenCodeLayerFace(distro),
-		wslSharedSkillsFace(),
+		wslSharedSkillsFace(distro),
 		wslPluginsFace(a),
 	)
 	return out

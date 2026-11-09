@@ -48,7 +48,7 @@ func TestEnsureWSLSharedSkillsRootHappyPath(t *testing.T) {
 	if st.Backup == "" || st.Target != "/mnt/c/Users/u/.agents/skills" {
 		t.Fatalf("backup/target must surface, got %+v", st)
 	}
-	face := wslSharedSkillsFace()
+	face := wslSharedSkillsFace("Ubuntu")
 	if face.Key != "skills" || face.State != "synced" {
 		t.Fatalf("face must be synced, got %+v", face)
 	}
@@ -79,9 +79,13 @@ func TestEnsureWSLSharedSkillsRootNegative(t *testing.T) {
 	if !st.Checked || st.State != string(platform.WSLSkillsHostMissing) {
 		t.Fatalf("host-missing must surface honestly, got %+v", st)
 	}
-	face := wslSharedSkillsFace()
-	if face.State != "unchecked" {
-		t.Fatalf("host-missing face must be unchecked, got %+v", face)
+	face := wslSharedSkillsFace("Ubuntu")
+	if face.State != "host-missing" {
+		t.Fatalf("host-missing face must be its own state, got %+v", face)
+	}
+	// R1-F05：其它 distro 无缓存时不串用本 distro 结果。
+	if face := wslSharedSkillsFace("Debian"); face.State != "unchecked" || face.LastCheck != "" {
+		t.Fatalf("other distro must stay unchecked, got %+v", face)
 	}
 
 	// 无 distro：未检查，不触达 runner。

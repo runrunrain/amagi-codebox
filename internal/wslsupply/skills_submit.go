@@ -9,11 +9,10 @@ package wslsupply
 // 目标路径此刻才存在）→ 读回校验（树 hash 复核）。交换/chmod/校验任一步
 // 失败均恢复前像或删除新增（restorePrev），不留半提交状态。
 //
-// 候选读取总量有界（skillCandidateCap，与前像封顶对齐）：超限报因拒绝供给，
-// 不静默截断。前像快照有界（skillPreimageCap）：超限不快照，撤销按
-// unavailable 处置（诚实标注而非假装可恢复）。目标侧符号链接只可能来自用户
-// 手改（本系统从不写链接）；撤销恢复链接 best-effort，恢复写同样经 chmod
-// 补偿 + 树 hash 读回校验（与主提交原语同构，F7）。
+// 候选读取总量有界（skillCandidateCap）：超限报因拒绝供给，不静默截断。
+// （R1-F04：撤销前像自 1.3.127 起只走持久 prev 树恢复——原「内存快照兜底」
+// 链随 P3-S3 applySkillUnit 退役而不可达，已一并删除；目标侧符号链接只可能
+// 来自用户手改，本系统从不写链接。）
 
 import (
 	"context"
@@ -26,13 +25,12 @@ import (
 	"time"
 )
 
-// skillPreimageCap 是撤销前像快照的内存上限（非密钥文本资产，超限不强留）。
-const skillPreimageCap = 8 << 20
+// skillCandidateCap 是候选读取总量上限（非密钥文本资产，超限不强留）。
 
 // skillCandidateCap 是 Apply 阶段候选读取的总量上限（F5：与前像封顶对齐，
 // 超限报因拒绝供给——不静默截断、不无界读入）。计划阶段同名原因码
 // oversize-skill 先行阻断。
-const skillCandidateCap = skillPreimageCap
+const skillCandidateCap = 8 << 20
 
 // skillChmodBatch 是单次 distro chmod 补偿的路径批量（wsl.exe 命令行长度约束）。
 const skillChmodBatch = 50
@@ -41,16 +39,6 @@ const skillChmodBatch = 50
 type skillWriteFile struct {
 	RelPath string
 	Bytes   []byte
-}
-
-// skillPreimageEntry 是前像树条目（含用户手改可能留下的符号链接与空目录
-// ——空目录不入树 hash 但必须保真：结构丢失不是「内容一致」）。
-type skillPreimageEntry struct {
-	RelPath    string
-	IsLink     bool
-	IsDir      bool
-	LinkTarget string
-	Bytes      []byte
 }
 
 // readSkillCandidateFiles 在 Apply 阶段读取清单条目的源字节并复核 hash
@@ -83,63 +71,6 @@ func readSkillCandidateFiles(m *SkillManifest, limits SkillsScanLimits) ([]skill
 		out = append(out, skillWriteFile{RelPath: e.RelPath, Bytes: data})
 	}
 	return out, nil
-}
-
-// snapshotSkillPreimage 有界读取目标侧现存树作为撤销前像（超限 → snapshot=false）。
-func snapshotSkillPreimage(uncSkillDir string, limits SkillsScanLimits) (entries []skillPreimageEntry, existed, snapshot bool, treeHash string) {
-	st := scanTargetSkillDir(uncSkillDir, limits)
-	if !st.Exists {
-		return nil, false, false, ""
-	}
-	if st.Unverifiable {
-		return nil, true, false, ""
-	}
-	var walk func(dir, relPrefix string, depth int) bool
-	total := int64(0)
-	walk = func(dir, relPrefix string, depth int) bool {
-		des, err := os.ReadDir(dir)
-		if err != nil {
-			return false
-		}
-		for _, e := range des {
-			rel := relPrefix + e.Name()
-			abs := filepath.Join(dir, e.Name())
-			switch {
-			case e.Type()&os.ModeSymlink != 0:
-				// F1：符号链接判定先于 IsDir（Windows 目录形态链接不递归，
-				// 按链接条目快照，恢复时 best-effort 重建）。
-				t, err := os.Readlink(abs)
-				if err != nil {
-					return false
-				}
-				entries = append(entries, skillPreimageEntry{RelPath: rel, IsLink: true, LinkTarget: t})
-			case e.IsDir():
-				before := len(entries)
-				if depth+1 > limits.MaxDepth || !walk(abs, rel+"/", depth+1) {
-					return false
-				}
-				if len(entries) == before {
-					// 空目录：结构保真（不入树 hash；恢复时重建目录本体）。
-					entries = append(entries, skillPreimageEntry{RelPath: rel, IsDir: true})
-				}
-			default:
-				data, err := readFileBounded(abs, limits.MaxFileBytes)
-				if err != nil {
-					return false
-				}
-				total += int64(len(data))
-				if total > skillPreimageCap {
-					return false
-				}
-				entries = append(entries, skillPreimageEntry{RelPath: rel, Bytes: data})
-			}
-		}
-		return true
-	}
-	if !walk(uncSkillDir, "", 0) {
-		return nil, true, false, st.TreeHash
-	}
-	return entries, true, true, st.TreeHash
 }
 
 // skillApplyNotes 生成脱敏附带说明（排除物摘要；不兼容项阻断供给不会走到写入）。
@@ -534,26 +465,18 @@ func (c *Coordinator) compensateSkillDir(h *CompensationHandle) CompensationOutc
 		c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryAvailable, "compensation-pending", "compensate")
 		return out
 	}
-	// 兜底：内存快照重建（有界；prev 树丢失时）。空目录/链接同样保真。
-	if !h.prevSnapshot {
-		out.Disposition = CompensationUnavailable
-		out.Message = "preimage unavailable (persistent prev tree missing and in-memory snapshot unavailable/oversized)"
-		c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryUnavailable, "compensation-pending", "compensate")
-		return out
-	}
-	if err := c.restoreSkillPreimage(h); err != nil {
-		out.Disposition = CompensationUnavailable
-		out.Message = err.Error()
-		c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryAvailable, "compensation-pending", "compensate")
-		return out
-	}
-	return settle("restored")
+	// R1-F04：持久 prev 树是唯一恢复材料（内存快照兜底已随 P3-S3 退役删除）；
+	// prev 材料缺失/不可恢复时如实 unavailable，不臆造恢复。
+	out.Disposition = CompensationUnavailable
+	out.Message = "preimage unavailable (persistent prev tree missing/unrecoverable)"
+	c.recordObservation(h.targetKey, compOpID, h.unit, OpEffectUnknown, OpRegistrationPending, OpRecoveryUnavailable, "compensation-pending", "compensate")
+	return out
 }
 
 // restoreDirFromPersistedPrev 用持久 prev 树恢复目录前像：displace 本次写入
 // 到唯一 compensated 名 → 复验 displaced 是本次写入 → no-replace 发布 prev →
-// 树 hash 复验 → 清理 displaced。prev 材料不存在时返回 (false, "")（调用方
-// 退回快照兜底）；恢复失败返回 (false, message)（两处均保留，不删任何一处）。
+// 树 hash 复验 → 清理 displaced。prev 材料不存在时返回 (false, "")（调用方按
+// unavailable 收口）；恢复失败返回 (false, message)（两处均保留，不删任何一处）。
 func (c *Coordinator) restoreDirFromPersistedPrev(h *CompensationHandle) (bool, string) {
 	if h.displacedRel == "" {
 		return false, ""
@@ -607,109 +530,3 @@ func (c *Coordinator) restoreDirFromPersistedPrev(h *CompensationHandle) (bool, 
 	return true, ""
 }
 
-// skillPreimageRenameFn 是恢复写最后一步 rename 的接缝（生产 os.Rename；
-// 测试注入失败钉住 F2：rename 失败时唯一持久前像必须保留在 staging）。
-var skillPreimageRenameFn = os.Rename
-
-// restoreSkillPreimage 重建前像树：staging 写回（链接条目 best-effort）→
-// 删当前 → rename 落位 → distro chmod 补偿 + 树 hash 读回校验（F7：与主
-// 提交原语同构，不信任 9P 默认位）。rename 失败时**保留 staging 不清理**
-// （F2：那是唯一持久前像副本，清理等于在自身失败路径上销毁它声称保留的
-// 备份）；写入阶段失败才清理 staging。
-func (c *Coordinator) restoreSkillPreimage(h *CompensationHandle) error {
-	parent := filepath.Dir(h.uncPath)
-	staging, err := os.MkdirTemp(parent, ".amagi-supply-skill-*")
-	if err != nil {
-		return fmt.Errorf("restore staging: %w", err)
-	}
-	keepStaging := false
-	defer func() {
-		if !keepStaging {
-			_ = os.RemoveAll(staging)
-		}
-	}()
-	for _, e := range h.prevFiles {
-		if e.IsDir {
-			// 空目录：结构保真重建（不入树 hash，但恢复时不得丢）。
-			unc := filepath.Join(staging, filepath.FromSlash(e.RelPath))
-			if err := os.MkdirAll(unc, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		unc := filepath.Join(staging, filepath.FromSlash(e.RelPath))
-		if err := os.MkdirAll(filepath.Dir(unc), 0o755); err != nil {
-			return err
-		}
-		if e.IsLink {
-			if err := os.Symlink(e.LinkTarget, unc); err != nil {
-				return fmt.Errorf("restore symlink %s: %w", e.RelPath, err)
-			}
-			continue
-		}
-		if err := os.WriteFile(unc, e.Bytes, 0o644); err != nil {
-			return err
-		}
-	}
-	if err := os.RemoveAll(h.uncPath); err != nil {
-		return err
-	}
-	if err := skillPreimageRenameFn(staging, h.uncPath); err != nil {
-		keepStaging = true // F2：唯一持久前像副本保留在 staging，供人工恢复
-		return fmt.Errorf("restore rename: %w (preimage kept in staging %s)", err, filepath.Base(staging))
-	}
-	// F7：恢复写同样经 chmod 补偿 + 树 hash 读回校验（与主提交原语同构）。
-	if err := c.chmodTree(context.Background(), h.target, h.relPath, preimageFiles(h.prevFiles), preimageDirsFor(h.relPath, h.prevFiles)); err != nil {
-		return fmt.Errorf("chmod restored skill tree in distro: %w", err)
-	}
-	got := scanTargetSkillDir(h.uncPath, c.skillLimits())
-	expected := preimageTreeHash(h.prevFiles)
-	if got.Unverifiable || got.TreeHash != expected {
-		return fmt.Errorf("verify restored skill tree: hash mismatch (unverifiable=%v)", got.Unverifiable)
-	}
-	return nil
-}
-
-// preimageFiles 把前像条目转为 chmod 所需的文件载荷（链接无字节，不参与 644）。
-func preimageFiles(prev []skillPreimageEntry) []skillWriteFile {
-	out := make([]skillWriteFile, 0, len(prev))
-	for _, e := range prev {
-		if !e.IsLink {
-			out = append(out, skillWriteFile{RelPath: e.RelPath, Bytes: e.Bytes})
-		}
-	}
-	return out
-}
-
-// preimageDirsFor 汇总前像目录集（单元根 + 各父目录）供 755 补偿。
-func preimageDirsFor(relDir string, prev []skillPreimageEntry) map[string]bool {
-	dirs := map[string]bool{relDir: true}
-	for _, e := range prev {
-		for d := relDirsOf(e.RelPath); d != ""; d = relDirsOf(d) {
-			dirs[relDir+"/"+d] = true
-			if !strings.Contains(d, "/") {
-				break
-			}
-		}
-	}
-	return dirs
-}
-
-// preimageTreeHash 计算前像的规范化树 hash（与 scanTargetSkillDir 同构：链接
-// 条目 hash("link:"+target)，文件条目 size+hash(bytes)；目录条目不入 hash——
-// 与扫描面一致，空目录只作结构保真不参与字节比对）——恢复后读回比对的
-// 期望值。
-func preimageTreeHash(prev []skillPreimageEntry) string {
-	entries := make([]SkillFileEntry, 0, len(prev))
-	for _, e := range prev {
-		if e.IsDir {
-			continue
-		}
-		if e.IsLink {
-			entries = append(entries, SkillFileEntry{RelPath: e.RelPath, Hash: hexHash([]byte("link:" + e.LinkTarget))})
-			continue
-		}
-		entries = append(entries, SkillFileEntry{RelPath: e.RelPath, Size: int64(len(e.Bytes)), Hash: hexHash(e.Bytes)})
-	}
-	return skillTreeHash(entries)
-}

@@ -8,6 +8,15 @@
 
 ## [1.3.130] - 2026-11-09
 
+### Fixed（审核 R1）
+
+- **R1-F01 并发建链穿透**：发布改为「临时名建链 + `mv -T` 原子改名 + readlink 终验」——不再直达 `ln -s "$T" "$L"`（L 已是目录符号链接时会穿透把链接写进 Windows 技能根内）；同 distro 并发在 App 层单飞串行化，后到者复用结果（幂等收敛）。
+- **R1-F02 备份静默覆盖**：前像迁移改用唯一备份槽（同秒碰撞追加序号）+ `mv -n` no-clobber + 落位校验——绝不覆盖既有 `skills.pre-shared.*` 备份，让位竞争如实 `FAIL-MOVE-LOST`。
+- **R1-F03 退役 pending 复活**：退役单元（`pi/*`、`shared/skill/*`）的未决 intent 对账时收口为 `retired-closed`——终结 intent（墓碑留证）但不重建在役登记、不触碰 WSL 侧旧副本；`applyIntentBaseline` 加同口径防线，GetStatus 过滤补齐 `shared/skill/*`。
+- **R1-F04/F07/F08 清理与诚实性**：删除不可达的内存前像快照恢复链（`snapshotSkillPreimage`/`restoreSkillPreimage`/`prevFiles` 兜底，持久 prev 树是唯一恢复材料）；路径翻译探测失败归为 failed（与「确认宿主根不存在」的 host-missing 区分）；host-missing 在状态卡显示独立徽标「宿主根不可达」，不再与「未检查」混同。
+- **R1-F05/F06 面与夹具一致性**：技能 face 只读当前 distro 的核验缓存（不串用其它 distro 结果）；e2e 交互夹具绑定同步退役面并补 `EnsureWSLSharedSkillsRoot`。
+- **R1 覆盖回补**：移植原树单元原语的四个独立回归（目录链接不递归×2、凭据名链接排除、候选读取身份重验）+ 退役 pending 对账回归（含在役单元不受误伤的负例）。
+
 ### Changed
 
 - **WSL 内共享 Windows `~/.agents/skills`（受管符号链接）**：延续 1.3.126「WSL 只提供运行环境」裁定——pi 原生按 Agent Skills 规范扫描 `$HOME/.agents/skills`，新增会话启动漏斗（WSL pi 分支，每进程每 distro 首轮核验）与状态页「检查/修复」动作（`EnsureWSLSharedSkillsRoot`），把 distro 内 `~/.agents/skills` 钉成指向 Windows 技能根（wslpath 实测翻译）的符号链接：幂等、指向别处的旧链接自愈替换、既有真实目录先备份为 `skills.pre-shared.<时间戳>` 再建链、目标经 `WSLTranslatePaths` 存在性验证（不可达如实报 host-missing 不建链）。

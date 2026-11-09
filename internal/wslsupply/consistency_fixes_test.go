@@ -462,8 +462,8 @@ func TestConsistencyResourceAbortRestoresFromPersistedPrev(t *testing.T) {
 	}
 }
 
-// TestConsistencyResourceAbortLargeUserTree：接管大目录（内存快照超限=不可
-// 用）时补偿仍可用持久 prev 树保全用户内容（不得仅依赖内存快照）。
+// TestConsistencyResourceAbortLargeUserTree：接管大目录时补偿用持久 prev 树
+// 保全用户内容（R1-F04：持久 prev 树是唯一恢复材料）。
 func TestConsistencyResourceAbortLargeUserTree(t *testing.T) {
 	c, fp, host := newS4ResourceCoordinator(t)
 	writeHostResource(t, host, filepath.Join("commands", "big", "SKILL.md"), "NEW")
@@ -484,9 +484,6 @@ func TestConsistencyResourceAbortLargeUserTree(t *testing.T) {
 	r, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLIClaude, u, pv[0].TargetHash)
 	if err != nil || r.Undo == nil {
 		t.Fatalf("setup: %+v %v", r, err)
-	}
-	if r.Undo.prevSnapshot {
-		t.Fatal("fixture must exceed the in-memory snapshot cap")
 	}
 	out := c.Compensate(context.Background(), r.Undo)
 	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {

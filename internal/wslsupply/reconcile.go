@@ -28,6 +28,10 @@ const (
 	ReconcileLeased        ReconcileDisposition = "leased"         // 本进程活跃租用：跳过清理
 	ReconcileSaveFailed    ReconcileDisposition = "settle-save-failed"
 	ReconcileSkipped       ReconcileDisposition = "skipped"        // 无法处置（保留全部材料）
+	// R1-F03：退役单元的未决 intent 收口——终结 intent（保全墓碑证据）但不
+	// 重建在役登记、不触碰 WSL 侧旧副本（副本已不受管，由受管符号链接机制
+	// 接管同一棵树的后续生命周期）。
+	ReconcileRetired       ReconcileDisposition = "retired-closed"
 )
 
 // ReconcileReport 是一次 reconcile 的结论摘要。
@@ -131,8 +135,8 @@ func (c *Coordinator) reconcileTargetPath(ctx context.Context, target TargetRef,
 		}
 		disp, detail := c.reconcileIntent(ctx, target, op)
 		switch disp {
-		case ReconcileNotApplied, ReconcileCommitted, ReconcileCleanupResent, ReconcileRemoveDone:
-			continue // 已收敛，可以继续新写
+		case ReconcileNotApplied, ReconcileCommitted, ReconcileCleanupResent, ReconcileRemoveDone, ReconcileRetired:
+			continue // 已收敛（含退役收口），可以继续新写
 		default:
 			return pathReconcileResult{blocked: true, opID: op.OpID, reason: string(disp) + ": " + detail}
 		}
@@ -160,6 +164,22 @@ func (c *Coordinator) leaseActive(opID string) bool {
 func (c *Coordinator) reconcileIntent(ctx context.Context, target TargetRef, op OperationIntent) (ReconcileDisposition, string) {
 	if c.leaseActive(op.OpID) {
 		return ReconcileLeased, "active undo lease in this process"
+	}
+	// R1-F03：退役单元的未决 intent 一律收口——不重建登记（applyIntentBaseline
+	// 亦拒绝退役单元），不动目标侧材料；墓碑保留恢复证据。否则旧 pending 可
+	// 在 prune 后经 committed-unregistered 路径复活退役登记。
+	if retiredPiUnit(op.Unit) || retiredSkillUnit(op.Unit) {
+		if err := c.settleReconciled(op, "retired", nil); err != nil {
+			return ReconcileSaveFailed, err.Error()
+		}
+		// 只终结 intent（墓碑保留为收口证据）；不走 finishMaterials——它会
+		// 清理目标侧 backup/staging/displaced 材料，退役单元的旧副本已不受
+		// 管，不得臆动文件系统。
+		if err := c.state.deleteIntent(op.OpID); err != nil {
+			return ReconcileSaveFailed, err.Error()
+		}
+		c.recordObservation(op.TargetKey, op.OpID, op.Unit, OpEffectCommitted, OpRegistrationConfirmed, OpRecoveryNone, "retired-unit-closed", "reconcile")
+		return ReconcileRetired, "retired unit intent closed without re-registering; WSL-side legacy copy left as-is"
 	}
 	uncPath := absOf(target, op.RelPath)
 	if op.Kind == OpKindRemove || op.Kind == OpKindA2Sync || op.Kind == OpKindPluginOp {
@@ -342,6 +362,11 @@ func (c *Coordinator) settleReconciled(op OperationIntent, disposition string, e
 // 能力」；主清单损坏时禁止从 intent 臆造全部授权）。
 func (c *Coordinator) applyIntentBaseline(st *StateFile, op OperationIntent, target TargetRef) {
 	if op.Unit == "" || op.AfterHash == "" {
+		return
+	}
+	// R1-F03：退役单元永不重建基准登记（对账入口已收口，此处是防线——
+	// 任何新路径都不允许把退役单元重新写回在役清单）。
+	if retiredPiUnit(op.Unit) || retiredSkillUnit(op.Unit) {
 		return
 	}
 	prev := st.entryFor(op.Unit, target.Generation)

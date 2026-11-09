@@ -13,15 +13,29 @@ func TestWSLSharedSkillsScriptShape(t *testing.T) {
 	for _, want := range []string{
 		`L="$HOME/.agents/skills"`,
 		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
-		`mv "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		// R1-F02：唯一备份槽 + no-clobber 迁移 + 落位校验（不静默覆盖旧备份）。
+		`C="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$i"`,
+		`if [ ! -e "$C" ]; then B="$C"; break; fi`,
+		`mv -n "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		`if [ ! -e "$B" ]; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
 		`printf 'BACKED-UP:%s\n' "$B"`,
 		`rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
-		`ln -s "$T" "$L" || { printf 'FAIL-LN\n'; exit 1; }`,
+		// R1-F01：临时名建链 + mv -T 原子发布（不穿透既有目录符号链接写入
+		// 目标目录），发布后 readlink 终验。
+		`ln -s "$T" "$N" || { rm -f "$N"; printf 'FAIL-LN\n'; exit 1; }`,
+		`if mv -T "$N" "$L" 2>/dev/null; then`,
+		`printf 'FAIL-PUBLISH\n'; exit 1`,
+		`if [ "$(readlink "$L")" = "$T" ]; then`,
+		`printf 'FAIL-VERIFY\n'; exit 1`,
 		`printf 'LINKED\n'`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script must contain %q, got:\n%s", want, script)
 		}
+	}
+	// 禁止旧的直达式发布（L 已是目录符号链接时会穿透写入目标目录内）。
+	if strings.Contains(script, `ln -s "$T" "$L"`) {
+		t.Fatalf("script must NOT publish directly onto $L (symlink traversal), got:\n%s", script)
 	}
 	// 目标路径单引号包裹（含空格/中文用户名安全）。
 	if !strings.Contains(script, `T='/mnt/c/Users/demo/.agents/skills'`) {
@@ -54,6 +68,10 @@ func TestParseWSLSharedSkillsLinkResult(t *testing.T) {
 		{"backed-up", "BACKED-UP:/home/u/.agents/skills.pre-shared.20261109\nLINKED\n", WSLSkillsBackedUp, "/home/u/.agents/skills.pre-shared.20261109"},
 		{"replaced", "REPLACED-LINK\nLINKED\n", WSLSkillsReplacedLink, ""},
 		{"fail-ln", "FAIL-LN\n", WSLSkillsFailed, ""},
+		{"fail-backup-slot", "FAIL-BACKUP-SLOT\n", WSLSkillsFailed, ""},
+		{"fail-move-lost", "FAIL-MOVE-LOST\n", WSLSkillsFailed, ""},
+		{"fail-publish", "FAIL-PUBLISH\n", WSLSkillsFailed, ""},
+		{"fail-verify", "FAIL-VERIFY\n", WSLSkillsFailed, ""},
 		{"empty", "", WSLSkillsFailed, ""},
 		{"garbage", "line1\nline2\n", WSLSkillsFailed, ""},
 	}
