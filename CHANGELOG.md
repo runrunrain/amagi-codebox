@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.3.129] - 2026-11-09
+
+### Fixed
+
+- **Claude 账号身份解析兼容真实嵌套响应**：`HTTPIdentityProvider.FetchProfile` 按真实端点返回的嵌套结构（`account.uuid` / `organization.uuid` / `organization_type` / `rate_limit_tier`，与 Claude Code 同源）解析账号/组织 UUID 与席位档位，同时保留早期扁平字段（`accountUuid`/`organizationUuid`/`seatTier`）兼容；席位档位依次回退 `seat_tier` → `organization_type` → `rate_limit_tier`，缺失账号 UUID 仍返回 `IDENTITY_UNVERIFIED`。
+- **发布资产回填修改日志**：release workflow 改为从 CHANGELOG.md 提取对应版本章节作为 Release body（`generate_release_notes` 对单提交直推 tag 只产出 compare 链接，导致更新界面无修改日志）；v1.3.125–v1.3.128 的 Release body 已回填。
+
 ## [1.3.128] - 2026-11-08
 
 ### Added

@@ -250,6 +250,20 @@ func TestIdentityProfileSuccess(t *testing.T) {
 	}
 }
 
+// TestIdentityProfileNestedReal：真实端点嵌套结构 account.uuid / organization.uuid。
+func TestIdentityProfileNestedReal(t *testing.T) {
+	provider := newIdentity(t, func(*http.Request) (*http.Response, error) {
+		return httpResponse(200, `{"account":{"uuid":"uuid-n","email":"a@b.c"},"organization":{"uuid":"org-n","organization_type":"claude_pro","seat_tier":"pro"}}`), nil
+	})
+	id, err := provider.FetchProfile(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	if id.AccountUUID != "uuid-n" || id.OrganizationUUID != "org-n" || id.SeatTier != "pro" {
+		t.Fatalf("解析不符: %+v", id)
+	}
+}
+
 // TestIdentityFailures：403 scope / 401 / 缺 UUID / 坏 JSON → IDENTITY_UNVERIFIED。
 func TestIdentityFailures(t *testing.T) {
 	cases := []struct {

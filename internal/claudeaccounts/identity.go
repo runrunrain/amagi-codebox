@@ -45,7 +45,23 @@ func NewHTTPIdentityProvider(client *http.Client) *HTTPIdentityProvider {
 
 // profileResponse 是响应解析契约。【待实测】字段名以真机验证为准；解析
 // 失败/缺失返回 IDENTITY_UNVERIFIED，不猜测字段。
+//
+// 真实端点返回嵌套结构（Claude Code 同源）：
+//
+//	{"account":{"uuid":"…","email":"…"},
+//	 "organization":{"uuid":"…","organization_type":"claude_pro","rate_limit_tier":"…"}}
+//
+// 同时兼容早期假定的扁平字段（accountUuid/organizationUuid/seatTier）。
 type profileResponse struct {
+	Account struct {
+		UUID string `json:"uuid"`
+	} `json:"account"`
+	Organization struct {
+		UUID             string `json:"uuid"`
+		SeatTier         string `json:"seat_tier"`
+		OrganizationType string `json:"organization_type"`
+		RateLimitTier    string `json:"rate_limit_tier"`
+	} `json:"organization"`
 	AccountUUID      string `json:"accountUuid"`
 	OrganizationUUID string `json:"organizationUuid"`
 	SeatTier         string `json:"seatTier"`
@@ -80,10 +96,30 @@ func (p *HTTPIdentityProvider) FetchProfile(ctx context.Context, accessToken str
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return ProfileIdentity{}, NewErr(ReasonIdentityUnverified, "身份响应不可解析")
 	}
-	if parsed.AccountUUID == "" {
+	out := ProfileIdentity{
+		AccountUUID:      parsed.Account.UUID,
+		OrganizationUUID: parsed.Organization.UUID,
+		SeatTier:         parsed.Organization.SeatTier,
+	}
+	if out.AccountUUID == "" {
+		out.AccountUUID = parsed.AccountUUID
+	}
+	if out.OrganizationUUID == "" {
+		out.OrganizationUUID = parsed.OrganizationUUID
+	}
+	if out.SeatTier == "" {
+		out.SeatTier = parsed.SeatTier
+	}
+	if out.SeatTier == "" {
+		out.SeatTier = parsed.Organization.OrganizationType
+	}
+	if out.SeatTier == "" {
+		out.SeatTier = parsed.Organization.RateLimitTier
+	}
+	if out.AccountUUID == "" {
 		return ProfileIdentity{}, NewErr(ReasonIdentityUnverified, "身份响应缺少账号 UUID")
 	}
-	return ProfileIdentity(parsed), nil
+	return out, nil
 }
 
 // VerifyPairedIdentities 做双 grant 身份配对校验（design §4.2）：两个独立
