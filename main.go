@@ -1,8 +1,11 @@
 package main
 
 import (
+	"amagi-codebox/internal/agentcli/client"
+	"amagi-codebox/internal/agentcli/cmds"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/updater"
+	"context"
 	"embed"
 	"os"
 
@@ -27,6 +30,14 @@ var (
 )
 
 func main() {
+	// agent-CLI 子命令（DESIGN §1）：必须在 updater helper / 单实例互斥 /
+	// NewApp 之前拦截，避免 CLI 路径拉起完整桌面应用。Windows 下先附着父
+	// 控制台再执行（console_attach）。其余平台为空实现。
+	if len(os.Args) > 1 && os.Args[1] == "cli" {
+		platform.AttachParentConsole()
+		os.Exit(client.Run(context.Background(), os.Args[2:], os.Stdin, os.Stdout, os.Stderr, cmds.Table(), Version))
+	}
+
 	if handled, err := updater.MaybeRunWindowsUpdateHelper(os.Args); handled {
 		if err != nil {
 			println("Update error:", err.Error())

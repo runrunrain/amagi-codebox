@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Agent CLI（codebox-agent）**：面向 AI agent 的本机命令行。桌面应用内置回环随机端口 + 一次性令牌的命令服务（`internal/agentcli`），业务命令只走运行中的应用、无离线直写；应用二进制新增隐藏 `cli` 子命令作为客户端（`internal/agentcli/client`），由 `~/.amagi-codebox/bin/codebox-agent` shim 转发调用。覆盖提供商/预设/密钥状态、设置、环境变量、工作目录、会话生命周期、用量统计、插件、环境检测与 Git 查询共 45 条命令；exec/destructive 命令需 `--yes` 双重确认（客户端预检 + 服务端强制），密钥只能经 stdin 写入、输出全脱敏，非只读命令记审计日志（不含参数值）。应用启动默认安装 shim 与 `amagi-codebox` agent 技能（`~/.agents` 默认，`~/.claude`/`~/.codex` 可选；用户清理过不再自动装回），设置新增「命令行访问」开关（`agentCLIEnabled`，默认开启）。命令参考文档 `docs/user/agent-cli.md` 由命令表生成并有防漂移测试锚定。
+
 ## [1.3.129] - 2026-11-09
 
 ### Fixed

@@ -35,6 +35,7 @@ docs/
 - [内嵌终端](user/terminal.md) — xterm.js + ConPTY/PTY、多 Tab、终端预设与回调机制
 - [插件系统](user/plugins.md) — Claude Code、OpenCode、Codex、Pi、omp 插件管理
 - [远程控制与移动端](user/remote-mobile.md) — HTTP/WebSocket 远程 API、Token 认证、设备配对、移动端连接
+- [Agent CLI](user/agent-cli.md) — codebox-agent 命令行：启用/shim 路径/技能安装、安全模型、退出码、故障排查与自动生成的命令参考
 - [常见问题](user/faq.md) — 环境检测、安装、单实例、托盘、配置目录
 
 ## 开发者 / 贡献者

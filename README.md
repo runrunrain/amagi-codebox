@@ -34,6 +34,7 @@
 - **Agent Profiles**：预定义 Agent 环境档案（`agent-profiles.json`），一键应用到会话
 - **皮肤（Skins）**：本地图片皮肤库与 `/skins/` 只读资源服务
 - **远程控制**：HTTP API + WebSocket 终端桥接，支持移动端控制；同时支持作为 Remote Client 反向连接其他 CodeBox 实例
+- **Agent CLI**：面向 AI agent 的本机命令行 `codebox-agent`（回环令牌服务 + shim + agent 技能），见下方 [Agent CLI](#agent-clicodebox-agent) 与 [用户文档](docs/user/agent-cli.md)
 - **自动更新**：GitHub Releases 检测，支持 Windows 和 macOS 一键下载安装
 - **环境检测与一键修复**：CLI 工具安装状态检测、问题诊断、一键修复（修复 PATH、安装工具、安装 Node.js）；Windows 下支持 WSL 发行版内 CLI 安装辅助
 - **CLI 工具**：独立命令行工具（`cmd/codebox`），支持无头模式操作
@@ -126,6 +127,7 @@ amagi-codebox/
 | `envvars.json` | 自定义环境变量 |
 | `agent-profiles.json` | Agent 环境档案 |
 | `devices.json` | 远程控制 v1 配对设备快照 |
+| `bin/codebox-agent`、`run/endpoint.json`、`agent-cli-install.json` | Agent CLI 的 shim、运行端点发现文件（合令牌，0600）与安装偏好 |
 | `usage.db` | 用量统计 SQLite 数据库 |
 | `usage-pricing.json` | 用量计费定价配置 |
 | `skins/`、`logs/` | 皮肤图片库与运行日志目录 |
@@ -133,6 +135,18 @@ amagi-codebox/
 **提供商与预设模型**：每个 Provider 支持多套 Preset，Preset 携带 `Parameters`（模型、温度、max_tokens）、`ThinkingConfig`（思考模式）、`ContextWindowConfig`（上下文窗口）等。新安装使用干净初始环境，不预置服务提供商或终端预设，均由用户自定义添加或从完整配置导入。
 
 > 字段定义与完整结构见 [提供商与预设配置](docs/user/providers.md)。
+
+---
+
+## Agent CLI（codebox-agent）
+
+Amagi CodeBox 内置一套面向 AI agent 的本机命令行 `codebox-agent`：agent（或脚本）通过它查询与操作**运行中的桌面应用**——提供商/预设/密钥状态、设置、环境变量、工作目录、会话生命周期（launch/send/output/stop）、用量统计、插件等。要点：
+
+- **无离线直写**：业务命令只走运行中的应用（回环随机端口 + 一次性令牌，`~/.amagi-codebox/run/endpoint.json` 发布端点）；应用未运行或访问被关闭时命令返回退出码 3，避免与应用互相覆盖丢更新。
+- **自动安装**：应用启动默认安装 `~/.amagi-codebox/bin/codebox-agent` shim 与 `~/.agents/skills/amagi-codebox` agent 技能（claude/codex 目标可选；用户清理过不再自动装回）。
+- **安全模型**：输出全脱敏（无明文密钥）、密钥只能经 stdin 写入、exec/destructive 命令需 `--yes` 确认、非只读命令记审计日志（不含参数值）。
+
+> 完整说明（启用/路径/退出码/安全模型/故障排查）与由命令表生成的命令参考见 [docs/user/agent-cli.md](docs/user/agent-cli.md)。
 
 ---
 

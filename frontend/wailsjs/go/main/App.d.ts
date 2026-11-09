@@ -29,8 +29,6 @@ export function ApplyWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfi
 
 export function ApplyWSLCliResourcesSupply(arg1:string,arg2:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
-export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
-
 export function ApplyWSLSkillsSupply(arg1:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function BeginClaudeAccountEnrollment(arg1:number):Promise<string>;
@@ -52,8 +50,6 @@ export function CheckPiPluginWSLStatus():Promise<main.PiPluginWSLStatus>;
 export function CheckTool(arg1:string):Promise<envcheck.CheckStatus>;
 
 export function CheckWSLCliResourcesSupply(arg1:string):Promise<main.WSLSkillsSupplyStatus>;
-
-export function CheckWSLPiConfigSupply():Promise<main.WSLConfigSupplyStatus>;
 
 export function CheckWSLSkillsSupply():Promise<main.WSLSkillsSupplyStatus>;
 
@@ -81,8 +77,6 @@ export function DisableWSLUnifiedSupply():Promise<void>;
 
 export function DownloadAndApplyUpdate():Promise<void>;
 
-export function EnableWSLPiConfigSupply():Promise<void>;
-
 export function EnableWSLUnifiedSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function ExportConfigToFile():Promise<string>;
@@ -96,6 +90,10 @@ export function ExportLogs():Promise<string>;
 export function FixClaudeConfig(arg1:string,arg2:string,arg3:string):Promise<envcheck.ConfigFixResult>;
 
 export function GetAIProxyState():Promise<aiproxy.State>;
+
+export function GetAgentCLIInstallStatus():Promise<main.AgentCLIInstallStatus>;
+
+export function GetAgentCLIStatus():Promise<main.AgentCLIStatus>;
 
 export function GetAmagiConfig():Promise<string>;
 
@@ -253,6 +251,10 @@ export function ImportEnvVarsFromFile():Promise<void>;
 
 export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
+export function InstallAgentCLIShim():Promise<main.AgentCLIInstallStatus>;
+
+export function InstallAgentCLISkill(arg1:string):Promise<main.AgentCLIInstallStatus>;
+
 export function InstallCLIToWSL(arg1:string):Promise<wslsetup.InstallResult>;
 
 export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallResult>;
@@ -264,8 +266,6 @@ export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
 export function KeepWSLCliConfigUnitLocal(arg1:string,arg2:string):Promise<void>;
 
 export function KeepWSLCliResourceLocal(arg1:string,arg2:string):Promise<void>;
-
-export function KeepWSLPiConfigUnitLocal(arg1:string):Promise<void>;
 
 export function KeepWSLSkillLocal(arg1:string):Promise<void>;
 
@@ -298,8 +298,6 @@ export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 export function PreviewWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitPreview>>;
 
 export function PreviewWSLCliResourcesSupply(arg1:string):Promise<Array<main.WSLSkillPreview>>;
-
-export function PreviewWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitPreview>>;
 
 export function PreviewWSLSkillsSupply():Promise<Array<main.WSLSkillPreview>>;
 
@@ -383,6 +381,10 @@ export function RemoteClientTerminalSendInput(arg1:string,arg2:string):Promise<v
 
 export function RemoteClientUpdateHost(arg1:string,arg2:string):Promise<void>;
 
+export function RemoveAgentCLIShim():Promise<main.AgentCLIInstallStatus>;
+
+export function RemoveAgentCLISkill(arg1:string):Promise<main.AgentCLIInstallStatus>;
+
 export function RemoveClaudeAccount(arg1:string,arg2:number):Promise<void>;
 
 export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
@@ -400,6 +402,8 @@ export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 export function RetryLaunchCompensationDebt(arg1:string):Promise<void>;
 
 export function RevokeRemoteDevice(arg1:string,arg2:boolean):Promise<remote.RevokeDeviceResult>;
+
+export function RotateAgentCLIToken():Promise<void>;
 
 export function RunEnvCheck():Promise<envcheck.OverallStatus>;
 
@@ -430,6 +434,8 @@ export function SaveProviderFromJSON(arg1:string,arg2:string):Promise<void>;
 export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalPreset):Promise<void>;
 
 export function SelfHealDockerWSLIntegration():Promise<dockerwsl.SelfHealReport>;
+
+export function SetAgentCLIEnabled(arg1:boolean):Promise<void>;
 
 export function SetClaudeAccountRotation(arg1:boolean,arg2:number,arg3:string):Promise<void>;
 
@@ -474,8 +480,6 @@ export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
 export function TakeOverWSLCliConfigUnit(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function TakeOverWSLCliResource(arg1:string,arg2:string,arg3:string):Promise<void>;
-
-export function TakeOverWSLPiConfigUnit(arg1:string,arg2:string):Promise<void>;
 
 export function TakeOverWSLSkill(arg1:string,arg2:string):Promise<void>;
 

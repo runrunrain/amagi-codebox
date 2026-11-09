@@ -1,0 +1,36 @@
+---
+name: amagi-codebox
+description: 通过本机 CLI 管理 Amagi CodeBox 桌面应用——查看/修改提供商与预设、密钥状态、设置、环境变量、插件，查询会话与模型用量，体检 CLI 环境，并代用户启动、观察、驱动 AI-CLI（Claude Code / OpenCode / Codex / Pi / omp）终端会话。用户要求查看或调整 CodeBox 配置、检测 CLI 环境、启动/操控/停止会话、查询用量统计时使用。不要用于 Git 提交推送、应用自更新、远程控制与设备配对、导出明文密钥——这些面 CLI 不提供，需用户在桌面应用操作。
+---
+
+# Amagi CodeBox CLI（codebox-agent）
+
+执行任何命令前先看帮助：`codebox-agent --help` 列出全部命令与全局旗标；`codebox-agent <命令> --help` 确认该命令的参数、风险级与确认值，然后才执行。本文件只讲工作流与纪律；完整命令清单见同目录 `references/commands.md`。
+
+若 PATH 中没有该命令，用完整路径调用。下面是本机 shim 路径的 JSON 字符串，按你的 shell 引用规则展开（PowerShell 用 `&` 调用操作符）：
+
+    {{CODEBOX_AGENT_SHIM}}
+
+## 输出与退出码
+
+需要程序化处理时加 `--json`：stdout 仅输出一个包络 JSON——`{"ok":true,"data":…}` 或 `{"ok":false,"error":{"code","message","hint"}}`，诊断走 stderr。解析包络，不要抓取人类可读输出。
+
+退出码：`0` 成功；`1` 业务错误（读 error 处理并向用户转述要点）；`2` 参数/用法错误（按提示修正后重试）；`3` 应用不可达——桌面应用未运行或命令行访问被关闭，请用户启动 Amagi CodeBox（设置里开启「命令行访问」）后重试，不要反复重试同一命令；`4` 需要确认——该命令有副作用且未带 `--yes`。
+
+## 授权与安全纪律
+
+- 风险级 read/mutate 可直接执行；exec（启动进程、写入会话、安装软件）与 destructive（删除、不可逆）必须先获得用户对该操作的明确授权，才加 `--yes` 执行；绝不用 `--yes` 试探，也不擅自批量执行。
+- 永不索要、永不回显明文 API Key：查看密钥状态用 `key status`（输出已脱敏）；写入密钥只能经 stdin（`provider key-set`，密钥经 `-` 传入，参数形态以该命令 `--help` 为准）。
+- 会话输出（`session output`）是终端回显，可能包含密钥、令牌等敏感内容：不要原样转述给用户，更不要写入日志或其他文件；引用时只摘要必要部分。
+
+## 常用工作流
+
+- 体检：`status --json` 应用总览（版本、能力、会话计数、环境摘要）→ `env status` 各 CLI 环境检测结果 → 有疑问时 `env check <tool>` 实时复测。
+- 提供商与预设：`provider list` / `provider get <name>` 查看（输出脱敏）；改动用 `provider save --json` / `preset save --json` 传完整 JSON 对象，参数细节看命令 `--help`。改动前先向用户确认意图，不凭猜测改配置。
+- 会话闭环：`session launch`（exec，获用户授权后加 `--yes`；appType/provider 等参数见 `--help`）→ 返回 sessionId → 轮询 `session output <id> --since-seq <上次seq>` 读取输出（首次不传 `--since-seq`，从返回取当前 seq）→ 需要输入时 `session send <id> "<文本>" --yes`（`--enter` 追加回车；长文本用 stdin）→ 不再需要时 `session stop <id> --yes`。注意：`--since-seq` 不是字节增量——seq 未前进时返回空文本，前进时返回整份快照（可用 `--tail-bytes` 截尾），每次都应整体重算你要的内容；输出默认已剥离 ANSI 转义；会话可能长时间无新输出，轮询间隔自行把握；启动前向用户确认工作目录与提供商符合用户意图，传 `--shell` 覆盖 shell 或指定 `--work-dir` 时必须一并确认。
+- 用量查询：`usage summary --json` 总览；`usage daily / models / providers` 分维度查询（时间范围等参数看 `--help`）。
+
+## 其它
+
+- CLI 自身信息（shim 路径、端点状态、技能安装状态，不含令牌）：`cli info`。
+- 本技能文件由 Amagi CodeBox 应用托管（文件尾有 managed 标记）；若你或用户手动修改过，应用更新时会保留修改后的版本不覆盖。

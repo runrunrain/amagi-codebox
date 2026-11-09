@@ -6,6 +6,8 @@ export function AddSavedWorkDir(arg1:string,arg2:string):Promise<void>;
 
 export function AddShellPath(arg1:settings.ShellEntry):Promise<void>;
 
+export function GetAgentCLIEnabled():Promise<boolean>;
+
 export function GetCodexGlobalHeadroom():Promise<settings.CodexGlobalHeadroomState>;
 
 export function GetCommitSummaryPreset():Promise<string>;
@@ -49,6 +51,8 @@ export function RemoveShellPath(arg1:string):Promise<void>;
 export function ReplaceSettings(arg1:settings.AppSettings):Promise<void>;
 
 export function Save():Promise<void>;
+
+export function SetAgentCLIEnabled(arg1:boolean):Promise<void>;
 
 export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<void>;
 

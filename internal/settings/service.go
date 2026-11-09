@@ -171,14 +171,19 @@ type AppSettings struct {
 	GitHubToken            string                           `json:"githubToken"`
 	// CommitSummaryPreset 指定 AI 提交总结使用的终端预设，格式 "provider/preset名"；
 	// 空 = 未设置（gitassist.SummarizeDiff 据此报错引导用户去设置页选择）。
-	CommitSummaryPreset string              `json:"commitSummaryPreset,omitempty"`
-	Skin                SkinSettings        `json:"skin"`
+	CommitSummaryPreset string       `json:"commitSummaryPreset,omitempty"`
+	Skin                SkinSettings `json:"skin"`
 	// WebPlaneSkin 会话 Web 平面（pi webui 内嵌 iframe）配色方向："dark"（缺省，
 	// 深底浅字，与终端深墨底一致）或 "light"（浅底深字）。空/未知值按 dark
 	// 处理（fail-safe；零值即默认，老 settings.json 无需迁移）。移动端（远程
 	// 控制）宿主固定浅色，不经此设置。
-	WebPlaneSkin        string              `json:"webPlaneSkin,omitempty"`
-	SystemProxy         SystemProxySettings `json:"systemProxy"`
+	WebPlaneSkin string              `json:"webPlaneSkin,omitempty"`
+	SystemProxy  SystemProxySettings `json:"systemProxy"`
+	// AgentCLIEnabled 控制 agent-CLI 本地命令服务（DESIGN.md §3.7，默认 true，
+	// 同 feishu-sync cli.enabled）。指针三态：nil（老 settings.json 无该键）
+	// = 默认 true；显式 false = 用户关闭。bool 零值无法区分“未写入”与
+	// “显式关闭”，故不用裸 bool。与 RemoteEnabled 无关联（独立开关）。
+	AgentCLIEnabled *bool `json:"agentCLIEnabled,omitempty"`
 }
 
 func defaultSettings() *AppSettings {
@@ -283,6 +288,8 @@ func (s *Service) Load() error {
 	if cfg.RemotePort <= 0 {
 		cfg.RemotePort = 8680
 	}
+	// AgentCLIEnabled 无需归一：nil（老文件无键）本身就是“默认 true”的
+	// 持久化形态（指针三态），显式 true/false 原样保留。
 	normalizeDashboardDefaults(&cfg.Dashboard)
 	s.settings = &cfg
 	return nil
@@ -805,6 +812,37 @@ func (s *Service) GetRemotePort() int {
 		return 8680
 	}
 	return port
+}
+
+// GetAgentCLIEnabled 返回 agent-CLI 开关（nil = 默认 true，DESIGN.md §3.7）。
+func (s *Service) GetAgentCLIEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.settings.AgentCLIEnabled == nil {
+		return true
+	}
+	return *s.settings.AgentCLIEnabled
+}
+
+// SetAgentCLIEnabled 事务式持久化 agent-CLI 开关（DESIGN.md §3.7）：
+// saveMu → mutate under mu → saveLocked，保存失败回滚内存（同 SetRemoteEnabled
+// 的事务式模式，R2-Minor-02/R3-Minor-02）。运行态联动（启停 Server、撤销端点
+// 文件）由 App 门面（app_agentcli.go）负责，本层只管持久化真值。
+func (s *Service) SetAgentCLIEnabled(enabled bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	old := s.settings.AgentCLIEnabled
+	s.settings.AgentCLIEnabled = &enabled
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk.
+		s.mu.Lock()
+		s.settings.AgentCLIEnabled = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Service) SetRemotePort(port int) error {

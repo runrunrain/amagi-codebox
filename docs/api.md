@@ -3,7 +3,7 @@
 本文档列出前端可调用的全部 Wails 绑定方法。方法清单**以当前代码为准**，生成依据：
 
 - 绑定清单：`bind_list.go` 的 `buildWailsBindList`（共 21 个绑定 = `App` + 20 个服务）
-- 方法签名：`app.go`、`headroom_facade.go`、`app_remoteclient.go` 中 `func (a *App) [A-Z]…`，以及 `internal/` 下各服务结构体的导出方法
+- 方法签名：`app.go`、`headroom_facade.go`、`app_remoteclient.go`、`app_agentcli.go`、`app_agentcli_install.go` 中 `func (a *App) [A-Z]…`，以及 `internal/` 下各服务结构体的导出方法
 - 校对日期：2026-08-22（对应版本 1.3.50）
 
 ## 调用方式
@@ -133,6 +133,15 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 
 - `GetSystemProxyStatus() SystemProxyStatus` — 全局设备显式代理快照：`supported`（平台能力）/`enabled`/`host`/`port`（系统实时值，Windows Internet Settings）/`reachable`（启用时对端点做 TCP+HTTP 双探测，识别"活端口死代理"）/`configuredHost`/`configuredPort`（持久化端点，下次开启写入）。
 - `SetSystemProxyEnabled(enabled bool) (SystemProxyStatus, error)` — 开启/关闭系统级显式代理。开启：端点优先取持久化配置，为空回落系统现有地址（如代理客户端已写入的 ProxyServer），写入 `ProxyServer`+`ProxyEnable=1`（`ProxyOverride` 缺失时补默认回环绕行）；关闭：仅置 `ProxyEnable=0`，保留地址与例外列表。写入后广播 WinINet 刷新（InternetSetOption SETTINGS_CHANGED+REFRESH），已运行应用免重登生效。与 CLI 会话代理注入（SystemProxyEnv）互不影响。
+
+### Agent CLI（命令行访问，`app_agentcli.go` / `app_agentcli_install.go`）
+
+- `GetAgentCLIStatus() AgentCLIStatus` — 命令行访问状态快照：enabled/running/url/endpointPath/pid/startedAt（**不含令牌**；URL 本身不含令牌）。
+- `SetAgentCLIEnabled(enabled bool) error` — 开关命令行访问：先持久化设置，再联动运行态（关闭 = 令牌作废 + 撤销端点文件，监听保留并对请求返回 503 cli_disabled）。
+- `RotateAgentCLIToken() error` — 轮换 CLI 令牌（旧令牌立即失效并重写端点文件）；仅运行且启用时可用。
+- `GetAgentCLIInstallStatus() AgentCLIInstallStatus` — 本机分发状态：shimPath/shimStatus、三个技能目标（agents/claude/codex）各自的 path/status、commandCount 与 shim 调用名 command。状态枚举 not-installed/up-to-date/outdated/modified-by-user/invalid（不含令牌）。
+- `InstallAgentCLIShim() (AgentCLIInstallStatus, error)` / `RemoveAgentCLIShim() (AgentCLIInstallStatus, error)` — 安装/清理 `~/.amagi-codebox/bin/codebox-agent`（Windows 为 `.cmd`）shim；清理会记录用户偏好，应用启动不再自动装回。均返回更新后的状态。
+- `InstallAgentCLISkill(target string) (AgentCLIInstallStatus, error)` / `RemoveAgentCLISkill(target string) (AgentCLIInstallStatus, error)` — 安装/清理 agent 技能（target ∈ agents|claude|codex），返回更新后的状态。被外部改动的托管文件一律保留并报冲突，不覆盖。
 
 ### 远程服务器（Remote Server）
 

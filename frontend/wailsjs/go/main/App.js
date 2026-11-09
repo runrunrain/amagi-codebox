@@ -22,10 +22,6 @@ export function ApplyWSLCliResourcesSupply(arg1, arg2) {
   return window['go']['main']['App']['ApplyWSLCliResourcesSupply'](arg1, arg2);
 }
 
-export function ApplyWSLPiConfigSupply() {
-  return window['go']['main']['App']['ApplyWSLPiConfigSupply']();
-}
-
 export function ApplyWSLSkillsSupply(arg1) {
   return window['go']['main']['App']['ApplyWSLSkillsSupply'](arg1);
 }
@@ -68,10 +64,6 @@ export function CheckTool(arg1) {
 
 export function CheckWSLCliResourcesSupply(arg1) {
   return window['go']['main']['App']['CheckWSLCliResourcesSupply'](arg1);
-}
-
-export function CheckWSLPiConfigSupply() {
-  return window['go']['main']['App']['CheckWSLPiConfigSupply']();
 }
 
 export function CheckWSLSkillsSupply() {
@@ -126,10 +118,6 @@ export function DownloadAndApplyUpdate() {
   return window['go']['main']['App']['DownloadAndApplyUpdate']();
 }
 
-export function EnableWSLPiConfigSupply() {
-  return window['go']['main']['App']['EnableWSLPiConfigSupply']();
-}
-
 export function EnableWSLUnifiedSupply() {
   return window['go']['main']['App']['EnableWSLUnifiedSupply']();
 }
@@ -156,6 +144,14 @@ export function FixClaudeConfig(arg1, arg2, arg3) {
 
 export function GetAIProxyState() {
   return window['go']['main']['App']['GetAIProxyState']();
+}
+
+export function GetAgentCLIInstallStatus() {
+  return window['go']['main']['App']['GetAgentCLIInstallStatus']();
+}
+
+export function GetAgentCLIStatus() {
+  return window['go']['main']['App']['GetAgentCLIStatus']();
 }
 
 export function GetAmagiConfig() {
@@ -470,6 +466,14 @@ export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
 }
 
+export function InstallAgentCLIShim() {
+  return window['go']['main']['App']['InstallAgentCLIShim']();
+}
+
+export function InstallAgentCLISkill(arg1) {
+  return window['go']['main']['App']['InstallAgentCLISkill'](arg1);
+}
+
 export function InstallCLIToWSL(arg1) {
   return window['go']['main']['App']['InstallCLIToWSL'](arg1);
 }
@@ -492,10 +496,6 @@ export function KeepWSLCliConfigUnitLocal(arg1, arg2) {
 
 export function KeepWSLCliResourceLocal(arg1, arg2) {
   return window['go']['main']['App']['KeepWSLCliResourceLocal'](arg1, arg2);
-}
-
-export function KeepWSLPiConfigUnitLocal(arg1) {
-  return window['go']['main']['App']['KeepWSLPiConfigUnitLocal'](arg1);
 }
 
 export function KeepWSLSkillLocal(arg1) {
@@ -560,10 +560,6 @@ export function PreviewWSLCliConfigSupply(arg1) {
 
 export function PreviewWSLCliResourcesSupply(arg1) {
   return window['go']['main']['App']['PreviewWSLCliResourcesSupply'](arg1);
-}
-
-export function PreviewWSLPiConfigSupply() {
-  return window['go']['main']['App']['PreviewWSLPiConfigSupply']();
 }
 
 export function PreviewWSLSkillsSupply() {
@@ -730,6 +726,14 @@ export function RemoteClientUpdateHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientUpdateHost'](arg1, arg2);
 }
 
+export function RemoveAgentCLIShim() {
+  return window['go']['main']['App']['RemoveAgentCLIShim']();
+}
+
+export function RemoveAgentCLISkill(arg1) {
+  return window['go']['main']['App']['RemoveAgentCLISkill'](arg1);
+}
+
 export function RemoveClaudeAccount(arg1, arg2) {
   return window['go']['main']['App']['RemoveClaudeAccount'](arg1, arg2);
 }
@@ -764,6 +768,10 @@ export function RetryLaunchCompensationDebt(arg1) {
 
 export function RevokeRemoteDevice(arg1, arg2) {
   return window['go']['main']['App']['RevokeRemoteDevice'](arg1, arg2);
+}
+
+export function RotateAgentCLIToken() {
+  return window['go']['main']['App']['RotateAgentCLIToken']();
 }
 
 export function RunEnvCheck() {
@@ -824,6 +832,10 @@ export function SaveTerminalPreset(arg1, arg2, arg3) {
 
 export function SelfHealDockerWSLIntegration() {
   return window['go']['main']['App']['SelfHealDockerWSLIntegration']();
+}
+
+export function SetAgentCLIEnabled(arg1) {
+  return window['go']['main']['App']['SetAgentCLIEnabled'](arg1);
 }
 
 export function SetClaudeAccountRotation(arg1, arg2, arg3) {
@@ -912,10 +924,6 @@ export function TakeOverWSLCliConfigUnit(arg1, arg2, arg3) {
 
 export function TakeOverWSLCliResource(arg1, arg2, arg3) {
   return window['go']['main']['App']['TakeOverWSLCliResource'](arg1, arg2, arg3);
-}
-
-export function TakeOverWSLPiConfigUnit(arg1, arg2) {
-  return window['go']['main']['App']['TakeOverWSLPiConfigUnit'](arg1, arg2);
 }
 
 export function TakeOverWSLSkill(arg1, arg2) {

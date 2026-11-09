@@ -10,6 +10,10 @@ export function AddShellPath(arg1) {
   return window['go']['settings']['Service']['AddShellPath'](arg1);
 }
 
+export function GetAgentCLIEnabled() {
+  return window['go']['settings']['Service']['GetAgentCLIEnabled']();
+}
+
 export function GetCodexGlobalHeadroom() {
   return window['go']['settings']['Service']['GetCodexGlobalHeadroom']();
 }
@@ -96,6 +100,10 @@ export function ReplaceSettings(arg1) {
 
 export function Save() {
   return window['go']['settings']['Service']['Save']();
+}
+
+export function SetAgentCLIEnabled(arg1) {
+  return window['go']['settings']['Service']['SetAgentCLIEnabled'](arg1);
 }
 
 export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {

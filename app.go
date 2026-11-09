@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"amagi-codebox/internal/agentcli"
+	"amagi-codebox/internal/agentcli/install"
 	"amagi-codebox/internal/agentprofile"
 	"amagi-codebox/internal/aiproxy"
 	"amagi-codebox/internal/claudeaccounts"
@@ -216,6 +218,14 @@ type persistentLoadState struct {
 type App struct {
 	ctx     context.Context
 	aiProxy *aiproxy.Service
+	// agentCLI 是 agent-CLI 本地命令服务（DESIGN.md §5 A1，独立回环
+	// listener/随机端口/端点文件发现）。构造/启停接线在 agentcli_wiring.go；
+	// 前端门面在 app_agentcli.go。小写不导出：不进 Wails 绑定，只能经门面。
+	agentCLI *agentcli.Server
+	// agentCLIInstall 管理 agent-CLI 本机分发（shim 与 agent 技能，DESIGN.md
+	// §5 C1/C2）。构造与 Startup 默认安装在 app_agentcli_install.go；前端门面
+	// 同文件。小写不导出：不进 Wails 绑定。
+	agentCLIInstall *install.Manager
 
 	Config   *config.ConfigService
 	Secrets  *secrets.SecretsService
@@ -538,6 +548,12 @@ func NewApp(mobileAssets embed.FS) *App {
 	// 1.3.126「WSL 内 Pi 共享 Windows agent 根」退役）；业务快照源闭包引用
 	// app，在字面量之后装配。
 	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
+	// agent-CLI 本地命令服务（DESIGN.md §5 A1）：命令表 + host Handler 驱动；
+	// Startup 按设置决定是否启动（agentcli_wiring.go）。
+	app.constructAgentCLI()
+	// agent-CLI 本机分发（DESIGN.md §5 C2）：shim 与技能安装管理器；Startup
+	// 默认安装见 app_agentcli_install.go。
+	app.constructAgentCLIInstall()
 	// Claude 订阅账号轮换（design §6.3/§7.2）：装配 1a 领域服务（Keychain 池
 	// 后端、canonical 原生适配器、MutationGate/Quiescence 生产实现）。启动
 	// 恢复在 Startup（§4.5 时序：池加载 → RecoverAtStartup → 开放受影响启动）。
@@ -2231,6 +2247,15 @@ func (a *App) Startup(ctx context.Context) {
 	// lastStartError/enabled/running），自检卡可据此分类提示。
 	a.healRemoteStartupRestore(ctx, remoteEnabled, startAllowed)
 
+	// agent-CLI 本地命令服务（DESIGN.md §3.7）：默认开启；关闭时仅清理陈旧
+	// 端点文件不监听。启动失败记警告不阻断主流程。
+	a.startAgentCLI()
+
+	// agent-CLI 本机分发（DESIGN.md §5 C2）：默认安装 shim 与 agents 技能
+	// （用户清理过的面不装回），每次启动刷新 shim 指向当前可执行文件。
+	// 失败只记日志不阻断启动。
+	a.installAgentCLIDefaults()
+
 	// 启动系统托盘（仅在平台能力允许时）
 	capabilities := a.platformCapabilities()
 	if capabilities.SystemTraySupported && len(trayIcon) > 0 {
@@ -2255,6 +2280,10 @@ func (a *App) Shutdown(ctx context.Context) {
 	// RC2：先收尾远程客户端终端长连接（等待读泵退出与 outbox 销毁；
 	// 不依赖网络往返，仅本地关闭）。
 	a.shutdownRemoteClientTerminals()
+
+	// agent-CLI（A1）：先于会话控制栅栏收口本地命令服务——停止监听、令牌
+	// 作废并撤销端点文件（pid 所有权校验），后续不再接受新命令。
+	a.stopAgentCLI()
 
 	// M3-A2 §10.3: authoritative control shutdown fence FIRST — cancels all
 	// device/desktop launch/run permits and current operations, fences run
