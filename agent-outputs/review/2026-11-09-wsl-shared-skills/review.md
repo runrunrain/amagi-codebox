@@ -1,3 +1,9 @@
+VERDICT: REJECT（R3：F09 关闭；备份迁移仍有 F02 边界问题，并引入 R3-F10 正常目录回归；2 Major）
+
+最新结论见文末「R3 定向复审」。以下 R1/R2 内容完整保留，历史 VERDICT 不代表最新状态。
+
+---
+
 VERDICT: REJECT（R2：F02 未关闭，F01 修复引入启动时序回归 R2-F09；2 Major）
 
 最新结论见文末 [R2 复审](#r2-复审7914a99)。R1 原文完整保留如下；R1 finding 状态以 R2 对照表为准。
@@ -213,3 +219,89 @@ VERDICT: REJECT
 5. 回滚本轮审核产物：仅 `review.md` 的新前置说明和 R2 追加内容，以及本报告目录下新 `r2/` 与 `retired-evidence-1405159723/`。R1 原文和所有已提交历史材料均未覆盖；任何清理/恢复由 Leader 授权执行，不使用破坏性 Git 操作。
 
 本轮结论仅对 `db0153c..7914a99` 修复及直接因果路径有效，不是全仓无缺陷保证。
+
+
+---
+
+## R3 定向复审
+
+### 结论、范围与版本归属
+
+**VERDICT: REJECT。仍有 2 Major（F02 的目标符号链接边界、修复引入的 R3-F10）。R2-F09 已关闭。** 原 R2-F02 的“文件占槽导致未备份覆盖”反例已挡住，但不能据此认定整个迁移安全面关闭。
+
+本轮只核验 R2-F02、R2-F09 及直接相关新增测试/边界，不重开 F03–F08。上游为本报告 R2、`r2/repro_link_r2.py`、`r2/repro_singleflight.go` 和本轮任务书。未实现修复或项目测试。
+
+版本事实：任务指定 `95d735204f4432d42f933090f92cc41bea505c05`；实际 HEAD 是 `87fe6f10a9b8eacf5cc8b79d69669b4618a517e5`，工作树起始干净。已独立运行 `git diff --name-only 95d7352..HEAD -- ':!agent-outputs/**'`，**无输出**，所有生产代码、测试、CHANGELOG 与指定提交一致；两提交间差异仅是 336 个历史合成报告夹具/缓存路径删除。因此本轮对指定代码的审核有效，不切换或恢复任何分支。目标增量的在役改动只有 CHANGELOG、App shared-skills 源/测试、platform link 源/形状测试/新增 race 测试六个路径。
+
+### 原编号核验表
+
+| 原项 | R3 结论 | 独立证据 |
+|---|---|---|
+| R2-F02：文件占槽让位 | 原具体覆盖反例已修复；**迁移边界仍未关闭** | 原生 `/bin/mv -n` lane 和 rename 适配 lane 都 exit 1、仅 FAIL-MOVE-LOST，L 保留原用户内容，无 BACKED-UP/LINKED。竞争者 B 指向目录时虽同样报失败，但实际迁移已穿透目的链接，见 F02 续项。 |
+| R2-F09：第二个首次启动提前继续 | **关闭** | App:67-74 等待 done 前已解锁；:79-88 删除在途项并 close，执行主体先记录结果。独立三路复现 B/C 都等待，释放后 seam=1、Ensure/cache/face 一致。失败状态也对两等待者广播且 seam=1，没有假成功。 |
+| F02 修复直接回归 | **新增 R3-F10 Major** | `B/skills` 也可能是合法原目录自带条目，无竞争的 `.agents/skills/skills/SKILL.md` 被误拒；原生 shell 已复现，L 被移走且未建共享链接。 |
+| F03–F08 | 维持 R2 关闭，不重审 | 按本轮限定范围执行。 |
+
+### Findings
+
+#### F02｜Major｜续项未关闭：备份目的变成目录符号链接时，错误检查发生在穿透写入之后
+
+- **定位**：`internal/platform/wsl_shared_skills_link.go:79-85`（slot 检查、`mv -n "$L" "$B"` 与迁后判定）。
+- **触发**：检查 C 为空后、mv 前，竞争者将 B 建成指向目录的符号链接；例如指向已翻译的 Windows 技能根 T，且 T/skills 尚不存在。L 是真实本地技能目录。
+- **实际行为/影响**：mv 把 L 移入 B 所指目录，落在 **T/skills**。新条件随后检测到 B/skills，返回 FAIL-MOVE-LOST，但本地 L 已消失、宿主技能根已被写入整棵本地目录。“不继续发布”不能撤回这次目的目录穿透，也没有输出 BACKED-UP 让用户知道前像已被移往宿主。它不是新的提权漏洞（操作者仍是同一用户），而是失败路径上的非预期用户资产迁移。
+- **原样证据**：`r3/repro_link_r3.py` 的 `native-slot-to-host` 仅在真实 mv 前创建 B→T，用本机真实 `/bin/mv -n` 执行，未使用 -T rename 适配；脚本 exit 1 / `FAIL-MOVE-LOST`，但 `HOST_TREE_CREATED_BEFORE_FAILURE=True host-bytes='LOCAL TREE CONTENT'`。所有 T 都是授权报告目录内隔离“宿主根”，未触碰真实技能资产。见 `r3/repro-link.log`。
+- **归属**：这是 R2-F02 已要求核查“目的突变目录”的直接边界，本轮又明确要求检查 B→目录链接，非扩展全仓审计。旧的最终 `ln -s T L` 穿透没有复活，故不重开 F01；未备份覆盖的旧反例也已关闭，但备份迁移本身尚未做到目的边界安全。
+- **最小修复方向**：在迁移发生前确保备份槽为本轮排他持有，并使用不把目的解释为目录/目录链接的迁移语义；不能仅在已经搬入其它目录后报错。保留外部竞争者及用户材料，不静默覆盖或清理它们。由实施者补目录链接占槽的正式行为测试。
+
+#### R3-F10｜Major｜F02 新判定误杀合法的名为 skills 的子技能，正常迁移后不给链接
+
+- **定位**：`internal/platform/wsl_shared_skills_link.go:85`；对应形状断言 `internal/platform/wsl_shared_skills_link_test.go:20`。
+- **触发**：无任何竞争，原 `~/.agents/skills` 内有合法目录 `skills/SKILL.md`（技能名为 skills），或其它存在的同名文件/链接。这些名字没有被需求或 Agent Skills 目录约定禁止。
+- **证据摘录**：`{ [ -d "$B" ] && [ -e "$B/skills" ]; }`。成功 mv 后，B 本来就是 L 的完整前像，原本自带 skills 条目会原样变成 B/skills；仅凭这个路径存在无法证明“L 被挪进竞争者目录”。
+- **实际行为/影响**：脚本把正常迁移误判为 FAIL-MOVE-LOST。L 已移动到备份，原位置为空，却没有建立共享链接；本轮启动无法通过标准技能根扫描，失败还会进入漏斗缓存。无内容丢失，但正常合法输入违反核心迁移契约。
+- **已复现（原生，不依赖 GNU -T 适配）**：`native-valid-skill` 场景创建 `.agents/skills/skills/SKILL.md`，真实 sh 与 mv 执行后 exit 1 / FAIL-MOVE-LOST；`native-valid-L-absent=True native-valid-bytes='VALID SKILL NAMED skills'`。另测同名普通文件也失败；同名悬挂链接因 -e 为假反而通过，进一步说明该条件只是名字/目标存在性启发式，而非迁移身份证明。见 `r3/repro-link.log`。
+- **最小修复方向**：取消以用户子条目名推断迁移归属的逻辑；通过排他槽位和真实迁移动作的结果证明前像身份。保持合法技能名、目录/文件/符号链接内容原样，不为迁就检测新增名称禁令。实施者应补含 skills 子目录的正常迁移测试。
+
+### 边界与直接相关回归核验
+
+| 检查项 | 结果 / 证据 |
+|---|---|
+| R2 文件占槽 | 新判定阻止发布，L 内容仍为原字节；原 R2 未备份覆盖反例关闭。 |
+| B 为真实目录 | 迁后 FAIL-MOVE-LOST，用户字节仍在 B/skills/SKILL.md；不是内容丢失，但 L 已迁离，这种失败并非事务回滚。 |
+| B 为目录链接 | 同样失败，但内容移到链接目标，含指向隔离宿主技能根的实测；构成 F02 续项。 |
+| B 为悬挂链接 | 本机目录源场景真实 mv 报 Not a directory / FAIL-MOVE，L 原内容保留；具体 GNU 平台错误码未真机验证，不泛化本机错误字样。 |
+| L 原本为悬挂链接 | 脚本 `-e && ! -L` 不进入真实目录备份分支，走 `elif -L` 替换；本地 rename 适配 lane 得 REPLACED-LINK/LINKED，第二次 OK-LINKED；无目录穿透。 |
+| 已存在备份槽、正常迁移 | 同秒旧未编号备份和 .0 都保留，新 .1 内容正确；不含同名 skills 子条目的普通目录迁移成功。 |
+| 跨脚本发布窗口 | R2 A/B 同类时序仍没有创建宿主子链接，`HOST_CHILD_LINK_CREATED=False`；完整发布使用同 R2 显式 rename 适配，不称作 WSL 真机结果。 |
+| 等待者“本轮或更新” | 可接受：record 先于 close，等待不持 run mutex，lookup 另加 root mutex；下一轮可能在唤醒后更新缓存，但不会读到早于已完成轮次的记录。该 API 没有 receipt/轮次绑定契约，不要求返回逐调用历史。 |
+| 死锁检查 | 可控 success 与 failed 路径都释放全部等待者；未见内部锁循环。平台 runner 若永不返回仍会使等待持续（既有无超时进程边界），本轮没有声称取消/截止保障，不据此新增 finding。 |
+
+### 新测试质量
+
+- `wsl_shared_skills_race_test.go` 改为真实 sh + 真实 mv，仅在执行前注入槽位竞争，比字符串形状断言有效；文件占槽检查失败标记、无成功标记与原字节保留。正常迁移正例验证 BACKED-UP 实际路径和 `# USER ORIGINAL` 字节，与负例成对。
+- 但正常正例只有一个 SKILL.md，没有合法 skills 子目录，故漏掉 R3-F10。目录占槽负例只在树内找名为 SKILL.md 的文件，没有比较字节内容，也没有覆盖目的目录链接；不足以证明完整内容保全/目的边界。
+- `TestWSLSharedSkillsFunnelWaitsForInFlight` 覆盖 B 漏斗/C 显式检查的等待、结果/cache/face；150ms 窗口是调度探测而非精确进入屏障；其注释称真实供给一次，但**正式测试没有 calls 计数断言**，且最后只断言 State，不匹配本轮 Detail 内容。独立取证补上 seam 次数与真实结果关键词、失败广播验证。缺失断言不直接证明生产有另一处缺陷，不额外列 finding。
+- 非 Windows 的翻译错误面测试确实只验证平台门，不把注入错误当成已执行 Windows 分支；这一降级诚实且不重新打开 F07。没有编写或修改正式测试。
+
+### R3 独立验证
+
+原始日志/退出码都在 `r3/`，未复用开发者或 R2 结果。虽然本轮只需定向，本机全量测试约一分钟，已顺便复核四项原门禁；它们全绿但不阻止本轮两个真实反例。
+
+| cwd | 命令 | 退出码与关键输出 |
+|---|---|---|
+| 工作树根 | `go vet ./...` | 0，空输出 |
+| 工作树根 | `go test ./... -count=1` | 0；48 个 ok 包；根 15.606s，platform 0.435s，wslsupply 4.440s |
+| frontend | `npx vue-tsc --noEmit` | 0，空输出 |
+| frontend | `npx vitest run` | 0；41 files / 405 tests passed，757ms |
+| 工作树根 | `go test . ./internal/platform -count=1 -run 'TestWSLSharedSkillsFunnelWaitsForInFlight\|TestSharedSkillsBackup\|TestWSLTranslatePathsCoreErrorSurface' -v` | 0；等待测试、3 个备份测试、错误面测试均 PASS；`r3/targeted.log` 保留真实命令输出。上表 regex 中反斜杠仅为 Markdown 表格转义，实际参数是裸 `|`。 |
+| 工作树根 | `python3 -B .../r3/repro_link_r3.py` | 外层 0，各 shell 子场景的真实退出码独立记录；两条 Major 取证均为原生 lane，详见 `r3/repro-link.log` |
+| 工作树根 | `go run .../r3/repro_singleflight_r3.go` | 0；B/C_WAITED_FOR_INFLIGHT=true；CALLS=1 CACHE=linked FACE=synced；两个失败等待者得到 REAL FAILURE，FAILURE_CALLS=1 |
+
+脚本来源：`r3/repro_link_r3.py` 沿用 R2 从当前 Go raw strings 提取脚本，新增本轮指定边界；只在迁移前制造竞争者槽位，原生失败反例不经过发布适配。`r3/repro_singleflight_r3.go` 原样抽取当前 App shared-skills 文件，只提供不可导入 main 包所需的惰性 App/log/home/face 类型 stub；并发 seam 可控，没改项目文件。Python 运行禁用字节码写入，所有生成材料位于本轮授权目录。
+
+### 未覆盖、风险与交接
+
+- **UNVERIFIED**：真实 Windows/WSL、GNU mv -T 进程链、真实 pi 技能扫描和前端浏览器。本轮两 Major 均在 publish 之前触发，使用真实 macOS sh/mv 即可复核，不依赖发布阶段适配。原生正常发布在 macOS 仍如实 FAIL-PUBLISH（不支持 -T），不当成 WSL 产品缺陷。
+- F03–F08 按任务维持关闭，无新审计结论；不扩大为全仓审核。待修复项仅为备份迁移的名字启发式/目的链接处理，F09 无需再改。
+- 建议最小下一步：实施者以不跟随目的目录/链接的排他迁移替代事后命名判定，并补正常含 skills 子技能和 B→目录链接两个真实行为测试；无需为合法输入增加规则。
+- 本轮只在授权报告目录新增 `r3/`、给 review.md 前置新结论并追加本节；R1/R2 原文未覆盖，摘要 hash 记录于 `r3/r2-preservation.sha256`。若需撤销本轮产物，由 Leader 授权移除准确的 R3 前置/追加部分及 r3/，不使用 checkout/reset 或清理他人现场。

@@ -9,97 +9,151 @@ import (
 	"testing"
 )
 
-// runSharedSkillsScriptInShell 在本地 POSIX sh 中执行生成的建链脚本（HOME 指
-// 向临时目录）。R2 审核要求以真实行为（而非字符串形状）钉住并发语义；preamble
-// 用于注入确定性竞争（函数覆盖 mv，在真实 mv 执行前制造 B 位竞争者）。
-func runSharedSkillsScriptInShell(t *testing.T, preamble string) (string, string, error) {
+// mvGNU 在 BSD 宿主上把 `mv -nT A B` 等价模拟为 GNU 语义（字面目的
+// 地 + 不覆写）：目的已存在（任何形态，含目录/目录符号链接，-e 跟随链接
+// 判存在）→ 原样拒绝且返回 0；目的不存在 → command mv A B（即 rename）。
+// 生产环境（WSL/Ubuntu，GNU coreutils）使用真实 mv -nT。注入竞争的测试
+// 定义 mv 包装：先制造槽位竞争者，再回落到本语义函数。
+const mvGNU = `mv() { __mv_gnu "$@"; }
+__mv_gnu() {
+  case "$1" in
+    -nT)
+      if [ -e "$3" ]; then return 0; fi
+      command mv "$2" "$3"
+      ;;
+    *)
+      command mv "$@"
+      ;;
+  esac
+}`
+
+// runSharedSkillsScriptInShell 在本地 POSIX sh 中执行生成的建链脚本（HOME
+// 指向临时目录）。R2/R3 审核要求以真实行为（而非字符串形状）钉住并发语义；
+// preamble 链在 mvNTAdapter 之后，用于注入确定性竞争（在真实迁移执行前于
+// 槽位制造竞争者）。
+func runSharedSkillsScriptInShell(t *testing.T, homeSetup func(home string), preambles ...string) (string, string, string, error) {
 	t.Helper()
 	home := t.TempDir()
-	agents := filepath.Join(home, ".agents")
-	if err := os.MkdirAll(filepath.Join(agents, "skills"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(agents, "skills", "SKILL.md"), []byte("# USER ORIGINAL"), 0o644); err != nil {
-		t.Fatal(err)
+	if homeSetup != nil {
+		homeSetup(home)
 	}
 	target := t.TempDir() // Windows 技能根的 distro 侧形态（存在即可）
 	script := wslSharedSkillsScript(target)
-	full := script
-	if preamble != "" {
-		full = preamble + ";\n" + script
-	}
-	cmd := exec.Command("sh", "-c", full)
+	parts := append([]string{mvGNU}, preambles...)
+	cmd := exec.Command("sh", "-c", strings.Join(parts, "\n")+";\n"+script)
 	cmd.Env = append(os.Environ(), "HOME="+home)
 	out, err := cmd.CombinedOutput()
-	return string(out), home, err
+	return string(out), home, target, err
 }
 
-// TestSharedSkillsBackupRaceFileFailsClosed（R2-F02 场景 A）：竞争者在选槽
-// 之后、真实 mv 之前创建同名文件 → mv -n 让位、L 未迁离 → 必须 FAIL-MOVE-LOST
-// 并停止发布（不拿竞争者空文件冒充本轮备份、不覆盖未备份的用户目录）。
-func TestSharedSkillsBackupRaceFileFailsClosed(t *testing.T) {
-	preamble := `mv() {
-  case "$3" in
-    "$HOME"/.agents/skills.pre-shared.*) : >"$3" ;;
+func writeDefaultUserSkill(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".agents", "skills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# USER ORIGINAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// competitorAtSlot 在 -nT 迁移执行前于槽位创建竞争者（经 mv 函数链注入）。
+// competitorAtSlot 构造 mv 包装：在 -nT 迁移执行前于槽位（$3）创建竞争者
+// （makeShell 为创建原语，可引用脚本内的 $T——函数与脚本同 shell，变量
+// 可见），随后回落 __mv_gnu 语义（目的已存在 → 拒绝）。
+func competitorAtSlot(makeShell string) string {
+	return `mv() {
+  case "$1 $3" in
+    "-nT "$HOME"/.agents/skills.pre-shared."*) ` + makeShell + ` ;;
   esac
-  command mv "$@"
+  __mv_gnu "$@"
 }`
-	out, home, err := runSharedSkillsScriptInShell(t, preamble)
+}
+
+// TestSharedSkillsBackupRaceFileFailsClosed（R2-F02 场景 A）：竞争者在迁移
+// 执行前于槽位创建同名文件 → mv -nT 字面拒绝（L 未迁离）→ FAIL-MOVE-LOST
+// 并停止发布；用户目录原字节保留在原位。
+func TestSharedSkillsBackupRaceFileFailsClosed(t *testing.T) {
+	out, home, _, err := runSharedSkillsScriptInShell(t,
+		func(home string) { writeDefaultUserSkill(t, home) },
+		competitorAtSlot(`: > "$3"`),
+	)
 	if err == nil {
-		t.Fatalf("no-clobber yield must fail closed, got exit 0, output:\n%s", out)
+		t.Fatalf("occupied slot must fail closed, got exit 0, output:\n%s", out)
 	}
 	if !strings.Contains(out, "FAIL-MOVE-LOST") {
 		t.Fatalf("must report FAIL-MOVE-LOST, got:\n%s", out)
 	}
 	if strings.Contains(out, "BACKED-UP") || strings.Contains(out, "LINKED") {
-		t.Fatalf("yielded backup must not report success, got:\n%s", out)
+		t.Fatalf("occupied slot must not report success, got:\n%s", out)
 	}
-	// 用户目录原样保留（未被链接替换——发布未发生）。
 	data, rerr := os.ReadFile(filepath.Join(home, ".agents", "skills", "SKILL.md"))
 	if rerr != nil || string(data) != "# USER ORIGINAL" {
-		t.Fatalf("user tree must stay in place (not replaced by link), err=%v", rerr)
+		t.Fatalf("user tree must stay in place byte-identical, err=%v", rerr)
 	}
 }
 
-// TestSharedSkillsBackupRaceDirFailsClosed（R2-F02 场景 B）：竞争者在 B 位创建
-// 目录 → mv 把 L 挪进目录内部（L 消失但 B 是目录）→ 必须识别为不可确认的
-// 迁移并 FAIL-MOVE-LOST，不继续发布；用户内容仍可在树内找到。
-func TestSharedSkillsBackupRaceDirFailsClosed(t *testing.T) {
-	preamble := `mv() {
-  case "$3" in
-    "$HOME"/.agents/skills.pre-shared.*) mkdir -p "$3" ;;
-  esac
-  command mv "$@"
-}`
-	out, home, err := runSharedSkillsScriptInShell(t, preamble)
+// TestSharedSkillsBackupRaceDirLinkFailsClosed（R3-F02）：竞争者在槽位创建
+// 指向目标目录的符号链接（模拟指向宿主技能根）→ 迁移原语对已存在目的一律
+// 拒绝、绝不把目的解释为目录内移动——无穿透写入（T/skills 不得出现），报
+// FAIL-MOVE-LOST，用户目录原位保留。
+func TestSharedSkillsBackupRaceDirLinkFailsClosed(t *testing.T) {
+	var targetDir string
+	out, home, target, err := runSharedSkillsScriptInShell(t,
+		func(home string) { writeDefaultUserSkill(t, home) },
+		competitorAtSlot(`ln -s "$T" "$3"`),
+	)
+	targetDir = target
 	if err == nil {
-		t.Fatalf("dir-at-slot must fail closed, got exit 0, output:\n%s", out)
+		t.Fatalf("dirlink-occupied slot must fail closed, got exit 0, output:\n%s", out)
 	}
 	if !strings.Contains(out, "FAIL-MOVE-LOST") {
 		t.Fatalf("must report FAIL-MOVE-LOST, got:\n%s", out)
 	}
-	if strings.Contains(out, "LINKED") {
-		t.Fatalf("must not publish after unconfirmed migration, got:\n%s", out)
+	if strings.Contains(out, "BACKED-UP") || strings.Contains(out, "LINKED") {
+		t.Fatalf("occupied slot must not report success, got:\n%s", out)
 	}
-	// 内容保全：SKILL.md 仍在 .agents 树内某处（原位或备份目录内部）。
-	found := false
-	_ = filepath.Walk(filepath.Join(home, ".agents"), func(p string, info os.FileInfo, werr error) error {
-		if werr == nil && !info.IsDir() && info.Name() == "SKILL.md" {
-			found = true
-		}
-		return nil
-	})
-	if !found {
-		t.Fatal("user content must survive somewhere under ~/.agents")
+	// 穿透断言：宿主目标目录内不得出现任何内容（尤其 skills/）。
+	entries, rerr := os.ReadDir(targetDir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("slot dirlink must NOT be traversed into target: %v", entries)
+	}
+	data, rerr := os.ReadFile(filepath.Join(home, ".agents", "skills", "SKILL.md"))
+	if rerr != nil || string(data) != "# USER ORIGINAL" {
+		t.Fatalf("user tree must stay in place byte-identical, err=%v", rerr)
+	}
+}
+
+// TestSharedSkillsBackupDirOccupantFailsClosed：竞争者在槽位创建真实目录
+// → 同样拒绝、L 原位保留、FAIL-MOVE-LOST。
+func TestSharedSkillsBackupDirOccupantFailsClosed(t *testing.T) {
+	out, home, _, err := runSharedSkillsScriptInShell(t,
+		func(home string) { writeDefaultUserSkill(t, home) },
+		competitorAtSlot(`mkdir -p "$3"`),
+	)
+	if err == nil {
+		t.Fatalf("dir-occupied slot must fail closed, got exit 0, output:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL-MOVE-LOST") || strings.Contains(out, "BACKED-UP") {
+		t.Fatalf("dir-occupied slot must fail honestly, got:\n%s", out)
+	}
+	data, rerr := os.ReadFile(filepath.Join(home, ".agents", "skills", "SKILL.md"))
+	if rerr != nil || string(data) != "# USER ORIGINAL" {
+		t.Fatalf("user tree must stay in place byte-identical, err=%v", rerr)
 	}
 }
 
 // TestSharedSkillsBackupMigratesRealDir（正向）：无竞争时真实目录被完整迁移
-// 到唯一备份槽（BACKED-UP 披露路径、内容原样）。BSD mv 无 -T 时发布阶段会
-// FAIL-PUBLISH（macOS 取证边界，如实接受）；GNU 环境则 LINKED——两者都证明
-// 备份语义正确。
+// 到排他槽位（BACKED-UP 披露路径、内容逐字节原样）。BSD mv 无 -T 时发布阶段
+// 经适配接缝由真实 ln/rm 组合完成（macOS 取证边界）；GNU 环境则 LINKED——
+// 两者都证明备份语义正确。
 func TestSharedSkillsBackupMigratesRealDir(t *testing.T) {
-	out, home, err := runSharedSkillsScriptInShell(t, "")
+	out, home, _, err := runSharedSkillsScriptInShell(t,
+		func(home string) { writeDefaultUserSkill(t, home) },
+	)
 	backupLine := ""
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasPrefix(l, "BACKED-UP:") {
@@ -114,10 +168,49 @@ func TestSharedSkillsBackupMigratesRealDir(t *testing.T) {
 	}
 	data, rerr := os.ReadFile(filepath.Join(backupLine, "SKILL.md"))
 	if rerr != nil || string(data) != "# USER ORIGINAL" {
-		t.Fatalf("backup must carry the user tree intact, err=%v", rerr)
+		t.Fatalf("backup must carry the user tree byte-identical, err=%v", rerr)
 	}
 	if !(strings.Contains(out, "LINKED") || strings.Contains(out, "FAIL-PUBLISH")) {
 		t.Fatalf("terminal must be LINKED (GNU mv -T) or FAIL-PUBLISH (BSD), got:\n%s", out)
+	}
+}
+
+// TestSharedSkillsBackupKeepsLegalSkillsSubdir（R3-F10 正例）：`skills` 是
+// 合法技能名——`~/.agents/skills/skills/SKILL.md` 是普通用户内容，正常迁移
+// 不得被任何子条目名启发式误判：必须 BACKED-UP 且备份内该子技能逐字节保留
+// （迁移身份由 mv -nT 原语结果自证）。
+func TestSharedSkillsBackupKeepsLegalSkillsSubdir(t *testing.T) {
+	out, _, _, err := runSharedSkillsScriptInShell(t,
+		func(home string) {
+			writeDefaultUserSkill(t, home)
+			nested := filepath.Join(home, ".agents", "skills", "skills")
+			if err := os.MkdirAll(nested, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(nested, "SKILL.md"), []byte("# VALID SKILL NAMED skills"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	)
+	backupLine := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "BACKED-UP:") {
+			backupLine = strings.TrimPrefix(l, "BACKED-UP:")
+		}
+	}
+	if backupLine == "" {
+		t.Fatalf("legal skills-named subdir must migrate normally, got (err=%v):\n%s", err, out)
+	}
+	if strings.Contains(out, "FAIL-MOVE-LOST") {
+		t.Fatalf("name heuristic must not reject legal content, got:\n%s", out)
+	}
+	nested, rerr := os.ReadFile(filepath.Join(backupLine, "skills", "SKILL.md"))
+	if rerr != nil || string(nested) != "# VALID SKILL NAMED skills" {
+		t.Fatalf("nested legal skill must survive byte-identical, err=%v", rerr)
+	}
+	data, rerr := os.ReadFile(filepath.Join(backupLine, "SKILL.md"))
+	if rerr != nil || string(data) != "# USER ORIGINAL" {
+		t.Fatalf("top-level skill must survive byte-identical, err=%v", rerr)
 	}
 }
 

@@ -13,11 +13,12 @@ func TestWSLSharedSkillsScriptShape(t *testing.T) {
 	for _, want := range []string{
 		`L="$HOME/.agents/skills"`,
 		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
-		// R1-F02：唯一备份槽 + no-clobber 迁移 + 落位校验（不静默覆盖旧备份）。
-		`C="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$i"`,
-		`if [ ! -e "$C" ]; then B="$C"; break; fi`,
-		`mv -n "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
-		`if [ -e "$L" ] || [ ! -e "$B" ] || { [ -d "$B" ] && [ -e "$B/skills" ]; }; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
+		// R1-F02→R3：排他槽位（时间戳+PID）+ mv -nT 字面目的地迁移——迁移身份
+		// 由原语结果自证（L 消失⇔B 存在），不用子条目名启发式；目的被任何形态
+		// 占用（含目录/目录符号链接）时原语拒绝，不存在穿透写入。
+		`B="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$$"`,
+		`mv -nT "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		`if [ -e "$L" ] || [ ! -e "$B" ]; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
 		`printf 'BACKED-UP:%s\n' "$B"`,
 		`rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
 		// R1-F01：临时名建链 + mv -T 原子发布（不穿透既有目录符号链接写入

@@ -52,18 +52,21 @@ type WSLSharedSkillsLinkResult struct {
 // wslSharedSkillsScript 在 distro 内核验/修复受管符号链接（事务化：不跟随
 // 目标目录的原子发布 + 唯一备份槽 + 终验）。
 // 输出行：OK-LINKED / BACKED-UP:<path> / REPLACED-LINK / LINKED /
-// FAIL-MKDIR / FAIL-BACKUP-SLOT / FAIL-MOVE / FAIL-MOVE-LOST / FAIL-RM /
+// FAIL-MKDIR / FAIL-MOVE / FAIL-MOVE-LOST / FAIL-RM /
 // FAIL-LN / FAIL-PUBLISH / FAIL-VERIFY（TARGET-MISSING 为附注行）。
 //
-// 并发安全（R1-F01/F02、R2-F02）：
+// 并发安全（R1-F01/F02、R2-F02、R3-F02/F10）：
 //   - 发布不用 `ln -s T L`——L 已是目录符号链接时 ln 会穿透把链接写进目标
 //     目录（宿主技能根）内；改为临时名建链后 `mv -T` 原子改名（rename(2)，
 //     不解析目标，竞争者已发布时本次替换为同目标链接，幂等收敛）；
-//   - 备份槽不覆用：同秒碰撞时追加序号寻空槽，`mv -n` 不覆写已存在目的；
-//     迁移成功的证明是「本轮前像已落位」——L 必须已迁离、B 必须存在，且
-//     B 为目录时不得再含 skills 条目（目录 L 迁走后 B 即该目录本体；若
-//     B 是竞争者目录、L 被控进其内部则 B/skills 存在——一律 FAIL-MOVE-LOST
-//     如实报错并停止发布，不拿竞争者内容冒充本轮备份）；
+//   - 备份迁移用 `mv -nT`（字面目的地 + 不覆写）：槽位名含时间戳与 PID
+//     （同进程由单飞串行化、跨进程 PID 互异，同秒槽位天然不碰撞）；目的
+//     已被任何形态占用（含目录/目录符号链接）时原语拒绝且绝不把目的解释
+//     为目录内移动——不存在穿透写入；迁移身份由原语结果自证（成功 ⇔
+//     L 已消失且 B 存在），不使用任何子条目名启发式（合法的 skills 子技能
+//     名不得被误判）；拒绝/不可确认 → FAIL-MOVE-LOST 如实报错并停止发布。
+//     注：-T 为 GNU coreutils 语义（WSL/Ubuntu 生产环境）；BSD 宿主的测试
+//     由 mv 适配接缝等价模拟（见 wsl_shared_skills_race_test.go）。
 //   - 终验 readlink——任何路径下未确认指向目标一律 FAIL-*，不冒充成功。
 func wslSharedSkillsScript(linuxTarget string) string {
 	t := wslShQuote(linuxTarget)
@@ -73,16 +76,9 @@ func wslSharedSkillsScript(linuxTarget string) string {
 		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
 		`mkdir -p "$HOME/.agents" 2>/dev/null || { printf 'FAIL-MKDIR\n'; exit 1; }`,
 		`if [ -e "$L" ] && [ ! -L "$L" ]; then`,
-		`  B=""`,
-		`  i=0`,
-		`  while [ "$i" -lt 50 ]; do`,
-		`    C="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$i"`,
-		`    if [ ! -e "$C" ]; then B="$C"; break; fi`,
-		`    i=$((i+1))`,
-		`  done`,
-		`  if [ -z "$B" ]; then printf 'FAIL-BACKUP-SLOT\n'; exit 1; fi`,
-		`  mv -n "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
-		`  if [ -e "$L" ] || [ ! -e "$B" ] || { [ -d "$B" ] && [ -e "$B/skills" ]; }; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
+		`  B="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$$"`,
+		`  mv -nT "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		`  if [ -e "$L" ] || [ ! -e "$B" ]; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
 		`  printf 'BACKED-UP:%s\n' "$B"`,
 		`elif [ -L "$L" ]; then`,
 		`  rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
