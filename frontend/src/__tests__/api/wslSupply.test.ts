@@ -17,12 +17,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
   GrantWSLVisionConsent: consentBinding,
   EnableWSLUnifiedSupply: unifiedEnableBinding,
   DisableWSLUnifiedSupply: unifiedDisableBinding,
-  GetWSLSkillsSupplyStatus: skillsStatusBinding,
-  CheckWSLSkillsSupply: skillsCheckBinding,
-  PreviewWSLSkillsSupply: skillsPreviewBinding,
-  ApplyWSLSkillsSupply: skillsApplyBinding,
-  KeepWSLSkillLocal: skillsKeepBinding,
-  TakeOverWSLSkill: skillsTakeOverBinding,
+  EnsureWSLSharedSkillsRoot: sharedRootBinding,
   GetWSLCliSupplyStatus: cliStatusBinding,
   PreviewWSLCliConfigSupply: cliPreviewBinding,
   ImportWSLCliConfigKeys: cliImportBinding,
@@ -77,12 +72,7 @@ describe('api.wslSupply', () => {
 // ---------------------------------------------------------------------------
 // 其余 App 绑定（S3 技能 / S4 CLI 配置与资源 / OpenCode MCP / 统一管理）。
 const {
-  skillsStatusBinding,
-  skillsCheckBinding,
-  skillsPreviewBinding,
-  skillsApplyBinding,
-  skillsKeepBinding,
-  skillsTakeOverBinding,
+  sharedRootBinding,
   cliStatusBinding,
   cliPreviewBinding,
   cliImportBinding,
@@ -97,12 +87,7 @@ const {
   ocPreviewBinding,
   ocSetBinding,
 } = vi.hoisted(() => ({
-  skillsStatusBinding: vi.fn(),
-  skillsCheckBinding: vi.fn(),
-  skillsPreviewBinding: vi.fn(),
-  skillsApplyBinding: vi.fn(),
-  skillsKeepBinding: vi.fn(),
-  skillsTakeOverBinding: vi.fn(),
+  sharedRootBinding: vi.fn(),
   cliStatusBinding: vi.fn(),
   cliPreviewBinding: vi.fn(),
   cliImportBinding: vi.fn(),
@@ -119,70 +104,46 @@ const {
 }))
 
 // ---------------------------------------------------------------------------
-// P3-S3：共享技能面（扫描/预览/勾选导入/保留本地/接管；绑定已并入首部
-// 单一 mock 工厂）。
+// 共享技能根（1.3.130：受管符号链接直连；原 P3-S3 同意制投影已退役）。
 
-import {
-  getWSLSkillsSupplyStatus,
-  checkWSLSkillsSupply,
-  previewWSLSkillsSupply,
-  applyWSLSkillsSupply,
-  keepWSLSkillLocal,
-  takeOverWSLSkill,
-} from '../../api/wslSupply'
+import { ensureWSLSharedSkillsRoot } from '../../api/wslSupply'
 
-describe('api.wslSupply skills (P3-S3)', () => {
-  it('getWSLSkillsSupplyStatus 透传扫描进度与逐技能状态（扫描未完成不冒充）', async () => {
-    skillsStatusBinding.mockResolvedValueOnce({
+describe('api.wslSupply shared skills root', () => {
+  it('ensureWSLSharedSkillsRoot 透传核验结果（含备份迁移披露）', async () => {
+    sharedRootBinding.mockResolvedValueOnce({
       distro: 'Ubuntu',
-      available: true,
-      scanStarted: true,
-      scanRunning: true,
-      scanScanned: 3,
-      scanTotal: 12,
-      scanIncomplete: true,
-      skills: [
-        { name: 'alpha', state: 'importable', detail: '可移植，未选择导入', selectable: true, actions: ['preview'] },
-        { name: 'win', state: 'incompatible', detail: '含 1 项不兼容内容', incompatible: ['run.ps1：Windows 专用脚本（未支持）'], selectable: false, actions: ['preview'] },
-      ],
+      state: 'backed-up',
+      target: '/mnt/c/Users/u/.agents/skills',
+      backup: '/home/u/.agents/skills.pre-shared.20261109',
+      detail: '既有目录已备份迁移',
+      checked: true,
     })
 
-    const st = await getWSLSkillsSupplyStatus()
+    const result = await ensureWSLSharedSkillsRoot()
 
-    expect(st.scanRunning).toBe(true)
-    expect(st.scanIncomplete).toBe(true)
-    expect(st.skills[1].incompatible?.[0]).toContain('run.ps1')
-    expect(st.skills[0].selectable).toBe(true)
+    expect(sharedRootBinding).toHaveBeenCalledTimes(1)
+    expect(result.state).toBe('backed-up')
+    expect(result.backup).toBe('/home/u/.agents/skills.pre-shared.20261109')
   })
 
-  it('applyWSLSkillsSupply 透传勾选名单并返回逐项结果', async () => {
-    skillsApplyBinding.mockResolvedValueOnce([{ unit: 'shared/skill/alpha', outcome: 'applied', detail: 'written' }])
-    const out = await applyWSLSkillsSupply(['alpha'])
-    expect(skillsApplyBinding).toHaveBeenCalledWith(['alpha'])
-    expect(out[0].outcome).toBe('applied')
-  })
+  it('host-missing 如实透传（不冒充成功）', async () => {
+    sharedRootBinding.mockResolvedValueOnce({
+      distro: 'Ubuntu',
+      state: 'host-missing',
+      target: '',
+      backup: '',
+      detail: 'Windows 技能根在 distro 内不可达（不存在或未挂载）',
+      checked: true,
+    })
 
-  it('checkWSLSkillsSupply / previewWSLSkillsSupply 透传检查与预览动作', async () => {
-    skillsCheckBinding.mockResolvedValueOnce({ distro: 'Ubuntu', available: true, skills: [] })
-    skillsPreviewBinding.mockResolvedValueOnce([
-      { name: 'alpha', portable: true, action: 'write', targetHash: 'tok', incompatible: [], excluded: 2 },
-    ])
-    await expect(checkWSLSkillsSupply()).resolves.toMatchObject({ distro: 'Ubuntu' })
-    const rows = await previewWSLSkillsSupply()
-    expect(rows[0].portable).toBe(true)
-    expect(rows[0].excluded).toBe(2)
-  })
+    const result = await ensureWSLSharedSkillsRoot()
 
-  it('keepWSLSkillLocal / takeOverWSLSkill 透传停跟随与接管', async () => {
-    skillsKeepBinding.mockResolvedValueOnce(undefined)
-    skillsTakeOverBinding.mockResolvedValueOnce(undefined)
-    await keepWSLSkillLocal('alpha')
-    await takeOverWSLSkill('alpha', 'tok')
-    expect(skillsKeepBinding).toHaveBeenCalledWith('alpha')
-    expect(skillsTakeOverBinding).toHaveBeenCalledWith('alpha', 'tok')
+    expect(result.state).toBe('host-missing')
+    expect(result.detail).toContain('不可达')
   })
 })
 
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // P3-S4：Claude / Codex 用户配置导入面 + OpenCode 附加层 MCP 选择面
 //（绑定已并入首部单一 mock 工厂）。

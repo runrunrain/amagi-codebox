@@ -398,17 +398,7 @@ trusted = ["C:\\proj"]
 func TestScanCompletionCallbackFires(t *testing.T) {
 	fp := newFakeProbes(t)
 	c := NewCoordinator(t.TempDir(), nil, fp.probes())
-	// skills 作用域：单技能目录。
-	skillsRoot := t.TempDir()
-	skillDir := filepath.Join(skillsRoot, "alpha")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# alpha"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c.RegisterSkills(NewSkillsScope(skillsRoot, DefaultSkillsScanLimits()))
-	// claude 资源作用域：单文件资源。
+	// claude 资源作用域：单文件资源。（原 skills 作用域已随 P3-S3 退役。）
 	resRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(resRoot, "CLAUDE.md"), []byte("# claude"), 0o644); err != nil {
 		t.Fatal(err)
@@ -419,28 +409,20 @@ func TestScanCompletionCallbackFires(t *testing.T) {
 
 	done := make(chan string, 4)
 	c.SetScanCompletionCallback(func() { done <- "scan" })
-	if !c.StartSkillsScan() {
-		t.Fatal("skills scan must start")
-	}
 	if !c.StartCliResourcesScan(CLIClaude) {
 		t.Fatal("resources scan must start")
 	}
-	for i := 0; i < 2; i++ {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("scan completion callback %d must fire", i)
-		}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scan completion callback must fire")
 	}
 	// 快照已收敛（非 Running），供对账面消费。
-	if snap := c.SkillsSnapshot(); snap.Running || !snap.Started {
-		t.Fatalf("skills snapshot must be complete: %+v", snap.Progress)
-	}
 	if snap := c.CliResourcesSnapshot(CLIClaude); snap.Running || !snap.Started {
 		t.Fatalf("resources snapshot must be complete: %+v", snap.Progress)
 	}
 	// 重扫（显式检查）完成同样触发。
-	if !c.RescanSkills() {
+	if !c.RescanCliResources(CLIClaude) {
 		t.Fatal("rescan must start")
 	}
 	select {

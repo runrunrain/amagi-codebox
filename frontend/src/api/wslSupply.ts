@@ -38,68 +38,28 @@ export type WSLConfigUnitDetail = main.WSLConfigUnitDetail;
 export type WSLConfigUnitPreview = main.WSLConfigUnitPreview;
 export type WSLConfigUnitKeyPreview = main.WSLConfigUnitKeyPreview;
 export type WSLConfigUnitOutcome = main.WSLConfigUnitOutcome;
-
-// ---------------------------------------------------------------------------
-// P3-S3：共享技能（Windows ~/.agents/skills → WSL）——有界扫描、预览勾选
-// 导入（per-target 同意）、增量跟随与冻结保留（TrackedProjection）。
-// ---------------------------------------------------------------------------
-
-import {
-  CheckWSLSkillsSupply,
-  GetWSLSkillsSupplyStatus,
-  PreviewWSLSkillsSupply,
-  ApplyWSLSkillsSupply,
-  KeepWSLSkillLocal,
-  TakeOverWSLSkill,
-} from '../../wailsjs/go/main/App';
-
 export type WSLSkillsSupplyStatus = main.WSLSkillsSupplyStatus;
 export type WSLSkillSummary = main.WSLSkillSummary;
 export type WSLSkillPreview = main.WSLSkillPreview;
 
-/**
- * 技能面状态：单飞启动后台扫描（分批推进），立即返回缓存快照——大目录
- * 不阻塞 UI；扫描未完成的技能明确标记，不冒充完成。
- */
-export function getWSLSkillsSupplyStatus(): Promise<WSLSkillsSupplyStatus> {
-  return callApi('[api.wslSupply.getWSLSkillsSupplyStatus]', () => GetWSLSkillsSupplyStatus());
-}
+// ---------------------------------------------------------------------------
+// 共享技能根（1.3.130：WSL ~/.agents/skills 经受管符号链接直连 Windows
+// ~/.agents/skills——与 pi 共享 agent 根同一裁定；原 P3-S3 同意制投影退役，
+// 状态面聚合在 GetWSLConfigSupplyStatus 的 skills face）。
+// ---------------------------------------------------------------------------
+
+import { EnsureWSLSharedSkillsRoot } from '../../wailsjs/go/main/App';
+
+export type WSLSharedSkillsRootStatus = main.WSLSharedSkillsRootStatus;
 
 /**
- * 「检查」：触发一轮后台重扫并返回当前状态（不写任何目标内容）。
+ * 「检查/修复」：强制核验（并按需修复）当前 distro 内 ~/.agents/skills 的
+ * 受管符号链接；真实目录被备份迁移等情况在返回值中如实披露。
  */
-export function checkWSLSkillsSupply(): Promise<WSLSkillsSupplyStatus> {
-  return callApi('[api.wslSupply.checkWSLSkillsSupply]', () => CheckWSLSkillsSupply());
+export function ensureWSLSharedSkillsRoot(): Promise<WSLSharedSkillsRootStatus> {
+  return callApi('[api.wslSupply.ensureWSLSharedSkillsRoot]', () => EnsureWSLSharedSkillsRoot());
 }
 
-/**
- * 「预览」：逐技能动作/不兼容原因（逐项报告）/接管 CAS 令牌；不产生写入。
- */
-export function previewWSLSkillsSupply(): Promise<WSLSkillPreview[]> {
-  return callApi('[api.wslSupply.previewWSLSkillsSupply]', () => PreviewWSLSkillsSupply());
-}
-
-/**
- * 「预览勾选后导入」：对勾选的可移植技能登记 per-target 同意并供给
- *（文件 0644/目录 0755；越界/绝对/循环链接与 Windows 专用脚本不复制）。
- */
-export function applyWSLSkillsSupply(names: string[]): Promise<WSLConfigUnitOutcome[]> {
-  return callApi('[api.wslSupply.applyWSLSkillsSupply]', () => ApplyWSLSkillsSupply(names));
-}
-
-/**
- * 「保留本地（停跟随）」：目标内容不动，后续供给零动作；接管可解除。
- */
-export function keepWSLSkillLocal(name: string): Promise<void> {
-  return callApi('[api.wslSupply.keepWSLSkillLocal]', () => KeepWSLSkillLocal(name));
-}
-
-/**
- * 「确认接管（预览后）」：目标树 hash 做 CAS；旧预览过期则拒绝。
- */
-export function takeOverWSLSkill(name: string, expectedTargetHash: string): Promise<void> {
-  return callApi('[api.wslSupply.takeOverWSLSkill]', () => TakeOverWSLSkill(name, expectedTargetHash));
-}
 
 // ---------------------------------------------------------------------------
 // P3-S4：Claude / Codex 用户配置导入（键级选择导入 + 资源目录单元）与

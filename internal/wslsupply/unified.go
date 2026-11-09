@@ -209,15 +209,9 @@ func (c *Coordinator) UnitSourceKeys(unit UnitID) ([]string, error) {
 }
 
 // consentPolicyFor 返回接受 per-target 同意的单元的策略名（GrantUnitConsent
-// 与 AutoConsentIfUnified 共用的可接受性判定：技能/资源单元按 TrackedProjection；
+// 与 AutoConsentIfUnified 共用的可接受性判定：资源单元按 TrackedProjection；
 // 投影单元必须 RequiresConsent）。不可接受返回 ok=false。
 func (c *Coordinator) consentPolicyFor(unit UnitID) (Policy, bool) {
-	if _, isSkill := ParseSkillUnit(unit); isSkill {
-		if c.skills == nil {
-			return "", false
-		}
-		return PolicyTrackedProjection, true
-	}
 	if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
 		if c.resourceScope(resCLI) == nil {
 			return "", false
@@ -268,8 +262,8 @@ func grantEntryIn(st *StateFile, target TargetRef, unit UnitID, policy Policy) {
 // 扫描完成通知（App 层对账时机依赖：启用后推送不能早于扫描结束）
 // ---------------------------------------------------------------------------
 
-// SetScanCompletionCallback 注册「一次后台扫描结束」通知回调（skills 与全部
-// CLI resources 作用域；Rescan 重扫完成同样触发）。回调在扫描 goroutine 内、
+// SetScanCompletionCallback 注册「一次后台扫描结束」通知回调（全部 CLI
+// resources 作用域；Rescan 重扫完成同样触发）。回调在扫描 goroutine 内、
 // 无锁状态下调用——必须非阻塞；App 层只做一次异步推送调度。重复注册以后者
 // 为准；nil 清除。回调在触发时刻经 scanDoneNotifier 快照读取，注册后修改
 // 也能被已注册作用域看到最新值。
@@ -278,9 +272,6 @@ func (c *Coordinator) SetScanCompletionCallback(fn func()) {
 	c.scanDone = fn
 	c.scanDoneMu.Unlock()
 	notifier := c.scanDoneNotifier()
-	if c.skills != nil {
-		c.skills.SetScanDoneCallback(notifier)
-	}
 	for _, scope := range c.resources {
 		scope.SetScanDoneCallback(notifier)
 	}

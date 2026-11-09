@@ -6,9 +6,43 @@
 
 ## [Unreleased]
 
+## [1.3.130] - 2026-11-09
+
 ### Added
 
 - **Agent CLI（codebox-agent）**：面向 AI agent 的本机命令行。桌面应用内置回环随机端口 + 一次性令牌的命令服务（`internal/agentcli`），业务命令只走运行中的应用、无离线直写；应用二进制新增隐藏 `cli` 子命令作为客户端（`internal/agentcli/client`），由 `~/.amagi-codebox/bin/codebox-agent` shim 转发调用。覆盖提供商/预设/密钥状态、设置、环境变量、工作目录、会话生命周期、用量统计、插件、环境检测与 Git 查询共 45 条命令；exec/destructive 命令需 `--yes` 双重确认（客户端预检 + 服务端强制），密钥只能经 stdin 写入、输出全脱敏，非只读命令记审计日志（不含参数值）。应用启动默认安装 shim 与 `amagi-codebox` agent 技能（`~/.agents` 默认，`~/.claude`/`~/.codex` 可选；用户清理过不再自动装回），设置新增「命令行访问」开关（`agentCLIEnabled`，默认开启）。命令参考文档 `docs/user/agent-cli.md` 由命令表生成并有防漂移测试锚定。
+
+### Fixed（审核 R1）
+
+- **R1-F01 并发建链穿透**：发布改为「临时名建链 + `mv -T` 原子改名 + readlink 终验」——不再直达 `ln -s "$T" "$L"`（L 已是目录符号链接时会穿透把链接写进 Windows 技能根内）；同 distro 并发在 App 层单飞串行化，后到者复用结果（幂等收敛）。
+- **R1-F02 备份静默覆盖**：前像迁移改用唯一备份槽（同秒碰撞追加序号）+ `mv -n` no-clobber + 落位校验——绝不覆盖既有 `skills.pre-shared.*` 备份，让位竞争如实 `FAIL-MOVE-LOST`。
+- **R1-F03 退役 pending 复活**：退役单元（`pi/*`、`shared/skill/*`）的未决 intent 对账时收口为 `retired-closed`——终结 intent（墓碑留证）但不重建在役登记、不触碰 WSL 侧旧副本；`applyIntentBaseline` 加同口径防线，GetStatus 过滤补齐 `shared/skill/*`。
+- **R1-F04/F07/F08 清理与诚实性**：删除不可达的内存前像快照恢复链（`snapshotSkillPreimage`/`restoreSkillPreimage`/`prevFiles` 兜底，持久 prev 树是唯一恢复材料）；路径翻译探测失败归为 failed（与「确认宿主根不存在」的 host-missing 区分）；host-missing 在状态卡显示独立徽标「宿主根不可达」，不再与「未检查」混同。
+- **R1-F05/F06 面与夹具一致性**：技能 face 只读当前 distro 的核验缓存（不串用其它 distro 结果）；e2e 交互夹具绑定同步退役面并补 `EnsureWSLSharedSkillsRoot`。
+- **R1 覆盖回补**：移植原树单元原语的四个独立回归（目录链接不递归×2、凭据名链接排除、候选读取身份重验）+ 退役 pending 对账回归（含在役单元不受误伤的负例）。
+
+### Fixed（审核 R2）
+
+- **R2-F02 备份迁移的成功证明**：`mv -n` 让位（槽位检查后被竞争者占用）不再被误认迁移成功——落位校验改为「L 已迁离 + B 存在 + B 为目录时不得再含 skills 条目」（目录 L 迁走后 B 即该目录本体；L 被挪进竞争者目录则 `B/skills` 存在），任何不可确认迁移一律 `FAIL-MOVE-LOST` 并停止发布，不拿竞争者内容冒充本轮备份。新增真实 sh 执行的竞争回归（文件占用/目录占用/正常迁移三场景，函数覆盖 `mv` 注入确定性时序）。
+- **R2-F09 等待式单飞**：同 distro 的并发核验（第二个首次启动的会话漏斗/显式检查）改为等待在途轮次真正完成并返回真实结果——不再把「正在执行」当结果返回、不借旧缓存冒充本轮结果；完成信号在结果记录之后发出。新增双启动时序回归（在途未完成时后到者不得返回；完成后结果/缓存/face 三面一致）。
+- **R2 边界**：`wslTranslatePathsCore` 错误面在非 Windows 平台按平台门契约校验（空映射 + nil error，不伪造错误分支）。
+
+### Fixed（审核 R3）
+
+- **R3-F02 备份迁移的目的边界**：槽位被竞争者以目录符号链接占用（如指向宿主技能根）时，旧实现 `mv -n` 会把前像穿透写入目的所指目录后才报错。备份迁移改为 `mv -nT`（字面目的地 + 不覆写）：目的已被任何形态占用（文件/目录/目录符号链接）即原语拒绝、绝不解释为目录内移动——不存在穿透窗口；迁移身份由原语结果自证（成功 ⇔ L 已消失且 B 存在），不再有任何子条目名启发式。
+- **R3-F10 合法子技能误判**：名为 `skills` 的合法子技能（`skills/skills/SKILL.md`）不再被 `B/skills` 存在性启发式误判为「挪进竞争者目录」——该启发式已随上项整体移除；正常迁移 BACKED-UP 且嵌套内容逐字节保留。
+- **备份槽位排他**：槽名含时间戳与 PID（同进程单飞串行化、跨进程 PID 互异，同秒不碰撞），替代同秒序号寻槽循环；拒绝/不可确认迁移一律 `FAIL-MOVE-LOST` 如实报错并停止发布。
+- **测试**：BSD 宿主经 `mv` 适配接缝等价模拟 GNU `-nT` 语义（命名语义函数 + 竞争注入包装链）；新增真实 sh 行为测试——文件/目录/目录链接三占槽负例（含「宿主目标目录零写入」穿透断言）、正常迁移正例、合法 skills 子技能正例（R3-F10）。
+- **R4-F11 测试保真**：mv 适配接缝的「目的已占用」判定补 `-L`（lstat）——悬挂符号链接占槽时与 GNU no-clobber 语义一致（拒绝而非替换），并新增对应行为测试（悬挂链接本体不被覆盖、L 原位保留）。
+
+### Changed
+
+- **WSL 内共享 Windows `~/.agents/skills`（受管符号链接）**：延续 1.3.126「WSL 只提供运行环境」裁定——pi 原生按 Agent Skills 规范扫描 `$HOME/.agents/skills`，新增会话启动漏斗（WSL pi 分支，每进程每 distro 首轮核验）与状态页「检查/修复」动作（`EnsureWSLSharedSkillsRoot`），把 distro 内 `~/.agents/skills` 钉成指向 Windows 技能根（wslpath 实测翻译）的符号链接：幂等、指向别处的旧链接自愈替换、既有真实目录先备份为 `skills.pre-shared.<时间戳>` 再建链、目标经 `WSLTranslatePaths` 存在性验证（不可达如实报 host-missing 不建链）。
+
+### Removed
+
+- **退役 P3-S3「共享技能」同意制投影（`shared/skill/<name>` 单元）**：同一棵树不允许两套写入通道——投影副本会遮挡/被符号链接遮挡。删除 `SkillsScope` 作用域、App 动作面（`Get/Check/Preview/Apply/Keep/TakeOver` 六个 wails 方法）、统一管理的技能扫描/重扫/对账分支与前端技能面板；树单元共享原语（`planTreeUnitCore` / `submitDirUnit` / 目标树探测 / 扫描器与兼容检查）保留，继续服务 Claude/Codex 用户资源单元。
+- **旧状态清单读取时剔除退役登记**：`pi/*`（1.3.126 退役后仍残留的 awaiting-consent 死条目）与 `shared/skill/*` 登记在加载时统一剔除（`pruneRetiredUnits`），状态页不再展示永久的待同意/不兼容噪音；在役单元（视觉清单/学习层/Claude/Codex）不受影响。配置状态区「共享技能」卡片改为符号链接核验状态（已指向/已备份迁移/宿主根不可达/核验失败）。
 
 ## [1.3.129] - 2026-11-09
 

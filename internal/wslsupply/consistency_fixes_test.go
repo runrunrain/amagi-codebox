@@ -273,33 +273,35 @@ func TestConsistencyWrongRootReconcileKeepsSharedPending(t *testing.T) {
 // 5. dir-cas-and-structure：不可逆移动前对构建基准复验
 // ---------------------------------------------------------------------------
 
-// cfSkillEnv 构造一个已同意的技能单元环境（host 源 demo/SKILL.md=# NEW；目标
-// 已有 # OLD），返回协调器/探测/单元/目标目录。
+// cfSkillEnv 构造一个已同意的 claude 资源目录单元环境（host 源
+// commands/demo/SKILL.md=# NEW；目标已有 # OLD），返回协调器/探测/单元/目标目录。
+// （原技能单元驱动已随 P3-S3 退役，改用同一目录提交原语的资源单元承载。）
 func cfSkillEnv(t *testing.T) (*Coordinator, *fakeProbes, UnitID, string) {
 	t.Helper()
 	fp := newFakeProbes(t)
 	c := newCoordinatorWith(t, fp)
 	host := t.TempDir()
-	cfWrite(t, filepath.Join(host, "demo", "SKILL.md"), "# NEW", 0o644)
-	scope := NewSkillsScope(host, DefaultSkillsScanLimits())
-	scope.Scan()
-	c.RegisterSkills(scope)
-	u := SkillUnitID("demo")
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, u); err != nil {
+	cfWrite(t, filepath.Join(host, "commands", "demo", "SKILL.md"), "# NEW", 0o644)
+	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
+		HostRoot: host, DirUnits: []string{"commands"}, TargetPrefix: ".claude/",
+	}, DefaultSkillsScanLimits()))
+	c.resourceScope(CLIClaude).Scan()
+	u := ResourceUnitID(CLIClaude, "commands/demo")
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, u); err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo")
+	dst := filepath.Join(fp.uncRoot, "home/u/.claude/commands/demo")
 	cfWrite(t, filepath.Join(dst, "SKILL.md"), "# OLD", 0o644)
 	return c, fp, u, dst
 }
 
 func cfTakeOver(t *testing.T, c *Coordinator, u UnitID, ctx context.Context) UnitResult {
 	t.Helper()
-	p, err := c.PreviewUnits(context.Background(), "Ubuntu", CLICommon, []UnitID{u})
+	p, err := c.PreviewUnits(context.Background(), "Ubuntu", CLIClaude, []UnitID{u})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, u, p[0].TargetHash)
+	r, err := c.TakeOverUnit(ctx, "Ubuntu", CLIClaude, u, p[0].TargetHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,8 +462,8 @@ func TestConsistencyResourceAbortRestoresFromPersistedPrev(t *testing.T) {
 	}
 }
 
-// TestConsistencyResourceAbortLargeUserTree：接管大目录（内存快照超限=不可
-// 用）时补偿仍可用持久 prev 树保全用户内容（不得仅依赖内存快照）。
+// TestConsistencyResourceAbortLargeUserTree：接管大目录时补偿用持久 prev 树
+// 保全用户内容（R1-F04：持久 prev 树是唯一恢复材料）。
 func TestConsistencyResourceAbortLargeUserTree(t *testing.T) {
 	c, fp, host := newS4ResourceCoordinator(t)
 	writeHostResource(t, host, filepath.Join("commands", "big", "SKILL.md"), "NEW")
@@ -482,9 +484,6 @@ func TestConsistencyResourceAbortLargeUserTree(t *testing.T) {
 	r, err := c.TakeOverUnit(context.Background(), "Ubuntu", CLIClaude, u, pv[0].TargetHash)
 	if err != nil || r.Undo == nil {
 		t.Fatalf("setup: %+v %v", r, err)
-	}
-	if r.Undo.prevSnapshot {
-		t.Fatal("fixture must exceed the in-memory snapshot cap")
 	}
 	out := c.Compensate(context.Background(), r.Undo)
 	if len(out) != 1 || out[0].Disposition != CompensationConfirmed {
@@ -513,21 +512,22 @@ func TestConsistencyDirectoryRestartReconcileConverges(t *testing.T) {
 	probes := fp.probes()
 	c := NewCoordinator(cfgDir, nil, probes)
 	host := t.TempDir()
-	cfWrite(t, filepath.Join(host, "demo", "SKILL.md"), "# NEW", 0o644)
-	scope := NewSkillsScope(host, DefaultSkillsScanLimits())
-	scope.Scan()
-	c.RegisterSkills(scope)
-	u := SkillUnitID("demo")
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, u); err != nil {
+	cfWrite(t, filepath.Join(host, "commands", "demo", "SKILL.md"), "# NEW", 0o644)
+	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
+		HostRoot: host, DirUnits: []string{"commands"}, TargetPrefix: ".claude/",
+	}, DefaultSkillsScanLimits()))
+	c.resourceScope(CLIClaude).Scan()
+	u := ResourceUnitID(CLIClaude, "commands/demo")
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, u); err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo")
+	dst := filepath.Join(fp.uncRoot, "home/u/.claude/commands/demo")
 	cfWrite(t, filepath.Join(dst, "SKILL.md"), "# OLD", 0o644)
 	r := cfTakeOver(t, c, u, context.Background())
 	if r.Outcome != UnitApplied {
 		t.Fatalf("setup: %+v", r)
 	}
-	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
+	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIClaude)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,8 +561,8 @@ func TestConsistencyDirectoryRestartReconcileConverges(t *testing.T) {
 	treeHash := scanTargetSkillDir(dst, DefaultSkillsScanLimits()).TreeHash
 	intent := OperationIntent{
 		OpID: newOpID(), Kind: OpKindDirSwap, TargetKey: targetKeyOf(tr),
-		TargetDistro: "Ubuntu", TargetHome: tr.Home, TargetCLI: string(CLICommon),
-		Unit: u, RelPath: "skills/demo", BeforeExists: true, AfterHash: treeHash,
+		TargetDistro: "Ubuntu", TargetHome: tr.Home, TargetCLI: string(CLIClaude),
+		Unit: u, RelPath: ".claude/commands/demo", BeforeExists: true, AfterHash: treeHash,
 	}
 	if err := c3.state.saveIntent(intent); err != nil {
 		t.Fatal(err)
@@ -593,17 +593,17 @@ func TestConsistencyDirReconcileMismatchConflicted(t *testing.T) {
 	fp := &fakeProbes{uncRoot: filepath.Join(cfgDir, "target"), identity: platformUserIdentityFixture()}
 	probes := fp.probes()
 	c := NewCoordinator(cfgDir, nil, probes)
-	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLICommon)
+	tr, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIClaude)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(tr.UNCRoot, "skills", "demo")
+	dst := filepath.Join(tr.UNCRoot, ".claude", "commands", "demo")
 	cfWrite(t, filepath.Join(dst, "SKILL.md"), "# STRANGER", 0o644)
 	id := newOpID()
 	intent := OperationIntent{
 		OpID: id, Kind: OpKindDirSwap, TargetKey: targetKeyOf(tr),
-		TargetDistro: "Ubuntu", TargetHome: tr.Home, TargetCLI: string(CLICommon),
-		Unit: SkillUnitID("demo"), RelPath: "skills/demo", BeforeExists: true,
+		TargetDistro: "Ubuntu", TargetHome: tr.Home, TargetCLI: string(CLIClaude),
+		Unit: ResourceUnitID(CLIClaude, "commands/demo"), RelPath: ".claude/commands/demo", BeforeExists: true,
 		AfterHash: hexHash([]byte("not-the-tree")), PrevTreeHash: hexHash([]byte("not-the-either")),
 	}
 	if err := c.state.saveIntent(intent); err != nil {

@@ -332,6 +332,8 @@ func (s *stateStore) loadLocked() StateFile {
 	if f.SchemaVersion < stateSchemaVersion {
 		migrateLegacyState(&f)
 	}
+	// 退役单元登记剔除（升级后旧状态文件里的 pi/*、shared/skill/* 残留）。
+	pruneRetiredUnits(&f)
 	if f.Units == nil {
 		f.Units = []StateEntry{}
 	}

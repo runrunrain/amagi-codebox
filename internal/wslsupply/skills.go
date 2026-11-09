@@ -1,59 +1,27 @@
 package wslsupply
 
-// skills.go — 技能资源单元（shared/skill/<name>）的作用域与计划逻辑（P3-S3）。
+// skills.go — 树单元（目录/单文件）的共享计划与目标侧探测原语。
 //
-// SkillsScope 持有 Windows ~/.agents/skills 的有界扫描缓存与后台扫描状态：
-// 扫描按 skill 目录分批推进（每批一个目录，天然受单 skill 上限约束），进度
-// 对外可见；「扫描未完成」的 skill 不冒充完成、不可选入供给。启动链不触发
-// 技能扫描（RunUnits 的启动单元清单不含技能单元——大目录绝不阻塞会话启动）。
+// 演进：本文件原是 P3-S3「共享技能」作用域（SkillsScope + shared/skill/<name>
+// 同意制投影）。1.3.130 起 WSL 内 ~/.agents/skills 改为受管符号链接直连
+// Windows 技能根（见 platform.WSLEnsureSharedAgentsSkillsLink 与
+// app_wsl_supply.go 的 EnsureWSLSharedSkillsRoot），同一棵树不再保留两套写入
+// 通道——作用域与 shared/skill 单元全部退役（旧登记经 pruneRetiredUnits 剔除）。
 //
-// 单元语义（TrackedProjection，最小登记单元 = skill 目录）：
-//   - 无记录 + 目标目录已存在 → unmanaged-existing 冻结（预览后接管）；
-//   - 有记录 + 目标树 hash ≠ 上次写入 → WSL 手改，冻结该单元；
-//   - 有记录 + 目标被删 → local-deletion-frozen（不自动补回用户删除）；
-//   - 双侧同变 → both-changed-frozen（保留 WSL 现状，不以时间戳仲裁）；
-//   - 来源清单未变且目标等于上次写入 → 跳过；来源变且目标未手改 → 更新；
-//   - 来源（Windows 侧目录）已消失 → source-deleted（删除需确认，不自动删）。
-// per-target 同意门：技能是用户资产跨界导入，未同意前恒 awaiting-consent
-//（与 S1 视觉清单/S2 键级投影同一 GrantUnitConsent 机制与跨代语义）。
+// 保留下来的只有 S4 资源单元（claude/codex 用户资源目录）仍共用的原语：
+//   - SkillsScanProgress / SkillsScanSnapshot：树扫描的进度与快照类型；
+//   - SkillTargetState / scanTargetSkillDir：目标侧有界只读探测；
+//   - planTreeUnitCore：TrackedProjection 树单元的共享判定核心。
 
 import (
-	"context"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
-	"sync"
 )
-
-// isSkillUnitID 报告单元是否为技能单元。
-func isSkillUnitID(id UnitID) bool { _, ok := ParseSkillUnit(id); return ok }
-
-// SkillUnitPrefix 是技能单元 id 前缀（shared 作用域内动态单元）。
-const SkillUnitPrefix = "shared/skill/"
-
-// SkillUnitID 由 skill 目录名构造单元 id。
-func SkillUnitID(name string) UnitID { return UnitID(SkillUnitPrefix + name) }
-
-// ParseSkillUnit 解析技能单元 id；name 非法（空/含分隔符/点开头）返回 false。
-func ParseSkillUnit(id UnitID) (string, bool) {
-	s := string(id)
-	if !strings.HasPrefix(s, SkillUnitPrefix) {
-		return "", false
-	}
-	name := strings.TrimPrefix(s, SkillUnitPrefix)
-	if name == "" || strings.ContainsAny(name, "/\\") || strings.HasPrefix(name, ".") ||
-		name == "." || name == ".." || strings.Contains(name, "\x00") {
-		return "", false
-	}
-	return name, true
-}
 
 // SkillsScanProgress 是后台扫描进度（按目录计）。
 type SkillsScanProgress struct {
-	Scanned int // 已完成扫描的 skill 目录数
-	Total   int // 发现的 skill 目录总数
+	Scanned int // 已完成扫描的目录数
+	Total   int // 发现的目录总数
 }
 
 // SkillsScanSnapshot 是扫描缓存的脱敏快照（供状态面/预览面）。
@@ -61,11 +29,11 @@ type SkillsScanSnapshot struct {
 	Started     bool
 	Running     bool
 	Progress    SkillsScanProgress
-	RootMissing bool // 宿主 skills 根不存在（无技能可共享，非错误）
+	RootMissing bool // 宿主根不存在（无可共享内容，非错误）
 	Skills      []*SkillManifest
 }
 
-// Incomplete 报告是否存在「扫描未完成」的 skill（状态面显示不冒充完成）。
+// Incomplete 报告是否存在「扫描未完成」的目录（状态面显示不冒充完成）。
 func (s *SkillsScanSnapshot) Incomplete() bool {
 	for _, m := range s.Skills {
 		if m.Incomplete {
@@ -75,154 +43,12 @@ func (s *SkillsScanSnapshot) Incomplete() bool {
 	return false
 }
 
-// SkillsScope 管理宿主技能根的扫描缓存与后台扫描。并发安全；扫描单飞。
-type SkillsScope struct {
-	root   string
-	limits SkillsScanLimits
-
-	mu       sync.Mutex
-	started  bool
-	running  bool
-	skills   map[string]*SkillManifest
-	progress SkillsScanProgress
-	// onDone 是扫描结束通知（P2-B 统一管理：App 对账依赖扫描真正完成；
-	// 在扫描 goroutine 内、无锁状态下调用，必须非阻塞）。
-	onDone func()
-}
-
-// NewSkillsScope 创建技能作用域。root 是宿主侧 skills 根（Windows 路径）。
-func NewSkillsScope(root string, limits SkillsScanLimits) *SkillsScope {
-	return &SkillsScope{root: root, limits: limits.withDefaults(), skills: map[string]*SkillManifest{}}
-}
-
-// Root 返回宿主 skills 根（App 层展示与 e2e 使用）。
-func (s *SkillsScope) Root() string { return s.root }
-
-// Limits 返回生效的扫描上限。
-func (s *SkillsScope) Limits() SkillsScanLimits { return s.limits }
-
-// StartScanAsync 单飞启动后台扫描（SA-17：已启动过即幂等返回——状态 Get
-// 不重启已完成的扫描；扫描按目录分批，批间释放锁让 Snapshot 可见中间进度）。
-func (s *SkillsScope) StartScanAsync() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running || s.started {
-		return false
-	}
-	return s.startScanLocked()
-}
-
-// RescanAsync 强制启动一轮后台重扫（显式「检查」入口专用；已在跑则保持本轮）。
-func (s *SkillsScope) RescanAsync() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running {
-		return false
-	}
-	return s.startScanLocked()
-}
-
-// SetScanDoneCallback 注册扫描结束通知（重复注册以后者为准；nil 清除）。
-func (s *SkillsScope) SetScanDoneCallback(fn func()) {
-	s.mu.Lock()
-	s.onDone = fn
-	s.mu.Unlock()
-}
-
-func (s *SkillsScope) startScanLocked() bool {
-	s.running = true
-	go func() {
-		s.Scan()
-		s.mu.Lock()
-		s.running = false
-		cb := s.onDone
-		s.mu.Unlock()
-		if cb != nil {
-			cb()
-		}
-	}()
-	return true
-}
-
-// Scan 同步执行一轮全量重扫（后台包装与测试使用；有界）。已启动标记置位。
-func (s *SkillsScope) Scan() {
-	dirs, err := listSkillDirs(s.root)
-	if err != nil {
-		// 根不存在/不可读：清空缓存并标记已启动（空快照，RootMissing 由
-		// Snapshot 报告）——读错误不冒充零技能完成态。
-		s.mu.Lock()
-		s.started = true
-		s.skills = map[string]*SkillManifest{}
-		s.progress = SkillsScanProgress{}
-		s.mu.Unlock()
-		return
-	}
-	budget := 0
-	for i, name := range dirs {
-		manifest := scanSkillDir(s.root, name, s.limits, &budget)
-		if budget > s.limits.MaxTotalFiles {
-			manifest.markIncomplete("total-file-limit")
-		}
-		s.mu.Lock()
-		s.started = true
-		s.skills[name] = manifest
-		s.progress = SkillsScanProgress{Scanned: i + 1, Total: len(dirs)}
-		s.mu.Unlock()
-	}
-	s.mu.Lock()
-	// 删除本轮已消失的缓存项（增量基线跟随删除）。
-	for name := range s.skills {
-		found := false
-		for _, d := range dirs {
-			if d == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			delete(s.skills, name)
-		}
-	}
-	s.mu.Unlock()
-}
-
-// Snapshot 返回扫描缓存快照（只读，不触发扫描）。
-func (s *SkillsScope) Snapshot() SkillsScanSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap := SkillsScanSnapshot{
-		Started: s.started, Running: s.running, Progress: s.progress,
-		Skills: make([]*SkillManifest, 0, len(s.skills)),
-	}
-	if s.root != "" {
-		if _, err := os.Stat(s.root); err != nil && os.IsNotExist(err) {
-			snap.RootMissing = true
-		}
-	}
-	names := make([]string, 0, len(s.skills))
-	for name := range s.skills {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		snap.Skills = append(snap.Skills, s.skills[name])
-	}
-	return snap
-}
-
-// manifest 返回指定 skill 的扫描缓存（未扫描返回 nil）。
-func (s *SkillsScope) manifest(name string) *SkillManifest {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.skills[name]
-}
-
 // ---------------------------------------------------------------------------
 // 计划（目标侧有界只读探测 + TrackedProjection 判定）
 // ---------------------------------------------------------------------------
 
-// SkillTargetState 是目标侧 skill 目录的有界扫描结果。TreeHash 与来源清单
-// hash 同构（同一 skillTreeHash），同步状态 ⇔ 两侧相等。
+// SkillTargetState 是目标侧目录的有界扫描结果。TreeHash 与来源清单 hash
+// 同构（同一 skillTreeHash），同步状态 ⇔ 两侧相等。
 type SkillTargetState struct {
 	Exists       bool
 	TreeHash     string
@@ -231,7 +57,7 @@ type SkillTargetState struct {
 	Reason       string
 }
 
-// scanTargetSkillDir 有界只读扫描目标 skill 目录（UNC 视图）。符号链接按
+// scanTargetSkillDir 有界只读扫描目标目录（UNC 视图）。符号链接按
 // 「目标被外部修改」参与 hash（链接目标串入 hash）；读失败/超限 → 不可核验
 // （不猜语义）。
 func scanTargetSkillDir(uncSkillDir string, limits SkillsScanLimits) SkillTargetState {
@@ -297,40 +123,11 @@ func scanTargetSkillDir(uncSkillDir string, limits SkillsScanLimits) SkillTarget
 	return SkillTargetState{Exists: true, TreeHash: skillTreeHash(files), FileCount: len(files)}
 }
 
-// planSkill 是技能单元的纯判定（目标侧经有界只读 UNC 探测，不写、不 spawn、
-// 不执行任何脚本）。consent 门由协调器 Plan 统一前置。
-func (c *Coordinator) planSkill(target TargetRef, name string, entry *StateEntry) PlannedUnit {
-	unit := PlannedUnit{Unit: SkillUnitID(name), Policy: PolicyTrackedProjection, RelPath: skillRelDir(name)}
-	if entry != nil && entry.Detached {
-		unit.Action = ActionBlocked
-		unit.BlockedReason = "detached"
-		return unit
-	}
-	if c.skills == nil {
-		unit.Action = ActionBlocked
-		unit.BlockedReason = "skills-scope-unavailable"
-		return unit
-	}
-	snap := c.skills.Snapshot()
-	if !snap.Started {
-		unit.Action = ActionBlocked
-		unit.BlockedReason = "scan-not-ready"
-		return unit
-	}
-	m := c.skills.manifest(name)
-	if m == nil {
-		// 来源已删除：不自动删除目标（design §三「skills 的删除需确认」）。
-		unit.Action = ActionBlocked
-		unit.BlockedReason = "source-deleted"
-		return unit
-	}
-	return planTreeUnitCore(target, unit, m, c.skills.Limits(), entry, skillRelDir(name), scanTargetSkillDir)
-}
-
 // targetStateFn 是树单元（目录/单文件）的目标侧有界探测函数。
 type targetStateFn func(uncPath string, limits SkillsScanLimits) SkillTargetState
 
-// planTreeUnitCore 是树单元（S3 技能目录 + S4 用户资源）的共享纯判定核心。
+// planTreeUnitCore 是树单元（S4 用户资源目录/文件）的共享纯判定核心
+//（consent 门由协调器 Plan 统一前置）。
 func planTreeUnitCore(target TargetRef, unit PlannedUnit, m *SkillManifest, limits SkillsScanLimits, entry *StateEntry, targetRel string, probe targetStateFn) PlannedUnit {
 	unit.TransformVersion = skillsTransformVersion
 	if m.Incomplete {
@@ -384,72 +181,5 @@ func planTreeUnitCore(target TargetRef, unit PlannedUnit, m *SkillManifest, limi
 	return unit
 }
 
-// skillRelDir 返回 skill 的目标相对目录（skills/<name>）。
-func skillRelDir(name string) string { return "skills/" + name }
-
-// skillsTransformVersion 是技能供给的转换版本（实体化规则 v1）。
+// skillsTransformVersion 是树单元供给的转换版本（实体化规则 v1）。
 const skillsTransformVersion = "skills-materialize-v1"
-
-// RegisterSkills 注册技能作用域（S3 装配；生产由 newWSLSupplyCoordinator 注入）。
-func (c *Coordinator) RegisterSkills(scope *SkillsScope) {
-	if scope != nil {
-		scope.SetScanDoneCallback(c.scanDoneNotifier())
-		c.skills = scope
-	}
-}
-
-// StartSkillsScan 单飞启动后台技能扫描（SA-17：已启动过即幂等返回——Get
-// 不重启扫描）。
-func (c *Coordinator) StartSkillsScan() bool {
-	if c.skills == nil {
-		return false
-	}
-	return c.skills.StartScanAsync()
-}
-
-// RescanSkills 强制一轮后台技能重扫（显式「检查」入口；SA-17：重扫仅由显式
-// 动作触发，状态轮询不重启全量扫描）。
-func (c *Coordinator) RescanSkills() bool {
-	if c.skills == nil {
-		return false
-	}
-	return c.skills.RescanAsync()
-}
-
-// SkillsSnapshot 返回技能扫描快照（只读缓存，不触发扫描）。
-func (c *Coordinator) SkillsSnapshot() SkillsScanSnapshot {
-	if c.skills == nil {
-		return SkillsScanSnapshot{}
-	}
-	return c.skills.Snapshot()
-}
-
-// SkillsHostRoot 返回宿主技能根（App/e2e 使用）。
-func (c *Coordinator) SkillsHostRoot() string {
-	if c.skills == nil {
-		return ""
-	}
-	return c.skills.Root()
-}
-
-// applySkillPlanned 分发技能单元的 Apply 动作（none/blocked/write），与投影
-// 单元同一套冻结/待同意登记语义。
-func (c *Coordinator) applySkillPlanned(ctx context.Context, target TargetRef, unit PlannedUnit) UnitResult {
-	switch unit.Action {
-	case ActionNone:
-		return UnitResult{Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFresh, Detail: "no-change"}
-	case ActionBlocked:
-		if unit.Freeze {
-			c.recordProjectionFreeze(target, unit.Unit, PolicyTrackedProjection, unit.BlockedReason)
-		} else if unit.BlockedReason == "awaiting-consent" {
-			c.recordProjectionPendingConsent(target, unit.Unit, PolicyTrackedProjection)
-		}
-		return UnitResult{Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked, Detail: unit.BlockedReason}
-	case ActionWriteProjection:
-		return c.applySkillUnit(ctx, target, unit, false)
-	default:
-		return UnitResult{Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitFailed,
-			Detail: "planned-action-mismatch",
-			Err:    fmt.Errorf("unsupported skill action: %d", unit.Action)}
-	}
-}

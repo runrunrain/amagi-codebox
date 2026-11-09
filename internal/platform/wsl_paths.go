@@ -8,6 +8,7 @@ package platform
 // 不盲信所有 distro 都挂 /mnt）。非 Windows 平台返回空 map。
 
 import (
+	"fmt"
 	"runtime"
 	"sort"
 	"strings"
@@ -18,10 +19,19 @@ import (
 // 只包含目标内 wslpath 可转换且实际存在的条目。脚本每行输出
 // 「原始输入<TAB>Linux 路径」，对齐不依赖输入顺序。
 func WSLTranslatePaths(distro string, windowsPaths ...string) map[string]string {
+	out, _ := wslTranslatePathsCore(distro, windowsPaths...)
+	return out
+}
+
+// wslTranslatePathsCore 是 WSLTranslatePaths 的错误内核：执行失败（distro 不可
+// 达/wsl.exe 报错）返回非 nil err，与「确认目标不存在」（空映射、nil err）区分
+// ——R1-F07：受管符号链接供给据此把执行故障归为 failed 而非 host-missing，
+// 不丢失原始错误。
+func wslTranslatePathsCore(distro string, windowsPaths ...string) (map[string]string, error) {
 	out := map[string]string{}
 	distro = strings.TrimSpace(distro)
 	if distro == "" || runtime.GOOS != "windows" || len(windowsPaths) == 0 {
-		return out
+		return out, nil
 	}
 	seen := map[string]bool{}
 	inputs := make([]string, 0, len(windowsPaths))
@@ -38,7 +48,7 @@ func WSLTranslatePaths(distro string, windowsPaths ...string) map[string]string 
 		inputs = append(inputs, p)
 	}
 	if len(inputs) == 0 {
-		return out
+		return out, nil
 	}
 	sort.Strings(inputs)
 
@@ -51,7 +61,7 @@ func WSLTranslatePaths(distro string, windowsPaths ...string) map[string]string 
 
 	raw, err := wslScriptRunner(distro, script.String())
 	if err != nil {
-		return out
+		return out, fmt.Errorf("wsl.exe translate probe failed: %w", err)
 	}
 	for _, line := range strings.Split(decodeWSLListOutput(raw), "\n") {
 		line = strings.Trim(strings.TrimSpace(line), "\r\x00")
@@ -66,7 +76,7 @@ func WSLTranslatePaths(distro string, windowsPaths ...string) map[string]string 
 		}
 		out[normalizeWindowsPathKey(input)] = linuxPath
 	}
-	return out
+	return out, nil
 }
 
 // normalizeWindowsPathKey 规范化 Windows 路径为映射查找键（与 wslsupply 的

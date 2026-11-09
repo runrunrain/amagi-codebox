@@ -93,62 +93,22 @@
             {{ consentBusy ? '授权中…' : '同意共享到 WSL' }}
           </AppButton>
         </div>
-        <!-- P3-S3：共享技能面（扫描/预览/勾选导入/保留本地/接管） -->
-        <div v-if="skills !== null" class="pi-units skills-section">
+        <!-- 共享技能根（1.3.130：受管符号链接直连 Windows ~/.agents/skills） -->
+        <div class="pi-units skills-section">
           <h4>共享技能（Windows ~/.agents/skills → WSL）</h4>
           <p class="set-sub">
-            按技能目录选择导入（文件 0644/目录 0755）；越界/绝对/循环链接与 Windows 专用脚本
-            （.ps1/.cmd/.bat）不复制并逐项报告；仅静态检查，从不执行技能内容——「已供给」
-            不等于「运行已验证」。大目录后台分批扫描，不阻塞启动。
+            WSL 内 ~/.agents/skills 以受管符号链接直连 Windows 技能根（与 pi 共享 agent 根同一
+            机制）：无需逐项导入，WSL 侧始终读到 Windows 最新内容；既有 WSL 目录会在链接前自动
+            备份为 skills.pre-shared.*。会话启动时自动核验，也可在此手动检查/修复。
           </p>
           <div class="skills-toolbar">
-            <span v-if="skills.scanRunning" class="badge badge-warn">扫描中 {{ skills.scanScanned }}/{{ skills.scanTotal }}</span>
-            <span v-else-if="skills.scanIncomplete" class="badge badge-missing">扫描未完成</span>
-            <AppButton variant="ghost" size="small" :disabled="skillsBusy" @click="checkSkills">检查</AppButton>
-            <AppButton variant="ghost" size="small" :disabled="skillsBusy" @click="previewSkills">预览</AppButton>
-            <AppButton
-              variant="primary" size="small"
-              :disabled="skillsBusy || !anySkillSelected"
-              @click="applySelectedSkills()"
-            >导入所选（{{ selectedSkillNames.length }}）</AppButton>
+            <span class="badge" :class="faceBadgeClass(skillsFace?.state || 'unchecked')">{{ faceStateText(skillsFace?.state || 'unchecked') }}</span>
+            <span class="supply-detail">{{ skillsFace?.detail || '尚未核验（启动 WSL pi 会话或点检查）' }}</span>
+            <AppButton variant="ghost" size="small" :disabled="sharedRootBusy" @click="ensureSharedRoot">
+              {{ sharedRootBusy ? '核验中…' : '检查/修复' }}
+            </AppButton>
           </div>
-          <p v-if="skills.rootMissing" class="set-hint">Windows 侧 ~/.agents/skills 不存在（无技能可共享）。</p>
-          <div v-for="s in skills.skills" :key="s.name" class="pi-unit-row skill-row">
-            <label class="mono">
-              <input
-                v-if="s.selectable"
-                type="checkbox"
-                :checked="selectedSkillNames.includes(s.name)"
-                :disabled="skillsBusy"
-                @change="toggleSkill(s.name)"
-              />
-              {{ s.name }}
-            </label>
-            <span class="badge" :class="skillBadgeClass(s.state)">{{ skillStateText(s.state) }}</span>
-            <span class="supply-detail">{{ s.detail }}<template v-if="s.files">（{{ s.files }} 个文件）</template></span>
-            <div class="unit-actions">
-              <AppButton v-if="s.actions.includes('apply')" variant="ghost" size="small" :disabled="skillsBusy" @click="applySelectedSkills([s.name])">应用安全更新</AppButton>
-              <AppButton v-if="s.actions.includes('keep-local')" variant="ghost" size="small" :disabled="skillsBusy" @click="keepSkillLocal(s.name)">保留本地</AppButton>
-              <AppButton
-                v-if="s.actions.includes('takeover') && skillPreviewHash(s.name)"
-                variant="primary" size="small" :disabled="skillsBusy"
-                @click="takeOverSkill(s.name)"
-              >确认接管</AppButton>
-            </div>
-            <!-- 不兼容清单（逐项原因）与预览说明 -->
-            <div v-if="s.incompatible?.length" class="unit-preview">
-              <div v-for="it in s.incompatible" :key="it" class="key-row">
-                <span class="badge badge-missing">不兼容</span>
-                <span class="supply-detail">{{ it }}</span>
-              </div>
-            </div>
-            <div v-if="skillPreviewFor(s.name)" class="unit-preview">
-              <div class="key-row">
-                <span class="badge" :class="keyBadgeClass(skillPreviewFor(s.name)!.action || 'none')">{{ skillPreviewFor(s.name)!.action || 'none' }}</span>
-                <span class="supply-detail">{{ skillPreviewFor(s.name)!.blockedReason || (skillPreviewFor(s.name)!.notes ?? []).join('；') }}</span>
-              </div>
-            </div>
-          </div>
+          <p v-if="sharedRoot?.backup" class="set-hint">旧目录已备份迁移：<span class="mono">{{ sharedRoot.backup }}</span></p>
         </div>
         <!-- P3-S4：Claude / Codex 用户配置导入（键级选择导入 + 资源目录单元） -->
         <div v-if="cliStatus['claude'] || cliStatus['codex']" class="pi-units s4-section">
@@ -332,8 +292,6 @@ async function load() {
       getWSLConfigSupplyStatus()
         .then((s) => { supply.value = s; watchFaces() })
         .catch(() => { supply.value = null })
-      // P3-S3：技能面（后台扫描单飞启动，非阻塞）。
-      loadSkills()
       // P3-S4：Claude/Codex 用户配置导入面 + OpenCode 附加层 MCP 选择面。
       loadAllCliSupply()
     }
@@ -393,6 +351,7 @@ function faceStateText(state: string): string {
     case 'scanning': return '扫描中'
     case 'incompatible': return '有不兼容项'
     case 'pending-op': return '待确认'
+    case 'host-missing': return '宿主根不可达'
     default: return '未检查'
   }
 }
@@ -400,7 +359,7 @@ function faceBadgeClass(state: string): string {
   switch (state) {
     case 'synced': return 'badge-ok'
     case 'failed': case 'incompatible': return 'badge-missing'
-    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': case 'pending-op': return 'badge-warn'
+    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': case 'pending-op': case 'host-missing': return 'badge-warn'
     default: return ''
   }
 }
@@ -506,148 +465,31 @@ async function refreshStatus(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// P3-S3：共享技能面（扫描/预览/勾选导入/保留本地/接管）
+// 共享技能根（1.3.130：受管符号链接直连 Windows ~/.agents/skills；原 P3-S3
+// 同意制投影退役——状态面来自配置状态 faces，显式检查走 ensureWSLSharedSkillsRoot）
 // ---------------------------------------------------------------------------
-import {
-  getWSLSkillsSupplyStatus,
-  checkWSLSkillsSupply,
-  previewWSLSkillsSupply,
-  applyWSLSkillsSupply,
-  keepWSLSkillLocal,
-  takeOverWSLSkill,
-  type WSLSkillsSupplyStatus,
-  type WSLSkillPreview,
-} from '../../api/wslSupply'
+import { ensureWSLSharedSkillsRoot, type WSLSharedSkillsRootStatus, type WSLSkillPreview } from '../../api/wslSupply'
 
-const skills = ref<WSLSkillsSupplyStatus | null>(null)
-const skillsBusy = ref(false)
-const selectedSkills = ref<string[]>([])
-const skillPreviews = ref<Record<string, WSLSkillPreview>>({})
-const selectedSkillNames = computed(() => selectedSkills.value)
-const anySkillSelected = computed(() => selectedSkills.value.length > 0)
+const sharedRoot = ref<WSLSharedSkillsRootStatus | null>(null)
+const sharedRootBusy = ref(false)
+const skillsFace = computed(() => supply.value?.faces.find((f) => f.key === 'skills') ?? null)
 
-async function loadSkills(): Promise<void> {
-  if (!alive) return
+async function ensureSharedRoot(): Promise<void> {
+  if (sharedRootBusy.value) return
+  sharedRootBusy.value = true
   try {
-    skills.value = await getWSLSkillsSupplyStatus()
-    // 扫描进行中：轮询直到收敛（大目录分批，进度可见；卸载后停链）。
-    if (alive && skills.value?.scanRunning) {
-      setTimeout(loadSkills, 800)
+    sharedRoot.value = await ensureWSLSharedSkillsRoot()
+    if (sharedRoot.value.state === 'failed') {
+      showError('共享技能核验失败：' + (sharedRoot.value.detail || '未知原因'))
+    } else if (sharedRoot.value.backup) {
+      showSuccess('符号链接已就绪；旧目录备份至 ' + sharedRoot.value.backup)
     }
-  } catch {
-    skills.value = null
-  }
-}
-
-async function refreshSkills(): Promise<void> {
-  try {
-    skills.value = await getWSLSkillsSupplyStatus()
-  } catch {
-    // 保持现状
-  }
-}
-
-async function checkSkills(): Promise<void> {
-  if (skillsBusy.value) return
-  skillsBusy.value = true
-  try {
-    skills.value = await checkWSLSkillsSupply()
-    if (alive && skills.value?.scanRunning) setTimeout(loadSkills, 800)
+    // 配置状态 faces 同步刷新（skills face 读进程内缓存）。
+    getWSLConfigSupplyStatus().then((s) => { supply.value = s; watchFaces() }).catch(() => {})
   } catch (err: any) {
     showError('检查失败: ' + (err?.message || err))
   } finally {
-    skillsBusy.value = false
-  }
-}
-
-function toggleSkill(name: string): void {
-  if (selectedSkills.value.includes(name)) {
-    selectedSkills.value = selectedSkills.value.filter((n) => n !== name)
-  } else {
-    selectedSkills.value = [...selectedSkills.value, name]
-  }
-}
-
-async function previewSkills(): Promise<void> {
-  if (skillsBusy.value) return
-  skillsBusy.value = true
-  try {
-    const rows = await previewWSLSkillsSupply()
-    const next: Record<string, WSLSkillPreview> = {}
-    for (const row of rows) next[row.name] = row
-    skillPreviews.value = next
-    showInfo(`预览完成：${rows.length} 个技能（不兼容项已逐项列出）`)
-  } catch (err: any) {
-    showError('预览失败: ' + (err?.message || err))
-  } finally {
-    skillsBusy.value = false
-  }
-}
-
-function skillPreviewFor(name: string): WSLSkillPreview | undefined {
-  return skillPreviews.value[name]
-}
-
-function skillPreviewHash(name: string): string {
-  return skillPreviews.value[name]?.targetHash ?? ''
-}
-
-async function applySelectedSkills(only?: string[]): Promise<void> {
-  const names = only ?? selectedSkills.value
-  if (!names.length) {
-    showInfo('请先勾选要导入的技能')
-    return
-  }
-  if (skillsBusy.value) return
-  skillsBusy.value = true
-  try {
-    const outcomes = await applyWSLSkillsSupply(names)
-    const failed = outcomes.filter((o) => o.outcome !== 'applied' && o.outcome !== 'fresh')
-    if (failed.length) {
-      showInfo(`导入完成：${outcomes.length - failed.length} 项成功，${failed.length} 项保持现状（不兼容/冻结项见预览）`)
-    } else {
-      showSuccess(`已导入 ${names.length} 个技能（静态检查通过；未执行内容）`)
-    }
-    selectedSkills.value = []
-    await refreshSkills()
-    await refreshStatus()
-  } catch (err: any) {
-    showError('导入失败: ' + (err?.message || err))
-  } finally {
-    skillsBusy.value = false
-  }
-}
-
-async function keepSkillLocal(name: string): Promise<void> {
-  if (skillsBusy.value) return
-  skillsBusy.value = true
-  try {
-    await keepWSLSkillLocal(name)
-    showInfo(`已保留 WSL 本地技能（停跟随）：${name}`)
-    await refreshSkills()
-  } catch (err: any) {
-    showError('停跟随失败: ' + (err?.message || err))
-  } finally {
-    skillsBusy.value = false
-  }
-}
-
-async function takeOverSkill(name: string): Promise<void> {
-  const token = skillPreviewHash(name)
-  if (!token && token !== '') {
-    showError('请先预览该技能再确认接管')
-    return
-  }
-  if (skillsBusy.value) return
-  skillsBusy.value = true
-  try {
-    await takeOverWSLSkill(name, token)
-    showSuccess(`已按预览确认接管技能：${name}`)
-    await refreshSkills()
-  } catch (err: any) {
-    showError('接管失败: ' + (err?.message || err))
-  } finally {
-    skillsBusy.value = false
+    sharedRootBusy.value = false
   }
 }
 
