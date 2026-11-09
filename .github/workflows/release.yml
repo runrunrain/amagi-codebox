@@ -103,11 +103,28 @@ jobs:
           7z a -tzip ../../amagi-codebox-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip amagi-codebox.exe
         shell: cmd
 
+      - name: Extract CHANGELOG release notes
+        shell: bash
+        run: |
+          ver="${RELEASE_TAG#v}"
+          awk -v ver="$ver" '
+            $0 ~ "^## \\[" ver "\\]($| )" { in_section=1; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG 未收录 [${ver}] 章节，回退到仓库 CHANGELOG 链接" >&2
+            printf '本次更新内容见 CHANGELOG：https://github.com/%s/blob/master/CHANGELOG.md\n' "$GITHUB_REPOSITORY" > release-notes.md
+          fi
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           files: amagi-codebox-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip
+          body_path: release-notes.md
           generate_release_notes: true
 
   build-macos-arm64:
