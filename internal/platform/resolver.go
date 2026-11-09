@@ -149,7 +149,12 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		}
 		if wslShell != nil && strings.EqualFold(wslShell.Key, "wsl") {
 			cliName := cliCandidates[0]
-			wslEnv := appendWSLENVForwardingWithPaths(append([]string(nil), resolvedEnv...), request.EnvForwardKeys, request.EnvPathFlagKeys)
+			// AMAGI_WIN_*：Windows 根目录事实（/p 翻译），供 WSL 内工具定位 Windows
+			// 原生程序；在剥离防线之后注入，不受盘符路径剥离影响。
+			rootedEnv, rootKeys := appendWSLWindowsRoots(resolvedEnv)
+			forwardKeys := append(append([]string(nil), request.EnvForwardKeys...), rootKeys...)
+			pathFlagKeys := append(append([]string(nil), request.EnvPathFlagKeys...), rootKeys...)
+			wslEnv := appendWSLENVForwardingWithPaths(rootedEnv, forwardKeys, pathFlagKeys)
 			spec := ResolvedLaunchSpec{
 				AppType:       request.AppType,
 				LaunchMode:    request.LaunchMode,

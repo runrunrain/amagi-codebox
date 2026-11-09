@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.128] - 2026-11-08
+
+### Added
+
+- **WSL 会话供给 Windows 根目录事实**：Windows 上落在 WSL 的会话新增 `AMAGI_WIN_SYSTEMROOT` / `AMAGI_WIN_PROGRAMFILES` / `AMAGI_WIN_LOCALAPPDATA` / `AMAGI_WIN_USERPROFILE`（取宿主值、仅盘符绝对路径、经 WSLENV `/p` 翻译为 `/mnt/<盘符>/…`，已有同名键不覆盖），供 amagi-pi `win_exec` 受管调用 Windows 原生程序（cmake/git/UBT 等），无需依赖 WSL PATH 带 Windows 目录，也不放开全局 interop。
+
 ## [1.3.127] - 2026-11-08
 
 ### Removed

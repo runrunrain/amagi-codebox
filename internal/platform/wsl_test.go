@@ -801,3 +801,49 @@ func TestParseWSLStatModeOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestAppendWSLWindowsRoots：AMAGI_WIN_* 仅在宿主值是盘符绝对路径时注入；
+// 已存在的同名键不覆盖；注入键进入 WSLENV 且带 /p。
+func TestAppendWSLWindowsRoots(t *testing.T) {
+	orig := wslWindowsRootLookup
+	t.Cleanup(func() { wslWindowsRootLookup = orig })
+	host := map[string]string{
+		"SystemRoot":   `C:\Windows`,
+		"ProgramFiles": `D:\Program Files`,
+		"LOCALAPPDATA": "relative\\bad",
+		"USERPROFILE":  `C:\Users\u`,
+	}
+	wslWindowsRootLookup = func(k string) string { return host[k] }
+
+	env, added := appendWSLWindowsRoots([]string{"AMAGI_WIN_USERPROFILE=/custom", "LANG=C"})
+	got := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	if got["AMAGI_WIN_SYSTEMROOT"] != `C:\Windows` || got["AMAGI_WIN_PROGRAMFILES"] != `D:\Program Files` {
+		t.Fatalf("roots not injected: %v", got)
+	}
+	if _, ok := got["AMAGI_WIN_LOCALAPPDATA"]; ok {
+		t.Fatalf("non-drive value must be skipped: %v", got)
+	}
+	if got["AMAGI_WIN_USERPROFILE"] != "/custom" {
+		t.Fatalf("explicit env must win: %v", got)
+	}
+	if len(added) != 2 {
+		t.Fatalf("added = %v", added)
+	}
+
+	out := appendWSLENVForwardingWithPaths(env, added, added)
+	var wslenv string
+	for _, e := range out {
+		if strings.HasPrefix(e, "WSLENV=") {
+			wslenv = strings.TrimPrefix(e, "WSLENV=")
+		}
+	}
+	for _, want := range []string{"AMAGI_WIN_SYSTEMROOT/p", "AMAGI_WIN_PROGRAMFILES/p"} {
+		if !strings.Contains(":"+wslenv+":", ":"+want+":") {
+			t.Fatalf("WSLENV %q missing %s", wslenv, want)
+		}
+	}
+}
