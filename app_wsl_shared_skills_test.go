@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/platform"
 )
@@ -98,3 +99,67 @@ func TestEnsureWSLSharedSkillsRootNegative(t *testing.T) {
 	}
 }
 
+
+// TestWSLSharedSkillsFunnelWaitsForInFlight（R2-F09 正式时序回归）：同 distro
+// 第二个首次启动（漏斗/显式检查）必须等待在途轮次真正完成并拿到真实结果，
+// 不得在链接就绪前提前返回，也不得把「正在执行」当结果。
+func TestWSLSharedSkillsFunnelWaitsForInFlight(t *testing.T) {
+	app := newSharedSkillsTestApp(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	orig := wslSharedSkillsLinkFn
+	wslSharedSkillsLinkFn = func(distro, host string) platform.WSLSharedSkillsLinkResult {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+		<-release // 阻塞在途轮次，模拟建链尚未完成
+		return platform.WSLSharedSkillsLinkResult{State: platform.WSLSkillsLinked, Target: "/mnt/c/Users/u/.agents/skills", Detail: "已建立指向 Windows 技能根的符号链接"}
+	}
+	defer func() { wslSharedSkillsLinkFn = orig }()
+	// 清空进程内缓存，保证两路都是「首次」。
+	wslSharedSkillsRootMu.Lock()
+	wslSharedSkillsRoots = map[string]wslSharedSkillsRootRecord{}
+	wslSharedSkillsRootMu.Unlock()
+
+	// A：会话漏斗（首轮，进入 seam 后阻塞）。
+	aDone := make(chan struct{})
+	go func() { defer close(aDone); app.wslEnsureSharedAgentsSkillsFunnel("Ubuntu") }()
+	<-entered // A 已进入真实供给且未完成。
+
+	// B：同 distro 第二个首次启动（漏斗）——必须等待，不得提前返回。
+	bDone := make(chan struct{})
+	go func() { defer close(bDone); app.wslEnsureSharedAgentsSkillsFunnel("Ubuntu") }()
+	select {
+	case <-bDone:
+		t.Fatal("second funnel returned before the in-flight link round finished (R2-F09 regression)")
+	case <-time.After(150 * time.Millisecond):
+	}
+	// C：显式检查同样等待在途轮次（拿真实结果，不冒充）。
+	cDone := make(chan struct{})
+	var cRes WSLSharedSkillsRootStatus
+	go func() { defer close(cDone); cRes = app.EnsureWSLSharedSkillsRoot() }()
+	select {
+	case <-cDone:
+		t.Fatal("explicit ensure returned before the in-flight round finished")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+	<-aDone
+	<-bDone
+	<-cDone
+	// 真实供给只发生一次；B/C 拿到的是本轮真实结果而非「正在执行」。
+	if cRes.State != string(platform.WSLSkillsLinked) {
+		t.Fatalf("explicit ensure must return the real in-flight result, got %+v", cRes)
+	}
+	rec, ok := lookupWSLSharedSkillsRoot("Ubuntu")
+	if !ok || rec.Res.State != platform.WSLSkillsLinked {
+		t.Fatalf("cache must hold the completed round result, got %+v", rec)
+	}
+	face := wslSharedSkillsFace("Ubuntu")
+	if face.State != "synced" {
+		t.Fatalf("face must reflect the completed round, got %+v", face)
+	}
+}

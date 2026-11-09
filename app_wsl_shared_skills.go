@@ -56,26 +56,31 @@ type WSLSharedSkillsRootStatus struct {
 var wslSharedSkillsLinkFn = platform.WSLEnsureSharedAgentsSkillsLink
 
 var wslSharedSkillsRunMu sync.Mutex
-var wslSharedSkillsRunning = map[string]bool{} // distro → 正在执行（单飞）
+var wslSharedSkillsInFlight = map[string]chan struct{}{} // distro → 在途轮次完成信号
 
 // runWSLSharedSkillsRoot 执行一轮核验/修复并登记（funnel 与显式动作共用）。
-// R1-F01：每 distro 单飞——同 distro 并发的会话漏斗/显式检查串行化，后到者
-// 直接复用前者结果（already-linked 幂等收敛）；跨进程安全由 distro 内脚本的
-// 原子发布语义保证（wslSharedSkillsScript 注释）。
+// R2-F09：每 distro 等待式单飞——同 distro 的并发调用（会话漏斗/显式检查）
+// 等待在途轮次真正完成再返回其真实结果，不把「正在执行」当结果、不借旧
+// 缓存冒充本轮结果（第二个首次启动在链接就绪前不继续）；跨进程安全由
+// distro 内脚本的原子发布语义保证（wslSharedSkillsScript 注释）。
 func (a *App) runWSLSharedSkillsRoot(distro string) platform.WSLSharedSkillsLinkResult {
 	wslSharedSkillsRunMu.Lock()
-	if wslSharedSkillsRunning[distro] {
+	if done, ok := wslSharedSkillsInFlight[distro]; ok {
 		wslSharedSkillsRunMu.Unlock()
+		<-done
 		if rec, ok := lookupWSLSharedSkillsRoot(distro); ok {
 			return rec.Res
 		}
-		return platform.WSLSharedSkillsLinkResult{State: platform.WSLSkillsFailed, Link: "~/.agents/skills", Detail: "同 distro 的共享技能根核验正在执行，稍后重试"}
+		return platform.WSLSharedSkillsLinkResult{State: platform.WSLSkillsFailed, Link: "~/.agents/skills", Detail: "共享技能根核验已完成但结果不可读，请重试"}
 	}
-	wslSharedSkillsRunning[distro] = true
+	done := make(chan struct{})
+	wslSharedSkillsInFlight[distro] = done
 	wslSharedSkillsRunMu.Unlock()
 	defer func() {
+		// 先记录结果再发完成信号（等待者读到的一定是本轮或更新的真实记录）。
 		wslSharedSkillsRunMu.Lock()
-		delete(wslSharedSkillsRunning, distro)
+		delete(wslSharedSkillsInFlight, distro)
+		close(done)
 		wslSharedSkillsRunMu.Unlock()
 	}()
 	res := wslSharedSkillsLinkFn(distro, wslSkillsHostRoot())

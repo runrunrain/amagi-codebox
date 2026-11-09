@@ -1,3 +1,9 @@
+VERDICT: REJECT（R2：F02 未关闭，F01 修复引入启动时序回归 R2-F09；2 Major）
+
+最新结论见文末 [R2 复审](#r2-复审7914a99)。R1 原文完整保留如下；R1 finding 状态以 R2 对照表为准。
+
+---
+
 # WSL 共享技能根与 P3-S3 退役：全量独立审核
 
 VERDICT: REJECT
@@ -120,3 +126,90 @@ VERDICT: REJECT
 - 回滚：本轮仅新增 `agent-outputs/review/2026-11-09-wsl-shared-skills/` 报告、脚本、日志、隔离材料；若不需保留可由 Leader 授权删除该准确目录，无被审源码需回滚。
 
 本 VERDICT 仅覆盖声明的 diff 和上述实际核实范围。
+
+
+---
+
+## R2 复审（7914a99）
+
+### 结论与审核基线
+
+**VERDICT: REJECT**。本轮仍有 **2 Major：原 F02 未关闭；新增 R2-F09 为 F01 修复引入回归**。原 F01 的宿主穿透写入反例已不再成立，但 App 新单飞没有等待在途结果，破坏第二个首次启动的就绪时序。F03–F08 已核实关闭；未发现其它需要新增编号的缺陷。
+
+- 上游：本报告 R1 原文、原 `repro_link.py` / `repro_retired.go`、本轮任务书和开发者修复声明（仅作待核验主张）。
+- Git：HEAD `7914a99ef814d6c03a7597447fdaab8cd0bb2fd2`，增量 `db0153c..7914a99` 全部 46 路径已检查：17 个源码/测试/文档路径，29 个上一轮报告/复现材料路径；总计 +729/−254。旧报告及绝对链接隔离材料是本次提交携带的历史取证，不是新的生产写入路径；未发现其它不相关功能改动。
+- 工作树初始干净。本轮仅编辑授权 `review.md`、新增本报告目录内 R2 取证和隔离材料；未修改被审源码/正式测试，未切分支或提交。
+
+### 原 finding 逐项核验
+
+| 原编号 | R2 状态 | 核验事实与定位（当前提交） |
+|---|---|---|
+| F01 Major | 原症状修复；**修复引入回归 R2-F09** | link.go:86-103 不再向 L 直接 ln，临时链接经 mv -T 发布后 readlink 核实；同类 A/B 发布窗口取证 `HOST_CHILD_LINK_CREATED=False`。但 App:67-72 在运行中立即返回而非等待，见下文。 |
+| F02 Major | **未关闭** | link.go:76-82 对已存在槽位避让成功，旧 R1 备份反例不再覆盖旧备份；但 no-clobber 后检查 B“存在”，不能证明“本次前像已经移走”，新竞态可丢当前文件。 |
+| F03 Major | 关闭 | reconcile.go:168-183 对退役 intent settle+deleteIntent，不调用 finishMaterials；:367-370 拒绝重新建立 baseline；coordinator.go:1019 补退役技能过滤。原公开 API 复现得到 `retired-closed`，前后 units 均为 0，pending 1→0，旧目标文件保留。 |
+| F04 Minor | 关闭 | skills_submit.go 删除 snapshotSkillPreimage/恢复快照整链，compensation.go 删除 prevFiles/prevSnapshot；全包源码搜索无这些符号，候选 cap 仍为 8 MiB；持久 prev 恢复不改，缺失时 :468-474 如实 unavailable。大树测试仅删除对已消失字段的断言，恢复成功及用户内容断言仍在。 |
+| F05 Minor | 关闭 | app_wsl_shared_skills.go:140-146 使用 lookup(distro)，app_wsl_supply.go:492 传当前 distro；app_wsl_shared_skills_test.go:87-90 断言 Debian 未缓存不复用 Ubuntu。 |
+| F06 Minor | 关闭（静态） | 两个 e2e HTML 已移除六旧绑定并新增 EnsureWSLSharedSkillsRoot；全库排除报告目录后仅说明性注释/CHANGELOG 含旧符号，无旧运行引用。未跑浏览器，不能将静态闭合称作交互验收。 |
+| F07 Minor | 关闭（静态错误链） | wsl_paths.go:22-23 保留公共空 map 降级兼容；:33-79 内核将 runner error 返回，link.go:132-138 将其归 failed 并带错误。不再把 wsl.exe 非零退出统一当 host-missing。Windows 入口在 macOS 上不可动态执行，本轮未模拟成真机证明。 |
+| F08 Minor | 关闭 | app shared:156-158 给 host-missing 独立状态；Vue:354、362 同步“宿主根不可达”和 badge-warn；vue-tsc 全绿，后端测试断言独立状态。 |
+
+### 本轮仍需修复的 findings
+
+#### F02｜Major｜未关闭：no-clobber 让位后误认备份成功，发布会覆盖尚未迁走的当前文件
+
+- **定位**：`internal/platform/wsl_shared_skills_link.go:76-83,91`；新形状断言 `internal/platform/wsl_shared_skills_link_test.go:16-21` 也钉住了错误校验。
+- **触发**：L 为受支持的真实文件；选槽 `if [ ! -e "$C" ]` 通过后，另一个操作者创建同名 B 文件；随后执行 `mv -n "$L" "$B"`。这是修复明确声称应得到 FAIL-MOVE-LOST 的让位竞争。
+- **证据摘录**：`mv -n "$L" "$B"` 后只做 `if [ ! -e "$B" ]; then ... FAIL-MOVE-LOST`。no-clobber 跳过时 B 正因为存在才让位，该条件恰好不会报错；L 仍留在原位，脚本却输出 BACKED-UP。接着 `mv -T "$N" "$L"` 可把这个普通文件原子替换为链接。
+- **实际影响**：B 是竞争者内容，不是本次用户前像；L 被链接替换，本次用户文件没有任何备份。修复避免覆盖“旧备份”，却引入覆盖“尚未备份的当前文件”的路径；即使不执行发布，BACKED-UP 已经是不实结果。
+- **复核证据**：`r2/repro_link_r2.py` 从当前 Go raw strings 提取脚本，在 mv 接缝只注入“竞争者恰在检查后创建 B”，`-n` 仍调用真实 `/bin/mv -n`。原生 macOS lane 输出 BACKED-UP，但 B 字节为 `COMPETING BACKUP`、L 仍是用户文件，直接证实“落位校验”失败。随后显式标识的 rename 适配 lane 用 `os.rename` 模拟当前同文件系统 GNU `mv -T` 发布，输出 exit 0 / BACKED-UP / LINKED，`current-file-survived=False`。原始日志：`r2/repro-link.log`。
+- **证据边界**：原生 no-clobber/错误备份声明已在 macOS 实测；Linux GNU mv -T 最后覆盖路径由代码和 rename(2) 语义确认，并在适配 lane 复现。**未在真实 Linux/WSL 上执行 GNU mv -T**，不把适配运行称为 WSL 全链集成。
+- **最小修复方向**：备份槽分配/迁移必须有排他保证，并验证“该前像已迁离 L 且落在本轮 B”而非只看 B 存在；任何让位/无法确认必须停止发布。备份移动还需防止 B 突变为目录后触发“移动到目录内”的语义。不能只反转现有一个存在性判断就宣称并发事务完备。由实施者补正式竞争回归。
+
+#### R2-F09｜Major｜新回归（来自 F01 修复）：第二个首次启动不等待建链完成
+
+- **定位**：`app_wsl_shared_skills.go:65-72,101-108`，消费者 `app.go:2475`。
+- **触发**：同进程同 distro 首次启动两个 pi 会话；A 已进入真实供给，但尚未发布链接/记录缓存，B 到达漏斗。
+- **证据摘录**：running 为 true 时先 lookup，若尚无缓存就 `return ... State: failed, Detail: "...正在执行，稍后重试"`。`wslEnsureSharedAgentsSkillsFunnel` 丢弃该返回值，直接结束；启动消费者随后继续 resolve/启动 pi，并不等 A。
+- **实际影响**：B 的 pi 在技能根仍未共享时就启动扫描，首次会话看不到 Windows 技能；即使 A 随后成功，该进程的初始扫描也已经发生。新注释/CHANGELOG 所说“后到者复用前者结果、串行化”不成立：首次情况直接失败返回，有旧缓存时还可能返回上一轮结果，而不是本次在途结果。
+- **已复现**：`r2/repro_singleflight.go` 抽取当前生产文件从开头到漏斗函数（原样保留 map/mutex/run/funnel），只为不可导入的 App main 包提供惰性日志和 home stub，并用可控平台 seam 阻塞首次调用。原生 Go 运行输出 `SECOND_FUNNEL_RETURNED_BEFORE_LINK_READY cached=false`，释放 A 后才 `FIRST_EVENTUALLY_FINISHED state=linked`。没有编写或修改项目测试；`r2/repro-singleflight.log` 保留结果。
+- **最小修复方向**：每 distro 的在途调用须有完成信号/结果；后到的启动漏斗等待同一轮结束再继续，不能把“正在执行”当成核验已完成。显式检查若选择忙碌提示，也不能借旧缓存冒充本轮结果。由实施者补双启动的时序正式测试。
+
+### 增量全量检查与测试质量
+
+| 维度 | R2 结论与证据 |
+|---|---|
+| 正确性/状态/并发 | 临时链接发布消除旧宿主目录穿透，顺序的真实目录/文件迁移、既有编号备份避让、悬挂链接替换、已链接幂等、中文/单引号/字面 shell 元字符都完成隔离行为核验。仍失败的时序为 F02 和 R2-F09；不以 4 项套件绿替代它们。 |
+| 安全/内容保全 | 临时链接仍在 distro 的 .agents 目录内；代码未新增宿主扫描/执行技能或越权工具路径。F02 的未备份覆盖是本轮核心内容安全问题。 |
+| 退役对账/一致性 | ReconcileRetired 加入同路径 continue 集合，退役收口不阻挡在役写；state save/delete 错误仍返回 ReconcileSaveFailed，未吞错。active lease 优先保护保持不变；旧材料没有经 finishMaterials 删除。 |
+| 资源恢复/兼容 | 仅删除已证实死快照链，submitDirUnit、持久 prev、chmodTree、资源扫描及公共 WSLTranslatePaths 旧语义保留；全包测试通过。没有 schema/授权面变更。 |
+| 新退役回归测试 | retired_reconcile_test.go:19-139 有退役技能正例和在役 Claude 资源负例，检查处置、登记、目标 `# legacy copy` 内容；未将 isError 规范机械套到不存在该字段的 Go API。声明中提到 pi/*，但代码只实际构造 shared/skill/*，未覆盖 pi case；也没给 intent 设置真实 backup/staging/displaced 材料来证实“全部恢复材料不删”，该方面主要靠静态无 finishMaterials 与原公开复现支撑。 |
+| 原语测试回补 | tree_primitives_test.go 四个用例恢复了在役 scanner/目标探测/凭据链接/候选身份的被删覆盖，原语级载体合理。候选身份测试仍只有替换后拒绝，没有调用读取接口的配对成功内容断言；目标链接 hash 非空断言不能独自证明链接参与 hash（FileCount=2 验证了条目计数）。这些是证据强度边界，不凭“少测试”另判生产缺陷。 |
+| 脚本/单飞测试 | platform 依然主要断言字符串与纯解析枚举，新增 4 失败码负例有效但不能证明失败码可被真实正确触发；F02 是反例。App 新 running 分支没有并发测试，现有 happy/negative 仅验证旧顺序调用；R2-F09 未被覆盖。 |
+| 前端/API/文案 | 两个 fixture 绑定和 host-missing 文案已闭合；wailsjs 本轮未改。未发现新增类型悬空。CHANGELOG 中 F02“让位如实失败”和 F01“串行/复用结果”当前不成立，随对应 finding 修复，不重复编号。 |
+| 性能/维护/范围 | 备份查槽最多 50 次，有界；bool-map mutex 无明显数据竞争或锁顺序死锁，但不是等待式 single-flight。删除死恢复链减少误导。除 R1 历史报告/取证外，改动都直接对应修复，无新增无关业务功能。 |
+
+### R2 独立复跑与原始输出
+
+执行目录仍为工作树根或其 frontend；退出码保存于 `r2/*.exit`，原始 stdout/stderr 保存于同名 `.log`。没有复用 R1 的已提交退出码。
+
+| cwd | 命令 | 退出码 | 原始关键输出 |
+|---|---|---:|---|
+| 根 | `go vet ./...` | 0 | 空输出 |
+| 根 | `go test ./... -count=1` | 0 | `ok  amagi-codebox 14.635s`；`ok  amagi-codebox/internal/platform 0.650s`；`ok  amagi-codebox/internal/wslsupply 3.513s`；48 个 ok 包、5 个 no-test 包，原日志保留 tab 分隔 |
+| frontend | `npx vue-tsc --noEmit` | 0 | 空输出 |
+| frontend | `npx vitest run` | 0 | `Test Files  41 passed (41)`；`Tests  405 passed (405)`；`Duration  679ms` |
+| 根 | `python3 agent-outputs/review/2026-11-09-wsl-shared-skills/r2/repro_link_r2.py` | 0 | 每场景子脚本状态单独记录，外层 0 不代表所有场景满足需求；详见 F02 与 `r2/repro-link.log` |
+| 根 | `go run agent-outputs/review/2026-11-09-wsl-shared-skills/r2/repro_singleflight.go` | 0 | `SECOND_FUNNEL_RETURNED_BEFORE_LINK_READY cached=false` |
+| 根 | `go run agent-outputs/review/2026-11-09-wsl-shared-skills/repro_retired.go` | 0 | 原 R1 公开复现原样重跑：units=0,pending=1 → retired-closed → units=0,pending=0；见 `r2/repro-retired.log` |
+
+补充：`git diff --check db0153c..7914a99` exit 2，仅指出 skills_submit.go:532 EOF 新空行（非 finding）。已删除快照符号搜索无命中；指定旧供给符号排除报告后只剩历史解释性文字，无生产/fixture 命中。
+
+### 证据边界、遗留观察和交接
+
+1. **macOS 不支持 GNU mv -T**：原样脚本本机的 native lane 如实 `FAIL-PUBLISH`，不能据此说 WSL 平台功能损坏（macOS 不是该 Windows-only 入口目标），也不能据此声称完整脚本已原生通过。补测选择显式 rename(2) 适配 lane，与真实 mv -n/ln/readlink/directory 语义分开记录，未安装依赖或绕过平台门禁。
+2. **UNVERIFIED**：真实 Windows/WSL wsl.exe、GNU mv -T 进程链、pi 的技能加载、wails build/绑定重生、真实浏览器/视觉验收仍未完成。未将 fixture 修正或适配运行等同生产实测。
+3. **遗留观察（不影响本轮新增 finding 数量）**：wslpath 子命令自身错误仍被原有 shell `2>/dev/null` + if 形态折叠为空输出，而外层 shell 可 exit 0；本轮 F07 修的是 runner 返回 error，未改变该既有输入内部失败边界。原 R1 已指出的翻译后目标消失 TOCTOU 也未改，不在修复增量中另起新编号。
+4. 建议下一轮由实施者修 F02 与 R2-F09，并落真实行为回归；复审只需针对这两项及直接相关迁移/启动回归。新测试无需继续堆字符串形状断言。
+5. 回滚本轮审核产物：仅 `review.md` 的新前置说明和 R2 追加内容，以及本报告目录下新 `r2/` 与 `retired-evidence-1405159723/`。R1 原文和所有已提交历史材料均未覆盖；任何清理/恢复由 Leader 授权执行，不使用破坏性 Git 操作。
+
+本轮结论仅对 `db0153c..7914a99` 修复及直接因果路径有效，不是全仓无缺陷保证。

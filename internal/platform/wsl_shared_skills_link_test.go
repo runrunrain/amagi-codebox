@@ -17,7 +17,7 @@ func TestWSLSharedSkillsScriptShape(t *testing.T) {
 		`C="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S).$i"`,
 		`if [ ! -e "$C" ]; then B="$C"; break; fi`,
 		`mv -n "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
-		`if [ ! -e "$B" ]; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
+		`if [ -e "$L" ] || [ ! -e "$B" ] || { [ -d "$B" ] && [ -e "$B/skills" ]; }; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
 		`printf 'BACKED-UP:%s\n' "$B"`,
 		`rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
 		// R1-F01：临时名建链 + mv -T 原子发布（不穿透既有目录符号链接写入

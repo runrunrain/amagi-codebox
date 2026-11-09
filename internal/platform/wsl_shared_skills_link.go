@@ -55,12 +55,15 @@ type WSLSharedSkillsLinkResult struct {
 // FAIL-MKDIR / FAIL-BACKUP-SLOT / FAIL-MOVE / FAIL-MOVE-LOST / FAIL-RM /
 // FAIL-LN / FAIL-PUBLISH / FAIL-VERIFY（TARGET-MISSING 为附注行）。
 //
-// 并发安全（R1-F01/F02）：
+// 并发安全（R1-F01/F02、R2-F02）：
 //   - 发布不用 `ln -s T L`——L 已是目录符号链接时 ln 会穿透把链接写进目标
 //     目录（宿主技能根）内；改为临时名建链后 `mv -T` 原子改名（rename(2)，
 //     不解析目标，竞争者已发布时本次替换为同目标链接，幂等收敛）；
-//   - 备份槽不覆用：同秒碰撞时追加序号寻空槽，`mv -n` 不覆写已存在目的，
-//     事后校验前像确实落位（no-clobber 静默让位则 FAIL-MOVE-LOST 如实报错）；
+//   - 备份槽不覆用：同秒碰撞时追加序号寻空槽，`mv -n` 不覆写已存在目的；
+//     迁移成功的证明是「本轮前像已落位」——L 必须已迁离、B 必须存在，且
+//     B 为目录时不得再含 skills 条目（目录 L 迁走后 B 即该目录本体；若
+//     B 是竞争者目录、L 被控进其内部则 B/skills 存在——一律 FAIL-MOVE-LOST
+//     如实报错并停止发布，不拿竞争者内容冒充本轮备份）；
 //   - 终验 readlink——任何路径下未确认指向目标一律 FAIL-*，不冒充成功。
 func wslSharedSkillsScript(linuxTarget string) string {
 	t := wslShQuote(linuxTarget)
@@ -79,7 +82,7 @@ func wslSharedSkillsScript(linuxTarget string) string {
 		`  done`,
 		`  if [ -z "$B" ]; then printf 'FAIL-BACKUP-SLOT\n'; exit 1; fi`,
 		`  mv -n "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
-		`  if [ ! -e "$B" ]; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
+		`  if [ -e "$L" ] || [ ! -e "$B" ] || { [ -d "$B" ] && [ -e "$B/skills" ]; }; then printf 'FAIL-MOVE-LOST\n'; exit 1; fi`,
 		`  printf 'BACKED-UP:%s\n' "$B"`,
 		`elif [ -L "$L" ]; then`,
 		`  rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
