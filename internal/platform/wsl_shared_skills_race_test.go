@@ -10,15 +10,16 @@ import (
 )
 
 // mvGNU 在 BSD 宿主上把 `mv -nT A B` 等价模拟为 GNU 语义（字面目的
-// 地 + 不覆写）：目的已存在（任何形态，含目录/目录符号链接，-e 跟随链接
-// 判存在）→ 原样拒绝且返回 0；目的不存在 → command mv A B（即 rename）。
+// 地 + 不覆写）：目的的目录条目已存在（任何形态——普通文件/真实目录/任
+// 何符号链接含悬挂链接；-e 跟随判存在 + -L lstat 判链接本身，R4-F11）
+// → 原样拒绝且返回 0；目的条目不存在 → command mv A B（即 rename）。
 // 生产环境（WSL/Ubuntu，GNU coreutils）使用真实 mv -nT。注入竞争的测试
 // 定义 mv 包装：先制造槽位竞争者，再回落到本语义函数。
 const mvGNU = `mv() { __mv_gnu "$@"; }
 __mv_gnu() {
   case "$1" in
     -nT)
-      if [ -e "$3" ]; then return 0; fi
+      if [ -e "$3" ] || [ -L "$3" ]; then return 0; fi
       command mv "$2" "$3"
       ;;
     *)
@@ -144,6 +145,43 @@ func TestSharedSkillsBackupDirOccupantFailsClosed(t *testing.T) {
 	if rerr != nil || string(data) != "# USER ORIGINAL" {
 		t.Fatalf("user tree must stay in place byte-identical, err=%v", rerr)
 	}
+}
+
+// TestSharedSkillsBackupRaceDanglingLinkFailsClosed（R4-F11）：竞争者在槽位
+// 创建指向不存在路径的悬挂符号链接——按 lstat 语义目的条目已存在，必须
+// 拒绝（不把悬挂链接当空位替换）：FAIL-MOVE-LOST、L 原位保留、悬挂链接
+// 本身不被覆盖。
+func TestSharedSkillsBackupRaceDanglingLinkFailsClosed(t *testing.T) {
+	out, home, _, err := runSharedSkillsScriptInShell(t,
+		func(home string) { writeDefaultUserSkill(t, home) },
+		competitorAtSlot(`ln -s "$HOME/.agents/nonexistent-target" "$3"`),
+	)
+	if err == nil {
+		t.Fatalf("dangling-link-occupied slot must fail closed, got exit 0, output:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL-MOVE-LOST") || strings.Contains(out, "BACKED-UP") {
+		t.Fatalf("dangling-link occupant must fail honestly, got:\n%s", out)
+	}
+	link := filepath.Join(home, ".agents", strings.TrimSpace(runShell(t, home, `ls "$HOME/.agents" | grep '^skills.pre-shared.'`)))
+	got, rerr := os.Readlink(link)
+	if rerr != nil || got != home+"/.agents/nonexistent-target" {
+		t.Fatalf("dangling link occupant must survive untouched, got=%q err=%v", got, rerr)
+	}
+	data, rerr := os.ReadFile(filepath.Join(home, ".agents", "skills", "SKILL.md"))
+	if rerr != nil || string(data) != "# USER ORIGINAL" {
+		t.Fatalf("user tree must stay in place byte-identical, err=%v", rerr)
+	}
+}
+
+func runShell(t *testing.T, home, snippet string) string {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", snippet)
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 // TestSharedSkillsBackupMigratesRealDir（正向）：无竞争时真实目录被完整迁移

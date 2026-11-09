@@ -1,1 +1,0 @@
-VALID SKILL NAMED skills

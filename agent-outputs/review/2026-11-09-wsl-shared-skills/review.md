@@ -1,3 +1,9 @@
+VERDICT: APPROVE-WITH-FINDINGS（R4：F02 与 R3-F10 均关闭；无阻断项，仅 1 项测试接缝 Minor）
+
+最新结论见文末「R4 定向复审」。R1–R3 原文完整保留，历史判定以本轮关闭表更新。
+
+---
+
 VERDICT: REJECT（R3：F09 关闭；备份迁移仍有 F02 边界问题，并引入 R3-F10 正常目录回归；2 Major）
 
 最新结论见文末「R3 定向复审」。以下 R1/R2 内容完整保留，历史 VERDICT 不代表最新状态。
@@ -305,3 +311,69 @@ VERDICT: REJECT
 - F03–F08 按任务维持关闭，无新审计结论；不扩大为全仓审核。待修复项仅为备份迁移的名字启发式/目的链接处理，F09 无需再改。
 - 建议最小下一步：实施者以不跟随目的目录/链接的排他迁移替代事后命名判定，并补正常含 skills 子技能和 B→目录链接两个真实行为测试；无需为合法输入增加规则。
 - 本轮只在授权报告目录新增 `r3/`、给 review.md 前置新结论并追加本节；R1/R2 原文未覆盖，摘要 hash 记录于 `r3/r2-preservation.sha256`。若需撤销本轮产物，由 Leader 授权移除准确的 R3 前置/追加部分及 r3/，不使用 checkout/reset 或清理他人现场。
+
+
+---
+
+## R4 定向复审
+
+### 最新结论与范围
+
+**VERDICT: APPROVE-WITH-FINDINGS。无 Critical/Major，无阻断项；原 F02（R3 目的目录链接穿透）与 R3-F10（合法 skills 子技能误拒）均关闭。** 新发现 1 个 Minor，仅影响测试适配器的边界保真度，不要求再改已闭合的生产逻辑。
+
+- 基线 `87fe6f1..0a8305d9d0ee1bf8aee331fe0b7975c2f5032e92`，HEAD 精确匹配本轮指定提交；开始时工作树干净。
+- 本轮生产相关增量为 CHANGELOG、platform link 源、形状测试、race 测试四条路径。审核仅围绕两项修复、新谓词/槽位和测试适配；R2-F09/F03–F08 按任务维持关闭，没有重审或新增无因果全仓观察。
+- 上游：本报告 R3、`r3/repro_link_r3.py` 及本轮任务书。所有本轮脚本、日志、隔离目标在 `r4/`，没有修改被审代码或正式测试。
+
+### 原编号关闭核验
+
+| 编号 | R4 状态 | 定位与证据 |
+|---|---|---|
+| F02（R3 目的目录链接穿透） | **关闭** | link.go:80 改成 `mv -nT L B`，不再把 B 解释为容纳源目录的目录目标；:81 在原语零退出但拒绝移动时检查 L 是否仍在，失败即停止发布。独立隔离 `r3-slot-to-host` 得 FAIL-MOVE-LOST、L 原字节保留、目标目录 entries=[]，没有 R3 的 T/skills 写入。完整 GNU 操作本机不可原生执行，该场景使用明确标注的字面目的地/no-clobber 适配 lane，结合生产语义静态核验。 |
+| R3-F10（合法名为 skills 的子技能） | **关闭** | link.go:81 完全移除 B/skills 判断，没有新增技能名限制。独立 `r3-valid-skill` 得 exit 0 / BACKED-UP / LINKED，顶层 `TOP ORIGINAL` 和嵌套 `VALID SKILL NAMED skills` 字节均保留；正式 `TestSharedSkillsBackupKeepsLegalSkillsSubdir` 也通过。 |
+| R2-F09 / F03–F08 | 维持关闭 | 本轮未改这些生产路径，按任务不重审。 |
+
+### 新谓词、槽位与边界结论
+
+1. **拒绝后 exit 0**：对初始真实 L、已占用 B，GNU no-clobber 不移走源，`[ -e "$L" ]` 为真，必报 FAIL-MOVE-LOST；若 mv 本身非零则更早报 FAIL-MOVE。同目录链接、文件、目录占槽均不需要再次发布才能判断安全。
+2. **其它 L/B 组合**：L 仍在（不论 B 是否存在）→ 拒绝；L 不在且 B 不存在 → 拒绝；L 不在且 B 存在 → 确认迁移。在普通源/同文件系统、未被其它操作者继续任意篡改的调用条件下，这比用户子条目名启发式正确。出现移动后外部删除 B 会诚实失败，不虚构备份。该两路径观察不等同文件系统全事务或抗恶意同用户任意删改的快照身份证明，不能额外宣传为此类保障。
+3. **悬挂源链接**：初始 L 为悬挂链接时 `-e && ! -L` 为假而 `elif -L` 为真，走替换旧链接，不使用真实目录迁移谓词；独立 lane 得 REPLACED-LINK/LINKED。正常文件、正常目录迁移也通过字节核查。
+4. **悬挂目的链接**：GNU no-clobber 的“目的已占用”是目录条目存在，不应只用跟随目标的 -e 近似；生产调用真正的 `mv -nT`，而不是开发测试适配器。独立 lstat 语义 lane 保留竞争者链接及用户 L、返回 FAIL-MOVE-LOST。项目测试适配器在这一点不忠实，见下方 Minor；未据此误报生产缺陷。
+5. **PID 槽位**：`date` 只生成时间戳，`$$` 在外层 sh 展开；dash/POSIX sh 支持该写法。正常同 distro/同 PID 命名空间内，并发外层 shell 有不同 PID；App 单飞避免同轮内部重复。PID 可在进程退出后复用，时间戳也不是永久排他预留，但即使碰到旧同名 B，真正的内容保全依赖 -nT 拒绝替换与失败检查，不依赖 PID 永不重复。这种碰撞会安全失败，不是覆盖备份；没有发现它构成新的阻断项。
+6. **发布/恢复相关路径**：本轮没有改动临时链接 + mv -T/readlink 发布；普通子技能名已不再干预迁移。没有发现修复引入新的生产控制流回归。GNU coreutils/WSL 是明确生产前提，不将 BSD 缺少 -T 判为产品错误。
+
+### R4-F11｜Minor｜测试 mv 适配器对悬挂目的链接不保真，且所有平台都遮蔽真实 -nT
+
+- **定位**：`internal/platform/wsl_shared_skills_race_test.go:17-25,42`。
+- **触发**：以真实文件为源，目的槽为指向不存在路径的符号链接；用项目声明“等价 GNU -nT”的 `__mv_gnu` 执行迁移。
+- **证据摘录**：`if [ -e "$3" ]; then return 0; fi` 后 `command mv "$2" "$3"`。-e 对悬挂链接为假，但槽位已经被占用；fallback 不带 -n/-T，会覆盖该目的链接。且 helper 无条件前置 mvGNU，没有按宿主区分，Linux 测试也不会执行真实 GNU -nT。
+- **已复现**：`r4/repro_link_r4.py` 直接从当前测试源码抽取 `const mvGNU`，在真实 macOS sh 上执行，没有使用审核者自己的适配器。结果：`ACTUAL_PROJECT_TEST_ADAPTER dangling-slot exit=0 src_exists=False dest_is_link=False dest_bytes=USER FILE`。即原目的悬挂链接已被替换，和“被占用即保留”的模拟契约相反。
+- **实际影响**：测试对这种目的形态的行为可能给出错误结果；同时在支持 GNU 的 CI/机器也无法借这些测试验证真实生产原语。当前生产直接调用 mv -nT，没有调用该适配函数，现有五种测试场景也不是悬挂目的链接，故仅 Minor、不阻断两项关闭。
+- **最小修复方向**：有 GNU mv 的宿主优先走真实 -nT；BSD fallback 应以目录条目存在性（含 -L）识别占用，并明确模拟只覆盖可控场景，不承诺并发原子等价。由实施者补悬挂目的链接保留断言；不为修测试而弱化生产 no-clobber。
+
+### 正式测试质量与独立取证
+
+- 文件/目录/目录链接三负例与两个迁移正例成对；目录链接负例检查目标 ReadDir 为空、L 字节匹配，确实覆盖 R3 的实际影响，不再仅寻找文件名。合法 skills 子技能正例同时比对顶层与嵌套字节，避免只看非空或文件数。形状测试与解析测试保留，但没有被当成运行行为证明。
+- BSD 上测试 adapter 只处理 -nT，`-T` 仍落真实 BSD mv；正常迁移测试允许最终 FAIL-PUBLISH，合法子技能测试也未断言最终 LINKED。因此这些正式正例证明的是**备份阶段**，不是完整 WSL 建链 happy path。注释称 BSD 发布通过 ln/rm 适配完成，与当前函数不符；建议随 F11 一并纠正表述，不另列重复 finding。
+- 独立脚本 `r4/repro_link_r4.py` 从当前 Go raw strings 提取真实脚本。为复跑 R3 两反例，在明确标识的 adapter lane 用 lstat/no-clobber + 同文件系统 rename 模拟已占用/空槽分支；它不证明 GNU 内核原子性，也没有模拟第二次竞争发生于适配器自身 check/rename 之间。原生 lane 如实保留 BSD `illegal option -- T` / FAIL-MOVE，未绕过平台限制伪称 GNU 实测。
+- 已覆盖：R3 native-slot-to-host 口径、native-valid-skill 口径、普通文件占槽/真实目录占槽/悬挂目的链接、普通目录/文件迁移、悬挂源链接替换。所有隔离“宿主根”都位于授权报告目录，没有写真实用户技能。
+
+### R4 独立命令验证
+
+日志/退出码为本轮新跑，位于 `r4/`；没有复用开发者声明或旧轮结果。
+
+| cwd | 命令 | 退出码 / 原始关键输出 |
+|---|---|---|
+| 工作树根 | `go test ./internal/platform -count=1 -run 'TestSharedSkillsBackup\|TestWSLSharedSkillsScriptShape\|TestParseWSLSharedSkillsLinkResult' -v` | 0；7 个目标用例均 PASS，platform 0.395s。表格反斜杠仅转义 Markdown，真实 regex 用裸 `|`。 |
+| 工作树根 | `go vet ./...` | 0，空输出 |
+| 工作树根 | `go test ./... -count=1` | 0；48 个 ok 包、5 个 no-test 包；根 15.594s，platform 0.593s，wslsupply 4.861s |
+| frontend | `npx vue-tsc --noEmit` | 0，空输出 |
+| frontend | `npx vitest run` | 0；41 files / 405 tests passed；686ms |
+| 工作树根 | `python3 -B agent-outputs/review/2026-11-09-wsl-shared-skills/r4/repro_link_r4.py` | 外层 0；各场景真实退出码独立记录；R3 目录链接反例已不写宿主，合法 skills 正例迁移成功，另复现 F11。 |
+
+### 盲区、通过边界与交接
+
+- **UNVERIFIED**：真实 Windows/WSL dash + GNU coreutils 执行、具体 coreutils 版本的退出码、原子 no-replace 的真实并发行为、真实 pi 技能加载。`command -v gmv` 在当前 PATH 未命中，不能据此断言机器所有位置均未安装 GNU 工具；本轮未调用任何已核实 GNU mv。按任务允许的适配取证边界给出本次代码修复验收，不冒充真机集成通过。
+- R3 两项 Major 在声明的 GNU 生产语义与已覆盖确定性反例下均闭合，**本轮范围无阻断项**；保留 F11 作为可选测试保真度改进。历史 F02/F10 不继续挂为未关闭；不要求为此再改已正确的迁移业务逻辑。
+- 下一步可由 Leader 决定是否处理 Minor 和安排真实 WSL 冒烟；检验者不写修复 patch、不替实施者编写正式测试。
+- 本轮产物仅本报告前置结论/R4 追加节及 `r4/`，旧 R1–R3 原文完整保留，hash 存 `r4/r3-preservation.sha256`。如需回滚审核产物，仅授权移除准确的本轮部分；未改任何被审文件、未 commit/checkout/reset/清理现场。
