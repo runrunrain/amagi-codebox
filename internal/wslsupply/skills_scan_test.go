@@ -4,21 +4,17 @@ package wslsupply
 // 本地临时目录（fake 宿主技能根），不触达真实 WSL。
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-// makeSkillRoot 构造一个临时宿主技能根并注册到协调器（fake 探测面目标侧
-// 落在另一个临时目录）。
-func makeSkillScope(t *testing.T) (*SkillsScope, string) {
+// makeSkillRoot 构造一个临时宿主树根（树扫描原语测试的驱动面；P3-S3 作用域
+// 已退役，扫描器经 claude/codex 资源作用域与直接调用消费）。
+func makeSkillRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	scope := NewSkillsScope(root, DefaultSkillsScanLimits())
-	return scope, root
+	return t.TempDir()
 }
 
 func writeSkillFile(t *testing.T, root, skill, rel, content string) {
@@ -110,7 +106,7 @@ func TestScanSkillAbsoluteLikeLinkTargetForms(t *testing.T) {
 }
 
 func TestScanSkillCompatChecks(t *testing.T) {
-	scope, root := makeSkillScope(t)
+	root := makeSkillRoot(t)
 	// 可移植基线 + 各类不兼容/排除形态。
 	writeSkillFile(t, root, "alpha", "SKILL.md", "# alpha\n")
 	writeSkillFile(t, root, "alpha", "docs/guide.md", "guide")
@@ -175,11 +171,10 @@ func TestScanSkillCompatChecks(t *testing.T) {
 	if !beta.Portable() {
 		t.Fatalf("clean skill must be portable: %+v", beta)
 	}
-	_ = scope
 }
 
 func TestScanSkillBoundedLimits(t *testing.T) {
-	_, root := makeSkillScope(t)
+	root := makeSkillRoot(t)
 	writeSkillFile(t, root, "deep", strings.Repeat("a/", 6)+"file.md", "x")
 	// 深度上限 2：a/b/c 之下的目录不再下降 → incomplete。
 	deep := scanSkillDir(root, "deep", SkillsScanLimits{MaxDepth: 2, MaxFilesPerSkill: 100, MaxFileBytes: 1 << 20, MaxTotalFiles: 1000}, nil)
@@ -211,7 +206,7 @@ func TestScanSkillBoundedLimits(t *testing.T) {
 }
 
 func TestScanSkillWindowsScriptExplicitlyUnsupported(t *testing.T) {
-	_, root := makeSkillScope(t)
+	root := makeSkillRoot(t)
 	writeSkillFile(t, root, "win", "SKILL.md", "# doc\n")
 	writeSkillFile(t, root, "win", "helper.bat", "@echo off")
 	m := scanSkillDir(root, "win", DefaultSkillsScanLimits(), nil)
@@ -245,83 +240,11 @@ func TestSkillTreeHashStableAcrossOrdering(t *testing.T) {
 	}
 }
 
-func TestSkillsScopeScanSnapshotAndDeletion(t *testing.T) {
-	scope, root := makeSkillScope(t)
-	writeSkillFile(t, root, "one", "SKILL.md", "one")
-	writeSkillFile(t, root, "two", "SKILL.md", "two")
-	scope.Scan()
-	snap := scope.Snapshot()
-	if !snap.Started || snap.Running || len(snap.Skills) != 2 || snap.Progress.Total != 2 {
-		t.Fatalf("unexpected snapshot: %+v", snap)
-	}
-	if m := scope.manifest("one"); m == nil || !m.Portable() {
-		t.Fatalf("manifest one missing/non-portable: %+v", m)
-	}
-	// 来源删除后重扫：缓存剔除该 skill。
-	if err := os.RemoveAll(filepath.Join(root, "two")); err != nil {
-		t.Fatal(err)
-	}
-	scope.Scan()
-	if m := scope.manifest("two"); m != nil {
-		t.Fatalf("deleted skill must leave cache: %+v", m)
-	}
-	// 空目录 skill：不可移植（empty）。
-	if err := os.MkdirAll(filepath.Join(root, "empty-skill"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	scope.Scan()
-	m := scope.manifest("empty-skill")
-	if m == nil || m.NotPortableReason() != "empty" {
-		t.Fatalf("empty skill must be non-portable(empty): %+v", m)
-	}
-}
-
-func TestSkillsScopeStartScanAsyncNonBlocking(t *testing.T) {
-	_, root := makeSkillScope(t)
-	for i := 0; i < 40; i++ {
-		writeSkillFile(t, root, fmt.Sprintf("skill-%02d", i), "SKILL.md", strings.Repeat("x", 200))
-	}
-	started := NewSkillsScope(root, DefaultSkillsScanLimits())
-	// 后台扫描立即返回（不阻塞调用方——启动链/状态面零等待）。
-	if !started.StartScanAsync() {
-		t.Fatal("first StartScanAsync must start")
-	}
-	if started.StartScanAsync() {
-		t.Fatal("running scan must single-flight (second call must not restart)")
-	}
-	// 有限等待收敛：扫描最终完成且全部技能入缓存。
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		snap := started.Snapshot()
-		if !snap.Running && snap.Started {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("scan did not converge: %+v", snap.Progress)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if len(started.Snapshot().Skills) != 40 {
-		t.Fatalf("expected 40 skills, got %d", len(started.Snapshot().Skills))
-	}
-}
-
-func TestParseSkillUnitValidation(t *testing.T) {
-	for _, bad := range []UnitID{"shared/skill/", "shared/skill/a/b", "shared/skill/.hidden", "shared/skill/..", "pi/skill/x"} {
-		if _, ok := ParseSkillUnit(bad); ok {
-			t.Fatalf("%q must not parse as skill unit", bad)
-		}
-	}
-	if name, ok := ParseSkillUnit("shared/skill/my-skill"); !ok || name != "my-skill" {
-		t.Fatalf("valid skill unit parse failed: %q %v", name, ok)
-	}
-}
-
 // TestScanSkillAliasToExcludedCredential（SA-05）：普通名链接别名不得实体化
 // 被排除的凭据/排除目录内容——直接别名、多跳别名、排除目录目标均按排除处理
 // （预览可见、不阻断供给）。
 func TestScanSkillAliasToExcludedCredential(t *testing.T) {
-	_, root := makeSkillScope(t)
+	root := makeSkillRoot(t)
 	writeSkillFile(t, root, "demo", "SKILL.md", "# synthetic\n")
 	writeSkillFile(t, root, "demo", ".env", "SYNTHETIC_SECRET=not-real\n")
 	writeSkillFile(t, root, "demo", "real.txt", "plain\n")
@@ -367,43 +290,3 @@ func TestScanSkillAliasToExcludedCredential(t *testing.T) {
 // TestSkillsScopeScanIdempotentAfterCompletion（SA-17）：扫描完成后 StartScanAsync
 // 不再重启扫描（多次 Get 不增加扫描轮次）；显式 RescanAsync 才重扫并收敛新
 // 增内容。
-func TestSkillsScopeScanIdempotentAfterCompletion(t *testing.T) {
-	_, root := makeSkillScope(t)
-	writeSkillFile(t, root, "alpha", "SKILL.md", "# alpha\n")
-	scope := NewSkillsScope(root, DefaultSkillsScanLimits())
-	if !scope.StartScanAsync() {
-		t.Fatal("first StartScanAsync must start")
-	}
-	waitScanDone := func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			snap := scope.Snapshot()
-			if !snap.Running && snap.Started {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("scan did not converge: %+v", snap.Progress)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	waitScanDone()
-	// 扫描后新增技能目录：反复 StartScanAsync（等价状态 Get 轮询）不重扫。
-	writeSkillFile(t, root, "beta", "SKILL.md", "# beta\n")
-	for i := 0; i < 3; i++ {
-		if scope.StartScanAsync() {
-			t.Fatal("completed scan must not restart via StartScanAsync (Get)")
-		}
-	}
-	if m := scope.manifest("beta"); m != nil {
-		t.Fatal("no rescan means new dir must stay invisible")
-	}
-	// 显式 RescanAsync：重扫并收敛新目录。
-	if !scope.RescanAsync() {
-		t.Fatal("RescanAsync must start after completion")
-	}
-	waitScanDone()
-	if m := scope.manifest("beta"); m == nil || !m.Portable() {
-		t.Fatalf("rescan must pick up new skill: %+v", m)
-	}
-}

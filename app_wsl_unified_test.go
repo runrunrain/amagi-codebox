@@ -199,12 +199,16 @@ func (r *recordingCoordinator) RunUnits(ctx context.Context, distro string, cli 
 	return r.Coordinator.RunUnits(ctx, distro, cli, reason, units)
 }
 
-// RescanSkills 计数后台循环触发的技能重扫（F1 有节制调度断言）。
-func (r *recordingCoordinator) RescanSkills() bool {
+// RescanCliResources 计数后台循环触发的 claude 资源重扫（F1 有节制调度断言；
+// 原 skills 作用域驱动已随 P3-S3 退役，同一节拍语义改由资源重扫承载）。
+func (r *recordingCoordinator) RescanCliResources(cli wslsupply.CLI) bool {
+	if cli != wslsupply.CLIClaude {
+		return r.Coordinator.RescanCliResources(cli)
+	}
 	r.mu.Lock()
 	r.rescans++
 	r.mu.Unlock()
-	return r.Coordinator.RescanSkills()
+	return r.Coordinator.RescanCliResources(cli)
 }
 
 func (r *recordingCoordinator) rescanCount() int {
@@ -270,10 +274,11 @@ func newUnifiedFixture(t *testing.T) *unifiedFixture {
 	writeUnifiedFile(t, filepath.Join(home, ".claude", "settings.json"), `{"model": "sonnet", "permissions": {"allow": ["Bash"]}}`)
 	writeUnifiedFile(t, filepath.Join(home, ".codex", "config.toml"),
 		"[mcp_servers.web]\nurl = \"https://mcp.example/sse\"\n\n[profiles.fast]\nmodel = \"gpt-5\"\n\n[trust]\ntrusted = [\"C:/proj\"]\n")
-	// 资源与技能。
+	// 资源（claude skills 目录单元是动态树单元的驱动面；原共享技能作用域
+	// 已随 P3-S3 退役，统一对账语义改由资源单元承载）。
 	writeUnifiedFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude global")
 	writeUnifiedFile(t, filepath.Join(home, ".claude", "commands", "review.md"), "# review")
-	writeUnifiedFile(t, filepath.Join(home, ".agents", "skills", "alpha", "SKILL.md"), "# alpha")
+	writeUnifiedFile(t, filepath.Join(home, ".claude", "skills", "alpha", "SKILL.md"), "# alpha")
 
 	origHome, origDistro, origRunning := wslS4HomeDirFn, wslDefaultDistroFn, wslDistroRunningFn
 	t.Cleanup(func() {
@@ -294,7 +299,6 @@ func newUnifiedFixture(t *testing.T) *unifiedFixture {
 	stateDir := t.TempDir()
 	coord := &recordingCoordinator{Coordinator: wslsupply.NewCoordinator(stateDir, nil, probes.probes())}
 	registerS4Adapters(coord.Coordinator, app)
-	coord.RegisterSkills(wslsupply.NewSkillsScope(filepath.Join(home, ".agents", "skills"), wslsupply.DefaultSkillsScanLimits()))
 	app.WSLSupply = coord
 	// 与生产装配（newWSLSupplyCoordinator）一致：扫描完成回调触发统一对账推送。
 	coord.SetScanCompletionCallback(app.wslUnifiedOnScanDone)
@@ -398,7 +402,7 @@ func TestWSLUnifiedSupplyEndToEnd(t *testing.T) {
 		return err == nil && strings.Contains(string(data), "mcp_servers.web") && strings.Contains(string(data), "profiles.fast")
 	}, "codex managed sections must be supplied")
 	waitUntil(t, func() bool {
-		return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md")
+		return unifiedTargetExists(f, ".claude/skills/alpha/SKILL.md")
 	}, "shared skill alpha must be supplied by scan-completion reconcile")
 	waitUntil(t, func() bool {
 		return unifiedTargetExists(f, ".claude/CLAUDE.md")
@@ -486,7 +490,7 @@ func TestWSLUnifiedSupplyGenerationChangeAndDisable(t *testing.T) {
 	}, "claude mcp must be supplied after enable")
 
 	// 停用：新技能不再自动纳入；自动化停止，既有副本保持现状。
-	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "beta", "SKILL.md"), "# beta")
+	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "skills", "beta", "SKILL.md"), "# beta")
 	if err := f.app.DisableWSLUnifiedSupply(); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -494,10 +498,10 @@ func TestWSLUnifiedSupplyGenerationChangeAndDisable(t *testing.T) {
 		t.Fatal("unified must be off after disable")
 	}
 	// 强制重扫（扫描完成回调触发，但未启用统一管理 → 不再对账纳入新项）。
-	f.coord.RescanSkills()
+	f.coord.RescanCliResources(wslsupply.CLIClaude)
 	waitUntil(t, func() bool {
-		for _, m := range f.coord.SkillsSnapshot().Skills {
-			if m.Name == "beta" {
+		for _, m := range f.coord.CliResourcesSnapshot(wslsupply.CLIClaude).Skills {
+			if m.Name == "skills/beta" {
 				return true
 			}
 		}
@@ -505,7 +509,7 @@ func TestWSLUnifiedSupplyGenerationChangeAndDisable(t *testing.T) {
 	}, "rescan must see the new skill")
 	f.app.doPushWSLSupply()
 	time.Sleep(300 * time.Millisecond)
-	if _, err := os.Stat(filepath.Join(f.target, ".agents", "skills", "beta", "SKILL.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(f.target, ".claude", "skills", "beta", "SKILL.md")); !os.IsNotExist(err) {
 		t.Fatal("new skill must not be auto-imported after disable")
 	}
 	// 停用后自动化停止：web 来源更新不再自动落地（副本保持现状；手动面仍可用）。
@@ -586,11 +590,11 @@ func TestWSLUnifiedScanCompletionTriggersReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool {
-		_, err := os.Stat(filepath.Join(f.target, ".agents", "skills", "alpha", "SKILL.md"))
+		_, err := os.Stat(filepath.Join(f.target, ".claude", "skills", "alpha", "SKILL.md"))
 		return err == nil
 	}, "skill must be supplied after scan-completion-triggered reconcile")
 	// 扫描快照确实完成（非 Running）。
-	if snap := f.coord.SkillsSnapshot(); snap.Running || !snap.Started {
+	if snap := f.coord.CliResourcesSnapshot(wslsupply.CLIClaude); snap.Running || !snap.Started {
 		t.Fatalf("skills scan must have completed: %+v", snap.Progress)
 	}
 }
@@ -628,17 +632,17 @@ func TestWSLUnifiedPeriodicRescanFollowsSourceChanges(t *testing.T) {
 	if _, err := f.app.EnableWSLUnifiedSupply(); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
-	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
+	waitUntil(t, func() bool { return unifiedTargetExists(f, ".claude/skills/alpha/SKILL.md") },
 		"initial scan-completion reconcile must supply alpha")
 
-	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "alpha", "SKILL.md"), "# alpha v2")
-	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "beta", "SKILL.md"), "# beta")
+	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "skills", "alpha", "SKILL.md"), "# alpha v2")
+	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "skills", "beta", "SKILL.md"), "# beta")
 	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "CLAUDE.md"), "# claude global v2")
 	waitUntil(t, func() bool {
-		data, err := os.ReadFile(filepath.Join(f.target, ".agents", "skills", "alpha", "SKILL.md"))
+		data, err := os.ReadFile(filepath.Join(f.target, ".claude", "skills", "alpha", "SKILL.md"))
 		return err == nil && string(data) == "# alpha v2"
 	}, "modified skill must follow via the automatic rescan cycle (no explicit check)")
-	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/beta/SKILL.md") },
+	waitUntil(t, func() bool { return unifiedTargetExists(f, ".claude/skills/beta/SKILL.md") },
 		"new skill must be auto-imported by the automatic rescan cycle")
 	waitUntil(t, func() bool {
 		data, err := os.ReadFile(filepath.Join(f.target, ".claude", "CLAUDE.md"))
@@ -647,19 +651,19 @@ func TestWSLUnifiedPeriodicRescanFollowsSourceChanges(t *testing.T) {
 
 	// 来源删除：快照刷新后自动对账只遍历新快照——已托管旧单元不自动删除
 	//（source-deleted 删除需确认，既有保护不变）。
-	if err := os.RemoveAll(filepath.Join(f.home, ".agents", "skills", "beta")); err != nil {
+	if err := os.RemoveAll(filepath.Join(f.home, ".claude", "skills", "beta")); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool {
-		for _, m := range f.coord.SkillsSnapshot().Skills {
-			if m.Name == "beta" {
+		for _, m := range f.coord.CliResourcesSnapshot(wslsupply.CLIClaude).Skills {
+			if m.Name == "skills/beta" {
 				return false
 			}
 		}
 		return true
 	}, "automatic rescan must refresh the snapshot (beta dropped after source deletion)")
 	time.Sleep(600 * time.Millisecond) // 覆盖至少两个重扫周期后的对账
-	if !unifiedTargetExists(f, ".agents/skills/beta/SKILL.md") {
+	if !unifiedTargetExists(f, ".claude/skills/beta/SKILL.md") {
 		t.Fatal("source-deleted managed skill must stay in WSL (deletion needs confirmation)")
 	}
 
@@ -687,12 +691,12 @@ func TestWSLUnifiedPushDeferredUntilActiveSessionsEnd(t *testing.T) {
 		t.Fatalf("enable: %v", err)
 	}
 	waitUntil(t, func() bool {
-		snap := f.coord.SkillsSnapshot()
+		snap := f.coord.CliResourcesSnapshot(wslsupply.CLIClaude)
 		return snap.Started && !snap.Running
 	}, "background scans must complete while the session is running")
 	waitForWSLSupplyPushIdleForTest()  // 启用推送 + 扫描完成推送均已执行并被挡下
 	time.Sleep(200 * time.Millisecond) // pending 心跳空转窗口：活动会话仍不得写入
-	for _, rel := range []string{".agents/skills/alpha/SKILL.md", ".claude/CLAUDE.md"} {
+	for _, rel := range []string{".claude/skills/alpha/SKILL.md", ".claude/CLAUDE.md"} {
 		if unifiedTargetExists(f, rel) {
 			t.Fatalf("active session must block background writes: %s", rel)
 		}
@@ -702,7 +706,7 @@ func TestWSLUnifiedPushDeferredUntilActiveSessionsEnd(t *testing.T) {
 	}
 	// 会话退出：无需另一次保存，延期对账自动补齐。
 	f.app.Sessions.MarkExited(sess.ID)
-	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
+	waitUntil(t, func() bool { return unifiedTargetExists(f, ".claude/skills/alpha/SKILL.md") },
 		"deferred reconcile must supply skills after session end without another save")
 	waitUntil(t, func() bool { _, ok := mcpServerURL(f, "web"); return ok },
 		"deferred reconcile must supply keyed units after session end")
@@ -741,7 +745,7 @@ func TestWSLUnifiedPartialEnableFailureAutoContinues(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(f.target, ".codex", "config.toml"))
 		return err == nil && strings.Contains(string(data), "mcp_servers.web")
 	}, "codex fixed group must be auto-continued after recovery")
-	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
+	waitUntil(t, func() bool { return unifiedTargetExists(f, ".claude/skills/alpha/SKILL.md") },
 		"tree reconcile must resume after recovery")
 	// 续接不复活 detached：保留本地的单元在后续自动周期中不被重新授权/改写。
 	if err := f.app.KeepWSLCliConfigUnitLocal("claude", "claude/settings"); err != nil {
@@ -775,7 +779,7 @@ func TestWSLUnifiedGenerationChangeWhileEnabledDoesNotInherit(t *testing.T) {
 	}
 	waitUntil(t, func() bool { _, ok := mcpServerURL(f, "web"); return ok },
 		"claude mcp must be supplied while enabled")
-	waitUntil(t, func() bool { return unifiedTargetExists(f, ".agents/skills/alpha/SKILL.md") },
+	waitUntil(t, func() bool { return unifiedTargetExists(f, ".claude/skills/alpha/SKILL.md") },
 		"tree units must be supplied while enabled before the flip")
 	oldTarget := f.target
 	oldMCPRel := filepath.FromSlash(".claude.json")
@@ -787,7 +791,7 @@ func TestWSLUnifiedGenerationChangeWhileEnabledDoesNotInherit(t *testing.T) {
 	// 新目标不教写入。
 	writeUnifiedFile(t, filepath.Join(f.home, ".claude.json"),
 		`{"mcpServers": {"web": {"url": "https://direct-flip.example/sse"}}}`)
-	writeUnifiedFile(t, filepath.Join(f.home, ".agents", "skills", "alpha", "SKILL.md"), "# alpha flipped")
+	writeUnifiedFile(t, filepath.Join(f.home, ".claude", "skills", "alpha", "SKILL.md"), "# alpha flipped")
 	time.Sleep(700 * time.Millisecond)
 	oldData, rerr := os.ReadFile(filepath.Join(oldTarget, oldMCPRel))
 	if rerr != nil || !strings.Contains(string(oldData), "https://mcp.example/sse") {
@@ -820,7 +824,7 @@ func TestWSLUnifiedGenerationChangeWhileEnabledDoesNotInherit(t *testing.T) {
 		return ok && url == "https://reenabled.example/sse"
 	}, "re-enabled automatic cycle must follow source changes on the new generation")
 	waitUntil(t, func() bool {
-		data, err := os.ReadFile(filepath.Join(f.target, ".agents", "skills", "alpha", "SKILL.md"))
+		data, err := os.ReadFile(filepath.Join(f.target, ".claude", "skills", "alpha", "SKILL.md"))
 		return err == nil && string(data) == "# alpha flipped"
 	}, "re-enabled automatic cycle must follow tree units on the new generation")
 	// 自然退出后重新启用（steer 回归）：统一标记关闭（不经 App.Disable 的

@@ -142,93 +142,9 @@ func snapshotSkillPreimage(uncSkillDir string, limits SkillsScanLimits) (entries
 	return entries, true, true, st.TreeHash
 }
 
-// applySkillUnit 执行一个技能单元的写入（Apply 阶段，applyMu 已持有）：
-// 复核扫描缓存仍便携 → 读取并复核候选字节 → CAS 目标树 hash → 前像快照 →
-// staging 提交 → 登记。部分失败逐项返回，不虚报成功。PR07：入口与不可逆
-// 交换前检查 ctx——已取消的接管/供给请求零新写。
-func (c *Coordinator) applySkillUnit(ctx context.Context, target TargetRef, planned PlannedUnit, adopt bool) UnitResult {
-	if err := ctx.Err(); err != nil {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
-			Detail: "context-canceled", Err: err}
-	}
-	name, ok := ParseSkillUnit(planned.Unit)
-	if !ok || c.skills == nil {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked,
-			Detail: "unit-adapter-missing", Err: errors.New("skills scope unavailable")}
-	}
-	limits := c.skills.Limits()
-	m := c.skills.manifest(name)
-	if m == nil {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked, Detail: "source-deleted"}
-	}
-	if reason := m.NotPortableReason(); reason != "" {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitBlocked, Detail: reason}
-	}
-	files, err := readSkillCandidateFiles(m, limits)
-	if err != nil {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
-			Detail: "candidate-unavailable", Err: err}
-	}
-	written := make([]SkillFileEntry, 0, len(files))
-	for _, f := range files {
-		written = append(written, SkillFileEntry{RelPath: f.RelPath, Size: int64(len(f.Bytes)), Hash: hexHash(f.Bytes)})
-	}
-	writtenTreeHash := skillTreeHash(written)
-	// CAS 前置复核：目标树自计划以来被外部改动 → 拒绝旧计划（adopt 接管路径
-	// 已在协调器按预览 hash 完成 CAS，这里同样复核写入时刻状态一致）。
-	uncSkillDir := filepath.Join(target.UNCRoot, filepath.FromSlash(skillRelDir(name)))
-	tgt := scanTargetSkillDir(uncSkillDir, limits)
-	if tgt.Unverifiable {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
-			Detail: tgt.Reason, Err: errors.New("cannot verify target skill tree before write")}
-	}
-	if tgt.TreeHash != planned.ExpectedTargetHash {
-		return UnitResult{Unit: planned.Unit, Policy: planned.Policy, Outcome: UnitFailed,
-			Detail: "target-changed-since-planning",
-			Err:    errors.New("target skill tree changed since planning (external edit retained)")}
-	}
-	prev, prevExisted, prevSnapshot, _ := snapshotSkillPreimage(uncSkillDir, limits)
-	_ = prevExisted
-	outcome := "written"
-	if adopt {
-		outcome = "takeover-written"
-	}
-	rcpt := c.submitDirUnit(ctx, CommitRequest{
-		Target: target, Unit: planned.Unit, RelPath: skillRelDir(name),
-		ExpectedBefore: planned.ExpectedTargetHash, Kind: OpKindDirSwap,
-		Dir: true, DirFiles: files, DirTreeHash: writtenTreeHash,
-		Register: func(st *StateFile) {
-			registerProjectionEntryIn(st, target, planned.Unit, PolicyTrackedProjection, m.SourceHash,
-				writtenTreeHash, skillsTransformVersion, nil, outcome)
-		},
-	})
-	if rcpt.UndoLease != nil {
-		rcpt.UndoLease.prevFiles = preimageAsEntries(prev)
-		rcpt.UndoLease.prevSnapshot = prevSnapshot
-	}
-	res := unitResultFromReceipt(planned.Unit, planned.Policy, rcpt, "write-failed")
-	if rcpt.Err == nil {
-		notes := skillApplyNotes(m)
-		if len(notes) > 0 {
-			logWarn(c.log, "wslsupply", "技能供给附带诊断", strings.Join(notes, "; "))
-		}
-		res.Outcome = UnitApplied
-		res.Detail = outcome
-		if len(notes) > 0 {
-			res.Detail += "; " + strings.Join(notes, "; ")
-		}
-	}
-	return res
-}
-
-func preimageAsEntries(prev []skillPreimageEntry) []skillPreimageEntry {
-	if len(prev) == 0 {
-		return nil
-	}
-	return append([]skillPreimageEntry(nil), prev...)
-}
-
 // skillApplyNotes 生成脱敏附带说明（排除物摘要；不兼容项阻断供给不会走到写入）。
+// （原 P3-S3 applySkillUnit/takeOverSkill 入口已随「WSL 内共享 Windows 技能根」
+// 退役；下方 submitDirUnit/chmodTree/恢复链仍是 S4 资源目录单元的共享原语。）
 func skillApplyNotes(m *SkillManifest) []string {
 	if len(m.Excluded) == 0 {
 		return nil
@@ -498,52 +414,6 @@ func (c *Coordinator) newDirUndoLease(req CommitRequest, rc *CommitReceipt, befo
 	return h
 }
 
-// takeOverSkill 执行技能单元的「预览后确认接管」：以预览时目标树 hash 做
-// CAS（旧预览不覆盖新编辑）；未同意仍拦截（与 F-3 同构：接管是显式写入，
-// 不得绕过 per-target 同意门）；随后按当前来源重建基准（adopt=true）。
-func (c *Coordinator) takeOverSkill(ctx context.Context, distro string, unit UnitID, name, expectedTargetHash string) (UnitResult, error) {
-	if c.skills == nil {
-		return UnitResult{}, fmt.Errorf("skills scope unavailable")
-	}
-	if err := ctx.Err(); err != nil {
-		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
-			Detail: "context-canceled", Err: err}, nil
-	}
-	c.applyMu.Lock()
-	defer c.applyMu.Unlock()
-	// PR07：等锁期间取消的请求不得进入接管写入。
-	if err := ctx.Err(); err != nil {
-		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
-			Detail: "context-canceled", Err: err}, nil
-	}
-
-	target, err := c.ResolveTarget(ctx, distro, CLICommon)
-	if err != nil {
-		return UnitResult{}, fmt.Errorf("resolve wsl supply target: %w", err)
-	}
-	st := c.state.load()
-	entry := st.entryFor(unit, target.Generation)
-	if !entry.Consented {
-		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
-			Detail: "awaiting-consent",
-			Err:    errors.New("skill is not consented for this target; import it first")}, nil
-	}
-	uncSkillDir := filepath.Join(target.UNCRoot, filepath.FromSlash(skillRelDir(name)))
-	tgt := scanTargetSkillDir(uncSkillDir, c.skillLimits())
-	if tgt.Unverifiable {
-		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitFailed,
-			Detail: tgt.Reason, Err: errors.New("cannot verify target skill tree")}, nil
-	}
-	if tgt.TreeHash != expectedTargetHash {
-		return UnitResult{Unit: unit, Policy: PolicyTrackedProjection, Outcome: UnitBlocked,
-			Detail: "preview-expired",
-			Err:    errors.New("target skill tree changed since preview; re-check before takeover")}, nil
-	}
-	planned := PlannedUnit{Unit: unit, Policy: PolicyTrackedProjection, RelPath: skillRelDir(name),
-		ExpectedTargetHash: expectedTargetHash, Action: ActionWriteProjection, TransformVersion: skillsTransformVersion}
-	return c.applySkillUnit(ctx, target, planned, true), nil
-}
-
 // relDirsOf 返回相对路径的父目录链首个父目录（"a/b/c.txt" → "a/b"）。
 func relDirsOf(rel string) string {
 	i := strings.LastIndexAny(rel, "/\\")
@@ -587,11 +457,8 @@ func (c *Coordinator) chmodTree(ctx context.Context, target TargetRef, relDir st
 	return nil
 }
 
-// skillLimits 返回技能扫描上限（skills 作用域未注册时用默认）。
+// skillLimits 返回树单元扫描/提交用的上限（P3-S3 作用域退役后恒用默认）。
 func (c *Coordinator) skillLimits() SkillsScanLimits {
-	if c.skills != nil {
-		return c.skills.Limits()
-	}
 	return DefaultSkillsScanLimits()
 }
 

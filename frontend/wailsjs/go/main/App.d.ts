@@ -31,7 +31,6 @@ export function ApplyWSLCliResourcesSupply(arg1:string,arg2:Array<string>):Promi
 
 export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
 
-export function ApplyWSLSkillsSupply(arg1:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function BeginClaudeAccountEnrollment(arg1:number):Promise<string>;
 
@@ -55,7 +54,6 @@ export function CheckWSLCliResourcesSupply(arg1:string):Promise<main.WSLSkillsSu
 
 export function CheckWSLPiConfigSupply():Promise<main.WSLConfigSupplyStatus>;
 
-export function CheckWSLSkillsSupply():Promise<main.WSLSkillsSupplyStatus>;
 
 export function CleanClaudeInstall(arg1:string):Promise<envcheck.InstallResult>;
 
@@ -83,6 +81,7 @@ export function DownloadAndApplyUpdate():Promise<void>;
 
 export function EnableWSLPiConfigSupply():Promise<void>;
 
+export function EnsureWSLSharedSkillsRoot():Promise<main.WSLSharedSkillsRootStatus>;
 export function EnableWSLUnifiedSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function ExportConfigToFile():Promise<string>;
@@ -229,7 +228,6 @@ export function GetWSLOpenCodeMCPPreview():Promise<Array<main.WSLOpenCodeMCPEntr
 
 export function GetWSLPluginTargetSupport():Promise<Array<main.WSLPluginTargetEntry>>;
 
-export function GetWSLSkillsSupplyStatus():Promise<main.WSLSkillsSupplyStatus>;
 
 export function GrantWSLVisionConsent():Promise<void>;
 
@@ -267,7 +265,6 @@ export function KeepWSLCliResourceLocal(arg1:string,arg2:string):Promise<void>;
 
 export function KeepWSLPiConfigUnitLocal(arg1:string):Promise<void>;
 
-export function KeepWSLSkillLocal(arg1:string):Promise<void>;
 
 export function LaunchCodexSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
@@ -301,7 +298,6 @@ export function PreviewWSLCliResourcesSupply(arg1:string):Promise<Array<main.WSL
 
 export function PreviewWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitPreview>>;
 
-export function PreviewWSLSkillsSupply():Promise<Array<main.WSLSkillPreview>>;
 
 export function ProbeAllProviderQuotas():Promise<Record<string, config.ProviderQuotaEntry>>;
 
@@ -477,7 +473,6 @@ export function TakeOverWSLCliResource(arg1:string,arg2:string,arg3:string):Prom
 
 export function TakeOverWSLPiConfigUnit(arg1:string,arg2:string):Promise<void>;
 
-export function TakeOverWSLSkill(arg1:string,arg2:string):Promise<void>;
 
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 

@@ -2466,10 +2466,13 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 	if launchTargetsWSLFn(mode, shellPath) {
 		// pi 共享 Windows agent 根（WSL 只提供运行环境）：钉定 PI_CODING_AGENT_DIR
 		// 为 Windows ~/.pi/agent 并登记为路径放行键（躲过剥离 + WSLENV /p 翻译）。
+		// 同源裁定延伸：~/.agents/skills 经受管符号链接直连 Windows 技能根
+		//（每进程每 distro 首次核验，见 app_wsl_shared_skills.go）。
 		if appType == session.AppTypePi {
 			env, req.EnvPathFlagKeys = launcher.ApplyWSLSharedPiAgentRoot(env, defaultPiAgentDir(), req.EnvPathFlagKeys)
 			req.Env = env
 			a.Log.Info("session", "WSL 内 pi 共享 Windows agent 根", defaultPiAgentDir())
+			a.wslEnsureSharedAgentsSkillsFunnel(wslDefaultDistroFn(nil))
 		}
 		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)
 		if len(allowedPath) > 0 {

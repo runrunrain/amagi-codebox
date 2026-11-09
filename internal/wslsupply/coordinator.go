@@ -44,9 +44,6 @@ type Coordinator struct {
 	// 依赖扫描真正结束后再推送；SetScanCompletionCallback 注册）。
 	scanDoneMu sync.Mutex
 	scanDone   func()
-	// skills 是技能资源作用域（S3：shared/skill/<name> 动态单元；nil 表示
-	// 未注册——技能单元全部 unknown）。
-	skills *SkillsScope
 	// plugins 是插件重放作用域（S5：pi 插件原生重放；与单元词汇表分离，
 	// 启动链结构性无法触达）。恒非 nil；裸解析面时操作降级 blocked。
 	plugins *PluginScope
@@ -276,11 +273,8 @@ func (c *Coordinator) unitFiles(cli CLI) []string {
 // knownUnit 报告单元是否已注册（技能/资源单元随各自作用域注册动态可识别）。
 // unknown 单元拒绝（design §七）；已退役的 Pi 单元恒拒绝（不再有生产路径）。
 func (c *Coordinator) knownUnit(unit UnitID) bool {
-	if retiredPiUnit(unit) {
+	if retiredPiUnit(unit) || retiredSkillUnit(unit) {
 		return false
-	}
-	if _, ok := ParseSkillUnit(unit); ok {
-		return c.skills != nil
 	}
 	if cli, _, ok := ParseResourceUnit(unit); ok {
 		return c.resourceScope(cli) != nil
@@ -311,24 +305,8 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 		if !c.knownUnit(unit) {
 			return nil, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
 		}
-		if _, isSkill := ParseSkillUnit(unit); isSkill {
-			// 技能单元（S3）：per-target 同意门与 S1/S2 同构——未同意恒
-			// awaiting-consent，不进入归属判定（用户资产跨界导入是授权动作）。
-			entry := state.entryFor(unit, req.Target.Generation)
-			if !entry.Consented {
-				plan.Units = append(plan.Units, PlannedUnit{
-					Unit: unit, Policy: PolicyTrackedProjection, Action: ActionBlocked,
-					BlockedReason: "awaiting-consent",
-				})
-				continue
-			}
-			name, _ := ParseSkillUnit(unit)
-			planned := c.planSkill(req.Target, name, &entry)
-			plan.Units = append(plan.Units, planned)
-			continue
-		}
 		if resCLI, resRel, isRes := ParseResourceUnit(unit); isRes {
-			// 资源单元（S4）：与技能同一同意门（用户资产跨界导入是授权动作）。
+			// 资源单元（S4）：per-target 同意门（用户资产跨界导入是授权动作）。
 			entry := state.entryFor(unit, req.Target.Generation)
 			if !entry.Consented {
 				plan.Units = append(plan.Units, PlannedUnit{
@@ -406,10 +384,6 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
 				Detail: "context-canceled", Err: err,
 			})
-			continue
-		}
-		if isSkillUnitID(unit.Unit) {
-			result.Results = append(result.Results, c.applySkillPlanned(ctx, current, unit))
 			continue
 		}
 		if resCLI, resRel, isRes := ParseResourceUnit(unit.Unit); isRes {
@@ -1051,7 +1025,7 @@ func (c *Coordinator) GetStatus(distro string, cli CLI) TargetStatus {
 			TransformVersion: entry.TransformVersion, Frozen: entry.Frozen,
 			FrozenReason: entry.FrozenReason, Consented: entry.Consented,
 			Detached: entry.Detached,
-			Stale:    c.skillUnitStale(entry) || c.resourceUnitStale(entry),
+			Stale:    c.resourceUnitStale(entry),
 		}
 		us.LastAttemptOutcome = entry.LastOutcome
 		if opID, pending := c.PendingSensitiveOperation(distro, entry.Unit); pending {
@@ -1194,17 +1168,6 @@ func entrySensitiveCopyPossible(e StateEntry) bool {
 	return e.LastWrittenHash != ""
 }
 
-// skillUnitStale 报告技能单元登记的来源 hash 与当前扫描缓存是否不一致
-// （S3 陈旧判定：脱敏布尔，hash 不出包）。非技能单元恒 false。
-func (c *Coordinator) skillUnitStale(entry StateEntry) bool {
-	name, ok := ParseSkillUnit(entry.Unit)
-	if !ok || c.skills == nil || entry.SourceHash == "" {
-		return false
-	}
-	m := c.skills.manifest(name)
-	return m != nil && m.SourceHash != entry.SourceHash
-}
-
 // resourceUnitStale 报告资源单元（S4）登记的来源 hash 与扫描缓存是否不一致。
 // 非资源单元恒 false。
 func (c *Coordinator) resourceUnitStale(entry StateEntry) bool {
@@ -1268,10 +1231,6 @@ func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, 
 	for _, unit := range units {
 		entry := state.entryFor(unit, target.Generation)
 		prev := UnitPreview{Unit: unit, Action: ActionNone}
-		if name, isSkill := ParseSkillUnit(unit); isSkill {
-			out = append(out, c.previewSkillUnit(target, name, &entry))
-			continue
-		}
 		if resCLI, resRel, isRes := ParseResourceUnit(unit); isRes {
 			out = append(out, c.previewResourceUnit(target, unit, resCLI, resRel, &entry))
 			continue
@@ -1320,69 +1279,11 @@ func (c *Coordinator) PreviewUnits(ctx context.Context, distro string, cli CLI, 
 	return out, nil
 }
 
-// previewSkillUnit 构造单个技能单元的预览（脱敏：不兼容项逐条原因、排除物
-// 摘要、目标 hash 令牌仅供接管回传；不写盘不 spawn）。
-func (c *Coordinator) previewSkillUnit(target TargetRef, name string, entry *StateEntry) UnitPreview {
-	prev := UnitPreview{Unit: SkillUnitID(name), Policy: PolicyTrackedProjection, Action: ActionNone, RelPath: skillRelDir(name)}
-	if c.skills == nil {
-		prev.BlockedReason = "skills-scope-unavailable"
-		return prev
-	}
-	limits := c.skills.Limits()
-	tgt := scanTargetSkillDir(filepath.Join(target.UNCRoot, filepath.FromSlash(skillRelDir(name))), limits)
-	if !tgt.Unverifiable {
-		prev.TargetHash = tgt.TreeHash
-	}
-	if m := c.skills.manifest(name); m != nil {
-		for _, it := range m.Incompatible {
-			prev.Notes = append(prev.Notes, fmt.Sprintf("不兼容：%s：%s", it.RelPath, it.Reason))
-		}
-		if len(m.Excluded) > 0 {
-			prev.Notes = append(prev.Notes, fmt.Sprintf("将排除 %d 项（.git/node_modules/缓存/凭据/会话产物）", len(m.Excluded)))
-		}
-		if m.Incomplete {
-			prev.Notes = append(prev.Notes, "扫描未完成（"+m.IncompleteReason+"），不可供给")
-		}
-	}
-	if entry != nil && entry.Detached {
-		prev.BlockedReason = "detached"
-		return prev
-	}
-	if entry == nil || !entry.Consented {
-		// F6：预览镜像 Plan 的同意门——同一单元同一答案（未同意恒
-		// awaiting-consent，不显示「会写入」）；目标 hash 令牌与目标存在性
-		// 附注仍保留（接管流程需要它们）。
-		prev.Action = ActionBlocked
-		prev.BlockedReason = "awaiting-consent"
-		prev.Notes = append(prev.Notes, "尚未选择导入（未授权）；勾选导入授权后才会写入")
-		if tgt.Exists {
-			prev.Notes = append(prev.Notes, "目标已存在内容（授权后将判定为未托管，需预览后确认接管）")
-		}
-		return prev
-	}
-	planned := c.planSkill(target, name, entry)
-	prev.Action = planned.Action
-	prev.BlockedReason = planned.BlockedReason
-	prev.Freeze = planned.Freeze
-	return prev
-}
-
 // DropUnitRegistration 执行「保留本地（停跟随）」：目标内容不动，登记
 // Detached 标记，后续供给零动作；显式接管可解除。不要求 distro 可达（停机
 // 目标上也可停跟随——PR04：经身份索引解析明确目标 generation，不取全局
 // 最近代；同名 distro 多代并存时拒绝歧义而不改别人）。
 func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) error {
-	if _, isSkill := ParseSkillUnit(unit); isSkill {
-		if c.skills == nil {
-			return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
-		}
-		return c.detachUnitOnDistro(distro, unit, func(prev StateEntry) StateEntry {
-			prev.Detached = true
-			prev.LastOutcome = "detached"
-			prev.LastSuccess = time.Now()
-			return prev
-		})
-	}
 	if resCLI, _, isRes := ParseResourceUnit(unit); isRes {
 		if c.resourceScope(resCLI) == nil {
 			return fmt.Errorf("unknown or non-projection wsl supply unit: %q", string(unit))
@@ -1438,9 +1339,6 @@ func (c *Coordinator) detachUnitOnDistro(distro string, unit UnitID, mutate func
 func (c *Coordinator) TakeOverUnit(ctx context.Context, distro string, cli CLI, unit UnitID, expectedTargetHash string) (UnitResult, error) {
 	if err := ctx.Err(); err != nil {
 		return UnitResult{Unit: unit, Outcome: UnitBlocked, Detail: "context-canceled", Err: err}, nil
-	}
-	if name, isSkill := ParseSkillUnit(unit); isSkill {
-		return c.takeOverSkill(ctx, distro, unit, name, expectedTargetHash)
 	}
 	if resCLI, resRel, isRes := ParseResourceUnit(unit); isRes {
 		return c.takeOverResource(ctx, distro, unit, resCLI, resRel, expectedTargetHash)

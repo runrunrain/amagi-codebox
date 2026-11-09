@@ -790,36 +790,38 @@ func (a *atomicValue) Load() any {
 // PR07：取消贯通 skill/resource takeover 与目录提交
 // ---------------------------------------------------------------------------
 
-// TestReviewFixPR07CanceledSkillTakeoverZeroWrites（反例：phase-review-cancel-repro.go）。
+// TestReviewFixPR07CanceledSkillTakeoverZeroWrites（反例：phase-review-cancel-repro.go；
+// 原技能单元驱动已随 P3-S3 退役，改用同一接管原语的 claude 资源目录单元承载）。
 func TestReviewFixPR07CanceledSkillTakeoverZeroWrites(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "host")
-	if err := os.MkdirAll(filepath.Join(src, "demo"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "commands", "demo"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "demo", "SKILL.md"), []byte("# synthetic skill\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "commands", "demo", "SKILL.md"), []byte("# synthetic resource\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scope := NewSkillsScope(src, DefaultSkillsScanLimits())
-	scope.Scan()
 	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
 		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "fixture", OK: true}}
 	c := newCoordinatorWith(t, fp)
-	c.RegisterSkills(scope)
-	unit := SkillUnitID("demo")
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {
+	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
+		HostRoot: src, DirUnits: []string{"commands"}, TargetPrefix: ".claude/",
+	}, DefaultSkillsScanLimits()))
+	c.resourceScope(CLIClaude).Scan()
+	unit := ResourceUnitID(CLIClaude, "commands/demo")
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, unit); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res, err := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, unit, "")
+	res, err := c.TakeOverUnit(ctx, "Ubuntu", CLIClaude, unit, "")
 	if err != nil {
 		t.Fatalf("TakeOverUnit: %v", err)
 	}
 	if res.Outcome != UnitBlocked || res.Detail != "context-canceled" {
 		t.Fatalf("canceled takeover must be blocked, got %+v", res)
 	}
-	if _, serr := os.Lstat(filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo/SKILL.md")); serr == nil {
+	if _, serr := os.Lstat(filepath.Join(fp.uncRoot, "home/u/.claude/commands/demo/SKILL.md")); serr == nil {
 		t.Fatal("canceled takeover must not write the target tree")
 	}
 }

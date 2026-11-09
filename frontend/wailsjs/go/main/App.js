@@ -26,9 +26,6 @@ export function ApplyWSLPiConfigSupply() {
   return window['go']['main']['App']['ApplyWSLPiConfigSupply']();
 }
 
-export function ApplyWSLSkillsSupply(arg1) {
-  return window['go']['main']['App']['ApplyWSLSkillsSupply'](arg1);
-}
 
 export function BeginClaudeAccountEnrollment(arg1) {
   return window['go']['main']['App']['BeginClaudeAccountEnrollment'](arg1);
@@ -74,9 +71,6 @@ export function CheckWSLPiConfigSupply() {
   return window['go']['main']['App']['CheckWSLPiConfigSupply']();
 }
 
-export function CheckWSLSkillsSupply() {
-  return window['go']['main']['App']['CheckWSLSkillsSupply']();
-}
 
 export function CleanClaudeInstall(arg1) {
   return window['go']['main']['App']['CleanClaudeInstall'](arg1);
@@ -130,6 +124,9 @@ export function EnableWSLPiConfigSupply() {
   return window['go']['main']['App']['EnableWSLPiConfigSupply']();
 }
 
+export function EnsureWSLSharedSkillsRoot() {
+  return window['go']['main']['App']['EnsureWSLSharedSkillsRoot']();
+}
 export function EnableWSLUnifiedSupply() {
   return window['go']['main']['App']['EnableWSLUnifiedSupply']();
 }
@@ -422,9 +419,6 @@ export function GetWSLPluginTargetSupport() {
   return window['go']['main']['App']['GetWSLPluginTargetSupport']();
 }
 
-export function GetWSLSkillsSupplyStatus() {
-  return window['go']['main']['App']['GetWSLSkillsSupplyStatus']();
-}
 
 export function GrantWSLVisionConsent() {
   return window['go']['main']['App']['GrantWSLVisionConsent']();
@@ -498,9 +492,6 @@ export function KeepWSLPiConfigUnitLocal(arg1) {
   return window['go']['main']['App']['KeepWSLPiConfigUnitLocal'](arg1);
 }
 
-export function KeepWSLSkillLocal(arg1) {
-  return window['go']['main']['App']['KeepWSLSkillLocal'](arg1);
-}
 
 export function LaunchCodexSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchCodexSession'](arg1, arg2, arg3, arg4, arg5);
@@ -566,9 +557,6 @@ export function PreviewWSLPiConfigSupply() {
   return window['go']['main']['App']['PreviewWSLPiConfigSupply']();
 }
 
-export function PreviewWSLSkillsSupply() {
-  return window['go']['main']['App']['PreviewWSLSkillsSupply']();
-}
 
 export function ProbeAllProviderQuotas() {
   return window['go']['main']['App']['ProbeAllProviderQuotas']();
@@ -918,9 +906,6 @@ export function TakeOverWSLPiConfigUnit(arg1, arg2) {
   return window['go']['main']['App']['TakeOverWSLPiConfigUnit'](arg1, arg2);
 }
 
-export function TakeOverWSLSkill(arg1, arg2) {
-  return window['go']['main']['App']['TakeOverWSLSkill'](arg1, arg2);
-}
 
 export function ToggleRemoteServer(arg1) {
   return window['go']['main']['App']['ToggleRemoteServer'](arg1);

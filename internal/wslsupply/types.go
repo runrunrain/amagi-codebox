@@ -14,6 +14,7 @@ package wslsupply
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -98,6 +99,40 @@ var retiredPiUnits = map[UnitID]bool{
 
 // retiredPiUnit 报告单元是否属于已退役的 Pi 供给面（升级后旧登记按未知处理）。
 func retiredPiUnit(unit UnitID) bool { return retiredPiUnits[unit] }
+
+// retiredSkillUnitPrefix 是已退役的共享技能单元 id 前缀（1.3.130「WSL 内共享
+// Windows ~/.agents/skills（受管符号链接）」后 P3-S3 同意制投影整体退役）。
+// 旧状态文件里仍可能残留 shared/skill/<name> 登记——读取时直接剔除（见
+// pruneRetiredUnits），避免状态面继续展示 await�cent/冻结等误导信息，也避免
+// 符号链接落点被旧投影副本遮挡。
+const retiredSkillUnitPrefix = "shared/skill/"
+
+// retiredSkillUnit 报告单元是否属于已退役的共享技能投影面。
+func retiredSkillUnit(unit UnitID) bool {
+	return strings.HasPrefix(string(unit), retiredSkillUnitPrefix)
+}
+
+// pruneRetiredUnits 从清单中剔除已退役单元的登记（内存视图；下次落盘持久化）。
+// 返回被剔除的单元 id（日志可观测）。退役面不再有任何生产路径，保留登记只会
+// 在状态页制造永久 pending/awaiting 噪音（「避免错误设置」）。
+func pruneRetiredUnits(f *StateFile) []UnitID {
+	if f == nil || len(f.Units) == 0 {
+		return nil
+	}
+	kept := f.Units[:0:0]
+	var dropped []UnitID
+	for _, u := range f.Units {
+		if retiredPiUnit(u.Unit) || retiredSkillUnit(u.Unit) {
+			dropped = append(dropped, u.Unit)
+			continue
+		}
+		kept = append(kept, u)
+	}
+	if len(dropped) > 0 {
+		f.Units = kept
+	}
+	return dropped
+}
 
 // retiredPiDirtySources 是已退役的 Pi 保存事件来源名：旧状态 PendingSources
 // 中可能仍残留（其滋养单元已全部退役，永远不会满足清除条件）——状态展示时

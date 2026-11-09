@@ -1,0 +1,167 @@
+package platform
+
+// wsl_shared_skills_link.go — WSL 内共享 Windows ~/.agents/skills（受管符号链接）。
+//
+// 设计（与 1.3.126「WSL 内 Pi 共享 Windows agent 根」同一裁定：WSL 只提供
+// 运行环境，用户资产全部来自 Windows）：pi 原生按 Agent Skills 规范扫描
+// $HOME/.agents/skills——distro 内该路径默认是独立目录，Windows 侧技能整体
+// 不可见。本模块在 distro 内把 ~/.agents/skills 钉成指向 Windows 技能根
+//（wslpath 翻译后的 /mnt/<盘>/… 路径）的符号链接：
+//   - 幂等：已指向目标的链接直接返回 already-linked，不重复写；
+//   - 既有真实目录/文件（如旧 P3-S3 投影副本）先备份为
+//     ~/.agents/skills.pre-shared.<时间戳> 再建链接，不静默覆盖用户内容；
+//   - 指向别处的既有符号链接替换为新目标（受管面自愈）；
+//   - 写失败如实报告（FAIL-*），不冒充成功。
+// 退役说明：P3-S3「共享技能」同意制投影（shared/skill/<name> 单元）随本机制
+// 退役——同一棵树不允许两套写入通道（投影副本会遮挡/被符号链接遮挡）。
+
+import (
+	"fmt"
+	"runtime"
+	"strings"
+)
+
+// WSLSharedSkillsLinkState 是受管符号链接的终态。
+type WSLSharedSkillsLinkState string
+
+const (
+	// WSLSkillsLinked 本轮新建了符号链接。
+	WSLSkillsLinked WSLSharedSkillsLinkState = "linked"
+	// WSLSkillsAlreadyLinked 已存在且指向目标（幂等命中）。
+	WSLSkillsAlreadyLinked WSLSharedSkillsLinkState = "already-linked"
+	// WSLSkillsBackedUp 既有真实目录/文件已备份迁移并新建链接（Backup 给出备份路径）。
+	WSLSkillsBackedUp WSLSharedSkillsLinkState = "backed-up"
+	// WSLSkillsReplacedLink 指向别处的既有符号链接已被替换为目标。
+	WSLSkillsReplacedLink WSLSharedSkillsLinkState = "replaced-link"
+	// WSLSkillsHostMissing Windows 侧技能根不存在或 distro 内不可达——不建
+	// 链接（pi 对缺失目录天然容忍），状态面按「宿主无技能根」展示。
+	WSLSkillsHostMissing WSLSharedSkillsLinkState = "host-missing"
+	// WSLSkillsFailed 写入或探测失败（Detail 给出原因）。
+	WSLSkillsFailed WSLSharedSkillsLinkState = "failed"
+)
+
+// WSLSharedSkillsLinkResult 是一次供给/核验的结果（展示面与日志共用）。
+type WSLSharedSkillsLinkResult struct {
+	State   WSLSharedSkillsLinkState
+	Target  string // 目标侧 Linux 路径（host-missing/failed 可能为空）
+	Link    string // ~/.agents/skills（distro 内落点）
+	Backup  string // backed-up 时的备份路径
+	Detail  string // 失败原因/备注
+}
+
+// wslSharedSkillsScript 在 distro 内核验/修复受管符号链接。
+// 输出行：OK-LINKED / BACKED-UP:<path> / REPLACED-LINK / LINKED /
+// FAIL-MKDIR / FAIL-MOVE / FAIL-RM / FAIL-LN（TARGET-MISSING 为附注行）。
+func wslSharedSkillsScript(linuxTarget string) string {
+	t := wslShQuote(linuxTarget)
+	return strings.Join([]string{
+		`L="$HOME/.agents/skills"`,
+		`T=` + t,
+		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
+		`mkdir -p "$HOME/.agents" 2>/dev/null || { printf 'FAIL-MKDIR\n'; exit 1; }`,
+		`if [ -e "$L" ] && [ ! -L "$L" ]; then`,
+		`  B="$HOME/.agents/skills.pre-shared.$(date +%Y%m%d%H%M%S)"`,
+		`  mv "$L" "$B" || { printf 'FAIL-MOVE\n'; exit 1; }`,
+		`  printf 'BACKED-UP:%s\n' "$B"`,
+		`elif [ -L "$L" ]; then`,
+		`  rm -f "$L" || { printf 'FAIL-RM\n'; exit 1; }`,
+		`  printf 'REPLACED-LINK\n'`,
+		`fi`,
+		`ln -s "$T" "$L" || { printf 'FAIL-LN\n'; exit 1; }`,
+		`if [ ! -d "$T" ]; then printf 'TARGET-MISSING\n'; fi`,
+		`printf 'LINKED\n'`,
+	}, "\n")
+}
+
+// wslShQuote POSIX 单引号包裹（值内单引号转义为 '\'' 形态）。
+func wslShQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+}
+
+// WSLEnsureSharedAgentsSkillsLink 核验（并在需要时修复）distro 内
+// ~/.agents/skills → Windows hostSkillsDir 的受管符号链接。
+// hostSkillsDir 必须是 Windows 绝对路径；distro 为空或非 Windows 平台
+// 返回 failed（调用方按「不适用」降级，不重试）。
+func WSLEnsureSharedAgentsSkillsLink(distro, hostSkillsDir string) WSLSharedSkillsLinkResult {
+	res := WSLSharedSkillsLinkResult{Link: "~/.agents/skills"}
+	distro = strings.TrimSpace(distro)
+	hostSkillsDir = strings.TrimSpace(hostSkillsDir)
+	if distro == "" || hostSkillsDir == "" || len(hostSkillsDir) < 3 || hostSkillsDir[1] != ':' {
+		res.State = WSLSkillsFailed
+		res.Detail = "参数不完整（distro/Windows 技能根缺失）"
+		return res
+	}
+	if runtime.GOOS != "windows" {
+		res.State = WSLSkillsFailed
+		res.Detail = "非 Windows 宿主不适用"
+		return res
+	}
+	// 目标路径须经 distro 内 wslpath 实测翻译（存在才算数——不盲信所有
+	// distro 都挂 /mnt，与 WSLTranslatePaths 同口径）。
+	mapped := WSLTranslatePaths(distro, hostSkillsDir)
+	linuxTarget := mapped[normalizeWindowsPathKey(hostSkillsDir)]
+	if linuxTarget == "" {
+		res.State = WSLSkillsHostMissing
+		res.Detail = "Windows 技能根在 distro 内不可达（不存在或未挂载）"
+		return res
+	}
+	res.Target = linuxTarget
+	out, err := wslScriptRunner(distro, wslSharedSkillsScript(linuxTarget))
+	if err != nil {
+		res.State = WSLSkillsFailed
+		res.Detail = fmt.Sprintf("distro 内执行失败：%v", err)
+		return res
+	}
+	return parseWSLSharedSkillsLinkResult(decodeWSLListOutput(out), linuxTarget)
+}
+
+// parseWSLSharedSkillsLinkResult 解析 distro 内脚本的终态行（纯函数，跨平台
+// 可测）。非确认形态一律 failed，不冒充成功。
+func parseWSLSharedSkillsLinkResult(out, linuxTarget string) WSLSharedSkillsLinkResult {
+	res := WSLSharedSkillsLinkResult{Link: "~/.agents/skills", Target: linuxTarget}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	last := ""
+	backup := ""
+	replaced := false
+	targetMissing := false
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		last = l
+		if strings.HasPrefix(l, "BACKED-UP:") {
+			backup = strings.TrimPrefix(l, "BACKED-UP:")
+		}
+		if l == "REPLACED-LINK" {
+			replaced = true
+		}
+		if l == "TARGET-MISSING" {
+			targetMissing = true
+		}
+	}
+	// 附注行（BACKED-UP/REPLACED-LINK/TARGET-MISSING）之后脚本总会输出终行
+	//（LINKED=成功）；附注携带更丰富的迁移事实，优先于裸 LINKED 报告。
+	switch {
+	case last == "OK-LINKED":
+		res.State = WSLSkillsAlreadyLinked
+		res.Detail = "已指向 Windows 技能根"
+	case last == "LINKED" && backup != "":
+		res.State = WSLSkillsBackedUp
+		res.Backup = backup
+		res.Detail = "既有目录已备份迁移：" + res.Backup
+	case last == "LINKED" && replaced:
+		res.State = WSLSkillsReplacedLink
+		res.Detail = "已替换指向别处的旧符号链接"
+	case last == "LINKED":
+		res.State = WSLSkillsLinked
+		res.Detail = "已建立指向 Windows 技能根的符号链接"
+		if targetMissing {
+			res.Detail += "（注意：目标目录当前不存在）"
+		}
+	default:
+		res.State = WSLSkillsFailed
+		res.Detail = "distro 内脚本未确认成功：" + last
+	}
+	return res
+}

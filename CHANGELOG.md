@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [1.3.130] - 2026-11-09
+
+### Changed
+
+- **WSL 内共享 Windows `~/.agents/skills`（受管符号链接）**：延续 1.3.126「WSL 只提供运行环境」裁定——pi 原生按 Agent Skills 规范扫描 `$HOME/.agents/skills`，新增会话启动漏斗（WSL pi 分支，每进程每 distro 首轮核验）与状态页「检查/修复」动作（`EnsureWSLSharedSkillsRoot`），把 distro 内 `~/.agents/skills` 钉成指向 Windows 技能根（wslpath 实测翻译）的符号链接：幂等、指向别处的旧链接自愈替换、既有真实目录先备份为 `skills.pre-shared.<时间戳>` 再建链、目标经 `WSLTranslatePaths` 存在性验证（不可达如实报 host-missing 不建链）。
+
+### Removed
+
+- **退役 P3-S3「共享技能」同意制投影（`shared/skill/<name>` 单元）**：同一棵树不允许两套写入通道——投影副本会遮挡/被符号链接遮挡。删除 `SkillsScope` 作用域、App 动作面（`Get/Check/Preview/Apply/Keep/TakeOver` 六个 wails 方法）、统一管理的技能扫描/重扫/对账分支与前端技能面板；树单元共享原语（`planTreeUnitCore` / `submitDirUnit` / 目标树探测 / 扫描器与兼容检查）保留，继续服务 Claude/Codex 用户资源单元。
+- **旧状态清单读取时剔除退役登记**：`pi/*`（1.3.126 退役后仍残留的 awaiting-consent 死条目）与 `shared/skill/*` 登记在加载时统一剔除（`pruneRetiredUnits`），状态页不再展示永久的待同意/不兼容噪音；在役单元（视觉清单/学习层/Claude/Codex）不受影响。配置状态区「共享技能」卡片改为符号链接核验状态（已指向/已备份迁移/宿主根不可达/核验失败）。
+
 ## [1.3.129] - 2026-11-09
 
 ### Fixed

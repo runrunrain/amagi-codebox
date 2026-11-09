@@ -327,31 +327,32 @@ func TestAttackWithdrawalAfterUnregisteredWriteNoFreshLeak(t *testing.T) {
 // 或明确保留位置；空目录也不丢（不做 RemoveAll 冒充恢复）。
 func TestAttackDirMoveAsideCancelRestores(t *testing.T) {
 	root := t.TempDir()
-	src := filepath.Join(root, "host", "demo")
+	src := filepath.Join(root, "host", "commands", "demo")
 	if err := os.MkdirAll(src, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("# NEW"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scope := NewSkillsScope(filepath.Join(root, "host"), DefaultSkillsScanLimits())
-	scope.Scan()
 	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
 		identity: platformUserIdentityFixture()}
 	c := newCoordinatorWith(t, fp)
-	c.RegisterSkills(scope)
-	unit := SkillUnitID("demo")
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {
+	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
+		HostRoot: filepath.Join(root, "host"), DirUnits: []string{"commands"}, TargetPrefix: ".claude/",
+	}, DefaultSkillsScanLimits()))
+	c.resourceScope(CLIClaude).Scan()
+	unit := ResourceUnitID(CLIClaude, "commands/demo")
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, unit); err != nil {
 		t.Fatal(err)
 	}
-	targetDir := filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo")
+	targetDir := filepath.Join(fp.uncRoot, "home/u/.claude/commands/demo")
 	if err := os.MkdirAll(targetDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(targetDir, "SKILL.md"), []byte("# USER ORIGINAL"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pv, x := c.PreviewUnits(context.Background(), "Ubuntu", CLICommon, []UnitID{unit})
+	pv, x := c.PreviewUnits(context.Background(), "Ubuntu", CLIClaude, []UnitID{unit})
 	if x != nil {
 		t.Fatal(x)
 	}
@@ -365,7 +366,7 @@ func TestAttackDirMoveAsideCancelRestores(t *testing.T) {
 		}
 		return len(ps) > 0
 	}}
-	res, xerr := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, unit, pv[0].TargetHash)
+	res, xerr := c.TakeOverUnit(ctx, "Ubuntu", CLIClaude, unit, pv[0].TargetHash)
 	if xerr != nil {
 		t.Fatal(xerr)
 	}

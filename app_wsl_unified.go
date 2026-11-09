@@ -197,12 +197,9 @@ func (a *App) DisableWSLUnifiedSupply() error {
 	return nil
 }
 
-// startWSLUnifiedScans 单飞启动 skills 与 claude/codex 资源后台扫描（已启动
-// 过幂等；完成回调触发统一对账）。扫描不进启动链等待——这里只点火。
+// startWSLUnifiedScans 单飞启动 claude/codex 资源后台扫描（已启动过幂等；
+// 完成回调触发统一对账）。扫描不进启动链等待——这里只点火。
 func (a *App) startWSLUnifiedScans() {
-	if c := a.wslSkillsCoordinator(); c != nil {
-		c.StartSkillsScan()
-	}
 	if c := a.wslCliSupplyCoordinator(); c != nil {
 		c.StartCliResourcesScan(wslsupply.CLIClaude)
 		c.StartCliResourcesScan(wslsupply.CLICodex)
@@ -358,9 +355,6 @@ func (a *App) wslUnifiedRescanTick() bool {
 	}
 	if !a.wslUnifiedCached(distro) {
 		return false
-	}
-	if c := a.wslSkillsCoordinator(); c != nil {
-		c.RescanSkills()
 	}
 	if c := a.wslCliSupplyCoordinator(); c != nil {
 		c.RescanCliResources(wslsupply.CLIClaude)
@@ -531,18 +525,6 @@ func (a *App) reconcileWSLUnifiedResources(distro string) {
 	coord := a.wslUnifiedCoordinator()
 	if coord == nil || !a.wslUnifiedCached(distro) {
 		return
-	}
-	if c := a.wslSkillsCoordinator(); c != nil {
-		snap := c.SkillsSnapshot()
-		if snap.Started && !snap.Running && !snap.RootMissing {
-			var candidates []wslsupply.UnitID
-			for _, m := range snap.Skills {
-				if m.NotPortableReason() == "" {
-					candidates = append(candidates, wslsupply.SkillUnitID(m.Name))
-				}
-			}
-			a.runWSLUnifiedTreeUnits(distro, wslsupply.CLICommon, candidates)
-		}
 	}
 	if c := a.wslCliSupplyCoordinator(); c != nil {
 		for _, cli := range []wslsupply.CLI{wslsupply.CLIClaude, wslsupply.CLICodex} {

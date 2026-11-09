@@ -3113,6 +3113,28 @@ export namespace main {
 	        this.configuredPort = source["configuredPort"];
 	    }
 	}
+	export class WSLSharedSkillsRootStatus {
+	    distro: string;
+	    state: string;
+	    target?: string;
+	    backup?: string;
+	    detail: string;
+	    checked: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSharedSkillsRootStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.state = source["state"];
+	        this.target = source["target"];
+	        this.backup = source["backup"];
+	        this.detail = source["detail"];
+	        this.checked = source["checked"];
+	    }
+	}
 	export class WSLSkillSummary {
 	    name: string;
 	    state: string;
