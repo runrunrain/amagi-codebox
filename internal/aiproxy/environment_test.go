@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"amagi-codebox/internal/aiproxy/router"
 	"amagi-codebox/internal/platform"
 )
 
@@ -144,4 +145,25 @@ func containsEntry(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestSessionRoutingRejectsConflictingExits(t *testing.T) {
+	for _, tc := range []struct {
+		name, domain, node, mode string
+		disabled, wantErr        bool
+	}{
+		{"same domain different exit", "api.example.com", "b", "proxy", false, true},
+		{"parent domain different exit", "example.com", "b", "proxy", false, true},
+		{"same node is allowed", "example.com", "a", "proxy", false, false},
+		{"different domain", "notexample.com", "b", "proxy", false, false},
+		{"direct conflict", "example.com", "", "direct", false, true},
+		{"disabled rule", "example.com", "b", "proxy", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules := []router.Rule{{ID: "a", Name: "A", Enabled: true, Domains: []string{"api.example.com"}, Mode: "proxy", Node: "a"}, {ID: "b", Name: "B", Enabled: !tc.disabled, Domains: []string{tc.domain}, Mode: tc.mode, Node: tc.node}}
+			if err := validateSessionRules(rules); (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v want rejection=%v", err, tc.wantErr)
+			}
+		})
+	}
 }

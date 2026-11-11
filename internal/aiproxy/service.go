@@ -283,12 +283,20 @@ func (s *Service) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := validateSessionRules(s.data.Settings.Routing.Rules); err != nil {
+		return err
+	}
 	config, err := router.Build(s.data.Settings.Routing, s.nodesLocked())
 	if err != nil {
 		return err
 	}
 	core := router.FindCore(s.data.Settings.CorePath)
 	if s.manager == nil || s.manager.Status().Core != core {
+		if s.manager != nil {
+			if err := s.manager.Close(); err != nil {
+				return err
+			}
+		}
 		s.manager = router.NewManager(core, filepath.Join(s.dir, "runtime"))
 	}
 	// Commit the enabled preference before replacing a live process. A storage
@@ -301,7 +309,11 @@ func (s *Service) Start(ctx context.Context) error {
 			return fmt.Errorf("保存 AI 代理启用状态失败：%w", err)
 		}
 	}
-	if err = s.manager.Apply(ctx, config, s.data.Settings.Routing.Ports(), s.data.Revision); err != nil {
+	providerDomains := map[string][]string{}
+	for _, provider := range providers {
+		providerDomains[provider.Name] = append([]string{}, provider.Domains...)
+	}
+	if err = s.manager.Apply(ctx, config, s.data.Settings.Routing.Ports(), s.data.Revision, router.TrafficPolicy{Settings: s.data.Settings.Routing.Clone(), Nodes: s.nodesLocked(), Providers: providerDomains}); err != nil {
 		if !wasEnabled {
 			s.data.Enabled = false
 			if saveErr := s.saveLocked(); saveErr != nil {
@@ -334,7 +346,7 @@ func (s *Service) Close() error {
 	defer s.mu.Unlock()
 	s.closed = true
 	if s.manager != nil {
-		return s.manager.Stop()
+		return s.manager.Close()
 	}
 	return nil
 }
@@ -572,4 +584,13 @@ func fetch(ctx context.Context, raw, proxy string) ([]byte, error) {
 		return nil, errors.New("订阅读取失败或超过 8 MiB")
 	}
 	return b, nil
+}
+
+func (s *Service) Traffic(q router.TrafficQuery) (router.TrafficPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.manager == nil {
+		s.manager = router.NewManager(router.FindCore(s.data.Settings.CorePath), filepath.Join(s.dir, "runtime"))
+	}
+	return s.manager.Traffic(q)
 }

@@ -956,3 +956,7 @@ export function UpdateProvider(arg1, arg2, arg3) {
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
 }
+
+export function GetAIProxyTraffic(arg1) {
+  return window['go']['main']['App']['GetAIProxyTraffic'](arg1);
+}

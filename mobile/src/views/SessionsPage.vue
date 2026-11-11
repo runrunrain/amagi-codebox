@@ -38,14 +38,20 @@ onMounted(async () => {
     return;
   }
   await lobby.load();
-  refreshTimer = window.setInterval(() => {
-    if (!document.hidden && !lobby.loading && lobby.launching === null) void lobby.refreshSessions();
-  }, 3000);
+  if (disposed) return;
+  const tick = async () => {
+    if (disposed) return;
+    if (!document.hidden && !lobby.loading && lobby.launching === null) await lobby.refreshSessions();
+    if (!disposed) refreshTimer = window.setTimeout(tick, 3000);
+  };
+  refreshTimer = window.setTimeout(tick, 3000);
 });
 
+let disposed = false;
 let refreshTimer: number | null = null;
 onBeforeUnmount(() => {
-  if (refreshTimer !== null) window.clearInterval(refreshTimer);
+  disposed = true;
+  if (refreshTimer !== null) window.clearTimeout(refreshTimer);
 });
 
 // 授权失效（auth.* 401 于任何大厅请求）：清态踢回 PG-01。
@@ -76,7 +82,9 @@ watch(
 const layers = computed<StatusLayer[]>(() => {
   const err = lobby.loadError;
   const connectionLayer: StatusLayer =
-    err?.kind === 'connection'
+    lobby.loading || !lobby.loaded
+      ? { key: 'connection', label: '连接', text: '检查中', tone: 'neutral' }
+      : err?.kind === 'connection'
       ? { key: 'connection', label: '连接', text: '异常', tone: 'danger', detail: err.guidance }
       : { key: 'connection', label: '连接', text: '正常', tone: 'ok' };
   const authLayer: StatusLayer = { key: 'auth', label: '授权', text: '已配对', tone: 'ok' };
@@ -214,7 +222,7 @@ function openWorkspace(session: SessionSummary) {
           {{ lobby.lastReceipt.resultText }}会话「{{ lobby.lastReceipt.sessionTitle }}」。
         </p>
         <p class="receipt-note">
-          操作记录已写入桌面端会话操作日志；远程查询入口将随 M2-C 交付。
+          可返回会话列表查看最新状态。
         </p>
         <button type="button" class="receipt-dismiss" aria-label="关闭回执" @click="lobby.dismissReceipt()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -222,6 +230,15 @@ function openWorkspace(session: SessionSummary) {
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
+      </div>
+
+      <div v-if="lobby.operationError" class="launch-error" role="alert">
+        <div class="launch-error-main"><p class="launch-error-title">{{ lobby.operationError.title }}</p><p class="launch-error-detail">{{ lobby.operationError.detail }}</p><p class="launch-error-guidance">{{ lobby.operationError.guidance }}</p></div>
+        <button type="button" class="receipt-dismiss" aria-label="关闭操作错误" @click="lobby.dismissOperationError()">×</button>
+      </div>
+      <div v-if="lobby.loadError && lobby.sessions.length > 0" class="lobby-error-card" role="alert">
+        <p class="error-title">列表更新失败，当前显示上次成功的数据</p><p class="error-guidance">{{ lobby.loadError.guidance }}</p>
+        <button class="btn-secondary" :disabled="lobby.loading" @click="lobby.load()">重试</button>
       </div>
 
       <!-- 控制权冲突反馈（不静默覆盖） -->

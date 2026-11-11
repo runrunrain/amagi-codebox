@@ -493,6 +493,8 @@ func agentCLISkillStatus(t *testing.T, status AgentCLIInstallStatus, target stri
 // `--help` 退出 0；`session stop x` 在应用未运行时仍先命中本地确认预检
 // （退出 4，不触达网络）。构建过慢或 cgo 不可用时跳过并说明。
 func TestAgentCLIBinaryHelpSmoke(t *testing.T) {
+	// Keep the unreachable-endpoint check isolated from any running local app.
+	t.Setenv("AMAGI_CODEBOX_HOME", t.TempDir())
 	goTool, err := exec.LookPath("go")
 	if err != nil {
 		t.Skipf("跳过：未找到 go 工具链（%v）", err)

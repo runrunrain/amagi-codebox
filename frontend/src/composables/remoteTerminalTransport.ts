@@ -35,6 +35,8 @@ function gapNoticeLine(fromSeq: number, toSeq: number, source: string): string {
 
 export function createRemoteTerminalTransport(sessionId: string): TerminalTransport {
   const store = useRemoteClientStore();
+  const hostScope = store.scope;
+  const isCurrent = () => store.scope === hostScope && store.isRemoteMode && store.connectState === "connected" && !store.connectRevoked;
 
   return {
     subscribeOutput(cb) {
@@ -53,7 +55,8 @@ export function createRemoteTerminalTransport(sessionId: string): TerminalTransp
       // 同一终态只通知一次（attach 快照态 + 后续事件可能重复）。
       let signaled = '';
       return store.subscribeRemoteSessionState(sessionId, (ev) => {
-        if (!TERMINAL_STATES.has(ev.state) || signaled === ev.state) return;
+        if (ev.restartBoundary || !TERMINAL_STATES.has(ev.state)) { signaled = ''; return; }
+        if (signaled === ev.state) return;
         signaled = ev.state;
         cb({});
       });
@@ -61,11 +64,13 @@ export function createRemoteTerminalTransport(sessionId: string): TerminalTransp
     // 历史由 Go 侧 attach 回放经输出事件流入，无快照拉取。
     fetchHistory: () => Promise.resolve(null),
     write(text) {
+      if (!isCurrent()) return Promise.reject(new Error("远程主机已切换或断开，输入未发送"));
       return sendRemoteTerminalInput(sessionId, text);
     },
     // 剪贴板图片保存是本机落盘能力，远程路径无意义：不支持（返回空串）。
     saveClipboardImage: () => Promise.resolve(''),
     async resize(cols, rows) {
+      if (!isCurrent()) return;
       // 仅 attached/degraded 可 resize（Go 侧拒绝其余状态）；断开/只读期间
       // 静默丢弃，避免引擎 resize 重试风暴——重连 attached 后视图强制 fit 补齐。
       const st = store.remoteTerminalStates[sessionId]?.connState;

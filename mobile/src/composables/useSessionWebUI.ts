@@ -27,7 +27,8 @@ export function useSessionWebUI(
   const isAvailable = computed(() => state.value === 'available');
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let inFlight = false;
+  let generation = 0;
+  let inFlight: number | null = null;
   let disposed = false;
 
   function clearTimer(): void {
@@ -39,16 +40,17 @@ export function useSessionWebUI(
 
   async function poll(): Promise<void> {
     clearTimer();
-    if (disposed || !enabledRef.value || !sessionIdRef.value || inFlight) {
+    if (disposed || !enabledRef.value || !sessionIdRef.value || inFlight === generation) {
       return;
     }
 
     const currentSid = sessionIdRef.value;
-    inFlight = true;
+    const requestGeneration = generation;
+    inFlight = requestGeneration;
 
     try {
       const res = await getSessionWebUI(currentSid);
-      if (disposed || sessionIdRef.value !== currentSid) return;
+      if (disposed || !enabledRef.value || generation !== requestGeneration || sessionIdRef.value !== currentSid) return;
 
       state.value = res.state;
       url.value = res.url;
@@ -59,16 +61,17 @@ export function useSessionWebUI(
         pollTimer = setTimeout(poll, MONITORING_INTERVAL_MS);
       }
     } catch {
-      if (disposed || sessionIdRef.value !== currentSid) return;
+      if (disposed || !enabledRef.value || generation !== requestGeneration || sessionIdRef.value !== currentSid) return;
       // 网络错误或服务不可达：标记为 unavailable，不持续高频空转
       state.value = 'unavailable';
       url.value = undefined;
     } finally {
-      inFlight = false;
+      if (inFlight === requestGeneration) inFlight = null;
     }
   }
 
   function start(): void {
+    generation++;
     clearTimer();
     const sid = sessionIdRef.value;
     if (!sid || !enabledRef.value) {
@@ -82,12 +85,13 @@ export function useSessionWebUI(
   }
 
   function stop(): void {
+    generation++;
     clearTimer();
   }
 
   function refresh(): void {
     clearTimer();
-    inFlight = false;
+    if (inFlight === generation) return;
     void poll();
   }
 

@@ -144,6 +144,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
   const currentHasLegacyToken = computed(() => currentHost.value?.hasLegacyToken === true);
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollVersion = 0;
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const isRemoteMode = computed(() => scope.value !== LOCAL_SCOPE);
@@ -151,6 +152,28 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     () => hosts.value.find((h) => h.id === scope.value) ?? null,
   );
   const currentHostName = computed(() => currentHost.value?.displayName || '远程主机');
+
+  let scopeVersion = 0;
+  let sessionsVersion = 0;
+  let providersVersion = 0;
+  let providerDocVersion = 0;
+  let settingsVersion = 0;
+  let connectionQueue: Promise<void> = Promise.resolve();
+  let connectedHost = '';
+  function serializeConnection(action: () => Promise<void>): Promise<void> {
+    const next = connectionQueue.then(action);
+    connectionQueue = next.catch(() => {});
+    return next;
+  }
+  function scopeIsCurrent(version: number): boolean {
+    return version === scopeVersion && isRemoteMode.value && connectState.value === 'connected' && !connectRevoked.value;
+  }
+
+  function requireRemoteReady(): number {
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) throw new Error('远程主机尚未连接，操作未发送');
+    return version;
+  }
 
   /** 装载主机登记簿。 */
   async function loadHosts(): Promise<void> {
@@ -211,6 +234,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** 切回本机：断开远程连接视图（尽力而为），清空远端会话数据面。 */
   async function switchToLocal(): Promise<void> {
+    ++scopeVersion;
     const prev = scope.value;
     scope.value = LOCAL_SCOPE;
     stopSessionPolling();
@@ -219,53 +243,57 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     remoteSessionsState.value = 'idle';
     remoteSessionsStale.value = false;
     remoteSessionsError.value = '';
-    // RC2-5：终端状态随连接一并清空（Go 侧 Disconnect 已 DetachAll）。
+    lastSyncedAt.value = null;
     remoteTerminalStates.value = {};
     activeRemoteTerminalId.value = null;
     connectRevoked.value = false;
-    if (prev !== LOCAL_SCOPE && connectState.value === 'connected') {
-      connectState.value = 'disconnected';
-      try {
-        await remoteClientApi.disconnectRemoteHost(prev);
-      } catch (err) {
-        console.error('[stores.remoteClient] disconnect failed:', err);
-      }
-    }
+    connectState.value = 'disconnected';
     connectError.value = '';
+    await serializeConnection(async () => {
+      const host = connectedHost || (prev !== LOCAL_SCOPE ? prev : '');
+      if (!host) return;
+      try { await remoteClientApi.disconnectRemoteHost(host); connectedHost = ''; }
+      catch (err) { console.error('[stores.remoteClient] disconnect failed:', err); }
+    });
   }
 
   /**
-   * 切换到指定主机：Connect（凭据恢复 + 验证）→ 进入远程模式 → 拉取会话列表。
-   * 失败时不切换 scope，抛出错误由调用方展示（revoked/unreachable 等健康
-   * 结论已由后端写回登记簿，这里顺手刷新主机列表让状态灯即时反映）。
+   * 立即显示目标主机的连接状态，串行切换后端连接；仅最新切换意图可更新视图。
+   * 失败保留目标主机及错误，旧主机数据不得冒充新主机。
    */
   async function switchToHost(hostID: string): Promise<void> {
     if (hostID === scope.value && connectState.value === 'connected') return;
+    const version = ++scopeVersion;
+    stopSessionPolling();
+    scope.value = hostID;
     connectState.value = 'connecting';
     connectError.value = '';
     connectRevoked.value = false;
-    // 换主机：上一宿主的终端状态随之作废（Go 侧 Connect 顶替已 DetachAll）。
     remoteTerminalStates.value = {};
     activeRemoteTerminalId.value = null;
+    remoteSessions.value = [];
+    remoteSessionsState.value = 'idle';
+    remoteSessionsStale.value = false;
+    remoteSessionsError.value = '';
+    lastSyncedAt.value = null;
+    resetRemoteConfigState();
     try {
-      await remoteClientApi.connectRemoteHost(hostID);
-      scope.value = hostID;
+      await serializeConnection(async () => {
+        if (version !== scopeVersion) return;
+        await remoteClientApi.connectRemoteHost(hostID);
+        connectedHost = hostID;
+      });
+      if (version !== scopeVersion) return;
       connectState.value = 'connected';
-      remoteSessions.value = [];
-      remoteSessionsState.value = 'idle';
-      remoteSessionsStale.value = false;
-      resetRemoteConfigState();
       await loadHosts();
+      if (!scopeIsCurrent(version)) return;
       await refreshRemoteSessions();
-      startSessionPolling();
+      if (scopeIsCurrent(version)) startSessionPolling();
     } catch (err) {
+      if (version !== scopeVersion) return;
       connectState.value = 'failed';
       connectError.value = remoteErrorText(err);
-      try {
-        await loadHosts();
-      } catch {
-        // 忽略列表刷新失败。
-      }
+      await loadHosts();
       throw err;
     }
   }
@@ -275,16 +303,21 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
    * error(可重试)：保留最后成功数据 + stale 过期标记。
    */
   async function refreshRemoteSessions(): Promise<void> {
-    if (!isRemoteMode.value) return;
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) return;
+    const request = ++sessionsVersion;
     const firstLoad = remoteSessionsState.value === 'idle';
     if (firstLoad) remoteSessionsState.value = 'loading';
     try {
-      remoteSessions.value = await remoteClientApi.listRemoteSessions();
+      const sessions = await remoteClientApi.listRemoteSessions();
+      if (!scopeIsCurrent(version) || request !== sessionsVersion) return;
+      remoteSessions.value = sessions;
       remoteSessionsState.value = 'ready';
       remoteSessionsStale.value = false;
       remoteSessionsError.value = '';
       lastSyncedAt.value = Date.now();
     } catch (err) {
+      if (!scopeIsCurrent(version) || request !== sessionsVersion) return;
       remoteSessionsError.value = remoteErrorText(err);
       if (firstLoad || remoteSessions.value.length === 0) {
         remoteSessionsState.value = 'error';
@@ -297,9 +330,10 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
   /** 启动会话列表轮询（setTimeout 接力单飞，杜绝慢请求堆积）。 */
   function startSessionPolling(intervalMs = SESSION_POLL_INTERVAL_MS): void {
     if (pollTimer) return;
+    const version = ++pollVersion;
     const tick = async () => {
       await refreshRemoteSessions();
-      if (pollTimer !== null) {
+      if (pollTimer !== null && version === pollVersion) {
         pollTimer = setTimeout(tick, intervalMs);
       }
     };
@@ -308,6 +342,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** 停止会话列表轮询。 */
   function stopSessionPolling(): void {
+    ++pollVersion;
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
@@ -317,18 +352,21 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
   // ---- 会话行操作（调用绑定后刷新列表；错误抛给调用方展示）----
 
   async function stopRemoteSession(sessionID: string): Promise<void> {
+    const version = requireRemoteReady();
     await remoteClientApi.stopRemoteSession(sessionID);
-    await refreshRemoteSessions();
+    if (scopeIsCurrent(version)) await refreshRemoteSessions();
   }
 
   async function restartRemoteSession(sessionID: string): Promise<void> {
+    const version = requireRemoteReady();
     await remoteClientApi.restartRemoteSession(sessionID);
-    await refreshRemoteSessions();
+    if (scopeIsCurrent(version)) await refreshRemoteSessions();
   }
 
   async function deleteRemoteSession(sessionID: string): Promise<void> {
+    const version = requireRemoteReady();
     await remoteClientApi.deleteRemoteSession(sessionID);
-    await refreshRemoteSessions();
+    if (scopeIsCurrent(version)) await refreshRemoteSessions();
   }
 
   /** 打开配对向导；传入已登记主机则为「重新配对」预填模式（地址/显示名预填）。 */
@@ -445,7 +483,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     rcBridgeReady = true;
     try {
       EventsOn('rc:conn-state', (p: any) => {
-        if (!p || typeof p.sessionId !== 'string') return;
+        if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         const st = ensureTermState(p.sessionId);
         st.connState = String(p.state ?? '') as RemoteTerminalState['connState'];
         st.attempt = Number(p.attempt ?? 0);
@@ -453,7 +491,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         st.detail = String(p.detail ?? '');
       });
       EventsOn('rc:session-state', (p: any) => {
-        if (!p || typeof p.sessionId !== 'string') return;
+        if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         const st = ensureTermState(p.sessionId);
         st.sessionState = String(p.state ?? '');
         if (st.sessionState === 'removed') {
@@ -468,14 +506,14 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         sessionStateSubs.get(p.sessionId)?.forEach((cb) => cb(ev));
       });
       EventsOn('rc:control-state', (p: any) => {
-        if (!p || typeof p.sessionId !== 'string') return;
+        if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         applyControlSnapshot(p.sessionId, {
           state: String(p.state ?? ''),
           deviceName: typeof p.deviceName === 'string' ? p.deviceName : '',
         });
       });
       EventsOn('rc:terminal-output', (p: any) => {
-        if (!p || typeof p.sessionId !== 'string') return;
+        if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         const subs = outputSubs.get(p.sessionId);
         if (!subs || subs.size === 0) return;
         let ev: RemoteTerminalOutputEvent;
@@ -498,6 +536,9 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         // fail-closed（交互稿 §3 revoked 行）：清连接视图 + 终端全部断开；
         // Go 侧已丢弃连接并把登记簿健康置 revoked，这里同步前端投影。
         if (scope.value === p.hostId) {
+          ++scopeVersion;
+          resetRemoteConfigState();
+          remoteSessionsStale.value = true;
           connectState.value = 'disconnected';
           connectRevoked.value = true;
           connectError.value = '';
@@ -528,8 +569,10 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** attach（或复用）会话终端连接；幂等。 */
   async function attachRemoteTerminal(sessionID: string): Promise<void> {
+    const version = requireRemoteReady();
     ensureRcEventBridge();
     const res = await remoteClientApi.attachRemoteTerminal(sessionID);
+    if (!scopeIsCurrent(version)) throw new Error('远程主机已切换，连接已取消');
     const st = ensureTermState(sessionID);
     st.attached = true;
     if (res && typeof res.state === 'string' && res.state) {
@@ -623,16 +666,21 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
    * 未 attach（如从会话列表行直接获取）时先幂等 attach，再走 acquire。
    */
   async function acquireControl(sessionID: string): Promise<void> {
+    const version = requireRemoteReady();
     if (!remoteTerminalStates.value[sessionID]?.attached) {
       await attachRemoteTerminal(sessionID);
     }
+    if (!scopeIsCurrent(version)) throw new Error("远程主机已切换，操作未发送");
     const view = await remoteClientApi.acquireRemoteControl(sessionID);
+    if (!scopeIsCurrent(version)) return;
     applyControlSnapshot(sessionID, { state: view.state ?? '', deviceName: view.deviceName });
   }
 
   /** 释放控制权：主动放手不是被抢占，复位降级标记。 */
   async function releaseControl(sessionID: string): Promise<void> {
+    const version = requireRemoteReady();
     const view = await remoteClientApi.releaseRemoteControl(sessionID);
+    if (!scopeIsCurrent(version)) return;
     applyControlSnapshot(sessionID, { state: view.state ?? '', deviceName: view.deviceName });
     ensureTermState(sessionID).controlWasYou = false;
   }
@@ -648,6 +696,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** RC4 域全部状态复位（切主机/切回本机时调用：远端配置快照随连接作废）。 */
   function resetRemoteConfigState(): void {
+    ++providersVersion; ++providerDocVersion; ++settingsVersion;
     remoteProviders.value = [];
     remoteProvidersView.value = { state: 'idle', error: '', authRejected: false };
     remoteProviderName.value = '';
@@ -668,12 +717,17 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** 拉取远程提供商列表（仅远程模式；远程模式下 ProviderCenter 数据源）。 */
   async function loadRemoteProviders(): Promise<void> {
-    if (!isRemoteMode.value) return;
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) return;
+    const request = ++providersVersion;
     remoteProvidersView.value = { state: 'loading', error: '', authRejected: false };
     try {
-      remoteProviders.value = await remoteClientApi.listRemoteProviders(scope.value);
+      const result = await remoteClientApi.listRemoteProviders(scope.value);
+      if (!scopeIsCurrent(version) || request !== providersVersion) return;
+      remoteProviders.value = result;
       remoteProvidersView.value = { state: 'ready', error: '', authRejected: false };
     } catch (err) {
+      if (!scopeIsCurrent(version) || request !== providersVersion) return;
       remoteProviders.value = [];
       remoteProvidersView.value = classifyConfigError(err);
     }
@@ -681,14 +735,19 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** 打开远程提供商详情（净化后 JSON；密钥字段已由 Go 掩码为占位）。 */
   async function openRemoteProvider(name: string): Promise<void> {
-    if (!isRemoteMode.value) return;
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) return;
+    const request = ++providerDocVersion;
     remoteProviderName.value = name;
     remoteProviderDoc.value = '';
     remoteProviderDocView.value = { state: 'loading', error: '', authRejected: false };
     try {
-      remoteProviderDoc.value = await remoteClientApi.getRemoteProviderJSON(scope.value, name);
+      const result = await remoteClientApi.getRemoteProviderJSON(scope.value, name);
+      if (!scopeIsCurrent(version) || request !== providerDocVersion) return;
+      remoteProviderDoc.value = result;
       remoteProviderDocView.value = { state: 'ready', error: '', authRejected: false };
     } catch (err) {
+      if (!scopeIsCurrent(version) || request !== providerDocVersion) return;
       remoteProviderDoc.value = '';
       remoteProviderDocView.value = classifyConfigError(err);
     }
@@ -696,6 +755,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
 
   /** 关闭远程提供商详情。 */
   function closeRemoteProvider(): void {
+    ++providerDocVersion;
     remoteProviderName.value = '';
     remoteProviderDoc.value = '';
     remoteProviderDocView.value = { state: 'idle', error: '', authRejected: false };
@@ -707,20 +767,26 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
    * 阻断含非统一密钥凭据字段的提交，再上传；成功后刷新列表与详情。
    */
   async function saveRemoteProvider(name: string, editedDocJSON: string): Promise<void> {
-    if (!isRemoteMode.value) return;
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) throw new Error("远程主机尚未连接");
     const payload = prepareRemoteProviderUpload(editedDocJSON);
     await remoteClientApi.putRemoteProviderJSON(scope.value, name, payload);
-    await Promise.all([loadRemoteProviders(), openRemoteProvider(name)]);
+    if (scopeIsCurrent(version)) await Promise.all([loadRemoteProviders(), openRemoteProvider(name)]);
   }
 
   /** 拉取远程应用设置（净化后 JSON）。 */
   async function loadRemoteSettings(): Promise<void> {
-    if (!isRemoteMode.value) return;
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) return;
+    const request = ++settingsVersion;
     remoteSettingsView.value = { state: 'loading', error: '', authRejected: false };
     try {
-      remoteSettingsDoc.value = await remoteClientApi.getRemoteSettingsJSON(scope.value);
+      const result = await remoteClientApi.getRemoteSettingsJSON(scope.value);
+      if (!scopeIsCurrent(version) || request !== settingsVersion) return;
+      remoteSettingsDoc.value = result;
       remoteSettingsView.value = { state: 'ready', error: '', authRejected: false };
     } catch (err) {
+      if (!scopeIsCurrent(version) || request !== settingsVersion) return;
       remoteSettingsDoc.value = '';
       remoteSettingsView.value = classifyConfigError(err);
     }
@@ -731,10 +797,11 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
    * prepareRemoteSettingsUpload 一律剥离掩码占位（宿主仅消费非密钥字段）。
    */
   async function saveRemoteSettings(editedDocJSON: string): Promise<void> {
-    if (!isRemoteMode.value) return;
+    const version = scopeVersion;
+    if (!scopeIsCurrent(version)) throw new Error("远程主机尚未连接");
     const payload = prepareRemoteSettingsUpload(editedDocJSON);
     await remoteClientApi.putRemoteSettingsJSON(scope.value, payload);
-    await loadRemoteSettings();
+    if (scopeIsCurrent(version)) await loadRemoteSettings();
   }
 
   /** 配置/替换当前主机的 legacy 访问令牌；成功后刷新登记簿布尔投影。 */

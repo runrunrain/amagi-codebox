@@ -91,9 +91,17 @@ type Manager struct {
 	config    []byte
 	ports     []int
 	revision  uint64
+	traffic   trafficStore
+	policy    TrafficPolicy
 }
 
 func NewManager(core, dir string) *Manager { return &Manager{core: core, dir: dir} }
+func (m *Manager) Traffic(q TrafficQuery) (TrafficPage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.traffic.open(m.dir)
+	return m.traffic.query(q)
+}
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -112,7 +120,7 @@ func (m *Manager) Status() Status {
 	return s
 }
 
-func (m *Manager) Apply(ctx context.Context, config []byte, ports []int, revision uint64) error {
+func (m *Manager) Apply(ctx context.Context, config []byte, ports []int, revision uint64, policies ...TrafficPolicy) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.core == "" {
@@ -155,12 +163,18 @@ func (m *Manager) Apply(ctx context.Context, config []byte, ports []int, revisio
 	if err := m.stop(); err != nil {
 		return err
 	}
+	m.traffic.open(m.dir)
+	oldPolicy := m.policy
+	if len(policies) > 0 {
+		m.policy = policies[0]
+	}
 	m.setSecrets(config)
-	if err := m.start(config, ports); err != nil {
+	if err := m.start(config, ports, revision); err != nil {
 		m.lastError = err.Error()
 		if wasRunning {
+			m.policy = oldPolicy
 			m.setSecrets(oldConfig)
-			if restoreErr := m.start(oldConfig, oldPorts); restoreErr != nil {
+			if restoreErr := m.start(oldConfig, oldPorts, oldRevision); restoreErr != nil {
 				m.lastError += "；旧配置恢复失败：" + restoreErr.Error()
 			} else {
 				m.revision = oldRevision
@@ -192,7 +206,7 @@ func (m *Manager) isRunning() bool {
 		return true
 	}
 }
-func (m *Manager) Stop() error { m.mu.Lock(); defer m.mu.Unlock(); return m.stop() }
+func (m *Manager) Stop() error { return m.Close() }
 
 // pidPath 记录当前内核 pid，供下次启动回收上次异常退出遗留的孤儿（见 reapStaleCore）。
 func (m *Manager) pidPath() string { return filepath.Join(m.dir, "core.pid") }
@@ -219,7 +233,7 @@ func (m *Manager) stop() error {
 	_ = os.Remove(m.pidPath())
 	return nil
 }
-func (m *Manager) start(config []byte, ports []int) error {
+func (m *Manager) start(config []byte, ports []int, revision uint64) error {
 	// 先回收上次异常退出遗留的孤儿内核（父进程已死且确属本 runtime），
 	// 否则其监听端口会让下方探测直接报“已被占用”，且每次重启复现。
 	// 无 pidfile 的旧版孤儿（v1.3.103 及以前不写 pidfile）由全量扫描兜底。
@@ -246,14 +260,15 @@ func (m *Manager) start(config []byte, ports []int) error {
 	}
 	p := &process{cmd: exec.Command(m.core, "run", "-c", path, "--disable-color"), done: make(chan struct{})}
 	platform.SuppressConsoleWindow(p.cmd)
-	p.cmd.Stdout = &m.logs
-	p.cmd.Stderr = &m.logs
+	writer := &trafficWriter{logs: &m.logs, store: &m.traffic, policy: m.policy, revision: revision, session: fmt.Sprint(time.Now().UnixNano())}
+	p.cmd.Stdout = writer
+	p.cmd.Stderr = writer
 	if err := p.cmd.Start(); err != nil {
 		return errors.New("无法启动 sing-box，请检查内核路径与执行权限")
 	}
 	p.tie()
 	m.proc = p
-	go func() { p.err = p.cmd.Wait(); p.release(); close(p.done) }()
+	go func() { p.err = p.cmd.Wait(); writer.flush(); p.release(); close(p.done) }()
 	deadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -345,4 +360,20 @@ func (m *Manager) setSecrets(config []byte) {
 	m.logs.mu.Lock()
 	defer m.logs.mu.Unlock()
 	m.logs.secrets = secretValues(config)
+}
+
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.stop(); err != nil {
+		return err
+	}
+	m.traffic.mu.Lock()
+	defer m.traffic.mu.Unlock()
+	if m.traffic.db != nil {
+		err := m.traffic.db.Close()
+		m.traffic.db = nil
+		return err
+	}
+	return nil
 }

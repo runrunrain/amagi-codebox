@@ -9,7 +9,7 @@
 //
 //	rc:conn-state      {sessionId, hostId, state, attempt, nextRetryMs, detail}
 //	rc:session-state   {sessionId, state, restartBoundary?, seq?, occurredAt}
-//	rc:terminal-output {sessionId, seq, data} 或 gap 通知 {sessionId, gap:{fromSeq,toSeq,source}}
+//	rc:terminal-output {hostId, sessionId, seq, data} 或 gap 通知 {hostId, sessionId, gap:{fromSeq,toSeq,source}}
 //	rc:control-state   {sessionId, state, deviceName?, reason, occurredAt}
 //	rc:revoked         {hostId, sessionId?}
 //	rc:host-health     {hostId, state}
@@ -442,12 +442,12 @@ func (s *TerminalSession) readPump(conn *websocket.Conn, attachRid contract.Requ
 		case contract.SessionRestartBoundaryEvent:
 			res := s.tracker.OnRestartBoundary(known)
 			s.applyOutputOutcome(res)
-			s.emitter.Emit(EventSessionState, map[string]any{
+			s.emitScoped(EventSessionState, map[string]any{
 				"sessionId": string(s.sessionID), "state": string(known.State),
 				"restartBoundary": true, "seq": uint64(known.Seq), "occurredAt": known.OccurredAt,
 			})
 		case contract.SessionStateEvent:
-			s.emitter.Emit(EventSessionState, map[string]any{
+			s.emitScoped(EventSessionState, map[string]any{
 				"sessionId": string(s.sessionID), "state": string(known.State), "occurredAt": known.OccurredAt,
 			})
 			// 会话移除：幂等 scope 终结，停止重连（removed broadcast 后服务端
@@ -464,7 +464,7 @@ func (s *TerminalSession) readPump(conn *websocket.Conn, attachRid contract.Requ
 			s.controlYou = known.State == contract.ControlStateYou
 			s.mu.Unlock()
 			s.refreshInputGate()
-			s.emitter.Emit(EventControlState, controlStatePayload(s.sessionID, known.State, known.DeviceName, known.Reason, known.OccurredAt))
+			s.emitScoped(EventControlState, controlStatePayload(s.sessionID, known.State, known.DeviceName, known.Reason, known.OccurredAt))
 		case contract.BackfillResultEvent:
 			s.onBackfillResult(known)
 		case contract.InputAckEvent:
@@ -501,10 +501,10 @@ func (s *TerminalSession) onAttached(ev contract.SessionAttachedEvent) {
 	}
 	s.outbox.Resume()
 	s.refreshInputGate()
-	s.emitter.Emit(EventSessionState, map[string]any{
+	s.emitScoped(EventSessionState, map[string]any{
 		"sessionId": string(s.sessionID), "state": string(ev.Snapshot.Session.State),
 	})
-	s.emitter.Emit(EventControlState, controlStatePayload(s.sessionID, ev.Snapshot.Control.State, ev.Snapshot.Control.DeviceName, "attach-snapshot", ""))
+	s.emitScoped(EventControlState, controlStatePayload(s.sessionID, ev.Snapshot.Control.State, ev.Snapshot.Control.DeviceName, "attach-snapshot", ""))
 }
 
 // onOutput 处理 live output：单调消费、洞→backfill、重复丢弃。
@@ -607,8 +607,8 @@ func (s *TerminalSession) onRevoked(cause string) {
 	s.revoked = true
 	s.mu.Unlock()
 	s.outbox.Halt()
-	s.emitter.Emit(EventRevoked, map[string]any{"hostId": s.hostID, "sessionId": string(s.sessionID)})
-	s.emitter.Emit(EventHostHealth, map[string]any{"hostId": s.hostID, "state": string(HealthRevoked)})
+	s.emitScoped(EventRevoked, map[string]any{"hostId": s.hostID, "sessionId": string(s.sessionID)})
+	s.emitScoped(EventHostHealth, map[string]any{"hostId": s.hostID, "state": string(HealthRevoked)})
 	s.setState(ConnDisconnected, "revoked: "+cause)
 }
 
@@ -649,7 +649,7 @@ func (s *TerminalSession) setState(state ConnState, detail string) {
 	attempt := s.attempt
 	next := s.nextBackoffLocked()
 	s.mu.Unlock()
-	s.emitter.Emit(EventConnState, map[string]any{
+	s.emitScoped(EventConnState, map[string]any{
 		"sessionId":   string(s.sessionID),
 		"hostId":      s.hostID,
 		"state":       string(state),
@@ -785,12 +785,22 @@ func (s *TerminalSession) requestBackfill(from, to contract.Seq) error {
 	return nil
 }
 
+// emitScoped binds every desktop event to its host, including queued output
+// that may arrive after the user has switched to another machine.
+func (s *TerminalSession) emitScoped(name string, payload map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	payload["hostId"] = s.hostID
+	s.emitter.Emit(name, payload)
+}
+
 // emitReplayFrame 把已消费的 replay 帧投递到事件总线（output 解码交给前端
 // 流式 TextDecoder；这里只透传 base64 与 seq；restart boundary 不产终端
 // 输出，由 rc:session-state 单独广播）。
 func (s *TerminalSession) emitReplayFrame(fr contract.ReplayFrame) {
 	if out, ok := fr.(contract.OutputEvent); ok {
-		s.emitter.Emit(EventTerminalOutput, map[string]any{
+		s.emitScoped(EventTerminalOutput, map[string]any{
 			"sessionId": string(s.sessionID), "seq": uint64(out.Seq), "data": out.Chunk,
 		})
 	}
@@ -816,7 +826,7 @@ func controlStatePayload(sessionID contract.SessionID, state contract.ControlSta
 
 // emitGapNotice 如实上报缺口（不吞不改；上层决策 continue-from-latest）。
 func (s *TerminalSession) emitGapNotice(g *GapNotice) {
-	s.emitter.Emit(EventTerminalOutput, map[string]any{
+	s.emitScoped(EventTerminalOutput, map[string]any{
 		"sessionId": string(s.sessionID),
 		"gap":       map[string]any{"fromSeq": uint64(g.From), "toSeq": uint64(g.To), "source": string(g.Source)},
 	})

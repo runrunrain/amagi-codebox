@@ -13,7 +13,7 @@
         <div class="actions"><AppButton :disabled="busy || !state.status.running" @click="stop">停止</AppButton><AppButton :disabled="busy" @click="save">保存配置</AppButton><AppButton variant="primary" :disabled="busy || !canApply" @click="apply">{{ busy ? '处理中…' : state.status.running ? '应用更改' : '启用分流' }}</AppButton></div>
       </div>
       <p v-if="dirty || state.pending" class="pending">有待应用的更改。应用会重启本功能的代理内核，现有连接将断开。</p>
-      <div class="section-title"><div><h2>服务分流规则</h2><p class="hint">从上到下匹配，首个命中生效；拖动卡片可调整顺序。域名包含其子域名；专用入口使用所属出口，本地回环优先直连。</p></div><AppButton :disabled="busy" @click="addRule">添加规则</AppButton></div>
+      <div class="section-title"><div><h2>服务分流规则</h2><p class="hint">域名包含其子域名；重叠域名不能指定不同出口。拖动卡片可调整顺序；专用入口使用所属出口，本地回环优先直连。</p></div><AppButton :disabled="busy" @click="addRule">添加规则</AppButton></div>
       <div class="provider-add"><select v-model="providerToAdd" class="input" aria-label="添加已配置的服务提供商" :disabled="busy"><option value="">选择 CodeBox 中已配置的服务提供商</option><option v-for="provider in availableProviders" :key="provider.id" :value="provider.id" :disabled="!provider.domains.length">{{ provider.name }}{{ provider.domains.length ? '' : '（请先配置 API 地址）' }}</option></select><AppButton :disabled="busy || !providerToAdd" @click="addProvider">关联并添加</AppButton></div>
       <p class="hint provider-help">关联后自动读取已启用 API 格式的地址；地址变更后点击“应用更改”生效。登录服务及额外域名可继续使用手动规则。</p>
       <p v-for="issue in state.issues" :key="issue" class="pending">{{ issue }}</p>
@@ -98,6 +98,7 @@
         <div class="integration-grid"><div><strong>新建会话自动生效</strong><p class="hint">内嵌、外部会话及宿主远程启动统一接入。Pi / OMP 的多模型与子 Agent 按请求域名分别分流。</p></div><div><strong>国内模型默认直连</strong><p class="hint">GLM 等未匹配域名走直连。第三方 API 可直接关联已有服务提供商，也可手动补充域名。</p></div><div><strong>压缩与模型探测一致</strong><p class="hint">新启动的 Headroom、提交总结模型、多模态与额度探测使用相同分流。已有会话和 Headroom 需重启后接入。</p></div></div>
         <p class="hint">当前管理的是本机。远程宿主使用宿主自己的配置；WSL 会话需 WSL2 mirrored 网络模式（NAT 下回环不可达，启动时将提示切换）。TUN 的出口策略可在上方独立管理。</p>
       </ConfigCard>
+      <AIProxyTraffic />
       <ConfigCard><details><summary>高级设置与运行日志</summary><label>统一入口端口<input v-model.number="form.routing.proxy_port" class="input" type="number" min="1024" max="65535" /></label><label>其他域名上游（留空直连）<input v-model="form.routing.fallback_proxy" class="input" autocomplete="off" placeholder="留空：国内模型及其他域名直连" /></label><label>订阅下载代理（留空直连）<input v-model="form.routing.fetch_proxy" class="input" autocomplete="off" placeholder="http://127.0.0.1:5800" /></label><label>sing-box 路径（留空自动查找）<input v-model="form.corePath" class="input" :placeholder="state.status.core || '自动查找 v2rayN 内核或 PATH'" /></label><label>v2rayN 数据库（留空自动查找）<input v-model="form.v2raynDatabase" class="input" :placeholder="state.source.database || 'guiConfigs/guiNDB.db'" /></label><p class="hint">统一入口：127.0.0.1:{{ form.routing.proxy_port }}。所有入口仅监听本机；停止分流后，新会话恢复原有代理策略。</p><pre>{{ state.status.error || state.status.logs || '暂无运行日志' }}</pre></details></ConfigCard>
     </template>
   </section>
@@ -108,6 +109,7 @@ import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { aiproxy, router as proxyRouter } from '../../wailsjs/go/models'
 import * as api from '../api/aiProxy'
 import { dropTargetIdOf, moveItemById, passesDragThreshold, type DragStartPoint } from './aiProxyRuleDrag'
+import AIProxyTraffic from '../components/AIProxyTraffic.vue'
 import PageHead from '../components/ui/PageHead.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
 import AppButton from '../components/ui/AppButton.vue'

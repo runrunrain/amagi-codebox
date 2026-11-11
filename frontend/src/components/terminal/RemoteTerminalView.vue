@@ -137,6 +137,8 @@ const props = withDefaults(defineProps<{ sessionId: string; active?: boolean }>(
 const emit = defineEmits<{ close: [] }>()
 
 const store = useRemoteClientStore()
+const terminalHostScope = store.scope
+let disposed = false
 const { showError, showInfo } = useToast()
 const platformCaps = usePlatformCapabilities()
 
@@ -283,7 +285,7 @@ let unsubscribeSessionState: (() => void) | null = null
 onMounted(async () => {
   await platformCaps.ensure()
   const el = bodyRef.value
-  if (!el) return
+  if (!el || disposed || store.scope !== terminalHostScope) return
 
   // 先挂载（内部完成输出/会话态订阅）再 attach，避免漏掉 attach 回放首帧。
   engine.mountTerm(props.sessionId, el, {
@@ -322,6 +324,7 @@ onMounted(async () => {
 })
 
 async function handleReattach() {
+  if (disposed || store.scope !== terminalHostScope) return
   attachError.value = ''
   try {
     await store.attachRemoteTerminal(props.sessionId)
@@ -384,6 +387,7 @@ function watchDpr() {
 onMounted(() => watchDpr())
 
 onBeforeUnmount(() => {
+  disposed = true
   if (resizeDebounce) clearTimeout(resizeDebounce)
   resizeObserver?.disconnect()
   resizeObserver = null
@@ -395,7 +399,7 @@ onBeforeUnmount(() => {
   unsubscribeSessionState = null
   engine.disposeTerm(props.sessionId)
   // 终止 Go 侧 /ws/v1 长连接（断开/换主机场景下绑定会失败，store 内已记录）。
-  void store.detachRemoteTerminal(props.sessionId)
+  if (store.scope === terminalHostScope && store.connectState === "connected") void store.detachRemoteTerminal(props.sessionId)
 })
 
 // ---- 操作 ----

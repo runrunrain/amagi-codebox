@@ -217,15 +217,14 @@ func TestNativeRoutingLifecycleAndDirectFallback(t *testing.T) {
 			t.Fatal("local relay did not bypass forward proxy", e)
 		}
 	}
-	// Draft port changes must not poison new sessions before apply.
+	// Saved changes must block new sessions until their intended exit is applied.
 	draft := s.State().Settings
 	draft.Routing.ProxyPort = unusedPorts(t)[0]
 	if err = s.SaveSettings(draft); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := s.ApplyEnv(base)
-	if err != nil || !strings.Contains(strings.Join(pending, "\n"), "HTTPS_PROXY="+m["HTTPS_PROXY"]) {
-		t.Fatal("unapplied port used")
+	if _, err = s.ApplyEnv(base); err == nil || !strings.Contains(err.Error(), "尚未应用") {
+		t.Fatalf("unapplied routing admitted a new session: %v", err)
 	}
 	// Reopening restores the enabled core and saved settings after clean close.
 	if err = s.Close(); err != nil {
@@ -255,7 +254,7 @@ func TestNativeRoutingLifecycleAndDirectFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, err := copyService.ApplyEnv(base)
-	if err != nil || !reflect.DeepEqual(after, base) {
+	if err != nil || !reflect.DeepEqual(after, stripAIProxyEnvMarker(base)) {
 		t.Fatal("stop did not restore original launch policy")
 	}
 }

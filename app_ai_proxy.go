@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/aiproxy"
+	"amagi-codebox/internal/aiproxy/router"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
@@ -137,4 +138,11 @@ func (p *appLaunchPlanner) resolveLaunch(req platform.ResolveRequest) (platform.
 		return spec, err
 	}
 	return aiproxy.PinProxyEnvironment(spec)
+}
+
+func (a *App) GetAIProxyTraffic(q router.TrafficQuery) (router.TrafficPage, error) {
+	if a.aiProxy == nil {
+		return router.TrafficPage{}, errors.New("AI 代理服务未初始化")
+	}
+	return a.aiProxy.Traffic(q)
 }

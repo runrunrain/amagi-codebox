@@ -2,7 +2,7 @@
  * __tests__/composables/useSessionWebUI.test.ts — useSessionWebUI 单元测试（C2/C4）
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ref } from 'vue';
+import { ref, nextTick } from 'vue';
 import {
   useSessionWebUI,
   PROBING_INTERVAL_MS,
@@ -148,4 +148,21 @@ describe('useSessionWebUI composable', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(getSessionWebUISpy).toHaveBeenCalledTimes(2);
   });
+  it('switches sessions while the old probe is pending and ignores the old reply', async () => {
+    let resolveOld!: (value: {state:'available';url:string}) => void;
+    const pending = new Promise<{state:'available';url:string}>(resolve => {resolveOld=resolve});
+    vi.spyOn(api,'getSessionWebUI').mockReturnValueOnce(pending).mockResolvedValue({state:'available',url:'/new'});
+    const sid=ref('old');const enabled=ref(true);const probe=useSessionWebUI(sid,enabled);
+    sid.value='new';await nextTick();await Promise.resolve();
+    expect(probe.url.value).toBe('/new');resolveOld({state:'available',url:'/old'});await Promise.resolve();
+    expect(probe.url.value).toBe('/new');probe.stop();
+  });
+  it('disabling during a probe cannot restore availability or restart polling',async()=>{
+    let resolve!: (value: {state:'available';url:string}) => void;
+    vi.spyOn(api,'getSessionWebUI').mockReturnValue(new Promise(r=>{resolve=r}));
+    const enabled=ref(true);const probe=useSessionWebUI(ref('a'),enabled);
+    enabled.value=false;await nextTick();resolve({state:'available',url:'/late'});await Promise.resolve();
+    expect(probe.state.value).toBe('unknown');expect(probe.url.value).toBeUndefined();expect(vi.getTimerCount()).toBe(0);
+  });
+
 });

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"amagi-codebox/internal/aiproxy/router"
 	"amagi-codebox/internal/platform"
 )
 
@@ -79,6 +81,18 @@ func (s *Service) ApplyEnv(base []string) ([]string, error) {
 		// 拒绝）；用户的普通代理变量语义保持原样透传。
 		return stripAIProxyEnvMarker(base), nil
 	}
+	if err := s.validateSessionRoutingLocked(); err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(address)
+	if err != nil {
+		return nil, errors.New("AI 代理入口地址无效")
+	}
+	conn, err := net.DialTimeout("tcp", u.Host, 500*time.Millisecond)
+	if err != nil {
+		return nil, errors.New("AI 代理入口不可达，已阻止会话启动；请在 AI 代理分流页重新应用配置")
+	}
+	_ = conn.Close()
 	out := make([]string, 0, len(base)+8)
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
@@ -159,4 +173,35 @@ func (s *Service) ProxyForRequest(req *http.Request) (*url.URL, error) {
 		return nil, nil
 	}
 	return url.Parse(address)
+}
+
+// Session admission must not silently accept a saved but unapplied egress.
+// It is separate from ProxyForRequest: existing local relays retain the
+// active policy until the user applies the replacement.
+func (s *Service) validateSessionRoutingLocked() error {
+	if s.manager.Status().Revision != s.data.Revision {
+		return errors.New("AI 代理配置已修改但尚未应用，已阻止会话启动；请先在 AI 代理分流页应用更改")
+	}
+	return validateSessionRules(s.active.Routing.Rules)
+}
+
+func validateSessionRules(rules []router.Rule) error {
+	for i, a := range rules {
+		if !a.Enabled {
+			continue
+		}
+		for _, b := range rules[i+1:] {
+			if !b.Enabled || (a.Mode == b.Mode && (a.Mode == "direct" || a.Node == b.Node)) {
+				continue
+			}
+			for _, ad := range a.Domains {
+				for _, bd := range b.Domains {
+					if ad == bd || (net.ParseIP(ad) == nil && net.ParseIP(bd) == nil && (strings.HasSuffix(ad, "."+bd) || strings.HasSuffix(bd, "."+ad))) {
+						return fmt.Errorf("规则 %q 与 %q 的域名重叠但指定了不同出口，无法保证各自出口；请消除冲突后重新应用", a.Name, b.Name)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
