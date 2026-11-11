@@ -206,6 +206,11 @@ jobs:
         run: |
           wails build -clean -platform darwin/arm64 -ldflags "-X main.Version=${{ steps.get_version.outputs.VERSION }} -X main.GitCommit=${{ steps.build_meta.outputs.git_commit }} -X main.BuildTime=${{ steps.build_meta.outputs.build_time }} -X main.GoVersion=${{ steps.build_meta.outputs.go_version }}"
 
+      - name: Ad-hoc sign and verify macOS bundle
+        run: |
+          codesign --force --deep --sign - build/bin/amagi-codebox.app
+          codesign --verify --deep --strict --verbose=2 build/bin/amagi-codebox.app
+
       - name: Prepare macOS arm64 artifact
         run: |
           mkdir -p release-assets

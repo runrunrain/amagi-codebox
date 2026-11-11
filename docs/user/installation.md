@@ -76,7 +76,7 @@ Windows 上 CodeBox 默认把终端会话启动到 WSL（Linux）环境中。CLI
 
 首次启动若被 Gatekeeper 拦截（"无法打开，因为它来自身份不明的开发者"），前往"系统设置 → 隐私与安全性"，点击"仍要打开"放行。
 
-> 待核实：是否提供 Apple Developer 签名 / 公证（notarized）。当前未在 Release 工作流中核实到签名步骤。
+> 待核实：发布包使用临时自签名保证完整性，未使用 Apple Developer ID 签名或公证（notarized）。
 
 ---
 
@@ -155,4 +155,4 @@ Windows 上 CodeBox 默认把终端会话启动到 WSL（Linux）环境中。CLI
 - macOS 无单实例保护与系统托盘：允许多实例启动，关闭窗口即退出。
 - macOS 官方包仅 arm64；Intel Mac 需自行从源码构建。
 - 内嵌终端在平台不支持时会自动回退为外部终端模式（由平台能力位控制；macOS 的 `StandaloneTerminalSupported` 为 false）。
-- 应用未携带代码签名（待核实），首次启动需在系统安全设置中放行。
+- 应用使用临时自签名，未使用 Apple Developer ID 签名或公证；首次启动可能需要在系统安全设置中放行。

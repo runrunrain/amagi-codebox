@@ -25,7 +25,7 @@ Amagi CodeBox 一次完整构建涉及三条产物线（详见 `../developer/bui
 
 需要特别注意的事实：
 - Release workflow **只产出 zip 包**，不产出 MSI/EXE 安装包或 DMG 镜像（待核实：是否计划由 NSIS / create-dmg 等工具补齐，目前 workflow 未实现）。
-- macOS 产物**未代码签名、未公证**：`release.yml` 的 `Codesign placeholder` 与 `Notarization placeholder` 步骤以 `if: ${{ false }}` 禁用，仅作占位。用户首次打开 zip 中的 `.app` 时会遇到 Gatekeeper 拦截，需在「系统设置 → 隐私与安全性」放行，或执行 `xattr -dr com.apple.quarantine /path/to/amagi-codebox.app`（待核实：何时接入 Developer ID 签名与公证）。
+- macOS 产物使用临时自签名以保证应用包完整性，但**未使用 Apple Developer ID 签名，也未公证**：`release.yml` 的 `Codesign placeholder` 与 `Notarization placeholder` 步骤以 `if: ${{ false }}` 禁用，仅作占位。用户首次打开 zip 中的 `.app` 时会遇到 Gatekeeper 拦截，需在「系统设置 → 隐私与安全性」放行，或执行 `xattr -dr com.apple.quarantine /path/to/amagi-codebox.app`（待核实：何时接入 Developer ID 签名与公证）。
 - Release workflow **不覆盖 macOS Intel（amd64）**：仅 `darwin/arm64` 一个 job。Intel Mac 用户需自行从源码构建。
 - `release-assets/` 是 macOS job 的临时打包目录，不纳入 git 跟踪（本地工作区现存的 zip 为历史构建残留，非构建输入）。
 
@@ -119,11 +119,12 @@ on:
 10. Build：**注入全部 4 个版本变量**（与本地脚本一致）：
     - Windows：`wails build -s -ldflags "-X main.Version=<v> -X main.GitCommit=<c> -X main.BuildTime=<t> -X main.GoVersion=<g>"`（`-s` 静默）。
     - macOS：`wails build -clean -platform darwin/arm64 -ldflags "-X main.Version=... ..."`（`-clean` 清缓存，显式指定 Apple Silicon）。
-11. 打包：
+11. macOS 应用包先临时自签名（`codesign --force --deep --sign -`）并验证完整性（`codesign --verify --deep --strict`）；此签名不提供 Apple Developer ID 或公证。
+12. 打包：
     - Windows（`shell: cmd`）：`7z a -tzip ../../amagi-codebox-<VERSION>-windows-amd64.zip amagi-codebox.exe`。
     - macOS：`ditto -c -k --sequesterRsrc --keepParent build/bin/amagi-codebox.app release-assets/amagi-codebox-<VERSION>-darwin-arm64.zip`（保留 `.app` 资源 fork 与权限）。
-12. Upload Release Asset：`softprops/action-gh-release@v2`，Windows job 带 `generate_release_notes: true`（GitHub 根据 commits 自动生成发行说明）；macOS job 仅上传 zip。
-13. （macOS job 额外）Codesign / Notarization placeholder：`if: ${{ false }}` 禁用占位。
+13. Upload Release Asset：`softprops/action-gh-release@v2`，Windows job 带 `generate_release_notes: true`（GitHub 根据 commits 自动生成发行说明）；macOS job 仅上传 zip。
+14. （macOS job 额外）Codesign / Notarization placeholder：`if: ${{ false }}` 禁用占位。
 
 ## 发布步骤建议
 
