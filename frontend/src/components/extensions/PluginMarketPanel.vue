@@ -188,6 +188,10 @@ import ErrorState from '../ui/ErrorState.vue';
 import AddMarketDialog from './AddMarketDialog.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import { RemoveMarketplace } from '../../../wailsjs/go/codexplugin/Service';
+import type {
+  AvailablePluginView,
+  MarketplaceSourceView,
+} from './pluginViewTypes';
 
 interface Props {
   engine?: 'claude' | 'codex';
@@ -229,7 +233,7 @@ const showAddMarketDialog = ref(false);
 
 // Remove market confirmation
 const showRemoveMarketDialog = ref(false);
-const marketToRemove = ref<any>(null);
+const marketToRemove = ref<MarketplaceSourceView | null>(null);
 
 // Retry function for ErrorState
 const handleRetry = async () => {
@@ -260,12 +264,12 @@ const initialLoading = ref(true);
 const initialError = ref('');
 
 // Markets based on engine
-const markets = computed(() => {
+const markets = computed<MarketplaceSourceView[]>(() => {
   return props.engine === 'claude' ? ccMarkets.value : cxMarkets.value;
 });
 
 // All available plugins
-const allPlugins = computed(() => {
+const allPlugins = computed<AvailablePluginView[]>(() => {
   return props.engine === 'claude' ? ccAvailable.value : cxAvailable.value;
 });
 
@@ -273,22 +277,18 @@ const allPlugins = computed(() => {
 const totalAvailableCount = computed(() => allPlugins.value.length);
 
 // Filtered plugins
-const filteredPlugins = computed(() => {
-  let plugins = [...allPlugins.value];
+const filteredPlugins = computed<AvailablePluginView[]>(() => {
+  let plugins: AvailablePluginView[] = [...allPlugins.value];
 
   // Filter by active marketplace
   if (activeMarketId.value) {
-    if (props.engine === 'claude') {
-      plugins = plugins.filter((p: any) => p.marketplaceName === activeMarketId.value);
-    } else {
-      plugins = plugins.filter((p: any) => p.marketplaceName === activeMarketId.value);
-    }
+    plugins = plugins.filter((p) => p.marketplaceName === activeMarketId.value);
   }
 
   // Filter by search query
   if (searchQuery.value.trim()) {
     const query = searchQuery.value.toLowerCase();
-    plugins = plugins.filter((p: any) =>
+    plugins = plugins.filter((p) =>
       (p.name?.toLowerCase().includes(query)) ||
       (p.description?.toLowerCase().includes(query)) ||
       (p.author?.toLowerCase().includes(query))
@@ -297,73 +297,70 @@ const filteredPlugins = computed(() => {
 
   // Sort
   if (sortBy.value === 'name') {
-    plugins.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+    plugins.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   } else if (sortBy.value === 'installs' && props.engine === 'claude') {
-    plugins.sort((a: any, b: any) => (b.installCount || 0) - (a.installCount || 0));
+    plugins.sort((a, b) => (b.installCount || 0) - (a.installCount || 0));
   }
 
   return plugins;
 });
 
 // Helper functions
-function getSourceKey(market: any): string {
+function getSourceKey(market: MarketplaceSourceView): string {
   if (props.engine === 'claude') {
     return market.Name || market.name || '';
   }
   return market.name || '';
 }
 
-function getMarketName(market: any): string {
+function getMarketName(market: MarketplaceSourceView): string {
   if (props.engine === 'claude') {
     return market.Name || market.name || 'Unknown';
   }
   return market.name || 'Unknown';
 }
 
-function getMarketDesc(market: any): string {
+function getMarketDesc(market: MarketplaceSourceView): string {
   if (props.engine === 'claude') {
     return market.Description || market.description || '';
   }
   return market.repo || market.url || market.source || '本地市场';
 }
 
-function getPluginCountForMarket(market: any): number {
+function getPluginCountForMarket(market: MarketplaceSourceView): number {
   const marketName = getMarketName(market);
-  if (props.engine === 'claude') {
-    return (allPlugins.value as any[]).filter((p: any) => p.marketplaceName === marketName).length;
-  }
-  return (allPlugins.value as any[]).filter((p: any) => p.marketplaceName === marketName).length;
+  return allPlugins.value.filter((p) => p.marketplaceName === marketName).length;
 }
 
-function isSourceActive(market: any): boolean {
+function isSourceActive(market: MarketplaceSourceView): boolean {
   return activeMarketId.value === getMarketName(market);
 }
 
-function selectMarket(market: any) {
+function selectMarket(market: MarketplaceSourceView) {
   const name = getMarketName(market);
   setActiveMarketId(activeMarketId.value === name ? null : name);
 }
 
-function getPluginKey(plugin: any): string {
+function getPluginKey(plugin: AvailablePluginView): string {
   if (props.engine === 'claude') {
     return plugin.name || plugin.id || '';
   }
   return plugin.pluginId || plugin.id || '';
 }
 
-function getPluginName(plugin: any): string {
+function getPluginName(plugin: AvailablePluginView): string {
   return plugin.name || 'Unknown';
 }
 
-function getPluginDesc(plugin: any): string {
+function getPluginDesc(plugin: AvailablePluginView): string {
   return plugin.description || '';
 }
 
-function getPluginAuthor(plugin: any): string {
+function getPluginAuthor(plugin: AvailablePluginView): string {
   return plugin.author || '';
 }
 
-function formatInstallCount(plugin: any): string {
+function formatInstallCount(plugin: AvailablePluginView): string {
   const count = plugin.installCount || 0;
   if (count >= 1000000) return (count / 1000000).toFixed(1) + 'M';
   if (count >= 1000) return (count / 1000).toFixed(1) + 'K';
@@ -390,7 +387,7 @@ async function handleMarketAdded() {
   }
 }
 
-function handleRemoveMarket(market: any) {
+function handleRemoveMarket(market: MarketplaceSourceView) {
   marketToRemove.value = market;
   showRemoveMarketDialog.value = true;
 }
@@ -399,7 +396,7 @@ async function confirmRemoveMarket() {
   if (!marketToRemove.value) return;
 
   try {
-    const result = await RemoveMarketplace(marketToRemove.value.name);
+    const result = await RemoveMarketplace(marketToRemove.value.name || '');
     if (result && !result.success) {
       console.error('[PluginMarketPanel] Remove market failed:', result.error);
     } else {
@@ -416,18 +413,18 @@ async function confirmRemoveMarket() {
   }
 }
 
-async function handleInstall(plugin: any) {
+async function handleInstall(plugin: AvailablePluginView) {
   if (props.engine === 'claude') {
     // Install Claude plugin using plugin name
     try {
-      const pluginName = plugin.name || plugin.id;
+      const pluginName = plugin.name || plugin.id || '';
       await installCcPlugin(pluginName);
     } catch (error) {
       console.error('[PluginMarketPanel] Install Claude plugin failed:', error);
     }
   } else {
     try {
-      await installCxPlugin(plugin.pluginId, plugin.marketplaceName);
+      await installCxPlugin(plugin.pluginId || plugin.id || '', plugin.marketplaceName);
     } catch (error) {
       console.error('[PluginMarketPanel] Install Codex plugin failed:', error);
     }

@@ -57,14 +57,25 @@
 import { ref, computed, watch } from 'vue';
 import Switch from '../ui/Switch.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import type {
+  PluginDetailInput,
+  PluginSubItemView,
+  SubItemType,
+} from './pluginViewTypes';
 
 // 子项类型：与后端 internal/plugin/types.go SubItemType 单数保持一致
 // （skill / agent / command / hook / mcp；claude 为 baseline，不在面板展示）
-type SubItemType = 'skill' | 'agent' | 'command' | 'hook' | 'mcp';
+const SUB_ITEM_TYPES: ReadonlySet<string> = new Set<SubItemType>([
+  'skill',
+  'agent',
+  'command',
+  'hook',
+  'mcp',
+]);
 
 interface Props {
   engine?: 'claude' | 'codex';
-  pluginDetail?: any;
+  pluginDetail?: PluginDetailInput | null;
   disabledSubItems?: string[];
 }
 
@@ -85,7 +96,7 @@ const activeTab = ref<string>('all');
 // - Codex 引擎：CodexPluginDetail 没有 subItems 字段 → 从 skills/agents/commands/hooks/mcpServers 合成
 // - 兜底：若 subItems 为空数组且 detail 没有原始字段，返回空
 // 合成时为每个条目补充 type 字段（单数），与后端 SubItemType 一致
-const normalizedSubItems = computed(() => {
+const normalizedSubItems = computed<PluginSubItemView[]>(() => {
   const detail = props.pluginDetail;
   if (!detail) return [];
 
@@ -95,38 +106,38 @@ const normalizedSubItems = computed(() => {
   }
 
   // 降级合成：从原始 skills/agents/commands/hooks/mcpServers 构建（Codex 路径）
-  const items: any[] = [];
-  (detail.skills || []).forEach((s: any) => {
+  const items: PluginSubItemView[] = [];
+  (detail.skills || []).forEach((s) => {
     items.push({
       type: 'skill',
-      name: s.name,
+      name: s.name || '',
       description: s.description || '',
       filePath: s.filePath,
       enabled: true,
     });
   });
-  (detail.agents || []).forEach((s: any) => {
+  (detail.agents || []).forEach((s) => {
     items.push({
       type: 'agent',
-      name: s.name,
+      name: s.name || '',
       description: s.description || '',
       filePath: s.filePath,
       enabled: true,
     });
   });
-  (detail.commands || []).forEach((s: any) => {
+  (detail.commands || []).forEach((s) => {
     items.push({
       type: 'command',
-      name: s.name,
+      name: s.name || '',
       description: s.description || '',
       filePath: s.filePath,
       enabled: true,
     });
   });
-  (detail.hooks || []).forEach((s: any) => {
+  (detail.hooks || []).forEach((s) => {
     items.push({
       type: 'hook',
-      name: s.name || s.event,
+      name: s.name || s.event || '',
       description: s.description || '',
       event: s.event,
       enabled: true,
@@ -159,16 +170,17 @@ const normalizedSubItems = computed(() => {
 
 // 按 type 分组：{ skill: [], agent: [], command: [], hook: [], mcp: [] }
 const groupedSubItems = computed(() => {
-  const groups: Record<SubItemType, any[]> = {
+  const groups: Record<SubItemType, PluginSubItemView[]> = {
     skill: [],
     agent: [],
     command: [],
     hook: [],
     mcp: [],
   };
-  normalizedSubItems.value.forEach((item: any) => {
-    const t = item.type as SubItemType;
-    if (groups[t]) groups[t].push(item);
+  normalizedSubItems.value.forEach((item) => {
+    if (SUB_ITEM_TYPES.has(item.type)) {
+      groups[item.type as SubItemType].push(item);
+    }
   });
   return groups;
 });
@@ -259,33 +271,33 @@ function setActiveTab(tab: string) {
   activeTab.value = tab;
 }
 
-function getItemKey(item: any): string {
+function getItemKey(item: PluginSubItemView): string {
   // type+name 唯一标识；MCP 多 server 场景 name 即 server 名
   return `${item.type}:${item.name || item.filePath || Math.random().toString(36)}`;
 }
 
-function getItemName(item: any): string {
+function getItemName(item: PluginSubItemView): string {
   return item.name || 'Unknown';
 }
 
-function getItemDesc(item: any): string {
+function getItemDesc(item: PluginSubItemView): string {
   return item.description || '';
 }
 
-function getItemMeta(item: any): string {
+function getItemMeta(item: PluginSubItemView): string {
   if (item.event) return `Event: ${item.event}`;
   if (item.type) return `Type: ${item.type}`;
   return '';
 }
 
 // 判断子项是否被禁用：disabledSubItems 是 "type/name" 字符串数组（type 单数）
-function isItemDisabled(item: any): boolean {
+function isItemDisabled(item: PluginSubItemView): boolean {
   const key = `${item.type}/${item.name}`;
   return props.disabledSubItems?.includes(key) || false;
 }
 
 // 开关切换：emit 的 itemType 用 item.type（单数），与后端 SubItemType 一致
-function handleToggleItem(item: any, value: boolean) {
+function handleToggleItem(item: PluginSubItemView, value: boolean) {
   emit('toggleSubItem', item.type, item.name, value);
 }
 

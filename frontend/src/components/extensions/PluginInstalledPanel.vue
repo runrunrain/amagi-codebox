@@ -107,8 +107,8 @@
             <!-- Plugins in this group -->
             <div
               v-for="plugin in group.plugins"
-              :key="(plugin as any).id || (plugin as any).pluginId"
-              :class="['plg-item', { active: activePluginId === ((plugin as any).id || (plugin as any).pluginId) }]"
+              :key="plugin.id || plugin.pluginId"
+              :class="['plg-item', { active: activePluginId === (plugin.id || plugin.pluginId) }]"
               @click="selectPlugin(plugin)"
             >
               <div class="plg-item-main">
@@ -122,13 +122,13 @@
                 <div class="plg-meta-row">
                   <Badge type="type" :text="pluginTypeLabel(plugin)" :color="pluginTypeColor(plugin)" />
                   <Badge v-if="plugin.version" type="ver" :text="'v' + plugin.version" />
-                  <Badge v-if="engine === 'claude' && (plugin as any).scope" type="scope" :text="(plugin as any).scope === 'global' ? '全局' : '项目'" />
+                  <Badge v-if="engine === 'claude' && plugin.scope" type="scope" :text="plugin.scope === 'global' ? '全局' : '项目'" />
                   <!-- Codex source badge -->
-                  <Badge v-if="engine === 'codex' && (plugin as any).source" type="source" :text="(plugin as any).source" variant="muted" />
+                  <Badge v-if="engine === 'codex' && plugin.source" type="source" :text="plugin.source" variant="muted" />
                   <!-- Codex duplicate warning badge -->
                   <Badge v-if="engine === 'codex' && hasDuplicateWarning(plugin)" type="warning" text="重复诊断" color="warning" />
                 </div>
-                <p v-if="(plugin as any).description" class="plg-desc">{{ truncate((plugin as any).description, 80) }}</p>
+                <p v-if="plugin.description" class="plg-desc">{{ truncate(plugin.description, 80) }}</p>
               </div>
             </div>
           </template>
@@ -142,13 +142,13 @@
               <div class="plg-row">
                 <Badge type="type" :text="pluginTypeLabel(activePlugin)" :color="pluginTypeColor(activePlugin)" />
                 <Badge v-if="activePlugin.version" type="ver" :text="'v' + activePlugin.version" />
-                <Badge v-if="engine === 'claude' && (activePlugin as any).scope" type="scope" :text="(activePlugin as any).scope === 'global' ? '全局' : '项目'" />
+                <Badge v-if="engine === 'claude' && activePlugin.scope" type="scope" :text="activePlugin.scope === 'global' ? '全局' : '项目'" />
                 <!-- Codex source badge -->
-                <Badge v-if="engine === 'codex' && (activePlugin as any).source" type="source" :text="(activePlugin as any).source" variant="muted" />
+                <Badge v-if="engine === 'codex' && activePlugin.source" type="source" :text="activePlugin.source" variant="muted" />
                 <!-- Codex duplicate warning badge -->
                 <Badge v-if="engine === 'codex' && hasDuplicateWarning(activePlugin)" type="warning" text="重复诊断" color="warning" />
                 <!-- Codex pluginId badge -->
-                <Badge v-if="engine === 'codex' && (activePlugin as any).pluginId" type="pid" :text="'PID: ' + shortId((activePlugin as any).pluginId)" variant="mono" />
+                <Badge v-if="engine === 'codex' && activePlugin.pluginId" type="pid" :text="'PID: ' + shortId(activePlugin.pluginId)" variant="mono" />
               </div>
             </div>
             <div class="plg-detail-actions">
@@ -179,20 +179,20 @@
             </div>
             <div class="meta-row">
               <span class="meta-label">安装路径:</span>
-              <span class="meta-value mono">{{ (activePlugin as any).installPath || (activePlugin as any).manifestPath }}</span>
+              <span class="meta-value mono">{{ activePlugin.installPath || activePlugin.manifestPath }}</span>
             </div>
-            <div v-if="(activePlugin as any).installedAt" class="meta-row">
+            <div v-if="activePlugin.installedAt" class="meta-row">
               <span class="meta-label">安装时间:</span>
-              <span class="meta-value">{{ formatDate((activePlugin as any).installedAt) }}</span>
+              <span class="meta-value">{{ formatDate(activePlugin.installedAt) }}</span>
             </div>
-            <div v-if="(activePlugin as any).lastUpdated" class="meta-row">
+            <div v-if="activePlugin.lastUpdated" class="meta-row">
               <span class="meta-label">最后更新:</span>
-              <span class="meta-value">{{ formatDate((activePlugin as any).lastUpdated) }}</span>
+              <span class="meta-value">{{ formatDate(activePlugin.lastUpdated) }}</span>
             </div>
             <!-- Codex pluginId -->
-            <div v-if="engine === 'codex' && (activePlugin as any).pluginId" class="meta-row">
+            <div v-if="engine === 'codex' && activePlugin.pluginId" class="meta-row">
               <span class="meta-label">Plugin ID:</span>
-              <span class="meta-value mono">{{ (activePlugin as any).pluginId }}</span>
+              <span class="meta-value mono">{{ activePlugin.pluginId }}</span>
             </div>
           </div>
 
@@ -315,6 +315,7 @@ import PluginMarketPanel from './PluginMarketPanel.vue';
 import PluginSubItemsPanel from './PluginSubItemsPanel.vue';
 import { truncate } from '../../utils/format';
 import { useToast } from '../../composables/useToast';
+import type { InstalledPluginView, PluginDetailView } from './pluginViewTypes';
 
 interface Props {
   engine?: 'claude' | 'codex';
@@ -332,7 +333,7 @@ const pluginStore = usePluginStore();
 const {
   filteredCcPlugins,
   activePluginId,
-  activePlugin,
+  activePlugin: storeActivePlugin,
   activeCxPlugin,
   activeCxPluginDetail,
   resFilter,
@@ -347,6 +348,8 @@ const {
   cxMarketCount,
   pluginView,
 } = storeToRefs(pluginStore);
+
+const activePlugin = computed<InstalledPluginView | null>(() => storeActivePlugin.value);
 
 const {
   setActivePlugin,
@@ -381,7 +384,7 @@ const loadErrorMessage = ref('');
 
 // Uninstall confirmation
 const showUninstallDialog = ref(false);
-const pluginToUninstall = ref<any>(null);
+const pluginToUninstall = ref<InstalledPluginView | null>(null);
 
 // Update loading state (for visual feedback on update button)
 const updating = ref(false);
@@ -442,7 +445,7 @@ const marketCount = computed(() => {
 });
 
 // Filtered plugins based on engine
-const filteredPlugins = computed(() => {
+const filteredPlugins = computed<InstalledPluginView[]>(() => {
   if (props.engine === 'claude') {
     return filteredCcPlugins.value;
   }
@@ -459,9 +462,9 @@ const filteredPlugins = computed(() => {
 // Grouped plugins by marketplace
 const groupedPlugins = computed(() => {
   const plugins = filteredPlugins.value;
-  const groups = new Map<string, any[]>();
+  const groups = new Map<string, InstalledPluginView[]>();
 
-  plugins.forEach((plugin: any) => {
+  plugins.forEach((plugin) => {
     const marketplace = plugin.marketplace || 'Unknown';
     if (!groups.has(marketplace)) {
       groups.set(marketplace, []);
@@ -476,14 +479,14 @@ const groupedPlugins = computed(() => {
 });
 
 // Current active plugin (engine-aware)
-const currentActivePlugin = computed(() => {
+const currentActivePlugin = computed<InstalledPluginView | null>(() => {
   return props.engine === 'codex' ? activeCxPlugin.value : activePlugin.value;
 });
 
-const activeCxDetail = computed(() => {
+const activeCxDetail = computed<PluginDetailView | null>(() => {
   if (!activePluginId.value || props.engine !== 'codex') return null;
   // activeCxPluginDetail（store computed）在 pluginId 未加载详情时为 null，解引用前必须防护
-  const detail = activeCxPluginDetail.value as Record<string, any> | null;
+  const detail = activeCxPluginDetail.value as unknown as Record<string, PluginDetailView | undefined> | null;
   if (!detail) return null;
   return detail[activePluginId.value] || null;
 });
@@ -509,9 +512,9 @@ const hasSkills = computed(() => {
   if (!p) return false;
   if (props.engine === 'codex') {
     const detail = activeCxDetail.value;
-    return detail?.skills?.length > 0;
+    return (detail?.skills?.length ?? 0) > 0;
   }
-  const type = (p as any).pluginType || '';
+  const type = p.pluginType || '';
   return type === 'skill' || type === 'hybrid' || type === 'integration';
 });
 
@@ -520,9 +523,9 @@ const hasAgents = computed(() => {
   if (!p) return false;
   if (props.engine === 'codex') {
     const detail = activeCxDetail.value;
-    return detail?.agents?.length > 0;
+    return (detail?.agents?.length ?? 0) > 0;
   }
-  const type = (p as any).pluginType || '';
+  const type = p.pluginType || '';
   return type === 'agent' || type === 'hybrid' || type === 'integration';
 });
 
@@ -531,9 +534,9 @@ const hasCommands = computed(() => {
   if (!p) return false;
   if (props.engine === 'codex') {
     const detail = activeCxDetail.value;
-    return detail?.commands?.length > 0;
+    return (detail?.commands?.length ?? 0) > 0;
   }
-  const type = (p as any).pluginType || '';
+  const type = p.pluginType || '';
   return type === 'command' || type === 'hybrid' || type === 'integration';
 });
 
@@ -542,9 +545,9 @@ const hasHooks = computed(() => {
   if (!p) return false;
   if (props.engine === 'codex') {
     const detail = activeCxDetail.value;
-    return detail?.hooks?.length > 0;
+    return (detail?.hooks?.length ?? 0) > 0;
   }
-  const type = (p as any).pluginType || '';
+  const type = p.pluginType || '';
   return type === 'hook' || type === 'hybrid' || type === 'integration';
 });
 
@@ -555,7 +558,7 @@ const hasMcp = computed(() => {
     const detail = activeCxDetail.value;
     return detail?.hasMcp === true;
   }
-  return (p as any).hasMcp === true;
+  return p.hasMcp === true;
 });
 
 // Counts from detail (Codex)
@@ -603,7 +606,7 @@ const hasManageableSubItems = computed(() => {
     );
   }
   // Claude 引擎：插件后端返回的子项数组
-  const subItems = (currentActivePlugin.value as any)?.subItems;
+  const subItems = currentActivePlugin.value?.subItems;
   return Array.isArray(subItems) && subItems.length > 0;
 });
 
@@ -619,7 +622,7 @@ const emptyDesc = computed(() => {
 });
 
 // Plugin type helpers
-function pluginTypeLabel(plugin: any): string {
+function pluginTypeLabel(plugin: InstalledPluginView): string {
   if (props.engine === 'codex') {
     // Codex plugins don't have pluginType in the base struct
     // Use capabilities or default to 'Plugin'
@@ -638,19 +641,19 @@ function pluginTypeLabel(plugin: any): string {
   return labels[type] || type;
 }
 
-function pluginTypeColor(plugin: any): string {
+function pluginTypeColor(plugin: InstalledPluginView): string {
   if (props.engine === 'codex') return 'plugin';
   const type = plugin.pluginType || 'unknown';
   return type;
 }
 
 // Duplicate warning helpers
-function hasDuplicateWarning(plugin: any): boolean {
-  return !!(plugin as any).warning || !!(plugin as any).duplicateOf;
+function hasDuplicateWarning(plugin: InstalledPluginView): boolean {
+  return !!plugin.warning || !!plugin.duplicateOf;
 }
 
-function getDuplicateWarning(plugin: any): string {
-  const raw = (plugin as any).warning || (plugin as any).duplicateOf || '';
+function getDuplicateWarning(plugin: InstalledPluginView): string {
+  const raw = plugin.warning || plugin.duplicateOf || '';
   if (!raw) return '';
   const mergedText = /归并|duplicate|重复/i.test(raw) ? raw : `检测到重复安装记录：${raw}`;
   return mergedText;
@@ -674,8 +677,8 @@ function formatDate(dateStr: string): string {
 }
 
 // Actions
-async function selectPlugin(plugin: any) {
-  const id = plugin.id || plugin.pluginId;
+async function selectPlugin(plugin: InstalledPluginView) {
+  const id = plugin.id || plugin.pluginId || '';
   setActivePlugin(id);
   // Load Codex detail if needed
   if (props.engine === 'codex' && plugin.marketplace) {
@@ -687,7 +690,7 @@ async function selectPlugin(plugin: any) {
   }
 }
 
-async function handleToggle(plugin: any, value: boolean) {
+async function handleToggle(plugin: InstalledPluginView, value: boolean) {
   if (props.engine === 'codex') {
     try {
       await toggleCxPlugin(plugin.pluginId || plugin.id, !value);
@@ -716,13 +719,13 @@ async function confirmUninstall() {
 
   if (props.engine === 'codex') {
     try {
-      await uninstallCxPlugin((plugin as any).pluginId || (plugin as any).id, (plugin as any).marketplace);
+      await uninstallCxPlugin(plugin.pluginId || plugin.id, plugin.marketplace);
     } catch (error) {
       console.error('Uninstall Codex plugin failed:', error);
     }
   } else {
     try {
-      await uninstallPlugin((plugin as any).id);
+      await uninstallPlugin(plugin.id);
     } catch (error) {
       console.error('Uninstall plugin failed:', error);
     }
@@ -740,7 +743,7 @@ async function handleUpdate() {
   try {
     if (props.engine === 'codex') {
       // Codex 没有单插件更新接口，更新机制是整个市场源 upgrade
-      const marketplace = (plugin as any).marketplace;
+      const marketplace = plugin.marketplace;
       if (!marketplace) {
         showError('该插件缺少市场来源信息，无法更新');
         return;
@@ -748,7 +751,7 @@ async function handleUpdate() {
       showInfo(`正在更新市场源「${marketplace}」…`);
       await upgradeCxMarketplace(marketplace);
       // 重载选中插件详情，让 UI 即时反映升级后的内容
-      const pid = (plugin as any).pluginId || plugin.id;
+      const pid = plugin.pluginId || plugin.id;
       if (pid) {
         await loadCxPluginDetail(pid, marketplace);
       }
@@ -802,14 +805,14 @@ const disabledSubItems = computed(() => {
   // Codex: activeCxDetail 为 CodexPluginDetail（当前未携带 subItems 字段，此分支保持兜底兼容）
   if (props.engine === 'codex' && activeCxDetail.value?.subItems) {
     return activeCxDetail.value.subItems
-      .filter((s: any) => !s.enabled)
-      .map((s: any) => `${s.type}/${s.name}`);
+      .filter((s) => !s.enabled)
+      .map((s) => `${s.type}/${s.name}`);
   }
   // Claude: 插件详情中的 subItems（后端聚合好，含 enabled 标记）
-  if (props.engine === 'claude' && (plugin as any).subItems) {
-    return (plugin as any).subItems
-      .filter((s: any) => !s.enabled)
-      .map((s: any) => `${s.type}/${s.name}`);
+  if (props.engine === 'claude' && plugin.subItems) {
+    return plugin.subItems
+      .filter((s) => !s.enabled)
+      .map((s) => `${s.type}/${s.name}`);
   }
   return [];
 });
@@ -821,12 +824,12 @@ async function handleToggleSubItem(itemType: string, itemId: string, enabled: bo
   const plugin = currentActivePlugin.value;
   if (!plugin) return;
 
-  const pid = (plugin as any).pluginId || plugin.id;
+  const pid = plugin.pluginId || plugin.id;
   try {
     await setPluginSubItemEnabled(pid, itemType, itemId, enabled);
     // 切换成功后 reload 详情以反映新状态
     if (props.engine === 'codex' && plugin.marketplace) {
-      await loadCxPluginDetail((plugin as any).pluginId || plugin.id, plugin.marketplace);
+      await loadCxPluginDetail(plugin.pluginId || plugin.id, plugin.marketplace);
     } else if (props.engine === 'claude') {
       await loadPluginDetail(plugin.id);
     }
