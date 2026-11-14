@@ -16,8 +16,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"amagi-codebox/internal/logging"
 )
 
 // ===========================================================================
@@ -132,7 +130,7 @@ func TestB2C1CreatePermitBlocksMaintenancePublicationRace(t *testing.T) {
 	dir := t.TempDir()
 	clk := newSecFakeClock(time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC))
 	opts := newSecurityOptions(dir, validHostSummary, clk, cr, &recordingSink{})
-	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(0, nil, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)
@@ -213,7 +211,7 @@ func TestB2C1SecretWipeFailurePaths(t *testing.T) {
 	dir := t.TempDir()
 	clk := newSecFakeClock(time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC))
 	opts := newSecurityOptions(dir, validHostSummary, clk, tr, &recordingSink{})
-	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(0, nil, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatal(err)

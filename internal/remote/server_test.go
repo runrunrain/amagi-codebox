@@ -19,19 +19,27 @@ import (
 //go:embed all:testdata/mobile/dist
 var testMobileFSSource embed.FS
 
+// newTestLogService builds a logging.Service rooted in a test-owned TempDir and
+// registers Close via t.Cleanup. On Windows an open log file handle fails the
+// TempDir RemoveAll cleanup ("being used by another process"), so every test
+// logger must be closed before the dir is removed; on other platforms this is
+// ordinary resource hygiene.
+func newTestLogService(t *testing.T) *logging.Service {
+	t.Helper()
+	logSvc := logging.NewService(t.TempDir())
+	t.Cleanup(logSvc.Close)
+	return logSvc
+}
+
 func newTestServer(t *testing.T, port int) *Server {
 	t.Helper()
-	logDir := t.TempDir()
-	logSvc := logging.NewService(logDir)
-	t.Cleanup(logSvc.Close)
+	logSvc := newTestLogService(t)
 	return NewServer(port, nil, logSvc, embed.FS{})
 }
 
 func newTestServerWithEmbeddedMobile(t *testing.T, port int) *Server {
 	t.Helper()
-	logDir := t.TempDir()
-	logSvc := logging.NewService(logDir)
-	t.Cleanup(logSvc.Close)
+	logSvc := newTestLogService(t)
 	srv := NewServer(port, nil, logSvc, testMobileFSSource)
 	// Adjust prefix to match the embed path within the FS
 	srv.mobileAssetsPrefix = "testdata/mobile/dist"

@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/remote/contract"
 )
 
@@ -120,7 +119,7 @@ func newB2C2Server(t *testing.T) (*Server, *recordingSink) {
 	dir := t.TempDir()
 	clk := newSecFakeClock(time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC))
 	opts := newSecurityOptions(dir, validHostSummary, clk, cryptoRand, sink)
-	srv := NewServerWithSecurity(8680, &b2aSpyApp{}, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(8680, &b2aSpyApp{}, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)

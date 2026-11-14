@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/remote/contract"
 )
 
@@ -94,7 +93,7 @@ func TestServer_HostSummaryDegraded_NilAndLegacySafety(t *testing.T) {
 		t.Fatal("nil receiver must report false")
 	}
 	// Legacy NewServer has no security surface (v1sec nil) → false.
-	legacy := NewServer(0, nil, logging.NewService(t.TempDir()), embed.FS{})
+	legacy := NewServer(0, nil, newTestLogService(t), embed.FS{})
 	if legacy.HostSummaryDegraded() {
 		t.Fatal("legacy server (no v1 security surface) must report false")
 	}

@@ -93,6 +93,11 @@ func TestM011_T43_RealPTYServiceCallbackPath(t *testing.T) {
 	sub := rt.Hub().RegisterCausalSubscription(sid, 0, subLease, nil)
 	t.Cleanup(func() { rt.Hub().UnregisterCausalSubscription(sub) })
 
+	// WorkDir TempDir must be registered BEFORE the ptySvc cleanup so LIFO
+	// tears the PTY (releasing the child's cwd) before the dir is removed —
+	// on Windows an open cwd handle fails t.TempDir RemoveAll.
+	workDir := t.TempDir()
+
 	// REAL internal/pty.Service with the projector wired as the RunEventSink —
 	// this is the production callback entry (app.go:1119
 	// `a.Pty.SetRunEventSink(a.control.Projector())`). The service's readLoop
@@ -104,17 +109,27 @@ func TestM011_T43_RealPTYServiceCallbackPath(t *testing.T) {
 
 	// Start a REAL PTY bound to the obsPermit as runHandle (production wiring:
 	// control_wiring.go::launchEmbeddedPTY `StartResolvedWithRun(sessionID,
-	// spec, obsPermit)`). A deterministic fake CLI (`/bin/sh -c "printf ..."`),
-	// not a real claude/codex binary — the "pty fake" the task permits for
-	// synchronization, while the data still flows through the real service
-	// callback entry.
+	// spec, obsPermit)`). A deterministic fake CLI (not a real claude/codex
+	// binary) — the "pty fake" the task permits for synchronization, while the
+	// data still flows through the real service callback entry. darwin:
+	// `/bin/sh -c "printf ..."`; windows: powershell.exe writing the same three
+	// segments without separators or trailing newline, then exiting (an
+	// interactive shell would never emit the content and would hold the
+	// WorkDir open past cleanup). ConPTY frames the run in VT prologue
+	// sequences, but the three back-to-back writes arrive as one contiguous
+	// "alphabbgamma" text run, so the content assertion below is identical on
+	// both backends.
 	spec := platform.ResolvedLaunchSpec{
-		WorkDir: t.TempDir(),
-		CLI: platform.ResolvedCLI{
-			Path: fakeCLIShell(),
-			Args: []string{"-c", "printf 'alpha'; printf 'bb'; printf 'gamma'"},
-		},
-		Env:           platform.ResolvedEnv{Variables: []string{"PATH=/usr/bin:/bin"}},
+		WorkDir: workDir,
+		CLI:     fakeCLISpec(),
+		Env: func() platform.ResolvedEnv {
+			// darwin needs only PATH; windows powershell requires the inherited
+			// system env (SystemRoot etc.), so pass no override there.
+			if runtime_.GOOS == "windows" {
+				return platform.ResolvedEnv{}
+			}
+			return platform.ResolvedEnv{Variables: []string{"PATH=/usr/bin:/bin"}}
+		}(),
 		PTYCols:       80,
 		PTYRows:       24,
 		BootstrapMode: platform.BootstrapDirectCommand,
@@ -127,7 +142,12 @@ func TestM011_T43_RealPTYServiceCallbackPath(t *testing.T) {
 
 	// Barrier: poll the subscriber until the expected output content arrives
 	// (bounded). The readLoop is asynchronous; output arrives after spawn.
-	// "alpha"+"bb"+"gamma" concatenates to "alphabbgamma".
+	// "alpha"+"bb"+"gamma" concatenates to "alphabbgamma". The contiguity check
+	// runs on the VISIBLE stream: ConPTY frames runs with terminal-control
+	// sequences (CSI prologue, a one-time OSC window-title set that can land
+	// between two segments), so raw byte adjacency is unattainable on windows
+	// by design — pty.StripAnsi (production VT parser) removes exactly those;
+	// on darwin the fixture emits no VT, so the strip is a no-op there.
 	wantContent := []byte("alphabbgamma")
 	var all []queuedEvent
 	deadline := time.Now().Add(10 * time.Second)
@@ -388,13 +408,23 @@ func TestM011_T44_Cell3_RealRestartProductionPath(t *testing.T) {
 // small helpers
 // ===========================================================================
 
-// fakeCLIShell returns the shell binary used as the deterministic fake CLI.
-// /bin/sh exists on darwin; on windows the test is skipped before this matters.
-func fakeCLIShell() string {
+// fakeCLISpec returns the deterministic fake CLI (path + args) that emits
+// "alpha", "bb", "gamma" back-to-back and exits. darwin: /bin/sh printf; the
+// darwin branch is exercised by the macOS CI full-suite run (CLAUDE.md: go
+// test ./... runs on macos-latest). windows: powershell.exe [Console]::Write —
+// no separators, no trailing newline, process exits on completion (cmd.exe
+// cannot printf and an interactive shell would hold the PTY open forever).
+func fakeCLISpec() platform.ResolvedCLI {
 	if runtime_.GOOS == "windows" {
-		return "cmd.exe"
+		return platform.ResolvedCLI{
+			Path: "powershell.exe",
+			Args: []string{"-NoProfile", "-Command", "[Console]::Write('alpha');[Console]::Write('bb');[Console]::Write('gamma')"},
+		}
 	}
-	return "/bin/sh"
+	return platform.ResolvedCLI{
+		Path: "/bin/sh",
+		Args: []string{"-c", "printf 'alpha'; printf 'bb'; printf 'gamma'"},
+	}
 }
 
 // outputEvents filters OutputEvent records from a batch of queued events.
@@ -410,7 +440,9 @@ func outputEvents(events []queuedEvent) []contract.OutputEvent {
 
 // concatOutputBytes decodes and concatenates the base64 chunks of all output
 // events (in arrival order) so content assertions are robust to PTY read
-// coalescing.
+// coalescing. VT/OSC terminal-control framing is stripped AFTER concatenation
+// (a sequence may split across chunk boundaries); visible text order and
+// adjacency are preserved — see wantContent above.
 func concatOutputBytes(events []queuedEvent) []byte {
 	var buf bytes.Buffer
 	for _, oe := range outputEvents(events) {
@@ -418,7 +450,7 @@ func concatOutputBytes(events []queuedEvent) []byte {
 			buf.Write(raw)
 		}
 	}
-	return buf.Bytes()
+	return []byte(pty.StripAnsi(buf.String()))
 }
 
 // decodeChunk decodes a base64 OutputEvent chunk to raw bytes.

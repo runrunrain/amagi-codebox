@@ -321,7 +321,11 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 	workDir := spec.WorkDir
 	commandLine, sendAutoCommand := buildResolvedStartupPlan(spec, s.log)
 
-	s.log.Info("pty", "创建 ConPTY 会话", fmt.Sprintf("id=%s cmd=%s autoCmd=%s workDir=%s size=%dx%d", sessionID, commandLine, redactAutoCommandForLog(sendAutoCommand), workDir, cols, rows))
+	// nil logger is a supported wiring (service_darwin.go already guards every
+	// s.log call the same way; NewService(nil) must not panic on Windows).
+	if s.log != nil {
+		s.log.Info("pty", "创建 ConPTY 会话", fmt.Sprintf("id=%s cmd=%s autoCmd=%s workDir=%s size=%dx%d", sessionID, commandLine, redactAutoCommandForLog(sendAutoCommand), workDir, cols, rows))
+	}
 
 	// WSL 会话：对照 darwin 的 PTY 环境补丁（buildDarwinPTYEnvironmentFromBase
 	// 的 LANG 注入）确保 distro 内 CLI 拿到 UTF-8 locale，不依赖发行版自身
@@ -349,12 +353,16 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 
 	cpty, err := conpty.Start(commandLine, opts...)
 	if err != nil {
-		s.log.Error("pty", "ConPTY 启动失败", err.Error())
+		if s.log != nil {
+			s.log.Error("pty", "ConPTY 启动失败", err.Error())
+		}
 		return processcap.StartEvidence{}, fmt.Errorf("conpty start: %w", err)
 	}
 
 	pid := cpty.Pid()
-	s.log.Info("pty", "ConPTY 已启动", fmt.Sprintf("id=%s pid=%d", sessionID, pid))
+	if s.log != nil {
+		s.log.Info("pty", "ConPTY 已启动", fmt.Sprintf("id=%s pid=%d", sessionID, pid))
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -401,7 +409,9 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 			time.Sleep(1000 * time.Millisecond) // 等待 shell 初始化完成
 			cmd := sendAutoCommand + "\r\n"
 			_, _ = ps.cpty.Write([]byte(cmd))
-			s.log.Info("pty", "自动发送命令", fmt.Sprintf("id=%s cmd=%s", sessionID, redactAutoCommandForLog(sendAutoCommand)))
+			if s.log != nil {
+				s.log.Info("pty", "自动发送命令", fmt.Sprintf("id=%s cmd=%s", sessionID, redactAutoCommandForLog(sendAutoCommand)))
+			}
 		}()
 	}
 
@@ -499,7 +509,9 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 			}
 		}
 		if err != nil {
-			s.log.Debug("pty", "读取结束", fmt.Sprintf("id=%s err=%v", sessionID, err))
+			if s.log != nil {
+				s.log.Debug("pty", "读取结束", fmt.Sprintf("id=%s err=%v", sessionID, err))
+			}
 			return
 		}
 	}
@@ -510,7 +522,9 @@ func (s *Service) waitLoop(sessionID string, ps *PtySession, ctx context.Context
 	close(ps.waitArmed)
 	defer close(ps.exited)
 	exitCode, err := ps.cpty.Wait(ctx)
-	s.log.Info("pty", "进程退出", fmt.Sprintf("id=%s exitCode=%d err=%v", sessionID, exitCode, err))
+	if s.log != nil {
+		s.log.Info("pty", "进程退出", fmt.Sprintf("id=%s exitCode=%d err=%v", sessionID, exitCode, err))
+	}
 
 	// Run-scoped exit: raw PTY never emits Wails events directly (design §8.6).
 	failed := err != nil && err != context.Canceled
@@ -779,7 +793,9 @@ func (s *Service) Close(sessionID string) error {
 	delete(s.sessions, sessionID)
 	s.mu.Unlock()
 
-	s.log.Info("pty", "关闭 PTY 会话", "id="+sessionID)
+	if s.log != nil {
+		s.log.Info("pty", "关闭 PTY 会话", "id="+sessionID)
+	}
 	ps.cancel()
 	err := ps.cpty.Close()
 	// M-009: bounded wait for the read loop to exit. A stuck read must not hold a
@@ -790,7 +806,9 @@ func (s *Service) Close(sessionID string) error {
 	select {
 	case <-ps.done:
 	case <-time.After(ptyCloseWaitTimeout):
-		s.log.Warn("pty", "关闭等待读取协程退出超时", "id="+sessionID)
+		if s.log != nil {
+			s.log.Warn("pty", "关闭等待读取协程退出超时", "id="+sessionID)
+		}
 	}
 	return err
 }

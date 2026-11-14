@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/remote/contract"
 )
 
@@ -425,7 +424,7 @@ func TestFinding6CorruptEventLogKeepsStoreAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := NewProductionSecurityOptions(dir, validHostSummary)
-	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(0, nil, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	// LoadSecurityState must NOT fail; the store loads (authority intact) while
 	// the sink stays unavailable (finding 6).

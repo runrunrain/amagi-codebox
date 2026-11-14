@@ -17,8 +17,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"amagi-codebox/internal/logging"
 )
 
 // ===========================================================================
@@ -196,7 +194,7 @@ func TestB2C2AllCarriersRoutesExactFields(t *testing.T) {
 
 func TestB2C2PreAcceptSinkNextCalledDedupHealth(t *testing.T) {
 	sink := &recordingSink{}
-	srv := NewServerWithSecurity(8680, &b2aSpyApp{}, logging.NewService(t.TempDir()), embed.FS{},
+	srv := NewServerWithSecurity(8680, &b2aSpyApp{}, newTestLogService(t), embed.FS{},
 		newSecurityOptions(t.TempDir(), validHostSummary, newSecFakeClock(time.Now()), cryptoRand, sink))
 	t.Cleanup(srv.log.Close)
 	srv.LoadSecurityState()

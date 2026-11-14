@@ -109,7 +109,7 @@ func (a *websocketTestApp) ProbeSessionWebUI(string) (SessionWebUIInfo, bool) {
 // remote resize frame does not call PtyResize (desktop remains geometry owner).
 func TestWebSocketLegacyInputOnlyNoOutputBypass(t *testing.T) {
 	app := newWebsocketTestApp()
-	srv := NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
+	srv := NewServer(0, app, newTestLogService(t), embed.FS{})
 	srv.SetPtyBridge(app) // M3-A2: unbound PTY bridge (design §8.6.3)
 	t.Cleanup(srv.log.Close)
 

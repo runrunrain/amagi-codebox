@@ -96,7 +96,7 @@ func (a *b2aSpyApp) ProbeSessionWebUI(string) (SessionWebUIInfo, bool) {
 
 func newB2AServer(t *testing.T, app *b2aSpyApp) *Server {
 	t.Helper()
-	return NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
+	return NewServer(0, app, newTestLogService(t), embed.FS{})
 }
 
 func loopbackReq(method, target string) *http.Request {

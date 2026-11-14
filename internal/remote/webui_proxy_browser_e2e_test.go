@@ -81,7 +81,7 @@ func TestWebUIProxyBrowserE2E(t *testing.T) {
 	app.setInfo(sid, SessionWebUIInfo{State: "available", Port: backendPort, Token: backendToken})
 	clk := newSecFakeClock(time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC))
 	opts := newSecurityOptions(t.TempDir(), validHostSummary, clk, rand.Reader, NewVolatileSecurityEventSink())
-	srv := NewServerWithSecurity(port, app, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(port, app, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)
