@@ -20,8 +20,9 @@ it('returning local during connect never re-enters remote and disconnects the co
 })
 it('ignores a late session list after switching local',async()=>{
  const s=useRemoteClientStore();await s.switchToHost('a')
- const d=deferred<any[]>();vi.mocked(api.listRemoteSessions).mockReturnValueOnce(d.promise)
- const pending=s.refreshRemoteSessions();await s.switchToLocal();d.resolve([{id:'old-host'}]);await pending
+ type RemoteSessions = Awaited<ReturnType<typeof api.listRemoteSessions>>
+ const d=deferred<RemoteSessions>();vi.mocked(api.listRemoteSessions).mockReturnValueOnce(d.promise)
+ const pending=s.refreshRemoteSessions();await s.switchToLocal();d.resolve([{id:'old-host'}] as unknown as RemoteSessions);await pending
  expect(s.remoteSessions).toEqual([]);expect(s.lastSyncedAt).toBeNull()
 })
 it('latest provider selection wins and close cannot be undone by a late response',async()=>{

@@ -508,12 +508,6 @@ function hasModelField(name: string, idx: number, key: string): boolean {
   return !!m && typeof m === 'object' && key in m;
 }
 
-function modelAdvancedPresent(name: string, idx: number): string[] {
-  const m = providerModels(name)[idx];
-  if (!m || typeof m !== 'object') return [];
-  return Object.keys(m).filter((k) => MODEL_ADVANCED_KEYS.has(k));
-}
-
 function modelExtraKeys(name: string, idx: number): string[] {
   return modelUnknownKeys(name, idx);
 }

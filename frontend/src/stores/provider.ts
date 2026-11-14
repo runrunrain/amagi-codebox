@@ -51,10 +51,10 @@ export interface ProviderEntry {
 }
 
 function hasAnthropic(p: Provider): boolean {
-  return !!(p && (p as any).anthropic && (p as any).anthropic.enabled);
+  return Boolean(p?.anthropic?.enabled);
 }
 function hasOpenAI(p: Provider): boolean {
-  return !!(p && (p as any).openai && (p as any).openai.enabled);
+  return Boolean(p?.openai?.enabled);
 }
 
 export const useProviderStore = defineStore('provider', () => {

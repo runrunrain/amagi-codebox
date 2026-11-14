@@ -245,7 +245,6 @@ import {
   enableWSLUnifiedSupply,
   disableWSLUnifiedSupply,
   type WSLConfigSupplyStatus,
-  type WSLConfigSupplyFace,
   type WSLConfigUnitPreview,
 } from '../../api/wslSupply'
 import { useToast } from '../../composables/useToast'

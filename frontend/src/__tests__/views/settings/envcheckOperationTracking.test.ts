@@ -172,7 +172,7 @@ describe('Major 1：有界超时（不无限轮询）与 unknown 语义', () => 
 
   it('超时产出 unknown 且携带 tool/kind 供组件层复检；终态在超时前到达则不触发', () => {
     let st = begin({ id: 'op-t', tool: 'pi', kind: 'install' });
-    let r = feed(st, null, T0 + PENDING_OP_TIMEOUT_MS - 1);
+    const r = feed(st, null, T0 + PENDING_OP_TIMEOUT_MS - 1);
     expect(r.event).toBe('none');
     st = r.state;
     const out = observeOperation(st, null, T0 + PENDING_OP_TIMEOUT_MS + 1);

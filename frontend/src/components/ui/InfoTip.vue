@@ -67,6 +67,10 @@
 <script lang="ts">
 // 模块级计数器：项目 vue ^3.2.37，不能依赖 3.5 的 useId。
 let infoTipSeq = 0;
+function nextInfoTipSeq(): number {
+  infoTipSeq += 1;
+  return infoTipSeq;
+}
 </script>
 
 <script setup lang="ts">
@@ -93,7 +97,7 @@ const props = withDefaults(defineProps<Props>(), {
   placement: 'bottom',
 });
 
-const popId = `infotip-${++infoTipSeq}`;
+const popId = `infotip-${nextInfoTipSeq()}`;
 
 const open = ref(false);
 const sectionActive = inject(EDITOR_SECTION_ACTIVE, computed(() => true));

@@ -12,7 +12,7 @@ import type { ListDirectoriesResult } from '../../../api/paths'
 // ---- 桩工具：内存目录树 → ListDirectoriesResult ----
 
 function listingOf(root: string, names: string[], truncated = false): ListDirectoriesResult {
-  const parent = root === '/' ? null : `/${root.split('/').filter(Boolean).slice(0, -1).join('/') || ''}` || null
+  const parent = root === '/' ? null : `/${root.split('/').filter(Boolean).slice(0, -1).join('/')}`
   return {
     root,
     parent: parent === '' ? null : parent,
@@ -118,7 +118,7 @@ describe('PathPickerModel', () => {
 
     expect(backend.calls).toEqual(['/w'])
     expect(model.listing?.root).toBe('/w')
-    expect(model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name)).toEqual(['a', 'b'])
+    expect(model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name)).toEqual(['a', 'b'])
     expect(model.breadcrumb.map((s) => s.name)).toEqual(['/', 'w'])
     expect(model.loading).toBe(false)
     expect(model.errorMsg).toBe('')
@@ -215,7 +215,7 @@ describe('PathPickerModel', () => {
     // 收起
     await model.toggleExpand('/w/a')
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['a', 'b'])
     // 收起不清勾选
     expect(model.selected).toEqual(['/w/a', '/w/a/c'])
@@ -242,7 +242,7 @@ describe('PathPickerModel', () => {
     await model.toggleExpand('/w/a', true)
     expect(model.rows.some((r) => r.kind === 'error')).toBe(false)
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['a', 'c', 'b'])
   })
 
@@ -254,7 +254,7 @@ describe('PathPickerModel', () => {
     model.navigate('/w/a')
     await vi.waitFor(() => expect(model.listing?.root).toBe('/w/a'))
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['c'])
     expect(model.breadcrumb.map((s) => s.name)).toEqual(['/', 'w', 'a'])
 
@@ -278,7 +278,7 @@ describe('PathPickerModel', () => {
     // forceReload 与首次加载共享 pending 门：至多两次（第二次在 pending 期间被吞）
     expect(backend.calls.filter((c) => c === '/w/a').length).toBeLessThanOrEqual(2)
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['a', 'c', 'b'])
   })
 

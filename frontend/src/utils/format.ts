@@ -114,3 +114,16 @@ export function truncate(text: string, maxLength: number): string {
   if (!text || text.length <= maxLength) return text;
   return text.slice(0, maxLength - 3) + '...';
 }
+
+/**
+ * Extract a readable message from an unknown error value.
+ */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message || String(err);
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return String(err);
+}

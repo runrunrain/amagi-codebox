@@ -41,7 +41,7 @@ export function getRemoteToken(): Promise<string> {
 /**
  * Get remote status
  */
-export function getRemoteStatus(): Promise<Record<string, any>> {
+export function getRemoteStatus(): Promise<Record<string, unknown>> {
   return callApi('[api.remote.getRemoteStatus]', () => GetRemoteStatus());
 }
 

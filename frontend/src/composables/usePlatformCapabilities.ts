@@ -42,7 +42,7 @@ export interface PlatformCapabilities {
 const cached = ref<PlatformCapabilities | null>(null)
 
 async function fetchCapabilities(): Promise<PlatformCapabilities> {
-  return (window as any)['go']['main']['App']['GetPlatformCapabilities']()
+  return window.go.main.App.GetPlatformCapabilities()
 }
 
 export function usePlatformCapabilities() {

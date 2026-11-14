@@ -482,7 +482,14 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
     if (rcBridgeReady) return;
     rcBridgeReady = true;
     try {
-      EventsOn('rc:conn-state', (p: any) => {
+      EventsOn('rc:conn-state', (p?: {
+        sessionId?: unknown;
+        hostId?: unknown;
+        state?: unknown;
+        attempt?: unknown;
+        nextRetryMs?: unknown;
+        detail?: unknown;
+      }) => {
         if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         const st = ensureTermState(p.sessionId);
         st.connState = String(p.state ?? '') as RemoteTerminalState['connState'];
@@ -490,7 +497,12 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         st.nextRetryMs = Number(p.nextRetryMs ?? 0);
         st.detail = String(p.detail ?? '');
       });
-      EventsOn('rc:session-state', (p: any) => {
+      EventsOn('rc:session-state', (p?: {
+        sessionId?: unknown;
+        hostId?: unknown;
+        state?: unknown;
+        restartBoundary?: unknown;
+      }) => {
         if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         const st = ensureTermState(p.sessionId);
         st.sessionState = String(p.state ?? '');
@@ -505,14 +517,25 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         };
         sessionStateSubs.get(p.sessionId)?.forEach((cb) => cb(ev));
       });
-      EventsOn('rc:control-state', (p: any) => {
+      EventsOn('rc:control-state', (p?: {
+        sessionId?: unknown;
+        hostId?: unknown;
+        state?: unknown;
+        deviceName?: unknown;
+      }) => {
         if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         applyControlSnapshot(p.sessionId, {
           state: String(p.state ?? ''),
           deviceName: typeof p.deviceName === 'string' ? p.deviceName : '',
         });
       });
-      EventsOn('rc:terminal-output', (p: any) => {
+      EventsOn('rc:terminal-output', (p?: {
+        sessionId?: unknown;
+        hostId?: unknown;
+        gap?: { fromSeq?: unknown; toSeq?: unknown; source?: unknown } | null;
+        seq?: unknown;
+        data?: unknown;
+      }) => {
         if (!p || typeof p.sessionId !== 'string' || p.hostId !== scope.value || !isRemoteMode.value) return;
         const subs = outputSubs.get(p.sessionId);
         if (!subs || subs.size === 0) return;
@@ -531,7 +554,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         }
         subs.forEach((cb) => cb(ev));
       });
-      EventsOn('rc:revoked', (p: any) => {
+      EventsOn('rc:revoked', (p?: { hostId?: unknown }) => {
         if (!p || typeof p.hostId !== 'string') return;
         // fail-closed（交互稿 §3 revoked 行）：清连接视图 + 终端全部断开；
         // Go 侧已丢弃连接并把登记簿健康置 revoked，这里同步前端投影。
@@ -550,7 +573,7 @@ export const useRemoteClientStore = defineStore('remoteClient', () => {
         }
         void loadHosts();
       });
-      EventsOn('rc:host-health', (p: any) => {
+      EventsOn('rc:host-health', (p?: { hostId?: unknown; state?: unknown }) => {
         if (!p || typeof p.hostId !== 'string') return;
         const h = hosts.value.find((x) => x.id === p.hostId);
         if (h && typeof p.state === 'string') h.health = p.state;

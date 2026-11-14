@@ -59,8 +59,9 @@ test.beforeEach(async ({ page }, testInfo) => {
         return target[property] ?? (async () => null)
       },
     })
-    ;(window as any).go = { main: { App: app } }
-    ;(window as any).runtime = new Proxy({}, {
+    const wailsWin = window as unknown as { go?: unknown; runtime?: unknown }
+    wailsWin.go = { main: { App: app } }
+    wailsWin.runtime = new Proxy({}, {
       get: () => () => () => undefined,
     })
   }, { session: stoppingSession, startsRunning: testInfo.title.includes('accepted Stop') })

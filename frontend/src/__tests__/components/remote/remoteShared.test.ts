@@ -7,8 +7,6 @@ import {
   formatPairingUrl,
   copyTextToClipboard,
   formatCountdown,
-  formatDateTime,
-  formatEventTime,
 } from '../../../components/remote/remoteShared';
 
 describe('remoteShared helpers', () => {

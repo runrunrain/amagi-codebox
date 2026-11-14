@@ -185,12 +185,12 @@ export const usePluginStore = defineStore('plugin', () => {
 
     ccInstalled.value.forEach(p => {
       // Check by plugin type or sub items
-      const type = (p as any).pluginType || '';
+      const type = p.pluginType || '';
       if (type === 'skill' || type === 'hybrid' || type === 'integration') counts.Skills++;
       if (type === 'agent' || type === 'hybrid' || type === 'integration') counts.Agents++;
       if (type === 'command' || type === 'hybrid' || type === 'integration') counts.Commands++;
       if (type === 'hook' || type === 'hybrid' || type === 'integration') counts.Hooks++;
-      if ((p as any).hasMcp) counts.MCP++;
+      if (p.hasMcp) counts.MCP++;
     });
 
     filters.push(
@@ -209,7 +209,7 @@ export const usePluginStore = defineStore('plugin', () => {
     if (resFilter.value === 'all') return ccInstalled.value;
 
     return ccInstalled.value.filter(p => {
-      const type = (p as any).pluginType || '';
+      const type = p.pluginType || '';
       switch (resFilter.value) {
         case 'Skills':
           return type === 'skill' || type === 'hybrid' || type === 'integration';
@@ -220,7 +220,7 @@ export const usePluginStore = defineStore('plugin', () => {
         case 'Hooks':
           return type === 'hook' || type === 'hybrid' || type === 'integration';
         case 'MCP':
-          return (p as any).hasMcp === true;
+          return p.hasMcp === true;
         default:
           return true;
       }

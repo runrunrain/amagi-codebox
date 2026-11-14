@@ -28,7 +28,7 @@
  */
 
 import { ref } from 'vue'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type ILink } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 // WebGL addon 改为动态 import（见 loadWebglRenderer）：仅在非 macOS 且探测通过
 // 时按需加载，退出 TerminalPageView 主 chunk。类型引用在编译期擦除，不产生静态依赖。
@@ -192,18 +192,19 @@ export interface TerminalTransport {
 export function createLocalTerminalTransport(sessionId: string): TerminalTransport {
   return {
     subscribeOutput(cb) {
-      return EventsOn('pty:data:' + sessionId, (eventData: any) => {
+      return EventsOn('pty:data:' + sessionId, (eventData: unknown) => {
         if (
           eventData &&
           typeof eventData === 'object' &&
           's' in eventData &&
           'd' in eventData
         ) {
+          const frame = eventData as { s: unknown; d: unknown; r?: unknown; v?: unknown }
           cb({
-            seq: eventData.s as number,
-            data: eventData.d as string,
-            runToken: typeof eventData.r === 'string' ? eventData.r : '',
-            runVersion: typeof eventData.v === 'string' ? eventData.v : '',
+            seq: frame.s as number,
+            data: frame.d as string,
+            runToken: typeof frame.r === 'string' ? frame.r : '',
+            runVersion: typeof frame.v === 'string' ? frame.v : '',
           })
         } else if (typeof eventData === 'string') {
           // legacy fallback without seq -> flush through after replay.
@@ -212,11 +213,14 @@ export function createLocalTerminalTransport(sessionId: string): TerminalTranspo
       })
     },
     subscribeExit(cb) {
-      return EventsOn('pty:exit:' + sessionId, (info: any) => {
+      return EventsOn('pty:exit:' + sessionId, (info: unknown) => {
+        const payload = info && typeof info === 'object'
+          ? (info as { exitCode?: unknown; r?: unknown; v?: unknown })
+          : null
         cb({
-          exitCode: info && typeof info === 'object' ? info.exitCode : undefined,
-          runToken: info && typeof info.r === 'string' ? info.r : '',
-          runVersion: info && typeof info.v === 'string' ? info.v : '',
+          exitCode: typeof payload?.exitCode === 'number' ? payload.exitCode : undefined,
+          runToken: typeof payload?.r === 'string' ? payload.r : '',
+          runVersion: typeof payload?.v === 'string' ? payload.v : '',
         })
       })
     },
@@ -1175,14 +1179,14 @@ export function useTerminalEngine() {
         /(?:[A-Za-z]:[/]|[.][/])(?:[\w.-]+[/])*[\w.-]+\.[a-zA-Z]{1,10}(?::(\d+)(?::\d+)?)?|(?:[/]|(?:[\w.-]+[/]){1,})(?:[\w.-]+[/])*[\w.-]+\.[a-zA-Z]{1,10}(?::(\d+)(?::\d+)?)?/g
 
       term.registerLinkProvider({
-        provideLinks(bufferLineNumber: number, callback: (links: any[]) => void) {
+        provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
           const line = term.buffer.active.getLine(bufferLineNumber - 1)
           if (!line) {
             callback([])
             return
           }
           const lineText = line.translateToString(true)
-          const links: any[] = []
+          const links: ILink[] = []
 
           let match: RegExpExecArray | null
           FILE_PATH_REGEX.lastIndex = 0
@@ -1207,7 +1211,7 @@ export function useTerminalEngine() {
               },
               text: fullMatch,
               activate(_event: MouseEvent, _text: string) {
-                OpenFileInEditor(filePath, lineNum).catch((err: any) => {
+                OpenFileInEditor(filePath, lineNum).catch((err: unknown) => {
                   console.warn('OpenFileInEditor failed:', err)
                 })
               },
