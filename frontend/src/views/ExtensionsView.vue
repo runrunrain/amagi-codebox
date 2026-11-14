@@ -18,12 +18,16 @@
     <div class="ex-content">
       <!-- Plugins tab -->
       <div v-if="extMainTab === 'plugins'" class="tab-pane">
-        <!-- Engine segmented: ClaudeCode | OpenCode | Codex -->
+        <!-- Engine segmented: ClaudeCode | OpenCode | Codex | Pi | OMP。
+             引擎切换经 setPluginEngine 走 store 动作（清 activePluginId），
+             并把共享 pluginView 拉回列表态（契约 §2：引擎切换重置到列表态），
+             不用 v-model 直写 ref 绕过该重置。 -->
         <div class="ex-engine-tabs">
           <Segmented
-            v-model="pluginEngine"
+            :model-value="pluginEngine"
             :options="engineOptions"
             variant="underline"
+            @update:model-value="handleEngineChange"
           />
         </div>
 
@@ -31,7 +35,11 @@
         <div class="engine-content">
           <!-- ClaudeCode plugins -->
           <div v-if="pluginEngine === 'claude'" class="engine-pane">
+            <!-- :key 区分 Claude/Codex 两分支：否则 v-if 切换时 Vue 原地 patch、
+                 复用同一 PluginInstalledPanel 实例，onMounted 装载不再执行，
+                 直切后目标引擎数据永不加载（走查 medium 修复） -->
             <PluginInstalledPanel
+              key="claude"
               engine="claude"
               @add_market="handleAddMarket"
             />
@@ -64,6 +72,7 @@
           <!-- Codex plugins -->
           <div v-else class="engine-pane">
             <PluginInstalledPanel
+              key="codex"
               engine="codex"
               @add_market="handleAddMarket"
             />
@@ -97,7 +106,7 @@
           <input
             v-model="marketSource"
             type="text"
-            :placeholder="activeEngine === 'claude' ? '例: owner/repo 或 https://github.com/user/marketplace.git' : '例: owner/repo 或 https://github.com/user/marketplace.git'"
+            placeholder="例: owner/repo 或 https://github.com/user/marketplace.git"
             class="form-input"
             @keydown.enter="submitAddMarket"
           />
@@ -111,14 +120,14 @@
         </div>
       </div>
       <template #footer>
-        <button class="btn secondary" @click="showAddMarketDialog = false">取消</button>
-        <button
-          class="btn primary"
+        <AppButton variant="ghost" @click="showAddMarketDialog = false">取消</AppButton>
+        <AppButton
+          variant="primary"
           :disabled="addMarketSubmitting || !marketSource.trim()"
           @click="submitAddMarket"
         >
           添加
-        </button>
+        </AppButton>
       </template>
     </Dialog>
   </section>
@@ -129,6 +138,7 @@ import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import PageHead from '../components/ui/PageHead.vue';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
+import AppButton from '../components/ui/AppButton.vue';
 import Segmented from '../components/ui/Segmented.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
 import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';
@@ -146,6 +156,8 @@ const { extMainTab, pluginEngine } = storeToRefs(pluginStore);
 const { showError, showSuccess } = useToast();
 
 const {
+  setPluginEngine,
+  setPluginView,
   addCcMarketplace,
   addCxMarketplace,
 } = pluginStore;
@@ -171,6 +183,14 @@ const showAddMarketDialog = ref(false);
 const activeEngine = ref<'claude' | 'codex'>('claude');
 const marketSource = ref('');
 const addMarketSubmitting = ref(false);
+
+// 引擎切换（契约 §2）：走 setPluginEngine 动作（内部清 activePluginId），
+// 并把共享 pluginView 重置回列表态，避免上一个引擎的市场/详情态串到下一个引擎
+function handleEngineChange(engine: string) {
+  if (engine === pluginEngine.value) return;
+  setPluginEngine(engine as 'claude' | 'opencode' | 'codex' | 'pi' | 'omp');
+  setPluginView('installed');
+}
 
 // Handle add market request from child component
 function handleAddMarket(engine: 'claude' | 'codex') {
@@ -203,6 +223,12 @@ async function submitAddMarket() {
     addMarketSubmitting.value = false;
   }
 }
+
+// 测试契约（契约 §8 R5b）：交互断言直调 expose 的 handler——
+// handleAddMarket(engine) 打开内联 Dialog（经 ctx.teleports.body 断言），
+// submitAddMarket 按引擎分派 addCcMarketplace / addCxMarketplace；
+// marketSource ref 与 handleEngineChange 供注入输入与引擎切换接线断言
+defineExpose({ handleAddMarket, submitAddMarket, marketSource, handleEngineChange });
 </script>
 
 <style scoped>
@@ -318,37 +344,5 @@ async function submitAddMarket() {
   border-radius: 4px;
   font-family: var(--mono);
   color: var(--secondary);
-}
-
-.btn {
-  font-size: 13px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: none;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn.primary {
-  background: var(--accent);
-  color: #fff;
-}
-
-.btn.primary:hover:not(:disabled) {
-  background: #0066cc;
-}
-
-.btn.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn.secondary {
-  background: var(--control);
-  color: var(--label);
-}
-
-.btn.secondary:hover {
-  background: var(--controlHover);
 }
 </style>

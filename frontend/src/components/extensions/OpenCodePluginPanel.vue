@@ -1,173 +1,118 @@
+<!-- OpenCode 插件管理面板（plugin-ui-redesign 契约 §6.3 / R2 重写）。
+     四段式：DiagnosticBanner → CountTabs（插件 N + 搜索）→ ListToolbar（已安装 N +
+     刷新 + 安装插件）→ 内容区（列表态 ⇄ 详情态，面板本地 ref；不分组、无开关——
+     OpenCode 无启停 API）。门控为 store 派生（loading/installed/loadError），
+     首屏 Loading/Error 与「有数据后刷新失败」横幅双形态由此自然区分。 -->
 <template>
   <div class="opencode-plugin-panel">
-    <LoadingState v-if="initialLoading" message="加载 OpenCode 插件中..." />
-    <ErrorState
-      v-else-if="initialError"
-      :message="initialError"
-      :on-retry="loadPlugins"
-    />
+    <LoadingState v-if="showInitialLoading" message="加载 OpenCode 插件中..." />
+    <ErrorState v-else-if="showFatalError" :message="loadError" :on-retry="handleRefresh" />
 
     <template v-else>
-      <div v-if="warnings.length" class="status-banner warning">
-        <span>{{ warnings.join('；') }}</span>
-        <AppButton variant="ghost" size="small" @click="loadPlugins">重试</AppButton>
-      </div>
+      <DiagnosticBanner :errors="diagnosticErrors" :warnings="warnings" />
 
-      <div class="scope-note">
-        <div>
-          <strong>OpenCode 全局插件</strong>
-          <p>更新时会发现最新稳定版本、切换到不可变 tag/精确 npm 版本，再通过官方 CLI 安装并校验。</p>
-        </div>
-        <div class="header-actions">
-          <AppButton variant="ghost" size="small" :disabled="loading" @click="loadPlugins">
+      <CountTabs
+        v-model="activeTab"
+        v-model:search-value="searchQuery"
+        :tabs="countTabs"
+        search-placeholder="搜索插件名称或描述"
+      />
+
+      <ListToolbar title="已安装" :count="filteredPlugins.length" :loading="loading">
+        <template #actions>
+          <AppButton variant="ghost" size="small" :disabled="loading" @click="handleRefresh">
             {{ loading ? '刷新中…' : '刷新' }}
           </AppButton>
           <AppButton variant="primary" size="small" @click="openInstallDialog">
             安装插件
           </AppButton>
-        </div>
-      </div>
+        </template>
+      </ListToolbar>
 
-      <div class="panel-header">
-        <div class="header-title">
-          <h2>已安装</h2>
-          <span class="count-badge">{{ installed.length }}</span>
-        </div>
-      </div>
-
-      <div v-if="installed.length" class="plugin-split">
-        <div class="plugin-list">
-          <button
-            v-for="plugin in installed"
+      <!-- 列表态 -->
+      <div v-if="view === 'list'" class="list-pane">
+        <div v-if="filteredPlugins.length" class="plugin-list">
+          <PluginRow
+            v-for="plugin in filteredPlugins"
             :key="plugin.spec"
-            :class="['plugin-item', { active: activeSpec === plugin.spec }]"
-            @click="select(plugin.spec)"
-          >
-            <div class="plugin-name-row">
-              <span class="plugin-name">{{ plugin.name }}</span>
-              <Badge type="scope" text="全局" />
-            </div>
-            <div class="plugin-badges">
-              <Badge type="source" :text="sourceLabel(plugin.source)" variant="muted" />
-              <Badge v-if="plugin.version" type="ver" :text="`v${plugin.version}`" />
-              <Badge
-                v-for="target in plugin.targets || []"
-                :key="target"
-                type="type"
-                :text="target"
-                :color="target === 'tui' ? 'command' : 'plugin'"
-              />
-            </div>
-            <p class="plugin-spec">{{ plugin.spec }}</p>
-            <p v-if="plugin.description" class="plugin-description">
-              {{ truncate(plugin.description, 90) }}
-            </p>
-          </button>
+            :name="plugin.name"
+            :description="plugin.description"
+            :badges="buildBadges(plugin)"
+            :active="plugin.spec === activeSpec"
+            @click="openDetail(plugin.spec)"
+          />
         </div>
 
-        <div v-if="activePlugin" class="plugin-detail">
-          <div class="detail-header">
-            <div>
-              <h3>{{ activePlugin.name }}</h3>
-              <div class="plugin-badges">
-                <Badge type="source" :text="sourceLabel(activePlugin.source)" variant="muted" />
-                <Badge v-if="activePlugin.version" type="ver" :text="`v${activePlugin.version}`" />
-                <Badge
-                  v-for="target in activePlugin.targets || []"
-                  :key="target"
-                  type="type"
-                  :text="target"
-                  :color="target === 'tui' ? 'command' : 'plugin'"
-                />
-              </div>
-            </div>
-            <div class="detail-actions">
-              <AppButton
-                variant="ghost"
-                size="small"
-                :disabled="mutating || activePlugin.source === 'file'"
-                @click="handleUpdate"
-              >
-                {{ activePlugin.source === 'file' ? '本地直载' : (mutating ? '处理中…' : '检查更新') }}
-              </AppButton>
-              <AppButton variant="danger" size="small" :disabled="mutating" @click="showUninstallDialog = true">
-                卸载
-              </AppButton>
-            </div>
-          </div>
-
-          <p v-if="activePlugin.description" class="detail-description">
-            {{ activePlugin.description }}
-          </p>
-
-          <div class="meta-list">
-            <div class="meta-row">
-              <span>模块 Spec</span>
-              <code>{{ activePlugin.spec }}</code>
-            </div>
-            <div class="meta-row">
-              <span>安装路径</span>
-              <code>{{ activePlugin.installPath || '未找到缓存包' }}</code>
-            </div>
-            <div v-if="activePlugin.author" class="meta-row">
-              <span>作者</span>
-              <span>{{ activePlugin.author }}</span>
-            </div>
-            <div v-if="activePlugin.repository" class="meta-row">
-              <span>仓库</span>
-              <span class="break-text">{{ activePlugin.repository }}</span>
-            </div>
-            <div v-if="activePlugin.lastUpdated" class="meta-row">
-              <span>缓存更新时间</span>
-              <span>{{ formatDate(activePlugin.lastUpdated) }}</span>
-            </div>
-          </div>
-
-          <div v-if="loadingDetail" class="detail-loading">正在读取插件资源…</div>
-          <template v-else-if="isDetail(activePlugin)">
-            <div class="resource-summary">
-              <div class="resource-card">
-                <span class="resource-value">{{ activePlugin.skills.length }}</span>
-                <span>Skills</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ activePlugin.agents.length }}</span>
-                <span>Agents</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ activePlugin.commands.length }}</span>
-                <span>Commands</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ activePlugin.hooks.length }}</span>
-                <span>Hooks</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ activePlugin.hasMcp ? 1 : 0 }}</span>
-                <span>MCP</span>
-              </div>
-            </div>
-
-            <div v-if="resourceNames.length" class="resource-list">
-              <h4>包含资源</h4>
-              <div class="resource-chips">
-                <code v-for="item in resourceNames" :key="item">{{ item }}</code>
-              </div>
-            </div>
+        <EmptyStateCard
+          v-else
+          title="暂无 OpenCode 全局插件"
+          description="点击『安装插件』，输入 npm、GitHub 或本地模块地址"
+        >
+          <template #primary>
+            <AppButton variant="primary" size="small" @click="openInstallDialog">
+              安装插件
+            </AppButton>
           </template>
-        </div>
-
-        <div v-else class="detail-empty">
-          <EmptyState icon="◇" title="选择插件" description="点击左侧插件查看包信息与资源" />
-        </div>
+        </EmptyStateCard>
       </div>
 
-      <EmptyState
-        v-else
-        icon="⊘"
-        title="暂无 OpenCode 全局插件"
-        description="点击“安装插件”，输入 npm、GitHub 或本地模块地址"
-      />
+      <!-- 详情态：面包屑 + DetailHeader + 描述 + 资源汇总徽章行 + 只读子项 + MetaGrid -->
+      <div v-else-if="activePlugin" class="detail-pane">
+        <DetailHeader
+          :breadcrumb="detailBreadcrumb"
+          :title="activePlugin.name"
+          :badges="detailBadges"
+          @back="backToList"
+        >
+          <template #actions>
+            <AppButton
+              variant="primary"
+              size="small"
+              :disabled="mutating || activePlugin.source === 'file'"
+              @click="handleUpdate"
+            >
+              {{ activePlugin.source === 'file' ? '本地直载' : (mutating ? '处理中…' : '检查更新') }}
+            </AppButton>
+            <AppButton
+              variant="danger"
+              size="small"
+              :disabled="mutating"
+              @click="showUninstallDialog = true"
+            >
+              卸载
+            </AppButton>
+          </template>
+        </DetailHeader>
+
+        <p v-if="activePlugin.description" class="detail-description">
+          {{ activePlugin.description }}
+        </p>
+
+        <div v-if="loadingDetail" class="detail-loading">正在读取插件资源…</div>
+        <template v-else-if="pluginDetail">
+          <div v-if="resourceSummaryBadges.length" class="resource-summary">
+            <!-- type='tag' 为白字无底色（浅色背景上不可见），计数汇总改用 scope（--control 底 + --secondary 字） -->
+            <Badge
+              v-for="item in resourceSummaryBadges"
+              :key="item"
+              type="scope"
+              :text="item"
+              variant="muted"
+            />
+          </div>
+
+          <div v-if="subItems.length" class="sub-item-list">
+            <SubItemRow
+              v-for="item in subItems"
+              :key="`${item.typeBadge}:${item.name}`"
+              :name="item.name"
+              :type-badge="item.typeBadge"
+            />
+          </div>
+        </template>
+
+        <MetaGrid :items="metaItems" />
+      </div>
     </template>
 
     <Dialog
@@ -184,7 +129,10 @@
           placeholder="例：github:owner/repo#v1.2.3 或 package-name@1.2.3"
           @keydown.enter="handleInstall"
         />
-        <p>支持 npm 包、GitHub spec 和 file:// 本地插件；正式安装推荐固定不可变版本。</p>
+        <p>
+          支持 npm 包、GitHub spec 和 file:// 本地插件；正式安装推荐固定不可变版本。
+          更新时会发现最新稳定版本、切换到不可变 tag 或精确 npm 版本，再通过官方 CLI 安装并校验。
+        </p>
       </div>
       <template #footer>
         <AppButton variant="ghost" @click="showInstallDialog = false">取消</AppButton>
@@ -218,11 +166,35 @@ import AppButton from '../ui/AppButton.vue';
 import Badge from '../ui/Badge.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import Dialog from '../ui/Dialog.vue';
-import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
+import CountTabs from './ui/CountTabs.vue';
+import DetailHeader from './ui/DetailHeader.vue';
+import DiagnosticBanner from './ui/DiagnosticBanner.vue';
+import EmptyStateCard from './ui/EmptyStateCard.vue';
+import ListToolbar from './ui/ListToolbar.vue';
+import MetaGrid from './ui/MetaGrid.vue';
+import PluginRow from './ui/PluginRow.vue';
+import SubItemRow from './ui/SubItemRow.vue';
+import type {
+  BreadcrumbSegment,
+  CountTabItem,
+  PluginBadgeDescriptor,
+} from './pluginViewTypes';
 import { useToast } from '../../composables/useToast';
-import { truncate } from '../../utils/format';
+
+/** MetaGrid items 的结构镜像（MetaGrid.vue 未导出 Props 接口） */
+interface MetaItem {
+  label: string;
+  value: string;
+  mono?: boolean;
+}
+
+/** 详情子项行视图（§5.3 OpenCode：skills/agents/commands/hooks + hasMcp 汇总行，只读） */
+interface OpenCodeSubItemView {
+  typeBadge: string;
+  name: string;
+}
 
 const store = useOpenCodePluginStore();
 const {
@@ -232,31 +204,50 @@ const {
   activePlugin,
   loading,
   loadingDetail,
+  loadError,
 } = storeToRefs(store);
 const { showSuccess, showError } = useToast();
 
-const initialLoading = ref(true);
-const initialError = ref('');
+// —— 面板本地状态（契约 §2：OpenCode 仅 list ⇄ detail，本地 ref）——
+const view = ref<'list' | 'detail'>('list');
+const activeTab = ref('plugins');
+const searchQuery = ref('');
 const mutating = ref(false);
 const showInstallDialog = ref(false);
 const showUninstallDialog = ref(false);
 const installSpec = ref('');
 
-const resourceNames = computed(() => {
-  const plugin = activePlugin.value;
-  if (!plugin || !isDetail(plugin)) return [];
-  return [
-    ...plugin.skills.map(item => `skill:${item.name}`),
-    ...plugin.agents.map(item => `agent:${item.name}`),
-    ...plugin.commands.map(item => `command:${item.name}`),
-    ...plugin.hooks.map(item => `hook:${item.name}`),
-    ...(plugin.hasMcp ? ['mcp'] : []),
-  ].slice(0, 30);
+// —— 首屏门控：store 派生（契约 §6.3，SSR 测试可经 store 状态种子驱动分支）——
+const showInitialLoading = computed(() =>
+  loading.value && installed.value.length === 0 && !loadError.value);
+const showFatalError = computed(() => !!loadError.value && installed.value.length === 0);
+// 有数据后的刷新失败 → 并入诊断横幅 errors（整页 ErrorState 只在列表为空时出现）
+const diagnosticErrors = computed(() =>
+  loadError.value && installed.value.length > 0 ? [loadError.value] : []);
+
+// —— 资源计数标签（§3.1 OpenCode：无市场概念，仅单标签）——
+const countTabs = computed<CountTabItem[]>(() => [
+  { key: 'plugins', label: '插件', count: installed.value.length },
+]);
+
+// —— 搜索：作用于当前标签，本地过滤，不发后端请求 ——
+const filteredPlugins = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) return installed.value;
+  return installed.value.filter(plugin =>
+    plugin.name.toLowerCase().includes(query)
+    || (plugin.description ?? '').toLowerCase().includes(query));
 });
 
+// —— 详情（列表数据兜底；资源汇总/子项仅在详情形态可用）——
 function isDetail(plugin: OpenCodePlugin | OpenCodePluginDetail): plugin is OpenCodePluginDetail {
   return Array.isArray((plugin as OpenCodePluginDetail).skills);
 }
+
+const pluginDetail = computed(() => {
+  const plugin = activePlugin.value;
+  return plugin && isDetail(plugin) ? plugin : null;
+});
 
 function sourceLabel(source: string) {
   if (source === 'github') return 'GitHub';
@@ -268,23 +259,92 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString('zh-CN');
 }
 
-async function loadPlugins() {
-  initialError.value = '';
+/** 行/详情徽章（§5.1/§5.2 OpenCode：来源 + v{version} + targets，无开关） */
+function buildBadges(plugin: OpenCodePlugin): PluginBadgeDescriptor[] {
+  const badges: PluginBadgeDescriptor[] = [
+    { text: sourceLabel(plugin.source), type: 'source', variant: 'muted' },
+  ];
+  if (plugin.version) {
+    badges.push({ text: `v${plugin.version}`, type: 'ver' });
+  }
+  for (const target of plugin.targets || []) {
+    badges.push({ text: target, type: 'type', color: target === 'tui' ? 'command' : 'plugin' });
+  }
+  return badges;
+}
+
+const detailBadges = computed(() =>
+  activePlugin.value ? buildBadges(activePlugin.value) : []);
+
+const detailBreadcrumb = computed<BreadcrumbSegment[]>(() => [
+  { label: '插件', clickable: true },
+  { label: activePlugin.value?.name ?? '' },
+]);
+
+// —— 资源汇总徽章行（详情形态：真实计数；hasMcp=false 不显示假零徽章）——
+const resourceSummaryBadges = computed(() => {
+  const detail = pluginDetail.value;
+  if (!detail) return [];
+  const items = [
+    `技能 ${detail.skills.length}`,
+    `代理 ${detail.agents.length}`,
+    `命令 ${detail.commands.length}`,
+    `钩子 ${detail.hooks.length}`,
+  ];
+  if (detail.hasMcp) {
+    items.push('含 MCP');
+  }
+  return items;
+});
+
+// —— 只读子项列表（无启停 API，SubItemRow 不传 toggleable）——
+const subItems = computed<OpenCodeSubItemView[]>(() => {
+  const detail = pluginDetail.value;
+  if (!detail) return [];
+  return [
+    ...detail.skills.map(item => ({ typeBadge: '技能', name: item.name })),
+    ...detail.agents.map(item => ({ typeBadge: '代理', name: item.name })),
+    ...detail.commands.map(item => ({ typeBadge: '命令', name: item.name })),
+    ...detail.hooks.map(item => ({ typeBadge: '钩子', name: item.name })),
+    ...(detail.hasMcp ? [{ typeBadge: 'mcp', name: 'MCP 服务器' }] : []),
+  ];
+});
+
+// —— MetaGrid（§5.2 OpenCode；空 value 项过滤，installedAt 无字段不显示）——
+const metaItems = computed<MetaItem[]>(() => {
+  const plugin = activePlugin.value;
+  if (!plugin) return [];
+  const items: MetaItem[] = [
+    { label: '模块 Spec', value: plugin.spec, mono: true },
+    { label: '来源', value: sourceLabel(plugin.source) },
+    { label: '作用域', value: plugin.scope },
+    { label: '安装路径', value: plugin.installPath ?? '', mono: true },
+    { label: '开发者', value: plugin.author ?? '' },
+    { label: '仓库', value: plugin.repository ?? '' },
+    { label: '缓存更新时间', value: plugin.lastUpdated ? formatDate(plugin.lastUpdated) : '' },
+  ];
+  return items.filter(item => item.value);
+});
+
+async function handleRefresh() {
   try {
     await store.refresh(true);
-  } catch (error) {
-    initialError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    initialLoading.value = false;
+  } catch {
+    // 失败已由 store.loadError 记录（诊断横幅/整页错误数据源）
   }
 }
 
-async function select(spec: string) {
+async function openDetail(spec: string) {
+  view.value = 'detail';
   try {
     await store.selectPlugin(spec);
   } catch (error) {
     showError(`读取插件详情失败：${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function backToList() {
+  view.value = 'list';
 }
 
 function openInstallDialog() {
@@ -327,6 +387,7 @@ async function handleUninstall() {
   try {
     await store.uninstall(spec);
     showSuccess('OpenCode 插件已卸载');
+    view.value = 'list';
   } catch (error) {
     showError(`卸载失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -334,244 +395,80 @@ async function handleUninstall() {
   }
 }
 
-onMounted(loadPlugins);
+onMounted(() => {
+  // 失败已由 store.loadError 记录，此处捕获防未处理拒绝
+  store.refresh(true).catch(() => {});
+});
+
+// 可测试性契约（§8：行为断言一律走面板 expose 的 handler / ref）：
+// openInstallDialog + showInstallDialog/installSpec ref 供 Dialog teleports 与安装流断言。
+defineExpose({
+  handleRefresh,
+  openDetail,
+  backToList,
+  openInstallDialog,
+  handleInstall,
+  handleUpdate,
+  handleUninstall,
+  showInstallDialog,
+  installSpec,
+});
 </script>
 
 <style scoped>
+/* 根间距与 PluginInstalledPanel/PluginMarketPanel 对齐（14px，跨面板一致） */
 .opencode-plugin-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.status-banner,
-.scope-note {
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.status-banner.warning {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 8%, var(--card));
-}
-
-.scope-note {
-  background: var(--card);
-}
-
-.scope-note strong {
-  font-size: 14px;
-  color: var(--label);
-}
-
-.scope-note p,
-.install-form p {
-  margin: 5px 0 0;
-  font-size: 12px;
-  color: var(--secondary);
-}
-
-.header-actions,
-.detail-actions,
-.plugin-badges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.panel-header,
-.header-title,
-.detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.header-title {
-  justify-content: flex-start;
-  gap: 8px;
-}
-
-.header-title h2,
-.detail-header h3 {
-  margin: 0;
-}
-
-.count-badge {
-  min-width: 22px;
-  text-align: center;
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 11px;
-  background: var(--control);
-  color: var(--secondary);
-}
-
-.plugin-split {
-  display: grid;
-  grid-template-columns: minmax(280px, 36%) 1fr;
-  min-height: 470px;
-  border: 1px solid var(--separator);
-  border-radius: 14px;
-  overflow: hidden;
-  background: var(--card);
+  gap: 14px;
 }
 
 .plugin-list {
-  border-right: 1px solid var(--separator);
-  overflow-y: auto;
-  max-height: 620px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  overflow: hidden;
 }
 
-.plugin-item {
-  width: 100%;
-  text-align: left;
-  border: 0;
-  border-bottom: 1px solid var(--separator);
-  background: transparent;
-  padding: 15px 16px;
-  color: var(--label);
-  cursor: pointer;
-}
-
-.plugin-item:hover,
-.plugin-item.active {
-  background: var(--control);
-}
-
-.plugin-item.active {
-  box-shadow: inset 3px 0 var(--accent);
-}
-
-.plugin-name-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.plugin-name {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.plugin-badges {
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-
-.plugin-spec,
-.plugin-description {
-  margin: 8px 0 0;
-  font-size: 11px;
-  color: var(--tertiary);
-  overflow-wrap: anywhere;
-}
-
-.plugin-description {
-  color: var(--secondary);
-  line-height: 1.5;
-}
-
-.plugin-detail {
-  padding: 22px;
-  overflow-y: auto;
-}
-
-.detail-header {
-  align-items: flex-start;
-  gap: 16px;
-}
-
-.detail-description {
-  color: var(--secondary);
-  line-height: 1.65;
-  font-size: 13px;
-}
-
-.meta-list {
-  margin-top: 20px;
+.plugin-list :deep(.plugin-row) + :deep(.plugin-row) {
   border-top: 1px solid var(--separator);
 }
 
-.meta-row {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--separator);
-  font-size: 12px;
-  color: var(--secondary);
+.detail-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
-.meta-row code,
-.break-text {
-  color: var(--label);
-  overflow-wrap: anywhere;
-}
-
-.detail-loading {
-  padding: 24px 0;
+.detail-description {
+  margin: 0;
   color: var(--secondary);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .resource-summary {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(70px, 1fr));
-  gap: 8px;
-  margin-top: 20px;
-}
-
-.resource-card {
-  background: var(--control);
-  border-radius: 10px;
-  padding: 12px 8px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--secondary);
-}
-
-.resource-value {
-  font-size: 18px;
-  font-weight: 650;
-  color: var(--label);
-}
-
-.resource-list {
-  margin-top: 20px;
-}
-
-.resource-list h4 {
-  margin: 0 0 10px;
-}
-
-.resource-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.resource-chips code {
-  padding: 4px 7px;
-  border-radius: 6px;
-  background: var(--control);
-  color: var(--secondary);
-  font-size: 10px;
+.sub-item-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  overflow: hidden;
 }
 
-.detail-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.sub-item-list :deep(.sub-item-row) + :deep(.sub-item-row) {
+  border-top: 1px solid var(--separator);
+}
+
+.detail-loading {
+  color: var(--secondary);
+  font-size: 12px;
 }
 
 .install-form {
@@ -585,6 +482,13 @@ onMounted(loadPlugins);
   font-weight: 600;
 }
 
+.install-form p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--secondary);
+  line-height: 1.6;
+}
+
 .module-input {
   border: 1px solid var(--separator);
   border-radius: 8px;
@@ -596,21 +500,5 @@ onMounted(loadPlugins);
 .module-input:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-@media (max-width: 900px) {
-  .plugin-split {
-    grid-template-columns: 1fr;
-  }
-
-  .plugin-list {
-    border-right: 0;
-    border-bottom: 1px solid var(--separator);
-    max-height: 280px;
-  }
-
-  .resource-summary {
-    grid-template-columns: repeat(3, 1fr);
-  }
 }
 </style>

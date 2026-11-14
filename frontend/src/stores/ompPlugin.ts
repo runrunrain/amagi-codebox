@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import * as api from '../api/ompPlugin';
 import type {
@@ -19,6 +19,9 @@ export const useOmpPluginStore = defineStore('ompPlugin', () => {
   const loading = ref(false);
   const loadError = ref('');
   const loadedAt = ref<number | null>(null);
+
+  /** 已启用插件数（契约 §7 归一化：可选统计，计数来自 store 数据表达式） */
+  const enabledCount = computed(() => installed.value.filter((plugin) => plugin.enabled).length);
 
   async function refresh(force = false) {
     if (!force && loadedAt.value && Date.now() - loadedAt.value < CACHE_TTL) {
@@ -72,6 +75,7 @@ export const useOmpPluginStore = defineStore('ompPlugin', () => {
     loading,
     loadError,
     loadedAt,
+    enabledCount,
     refresh,
     install,
     uninstall,

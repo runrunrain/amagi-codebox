@@ -11,6 +11,9 @@ const CACHE_TTL = 5 * 60 * 1000;
 export const usePiPluginStore = defineStore('piPlugin', () => {
   const installed = ref<PiPackage[]>([]);
   const warnings = ref<string[]>([]);
+  // 契约 §7（plugin-ui-redesign）：refresh 失败写入 / 成功清空；refresh 维持
+  // 既有 rethrow 语义（动作签名不变），面板首屏门控与诊断横幅改由该 state 派生。
+  const loadError = ref('');
   const activeSource = ref<string | null>(null);
   const details = ref<Record<string, PiPackageDetail>>({});
   const loading = ref(false);
@@ -24,6 +27,13 @@ export const usePiPluginStore = defineStore('piPlugin', () => {
       || null;
   });
 
+  // 契约 §3.1/§7：PiPackage 自带四个可选资源数组（列表级可能未填充），Σ=0
+  // 时面板隐藏对应标签（宁可少显示不显示假零）。
+  const skillCount = computed(() => installed.value.reduce((sum, pkg) => sum + (pkg.skills?.length ?? 0), 0));
+  const extensionCount = computed(() => installed.value.reduce((sum, pkg) => sum + (pkg.extensions?.length ?? 0), 0));
+  const promptCount = computed(() => installed.value.reduce((sum, pkg) => sum + (pkg.prompts?.length ?? 0), 0));
+  const themeCount = computed(() => installed.value.reduce((sum, pkg) => sum + (pkg.themes?.length ?? 0), 0));
+
   async function refresh(force = false) {
     if (!force && loadedAt.value && Date.now() - loadedAt.value < CACHE_TTL) {
       return;
@@ -33,10 +43,14 @@ export const usePiPluginStore = defineStore('piPlugin', () => {
       const data = await api.refreshPiPackages();
       installed.value = data.installed || [];
       warnings.value = data.warnings || [];
+      loadError.value = '';
       loadedAt.value = Date.now();
       if (activeSource.value && !installed.value.some(pkg => pkg.source === activeSource.value)) {
         activeSource.value = null;
       }
+    } catch (error) {
+      loadError.value = error instanceof Error ? error.message : String(error);
+      throw error;
     } finally {
       loading.value = false;
     }
@@ -97,11 +111,16 @@ export const usePiPluginStore = defineStore('piPlugin', () => {
   return {
     installed,
     warnings,
+    loadError,
     activeSource,
     details,
     loading,
     loadingDetail,
     activePackage,
+    skillCount,
+    extensionCount,
+    promptCount,
+    themeCount,
     refresh,
     selectPackage,
     install,

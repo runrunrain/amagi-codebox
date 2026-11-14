@@ -64,12 +64,6 @@ export const usePluginStore = defineStore('plugin', () => {
   // Codex active marketplace filter
   const activeMarketId = ref<string | null>(null);
 
-  // Codex search query
-  const marketSearchQuery = ref('');
-
-  // Codex sort by: 'installs' | 'name'
-  const marketSortBy = ref<'installs' | 'name'>('installs');
-
   // Active plugin for detail view
   const activePluginId = ref<string | null>(null);
 
@@ -79,14 +73,21 @@ export const usePluginStore = defineStore('plugin', () => {
   // Claude active plugin detail
   const ccActivePluginDetail = ref<Record<string, PluginDetail>>({});
 
-  // Resource filter
+  // Resource filter（契约 §10.6：旧五类资源筛选 chips 已被「MCP 标签 + 类型徽章 + 搜索」
+  // 替代，state 保留在 store 不删以避免破坏序列化；面板不再消费，无写入口）
   const resFilter = ref<ResourceFilter['value']>('all');
+
+  // 加载诊断（契约 §7）：面板 DiagnosticBanner 的 errors 数据源。
+  // - ccLoadError 由 loadCcAllData 的 track() 在子任务失败时写入（外层 catch 仅非预期异常可达）
+  // - cxLoadError 由 loadCxPlugins 既有 catch 写入（该动作 rethrow）
+  // 两者成功时清空；动作签名不变。
+  const ccLoadError = ref('');
+  const cxLoadError = ref('');
 
   // Loading states
   const loadingCC = ref(false);
   const loadingCX = ref(false);
   const loadingDetail = ref(false);
-  const loadingMarket = ref(false);
 
   // Cache state to prevent redundant loads
   const ccDataLoaded = ref(false);
@@ -101,8 +102,13 @@ export const usePluginStore = defineStore('plugin', () => {
   const cxMarketCount = computed(() => cxMarkets.value.length);
   const ccAvailableCount = computed(() => ccAvailable.value.length);
   const cxAvailableCount = computed(() => cxAvailable.value.length);
-  const cxCxAailableCount = cxAvailableCount;
   const cxEnabledCount = computed(() => cxInstalled.value.filter(p => p.enabled).length);
+
+  // Claude「MCP」资源标签计数（契约 §3.1/§7）：列表级 hasMcp 常缺失，
+  // 以 pluginType==='mcp' 为主、hasMcp 兜底
+  const ccMcpPluginCount = computed(
+    () => ccInstalled.value.filter(p => p.hasMcp || p.pluginType === 'mcp').length
+  );
 
   // Active plugin detail (Claude)
   const activePlugin = computed(() => {
@@ -124,35 +130,6 @@ export const usePluginStore = defineStore('plugin', () => {
   const activeCxPluginDetail = computed(() => {
     if (!activePluginId.value) return null;
     return cxActivePluginDetail.value[activePluginId.value] || null;
-  });
-
-  // Codex filtered available plugins (by market, search, sort)
-  const filteredCxAvailable = computed(() => {
-    let plugins = [...cxAvailable.value];
-
-    // Filter by active marketplace
-    if (activeMarketId.value) {
-      plugins = plugins.filter(p => p.marketplaceName === activeMarketId.value);
-    }
-
-    // Filter by search query
-    if (marketSearchQuery.value.trim()) {
-      const query = marketSearchQuery.value.toLowerCase();
-      plugins = plugins.filter(p =>
-        (p.name?.toLowerCase().includes(query)) ||
-        (p.description?.toLowerCase().includes(query)) ||
-        (p.author?.toLowerCase().includes(query))
-      );
-    }
-
-    // Sort
-    if (marketSortBy.value === 'name') {
-      plugins.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    }
-    // 'installs' is default, but we don't have install count in CodexAvailablePlugin
-    // Keep original order for now
-
-    return plugins;
   });
 
   // Codex duplicate diagnostic
@@ -190,7 +167,8 @@ export const usePluginStore = defineStore('plugin', () => {
       if (type === 'agent' || type === 'hybrid' || type === 'integration') counts.Agents++;
       if (type === 'command' || type === 'hybrid' || type === 'integration') counts.Commands++;
       if (type === 'hook' || type === 'hybrid' || type === 'integration') counts.Hooks++;
-      if (p.hasMcp) counts.MCP++;
+      // hasMcp 列表级常缺失，以 pluginType==='mcp' 兜底（契约 §7 计数诚实化）
+      if (p.hasMcp || type === 'mcp') counts.MCP++;
     });
 
     filters.push(
@@ -204,34 +182,7 @@ export const usePluginStore = defineStore('plugin', () => {
     return filters;
   });
 
-  // Filtered Claude plugins based on resource filter
-  const filteredCcPlugins = computed(() => {
-    if (resFilter.value === 'all') return ccInstalled.value;
-
-    return ccInstalled.value.filter(p => {
-      const type = p.pluginType || '';
-      switch (resFilter.value) {
-        case 'Skills':
-          return type === 'skill' || type === 'hybrid' || type === 'integration';
-        case 'Agents':
-          return type === 'agent' || type === 'hybrid' || type === 'integration';
-        case 'Commands':
-          return type === 'command' || type === 'hybrid' || type === 'integration';
-        case 'Hooks':
-          return type === 'hook' || type === 'hybrid' || type === 'integration';
-        case 'MCP':
-          return p.hasMcp === true;
-        default:
-          return true;
-      }
-    });
-  });
-
   // Actions
-  function setExtMainTab(tab: 'plugins' | 'env' | 'tools') {
-    extMainTab.value = tab;
-  }
-
   function setPluginEngine(engine: 'claude' | 'opencode' | 'codex' | 'pi' | 'omp') {
     pluginEngine.value = engine;
     // Reset active plugin when switching engines
@@ -274,14 +225,6 @@ export const usePluginStore = defineStore('plugin', () => {
     activeMarketId.value = id;
   }
 
-  function setMarketSearchQuery(query: string) {
-    marketSearchQuery.value = query;
-  }
-
-  function setMarketSortBy(sort: 'installs' | 'name') {
-    marketSortBy.value = sort;
-  }
-
   function setLoadingCC(loading: boolean) {
     loadingCC.value = loading;
   }
@@ -296,10 +239,6 @@ export const usePluginStore = defineStore('plugin', () => {
 
   function setActivePlugin(id: string | null) {
     activePluginId.value = id;
-  }
-
-  function setResFilter(filter: ResourceFilter['value']) {
-    resFilter.value = filter;
   }
 
   // Load Claude installed plugins
@@ -366,16 +305,20 @@ export const usePluginStore = defineStore('plugin', () => {
       let allSuccess = true;
       const track = (label: string) => (err: unknown) => {
         allSuccess = false;
+        // 契约 §7：写入点必须落在 track（子任务被 .catch(track) 吞掉、外层 catch 不可达），
+        // 供面板 DiagnosticBanner 消费
+        ccLoadError.value = `加载${label}失败：${err instanceof Error ? err.message : String(err)}`;
         console.error(`[plugin.store] Failed to load ${label}:`, err);
       };
       await Promise.all([
-        loadCcInstalled().catch(track('installed')),
-        loadCcMarkets().catch(track('markets')),
-        loadCcAvailable().catch(track('available')),
+        loadCcInstalled().catch(track('已安装列表')),
+        loadCcMarkets().catch(track('市场源')),
+        loadCcAvailable().catch(track('可安装列表')),
       ]);
       if (allSuccess) {
         ccDataLoaded.value = true;
         ccDataLoadedAt.value = Date.now();
+        ccLoadError.value = '';
       } else {
         // 加载失败时确保不留下陈旧"已加载"缓存
         ccDataLoaded.value = false;
@@ -383,11 +326,18 @@ export const usePluginStore = defineStore('plugin', () => {
     } catch (error) {
       // 非预期异常同样不更新"成功"缓存
       ccDataLoaded.value = false;
+      ccLoadError.value = `加载失败：${error instanceof Error ? error.message : String(error)}`;
       console.error('[plugin.store.loadCcAllData]', error);
       throw error;
     } finally {
       setLoadingCC(false);
     }
+  }
+
+  // 工具栏「刷新」组合动作（契约 §6.1/§7）：失效缓存后全量三 load，不改 loadCcAllData 签名
+  async function refreshCc() {
+    ccDataLoaded.value = false;
+    await loadCcAllData();
   }
 
   // --- Codex plugin operations ---
@@ -411,7 +361,10 @@ export const usePluginStore = defineStore('plugin', () => {
       setCXWarnings(data.warnings);
       cxDataLoaded.value = true;
       cxDataLoadedAt.value = Date.now();
+      cxLoadError.value = '';
     } catch (error) {
+      // 契约 §7：写入 cxLoadError 供面板 DiagnosticBanner 消费；保持 rethrow 语义不变
+      cxLoadError.value = `Codex 插件加载失败：${error instanceof Error ? error.message : String(error)}`;
       console.error('[plugin.store.loadCxPlugins]', error);
       throw error;
     } finally {
@@ -451,16 +404,6 @@ export const usePluginStore = defineStore('plugin', () => {
       return null;
     } finally {
       setLoadingDetail(false);
-    }
-  }
-
-  // Get plugin sub items for resource counting
-  async function loadPluginSubItems(pluginId: string) {
-    try {
-      return await pluginApi.getPluginSubItems(pluginId);
-    } catch (error) {
-      console.error('[plugin.store.loadPluginSubItems]', error);
-      return [];
     }
   }
 
@@ -682,14 +625,16 @@ export const usePluginStore = defineStore('plugin', () => {
     cxAvailable,
     cxWarnings,
     activeMarketId,
-    marketSearchQuery,
-    marketSortBy,
     activePluginId,
     resFilter,
+    // Codex 详情缓存（与下方 ccActivePluginDetail 对称；此前漏导出导致实例外赋值
+    // 只写穿到普通属性、内部 computed 仍读旧 ref，契约 §7 面板测试需种子化此缓存）
+    cxActivePluginDetail,
+    ccLoadError,
+    cxLoadError,
     loadingCC,
     loadingCX,
     loadingDetail,
-    loadingMarket,
     ccDataLoaded,
     cxDataLoaded,
     ccDataLoadedAt,
@@ -703,18 +648,15 @@ export const usePluginStore = defineStore('plugin', () => {
     cxMarketCount,
     ccAvailableCount,
     cxAvailableCount,
-    cxCxAailableCount,
+    ccMcpPluginCount,
     activePlugin,
     activeCxPlugin,
     activeCxPluginDetail,
     ccActivePluginDetail,
     resourceFilters,
-    filteredCcPlugins,
-    filteredCxAvailable,
     cxDuplicates,
 
     // Actions
-    setExtMainTab,
     setPluginEngine,
     setPluginView,
     setCCInstalled,
@@ -725,23 +667,20 @@ export const usePluginStore = defineStore('plugin', () => {
     setCXAvailable,
     setCXWarnings,
     setActiveMarketId,
-    setMarketSearchQuery,
-    setMarketSortBy,
     setLoadingCC,
     setLoadingCX,
     setLoadingDetail,
     setActivePlugin,
-    setResFilter,
     loadCcInstalled,
     loadCcMarkets,
     loadCcAvailable,
     loadCcAllData,
+    refreshCc,
     addCcMarketplace,
     updateCcMarketplace,
     installCcPlugin,
     togglePlugin,
     loadPluginDetail,
-    loadPluginSubItems,
     setPluginSubItemEnabled,
     uninstallPlugin,
     updatePlugin,

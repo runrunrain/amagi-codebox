@@ -16,6 +16,9 @@ export const useOpenCodePluginStore = defineStore('opencodePlugin', () => {
   const loading = ref(false);
   const loadingDetail = ref(false);
   const loadedAt = ref<number | null>(null);
+  // 契约 §7（R5a 归一化）：refresh 失败写入/成功清空，供面板做 store 派生门控
+  // （首屏 Loading/Error）与 DiagnosticBanner errors 数据源；动作照旧 rethrow。
+  const loadError = ref('');
 
   const activePlugin = computed(() => {
     if (!activeSpec.value) return null;
@@ -34,9 +37,13 @@ export const useOpenCodePluginStore = defineStore('opencodePlugin', () => {
       installed.value = data.installed || [];
       warnings.value = data.warnings || [];
       loadedAt.value = Date.now();
+      loadError.value = '';
       if (activeSpec.value && !installed.value.some(plugin => plugin.spec === activeSpec.value)) {
         activeSpec.value = null;
       }
+    } catch (error) {
+      loadError.value = error instanceof Error ? error.message : String(error);
+      throw error;
     } finally {
       loading.value = false;
     }
@@ -93,6 +100,7 @@ export const useOpenCodePluginStore = defineStore('opencodePlugin', () => {
     details,
     loading,
     loadingDetail,
+    loadError,
     activePlugin,
     refresh,
     selectPlugin,

@@ -23,7 +23,7 @@ Amagi CodeBox 同时管理五套独立的插件/包生态：
 | Pi | `internal/piplugin` | `pi install/remove/update <source>`；真相源 `~/.pi/agent/settings.json` 的 `packages[]` 数组 | `~/.pi/agent/`（或 `PI_CODING_AGENT_DIR`） |
 | OMP | `internal/ompplugin` | `omp plugin list/install/uninstall/enable/disable/upgrade`（CLI `--json` 输出） | `~/.omp/agent/` |
 
-五套引擎在应用内统一通过 `/extensions`（扩展管理）页暴露：Plugins Tab 下再按 ClaudeCode / OpenCode / Codex / Pi / OMP 五个二级 Tab 切换。前端 API 层分别落在 `frontend/src/api/` 的 `plugin.ts`、`opencodePlugin.ts`、`codexPlugin.ts`、`piPlugin.ts` 与 `ompPlugin.ts`。
+五套引擎在应用内统一通过 `/extensions`（扩展管理）页暴露：「插件管理」标签下再按 ClaudeCode / OpenCode / Codex / Pi / OMP 五个引擎标签切换。每个引擎面板自上而下为：诊断横幅（仅在加载出错或存在警告时出现）、资源计数标签行（Claude 另有「MCP」标签，Pi 另有技能 / 扩展 / 提示词 / 主题标签，行尾为当前标签的搜索框）、工具栏（刷新与安装 / 市场入口）和内容区。插件列表为按市场分组的行式条目（Claude / Codex）或单组平铺，Claude / Codex 点选插件后在右侧查看详情，其余引擎则切换到详情页。Claude / Codex 经「市场」标签或工具栏「浏览插件市场」进入市场视图，「添加市场」统一由扩展管理页弹出的对话框处理。前端 API 层分别落在 `frontend/src/api/` 的 `plugin.ts`、`opencodePlugin.ts`、`codexPlugin.ts`、`piPlugin.ts` 与 `ompPlugin.ts`。
 
 Amagi CodeBox 在 CLI 之上添加的能力：
 
@@ -177,7 +177,7 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 
 ## 已知限制与注意事项
 
-- **Codex 子项禁用不可用**：当前是 no-op，UI 上展示的子项开关对 Codex 引擎实际不生效。
+- **Codex 子项禁用不可用**：后端当前是 no-op；界面据此将 Codex 插件的子项列表渲染为只读（不提供开关），子项级启停仅对 Claude 引擎真正落盘。
 - **OpenCode JSONC 卸载需手工处理**：列表读取支持 JSONC，但自动卸载只修改严格 JSON，防止注释和原有格式丢失。
 - **子项启停分派依赖 Claude 注册表**：注册表读取失败时按 Codex 分派，Claude 插件开关会静默不生效；需要看日志定位。
 - **`--scope user` 固定**：Claude 插件安装/卸载强制使用 user scope，不支持 project / local scope 的管理 UI。
