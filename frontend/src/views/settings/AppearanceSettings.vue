@@ -179,6 +179,7 @@ import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import EmptyState from '../../components/ui/EmptyState.vue'
 import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
+import { errorMessage } from '../../utils/format'
 
 const skinStore = useSkinStore()
 const appearanceStore = useAppearanceStore()
@@ -203,7 +204,7 @@ async function onSetWebPlaneSkin(v: WebPlaneSkin) {
 }
 
 function errMsg(err: unknown): string {
-  return (err as any)?.message || String(err)
+  return errorMessage(err)
 }
 
 async function onPick() {

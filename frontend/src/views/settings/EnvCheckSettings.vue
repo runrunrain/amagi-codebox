@@ -408,6 +408,7 @@ import {
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
+import { errorMessage } from '../../utils/format'
 import {
   planSolutionExecution,
   solutionConfirmMessage,
@@ -513,14 +514,14 @@ const runningOperation = computed<envcheck.OperationState | null>(() => {
   if (p) {
     return envcheck.OperationState.createFrom({
       id: p.id,
-      tool: p.tool as any,
-      kind: p.kind as any,
+      tool: p.tool,
+      kind: p.kind,
       status: 'running',
       step: '',
       message: p.lastMessage,
       progress: p.lastProgress,
-      startedAt: new Date(p.acceptedAt).toISOString() as any,
-      updatedAt: new Date().toISOString() as any,
+      startedAt: new Date(p.acceptedAt).toISOString(),
+      updatedAt: new Date().toISOString(),
       finishedAt: null,
       result: null,
       error: '',
@@ -565,12 +566,16 @@ function formatStepLabel(op: envcheck.OperationState | null): string {
   return `${kind}中${step}`
 }
 
+function toValidDate(raw: unknown): Date | null {
+  if (typeof raw !== 'string' && typeof raw !== 'number' && !(raw instanceof Date)) return null
+  const d = new Date(raw)
+  return isNaN(d.getTime()) ? null : d
+}
+
 const checkedAtText = computed(() => {
-  const at = snapshot.value?.status?.checkedAt as any
-  if (!at) return ''
+  const d = toValidDate(snapshot.value?.status?.checkedAt)
+  if (!d) return ''
   try {
-    const d = new Date(at)
-    if (isNaN(d.getTime())) return ''
     return d.toLocaleString('zh-CN', {
       month: '2-digit',
       day: '2-digit',
@@ -723,19 +728,12 @@ function parseNativeKeptSegments(message: string): { preserved: boolean; preserv
 function hasInitialCheckCompleted(s: envcheck.EnvCheckSnapshot | null): boolean {
   if (!s?.status) return false
   // F-4 主路径：checking === false 即检测已完成（非 in-progress）
-  const checkingFlag = (s.status as any).checking
+  const checkingFlag = s.status.checking
   if (typeof checkingFlag === 'boolean') {
     return !checkingFlag
   }
   // 兼容兜底：旧后端无 checking 字段时，靠 checkedAt 存在性判断。
-  const at = (s.status as any).checkedAt
-  if (!at) return false
-  try {
-    const d = new Date(at as any)
-    return !isNaN(d.getTime())
-  } catch {
-    return false
-  }
+  return toValidDate(s.status.checkedAt) !== null
 }
 
 function stopInitialLoadingTimer(): void {
@@ -786,9 +784,9 @@ async function fetchSnapshot(): Promise<void> {
         stopInitialLoadingTimer()
       }
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (!mounted.value || requestSeq < snapshotAppliedSeq) return
-    console.warn('[EnvCheck] fetchSnapshot failed:', err?.message || err)
+    console.warn('[EnvCheck] fetchSnapshot failed:', errorMessage(err))
     // 拉取失败时不能让用户卡在 loading；切到正常视图让其看到错误态/重试按钮。
     if (initialLoading.value) {
       initialLoading.value = false
@@ -845,7 +843,7 @@ function stopPolling(): void {
 // App.RunEnvFixAction 会 go CheckAll() 异步重检；不把该标志纳入轮询条件，
 // 前端就会在检测完成前停止轮询，界面停留在旧状态（陈旧状态根因之一）。
 function isBackendChecking(s: envcheck.EnvCheckSnapshot | null): boolean {
-  return (s?.status as any)?.checking === true
+  return s?.status?.checking === true
 }
 
 function ensurePollingState(): void {
@@ -926,8 +924,8 @@ async function runFullCheck(): Promise<void> {
       } as envcheck.EnvCheckSnapshot
     }
     showSuccess('环境检测完成')
-  } catch (err: any) {
-    showError('检测失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('检测失败: ' + errorMessage(err))
   } finally {
     if (mounted.value) checking.value = false
   }
@@ -951,28 +949,29 @@ async function runSingleCheck(key: string): Promise<void> {
           issues.push(`${s.tool}: 可执行文件未加入 PATH`)
         }
       }
-      snapshot.value = {
-        status: {
+      snapshot.value = envcheck.EnvCheckSnapshot.createFrom({
+        status: envcheck.OverallStatus.createFrom({
           allOk: issues.length === 0 && TOOL_METAS.every((m) => !!items[m.key]),
           items,
           issues,
-          checkedAt: new Date().toISOString() as any,
-        } as envcheck.OverallStatus,
+          checkedAt: new Date().toISOString(),
+          checking: false,
+        }),
         operation: snapshot.value?.operation || null,
-      } as envcheck.EnvCheckSnapshot
+      })
     }
-  } catch (err: any) {
-    showError(`检测 ${key} 失败: ` + (err?.message || err))
+  } catch (err: unknown) {
+    showError(`检测 ${key} 失败: ` + errorMessage(err))
   }
 }
 
 async function startInstall(key: string, displayName: string): Promise<void> {
   try {
     await startTrackedOperation({ tool: key, kind: 'install' }, () => startInstallToolAsync(key))
-  } catch (err: any) {
+  } catch (err: unknown) {
     lastResult.value = {
       title: `安装 ${displayName} 失败`,
-      description: err?.message || String(err),
+      description: errorMessage(err),
       type: 'error',
     }
   }
@@ -982,10 +981,10 @@ async function startUpdate(key: string, displayName: string, latestVersion: stri
   const verLabel = latestVersion ? 'v' + latestVersion : '最新版本'
   try {
     await startTrackedOperation({ tool: key, kind: 'update' }, () => startUpdateToolAsync(key))
-  } catch (err: any) {
+  } catch (err: unknown) {
     lastResult.value = {
       title: `更新 ${displayName} 到 ${verLabel} 失败`,
-      description: err?.message || String(err),
+      description: errorMessage(err),
       type: 'error',
     }
   }
@@ -1004,7 +1003,7 @@ const claudeBusy = computed(() => claudeInstalling.value || claudeUninstalling.v
 
 const claudeInstallMethodOptions = computed<{ value: ClaudeInstallMethod; label: string }[]>(() => {
   const claudeStatus = snapshot.value?.status?.items?.claude_code || null
-  const raw = (claudeStatus as any)?.canInstallByMethod as Record<string, boolean> | undefined
+  const raw = claudeStatus?.canInstallByMethod
   const methods: ClaudeInstallMethod[] = ['native', 'npm']
   return methods
     .filter((method) => {
@@ -1043,10 +1042,10 @@ async function startClaudeInstallWithMethod(displayName: string, reinstall: bool
     // does not leave stale binaries behind. Mirrors the legacy flow.
     try {
       await cleanClaudeInstall(method)
-    } catch (err: any) {
+    } catch (err: unknown) {
       lastResult.value = {
         title: `清理旧版 ${displayName} 失败`,
-        description: err?.message || String(err),
+        description: errorMessage(err),
         type: 'error',
       }
       return
@@ -1058,10 +1057,10 @@ async function startClaudeInstallWithMethod(displayName: string, reinstall: bool
       { tool: 'claude_code', kind: 'install' },
       () => startInstallClaudeWithMethodAsync(method),
     )
-  } catch (err: any) {
+  } catch (err: unknown) {
     lastResult.value = {
       title: `${reinstall ? '重装' : '安装'} ${displayName} 失败`,
-      description: err?.message || String(err),
+      description: errorMessage(err),
       type: 'error',
     }
   } finally {
@@ -1080,21 +1079,21 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
     let result: envcheck.InstallResult | envcheck.FixActionResult | null = null
     try {
       result = await uninstallClaudeCode(method)
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Only fall back to CleanClaudeInstall when the Wails binding itself is
       // missing; surface business errors instead of swallowing them.
-      const msg = err?.message || String(err)
+      const msg = errorMessage(err)
       if (msg.includes('not a function') || msg.includes('不可用')) {
         result = await cleanClaudeInstall(method)
       } else {
         throw err
       }
     }
-    const ok = !!(result as any)?.success
+    const ok = !!result?.success
     // F-2: success=false 时 message 可能含"versions/ 仍保留 N 个 Native 二进制"段落，
     // 实际语义是"shim 已卸载 + native 保留可复用"，并非真正失败。用 warning 态
     // 展示双段语义，避免用户误读为"卸载失败"。
-    const rawMsg = (result as any)?.message || (result as any)?.error || ''
+    const rawMsg = result?.message || result?.error || ''
     const nativeKept = parseNativeKeptSegments(rawMsg)
     if (ok && !nativeKept.preserved) {
       showSuccess(rawMsg || 'Claude Code 已卸载')
@@ -1120,11 +1119,12 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
       showError(desc)
       lastResult.value = { title: 'Claude Code 卸载失败', description: desc, type: 'error' }
     }
-  } catch (err: any) {
-    showError('卸载操作失败: ' + (err?.message || String(err)))
+  } catch (err: unknown) {
+    const msg = errorMessage(err)
+    showError('卸载操作失败: ' + msg)
     lastResult.value = {
       title: 'Claude Code 卸载失败',
-      description: err?.message || String(err),
+      description: msg,
       type: 'error',
     }
   } finally {
@@ -1163,7 +1163,7 @@ async function handleUninstallHeadroom(): Promise<void> {
       }
     }
     await runSingleCheck('headroom')
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('Headroom uninstall failed:', err)
     // R3-002: surface the typed in-use rejection distinctly — the venv was NOT
     // removed because active sessions still depend on it. The user should stop
@@ -1176,10 +1176,11 @@ async function handleUninstallHeadroom(): Promise<void> {
         type: 'warning',
       }
     } else {
-      showError('Headroom 卸载失败: ' + (err?.message || String(err)))
+      const msg = errorMessage(err)
+      showError('Headroom 卸载失败: ' + msg)
       lastResult.value = {
         title: 'Headroom 卸载失败',
-        description: err?.message || String(err),
+        description: msg,
         type: 'error',
       }
     }
@@ -1192,8 +1193,7 @@ async function handleUninstallHeadroom(): Promise<void> {
 // ---------- Claude Code: configuration items ----------
 
 function claudeConfigItems(status: envcheck.CheckStatus | null): envcheck.ClaudeConfigItem[] {
-  const cfg = (status as any)?.config as envcheck.ClaudeConfigStatus | null | undefined
-  return cfg?.configItems || []
+  return status?.config?.configItems || []
 }
 
 function claudeConfigConfiguredCount(status: envcheck.CheckStatus | null): number {
@@ -1215,15 +1215,15 @@ function toggleClaudeConfig(cardKey: string): void {
 async function handleFixClaudeConfig(_cardKey: string, item: envcheck.ClaudeConfigItem): Promise<void> {
   configFixing.value = { ...configFixing.value, [item.key]: true }
   try {
-    const result: any = await fixClaudeConfig(item.key, item.defaultValue || '', item.filePath || '')
+    const result = await fixClaudeConfig(item.key, item.defaultValue || '', item.filePath || '')
     if (result?.success) {
       showSuccess(result.message || `配置项 ${item.key} 已写入`)
     } else {
       showInfo(result?.message || result?.error || '配置写入失败')
     }
     await runSingleCheck('claude_code')
-  } catch (err: any) {
-    showError('配置写入失败: ' + (err?.message || String(err)))
+  } catch (err: unknown) {
+    showError('配置写入失败: ' + errorMessage(err))
   } finally {
     configFixing.value = { ...configFixing.value, [item.key]: false }
   }
@@ -1350,10 +1350,10 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
             { tool: 'claude_code', kind: 'install' },
             () => startInstallClaudeWithMethodAsync(plan.method),
           )
-        } catch (err: any) {
+        } catch (err: unknown) {
           lastResult.value = {
             title: `重装 ${displayName} 失败`,
-            description: err?.message || String(err),
+            description: errorMessage(err),
             type: 'error',
           }
         } finally {
@@ -1371,7 +1371,7 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
         // F-1: method 由决策层给出（solution.method > snapshot.installMethod >
         // 'native'），消除 installMethod 缺失时 fallback 误清另一渠道的风险。
         const method = plan.method
-        const result: any = await cleanClaudeInstall(method)
+        const result = await cleanClaudeInstall(method)
         const ok = !!result?.success
         // F-2: 即使 success=true 也可能含"versions/ 仍保留"段落（部分卸载语义）；
         // success=false 时不一定是真失败，而是"shim 已卸载 + native 保留"。
@@ -1398,7 +1398,7 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
       }
       // 剩余白名单动作（fix_path / install_node / install_wsl_search_tools 等）
       // 透传 RunEnvFixAction。
-      const result: any = await runEnvFixAction(sol.type, sol.tool || cardKey, '')
+      const result = await runEnvFixAction(sol.type, sol.tool || cardKey, '')
       const banner = buildFixResultBanner(result)
       lastResult.value = banner
       if (banner.type === 'success') showSuccess(banner.title)
@@ -1415,8 +1415,8 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
         await runDeterministicRecheck()
       }
     })
-  } catch (err: any) {
-    showError('修复操作失败: ' + (err?.message || String(err)))
+  } catch (err: unknown) {
+    showError('修复操作失败: ' + errorMessage(err))
   } finally {
     fixLoadingKey.value = ''
   }
@@ -1435,8 +1435,8 @@ async function runDeterministicRecheck(): Promise<void> {
         operation: snapshot.value?.operation || null,
       } as envcheck.EnvCheckSnapshot
     }
-  } catch (err: any) {
-    showError('自动复检失败，请点击「检测」手动核实: ' + (err?.message || String(err)))
+  } catch (err: unknown) {
+    showError('自动复检失败，请点击「检测」手动核实: ' + errorMessage(err))
   }
 }
 
@@ -1461,7 +1461,7 @@ async function handleUninstallAgentCLI(card: CardView): Promise<void> {
 async function runUninstallTool(tool: string, displayName: string): Promise<void> {
   const previousId = snapshot.value?.operation?.id
   const requestedAt = Date.now()
-  const result: any = await runEnvFixAction('uninstall_tool', tool, '')
+  const result = await runEnvFixAction('uninstall_tool', tool, '')
   if (!result?.success) {
     const banner = buildFixResultBanner(result)
     lastResult.value = banner

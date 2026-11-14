@@ -170,6 +170,7 @@ const navItems = [
 ]
 
 const runningSessions = computed(() => sessionStore.runningSessions)
+type RunningSessionItem = (typeof runningSessions.value)[number]
 const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
 
@@ -184,7 +185,7 @@ const groupedSessionsByAppType = computed(() => {
   const sessions = runningSessions.value
   const groups = new Map<string, { key: string; label: string; color: string; sessions: typeof sessions }>()
 
-  sessions.forEach((session: any) => {
+  sessions.forEach((session) => {
     const appType: string = (session?.appType as string) || ''
     if (!appType) return
     if (!groups.has(appType)) {
@@ -261,12 +262,12 @@ function handleNewSession() {
   }
 }
 
-function handleSessionClick(session: any) {
+function handleSessionClick(session: RunningSessionItem) {
   sessionStore.setActiveSession(session.id)
   router.push('/terminal')
 }
 
-async function handleSessionClose(session: any) {
+async function handleSessionClose(session: RunningSessionItem) {
   const sessionId = session.id
   if (session.status === 'stopping') {
     showInfo('会话正在停止，等待进程退出后才会移出列表')

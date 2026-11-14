@@ -250,6 +250,7 @@ import {
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import { cliImportOutcomeMessage } from './wslSupplyMessages'
+import { errorMessage } from '../../utils/format'
 
 const props = withDefaults(defineProps<{ refreshRevision?: number }>(), { refreshRevision: 0 })
 const { showSuccess, showError, showInfo } = useToast()
@@ -326,8 +327,8 @@ async function install(tool: string) {
     } else {
       showError(`${action}失败: ${res.error || '未知错误'}`)
     }
-  } catch (err: any) {
-    showError(`${action}失败: ` + (err?.message || err))
+  } catch (err: unknown) {
+    showError(`${action}失败: ` + errorMessage(err))
   } finally {
     busyTool.value = ''
   }
@@ -376,8 +377,8 @@ async function grantConsent(): Promise<void> {
     showSuccess('已授权向 WSL 共享视觉清单（密钥副本将以 0600 写入）')
     await load()
     refreshConsentFlag()
-  } catch (err: any) {
-    showError('授权失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('授权失败: ' + errorMessage(err))
   } finally {
     consentBusy.value = false
   }
@@ -400,8 +401,8 @@ async function enableUnified(): Promise<void> {
       showSuccess('已启用统一管理（此后启动/保存/对账自动同步；WSL 手改条目冻结保留）')
     }
     await load()
-  } catch (err: any) {
-    showError('启用失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('启用失败: ' + errorMessage(err))
   } finally {
     unifiedBusy.value = false
   }
@@ -414,8 +415,8 @@ async function disableUnified(): Promise<void> {
     await disableWSLUnifiedSupply()
     showInfo('已停止自动纳入新项（已授权单元与副本保持现状；撤回单个单元用「保留本地」）')
     await refreshStatus()
-  } catch (err: any) {
-    showError('停止失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('停止失败: ' + errorMessage(err))
   } finally {
     unifiedBusy.value = false
   }
@@ -485,8 +486,8 @@ async function ensureSharedRoot(): Promise<void> {
     }
     // 配置状态 faces 同步刷新（skills face 读进程内缓存）。
     getWSLConfigSupplyStatus().then((s) => { supply.value = s; watchFaces() }).catch(() => {})
-  } catch (err: any) {
-    showError('检查失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('检查失败: ' + errorMessage(err))
   } finally {
     sharedRootBusy.value = false
   }
@@ -611,8 +612,8 @@ async function previewCliUnit(cli: string, unit: string): Promise<void> {
       cliKeySelection.value = { ...cliKeySelection.value, [cli + '|' + unit]: selected }
     }
     showInfo(`预览完成：${row?.blockedReason || row?.action || ''}`)
-  } catch (err: any) {
-    showError('预览失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('预览失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -633,8 +634,8 @@ async function importCliKeys(cli: string, unit: string): Promise<void> {
       showInfo(msg.text)
     }
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('导入失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('导入失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -652,8 +653,8 @@ async function applyCli(cli: string): Promise<void> {
       showSuccess('安全更新完成（冻结/未托管条目保持 WSL 现状）')
     }
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('应用失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('应用失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -666,8 +667,8 @@ async function keepCliUnit(cli: string, unit: string): Promise<void> {
     await keepWSLCliConfigUnitLocal(cli, unit)
     showInfo('已保留 WSL 本地配置（停跟随）')
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('停跟随失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('停跟随失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -685,8 +686,8 @@ async function takeOverCliUnit(cli: string, unit: string): Promise<void> {
     await takeOverWSLCliConfigUnit(cli, unit, token)
     showSuccess('已按预览确认接管（托管域已按 Windows 当前内容重建基准）')
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('接管失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('接管失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -699,8 +700,8 @@ async function checkCliResources(cli: string): Promise<void> {
     await checkWSLCliResourcesSupply(cli)
     // 重拉完整状态（后台扫描分批推进，轮询至收敛）。
     await loadCliSupply(cli)
-  } catch (err: any) {
-    showError('检查失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('检查失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -715,8 +716,8 @@ async function previewCliResources(cli: string): Promise<void> {
     for (const row of rows) next[row.name] = row
     cliResPreviews.value = { ...cliResPreviews.value, [cli]: next }
     showInfo(`资源预览完成：${rows.length} 项（不兼容项已逐项列出）`)
-  } catch (err: any) {
-    showError('预览失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('预览失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -756,8 +757,8 @@ async function applyCliResources(cli: string, only?: string[]): Promise<void> {
     }
     cliResSelection.value = { ...cliResSelection.value, [cli]: [] }
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('导入失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('导入失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -770,8 +771,8 @@ async function keepCliResource(cli: string, rel: string): Promise<void> {
     await keepWSLCliResourceLocal(cli, rel)
     showInfo(`已保留 WSL 本地资源（停跟随）：${rel}`)
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('停跟随失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('停跟随失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -789,8 +790,8 @@ async function takeOverCliResource(cli: string, rel: string): Promise<void> {
     await takeOverWSLCliResource(cli, rel, token)
     showSuccess(`已按预览确认接管资源：${rel}`)
     await refreshCli(cli)
-  } catch (err: any) {
-    showError('接管失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('接管失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -819,8 +820,8 @@ async function saveOcSelection(): Promise<void> {
     await setWSLOpenCodeMCPSelection(ocOverride.value)
     showSuccess('已保存 OpenCode 附加层 MCP 覆盖选择（下次启动生效）')
     await loadOcMcp()
-  } catch (err: any) {
-    showError('保存失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存失败: ' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }

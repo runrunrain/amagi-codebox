@@ -189,6 +189,7 @@ import {
   HasAPIKey,
   GetAPIKey,
 } from '../../wailsjs/go/secrets/SecretsService';
+import { config } from '../../wailsjs/go/models';
 import { getProviderExportJSON, saveProviderFromJSON } from '../api/provider';
 
 const emit = defineEmits<{
@@ -240,7 +241,7 @@ const entryView = computed(() => {
   return (
     entry.value || {
       id: '',
-      provider: {} as any,
+      provider: config.Provider.createFrom({}),
       keyConfigured: false,
     }
   );
@@ -273,20 +274,20 @@ async function handleEditSaved() {
 }
 
 const hasAnthropic = computed(() => {
-  const p = entry.value?.provider as any;
-  return !!(p && p.anthropic && p.anthropic.enabled);
+  const p = entry.value?.provider;
+  return Boolean(p?.anthropic?.enabled);
 });
 const hasOpenAI = computed(() => {
-  const p = entry.value?.provider as any;
-  return !!(p && p.openai && p.openai.enabled);
+  const p = entry.value?.provider;
+  return Boolean(p?.openai?.enabled);
 });
-const anthropicBaseUrl = computed(() => (entry.value?.provider as any)?.anthropic?.base_url || '');
-const openaiBaseUrl = computed(() => (entry.value?.provider as any)?.openai?.base_url || '');
-const openaiOrg = computed(() => (entry.value?.provider as any)?.openai?.organization || '');
+const anthropicBaseUrl = computed(() => entry.value?.provider?.anthropic?.base_url || '');
+const openaiBaseUrl = computed(() => entry.value?.provider?.openai?.base_url || '');
+const openaiOrg = computed(() => entry.value?.provider?.openai?.organization || '');
 
 /** OpenAI 接口协议展示：未设置/非法值显示「自动」，与后端 EffectiveWireAPI 归一化语义一致 */
 const openaiWireApiLabel = computed(() => {
-  const wa = ((entry.value?.provider as any)?.openai?.wire_api || '').toLowerCase();
+  const wa = (entry.value?.provider?.openai?.wire_api || '').toLowerCase();
   if (wa === 'chat') return 'Chat Completions (/chat/completions)';
   if (wa === 'responses') return 'Responses (/responses)';
   return '自动';
@@ -296,19 +297,19 @@ const openaiWireApiLabel = computed(() => {
 const effectiveBaseUrl = computed(() => {
   const p = entry.value?.provider;
   if (!p) return '';
-  const a = (p as any).anthropic;
-  const o = (p as any).openai;
+  const a = p.anthropic;
+  const o = p.openai;
   if (a && a.enabled && a.base_url) return a.base_url;
   if (o && o.enabled && o.base_url) return o.base_url;
   return p.base_url || '';
 });
 
 const typeLabel = computed(() => {
-  const t = (entry.value?.provider as any)?.type || 'anthropic';
+  const t = entry.value?.provider?.type || 'anthropic';
   return t.toUpperCase();
 });
 const typeInitial = computed(() => {
-  const t = ((entry.value?.provider as any)?.type || 'anthropic').toLowerCase();
+  const t = (entry.value?.provider?.type || 'anthropic').toLowerCase();
   return t === 'openai' ? 'O' : 'A';
 });
 

@@ -50,6 +50,7 @@ import { BrowseDirectory } from '../../../wailsjs/go/main/App'
 import { settings } from '../../../wailsjs/go/models'
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
+import { errorMessage } from '../../utils/format'
 
 type ShellEntry = settings.ShellEntry
 
@@ -87,16 +88,16 @@ async function addShell() {
     return
   }
   try {
-    await addShellPath({
+    await addShellPath(settings.ShellEntry.createFrom({
       path: newShellPath.value,
       label: newShellLabel.value || basename(newShellPath.value),
-    } as any)
+    }))
     await loadShellPaths()
     newShellLabel.value = ''
     newShellPath.value = ''
     showSuccess('Shell 路径已添加')
-  } catch (err: any) {
-    const msg = err?.toString?.() || String(err)
+  } catch (err: unknown) {
+    const msg = errorMessage(err)
     if (msg.includes('already exists')) {
       showError('该路径已存在')
     } else {
@@ -110,8 +111,8 @@ async function removeShell(path: string) {
     await removeShellPath(path)
     await loadShellPaths()
     showSuccess('已删除')
-  } catch (err: any) {
-    showError('删除失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('删除失败: ' + errorMessage(err))
   }
 }
 

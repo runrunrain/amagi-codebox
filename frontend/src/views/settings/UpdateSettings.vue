@@ -112,6 +112,7 @@ import Switch from '../../components/ui/Switch.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
 
 import { updater } from '../../../wailsjs/go/models'
+import { errorMessage } from '../../utils/format'
 
 type UpdateInfo = updater.UpdateInfo
 
@@ -152,10 +153,15 @@ const updateActionLabel = computed(() => {
   return downloading.value ? '下载安装中...' : '下载并安装'
 })
 
-function normalizeUpdateError(err: any): string {
+function normalizeUpdateError(err: unknown): string {
   if (!err) return '未知错误'
   if (typeof err === 'string') return err
-  return err?.message || JSON.stringify(err)
+  if (err instanceof Error) return err.message || String(err)
+  if (typeof err === 'object' && 'message' in err) {
+    const msg = (err as { message?: unknown }).message
+    if (typeof msg === 'string' && msg) return msg
+  }
+  return JSON.stringify(err)
 }
 
 async function checkUpdate() {
@@ -181,18 +187,19 @@ async function downloadAndApply() {
   updateError.value = ''
   cleanupProgressListener()
   try {
-    removeProgressListener = EventsOn('update:progress', (progress: any) => {
+    removeProgressListener = EventsOn('update:progress', (progress: unknown) => {
       if (progress && typeof progress === 'object') {
+        const p = progress as { downloaded?: unknown; total?: unknown }
         downloadProgress.value = {
-          downloaded: Number(progress.downloaded) || 0,
-          total: Number(progress.total) || 0,
+          downloaded: Number(p.downloaded) || 0,
+          total: Number(p.total) || 0,
         }
       }
     })
     await downloadAndApplyUpdate()
     showSuccess('更新已开始应用，应用可能即将重启')
-  } catch (err: any) {
-    updateError.value = '安装失败: ' + (err?.message || err)
+  } catch (err: unknown) {
+    updateError.value = '安装失败: ' + errorMessage(err)
   } finally {
     downloading.value = false
     cleanupProgressListener()
@@ -225,8 +232,8 @@ async function loadToken() {
     const v = await getUpdaterGitHubToken()
     tokenDraft.value = v || ''
     showSuccess('已读取当前 Token')
-  } catch (err: any) {
-    showError('读取失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('读取失败: ' + errorMessage(err))
   } finally {
     savingToken.value = false
   }
@@ -237,8 +244,8 @@ async function saveToken() {
   try {
     await setUpdaterGitHubToken((tokenDraft.value || '').trim())
     showSuccess('Token 已保存')
-  } catch (err: any) {
-    showError('保存失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存失败: ' + errorMessage(err))
   } finally {
     savingToken.value = false
   }

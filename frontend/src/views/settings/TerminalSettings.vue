@@ -47,8 +47,10 @@
 import { ref, onMounted } from 'vue'
 import { getTerminalSettings, setTerminalSettings, getClaudeWebUIEnabled, setClaudeWebUIEnabled } from '../../api/settings'
 import { useToast } from '../../composables/useToast'
+import { settings } from '../../../wailsjs/go/models'
 import AppButton from '../../components/ui/AppButton.vue'
 import Switch from '../../components/ui/Switch.vue'
+import { errorMessage } from '../../utils/format'
 
 const { showSuccess, showError } = useToast()
 
@@ -64,9 +66,9 @@ const claudeWebUIToggling = ref(false)
 async function loadClaudeWebUI() {
   try {
     claudeWebUIEnabled.value = await getClaudeWebUIEnabled()
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('load claude webui settings:', err)
-    showError('读取 Claude Code Web 视图设置失败: ' + (err?.message || err))
+    showError('读取 Claude Code Web 视图设置失败: ' + errorMessage(err))
   } finally {
     claudeWebUILoading.value = false
   }
@@ -78,8 +80,8 @@ async function onToggleClaudeWebUI(value: boolean) {
     await setClaudeWebUIEnabled(value)
     claudeWebUIEnabled.value = value
     showSuccess(value ? 'Claude Code Web 视图已开启（新启动会话生效）' : 'Claude Code Web 视图已关闭')
-  } catch (err: any) {
-    showError('保存失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存失败: ' + errorMessage(err))
   } finally {
     claudeWebUIToggling.value = false
   }
@@ -102,11 +104,11 @@ async function saveTerminal() {
   saving.value = true
   try {
     const val = Math.max(1000, Math.min(10000000, scrollback.value || 100000))
-    await setTerminalSettings({ scrollback: val } as any)
+    await setTerminalSettings(settings.TerminalSettings.createFrom({ scrollback: val }))
     scrollback.value = val
     showSuccess('终端设置已保存（重新打开终端后生效）')
-  } catch (err: any) {
-    showError('保存失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存失败: ' + errorMessage(err))
   } finally {
     saving.value = false
   }

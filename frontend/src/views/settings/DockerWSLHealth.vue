@@ -50,6 +50,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { getDockerWSLHealth, selfHealDockerWSLIntegration, type DockerWSLHealth, type DockerWSLSelfHealReport } from '../../api/dockerwsl'
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
+import { errorMessage } from '../../utils/format'
 
 const { showSuccess, showError, showInfo } = useToast()
 
@@ -142,8 +143,8 @@ async function heal() {
       showError(rep.summary || '自愈未完全成功，请查看步骤回执')
     }
     await load()
-  } catch (err: any) {
-    showError('自愈失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('自愈失败: ' + errorMessage(err))
   } finally {
     busy.value = false
   }

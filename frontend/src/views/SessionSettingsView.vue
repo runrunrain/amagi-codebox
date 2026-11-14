@@ -536,8 +536,13 @@ function validateOmpPreset() {
 }
 
 // --- 事件处理 ---
+type EngineValue = typeof dashState.engine
+const ENGINE_VALUES: readonly string[] = ['claudecode', 'opencode', 'codex', 'pi', 'omp']
+function isEngineValue(v: string): v is EngineValue {
+  return ENGINE_VALUES.includes(v)
+}
 function handleEngineChange(v: string) {
-  dashState.engine = v as any
+  if (isEngineValue(v)) dashState.engine = v
 }
 
 function handleProviderChange(v: string) {
@@ -761,12 +766,11 @@ async function loadOpenCodePresets() {
     const map = await GetOpenCodePresets()
     const list: Array<{ key: string; name: string; description: string; bindingCount: number }> = []
     for (const [key, preset] of Object.entries(map || {})) {
-      const p = preset as any
       list.push({
         key,
-        name: p?.name || key,
-        description: p?.description || '',
-        bindingCount: p?.bindings ? Object.keys(p.bindings).length : 0,
+        name: preset?.name || key,
+        description: preset?.description || '',
+        bindingCount: preset?.bindings ? Object.keys(preset.bindings).length : 0,
       })
     }
     openCodePresetList.value = list
