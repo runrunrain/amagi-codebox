@@ -1015,7 +1015,7 @@ func (h *agentCLIHost) handleSettingsGet(ctx context.Context, _ spec.Args) (any,
 	return h.settingsView()
 }
 
-// normalizeAgentCLISettingKey 与 cmd/codebox 的 normalizeSettingKey 同规则：
+// normalizeAgentCLISettingKey 规范化设置键名：
 // 小写、按 "." 分段、去掉段内 "-" 与 "_"。
 func normalizeAgentCLISettingKey(key string) string {
 	parts := strings.Split(strings.TrimSpace(strings.ToLower(key)), ".")
@@ -1068,8 +1068,9 @@ func (h *agentCLIHost) handleSettingsSet(ctx context.Context, args spec.Args) (a
 	return map[string]any{"key": normalized, "value": value, "settings": view}, nil
 }
 
-// setAgentCLISettingValue 白名单与 cmd/codebox setSettingValue 对齐（另补 pi/omp
-// 面板键），并剔除其 remoteport/githubtoken 项（本 CLI 禁改面）。
+// setAgentCLISettingValue 按白名单更新允许修改的设置项（含 dashboard.*、
+// pi/omp 面板键及 terminal.scrollback / mobilewebroot），并排除
+// remoteport/githubtoken 等 remote*/cli*/token 禁改面。
 func setAgentCLISettingValue(a *App, normalizedKey, value string) error {
 	svc := a.Settings
 	dashboard := svc.GetDashboardDefaults()

@@ -55,7 +55,7 @@ OpenCode、Codex、Pi、OMP 的卸载使用 `uninstall_tool` 动作。只自动�
 
 ### 工具能否自动安装？
 
-可以走异步安装：`App.StartInstallToolAsync(tool)` / `App.StartUpdateToolAsync(tool)` 立即返回 `OperationState`，安装在后台 goroutine 中执行。前端通过 `App.GetEnvCheckOperationState()` 或快照轮询进度（`status`：`idle/running/succeeded/failed/timeout`；`step`：`precheck/prepare/run_command/verify/refresh_cache/completed`）。同步版 `InstallTool(tool)` / `UpdateTool(tool)` 仍保留，但前端建议使用异步版本避免阻塞 UI。
+可以走异步安装：`App.StartInstallToolAsync(tool)` / `App.StartUpdateToolAsync(tool)` 立即返回 `OperationState`，安装在后台 goroutine 中执行。前端通过 `App.GetEnvCheckSnapshot()` 轮询进度（读取其中的 `operation` 字段：`status`：`idle/running/succeeded/failed/timeout`；`step`：`precheck/prepare/run_command/verify/refresh_cache/completed`）。同步版 `InstallTool(tool)` / `UpdateTool(tool)` 仍保留，但前端建议使用异步版本避免阻塞 UI。
 
 ---
 

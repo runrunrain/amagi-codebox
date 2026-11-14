@@ -874,9 +874,9 @@ func TestBuildCodexCLIArgsWireAPI(t *testing.T) {
 // 双格式 provider 取 EffectiveWireAPI 归一化值；legacy 单格式（无 OpenAI 子块）为空。
 func TestResolveCodexLaunchSettings_WireAPI(t *testing.T) {
 	cases := []struct {
-		name    string
-		openAI  *config.OpenAIFormat
-		want    string
+		name   string
+		openAI *config.OpenAIFormat
+		want   string
 	}{
 		{"responses passthrough", &config.OpenAIFormat{Enabled: true, WireAPI: "responses"}, "responses"},
 		{"chat passthrough", &config.OpenAIFormat{Enabled: true, WireAPI: "chat"}, "chat"},
