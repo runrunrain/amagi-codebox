@@ -10,7 +10,7 @@
     "build:mobile": "npm --prefix mobile ci && npm --prefix mobile run build",
     "build:claude-webui": "npm --prefix webui-claude ci && npm --prefix webui-claude run build",
     "build:embedded-web": "npm run build:mobile && npm run build:claude-webui",
-    "build": "npm run build:mobile && npm --prefix frontend run build",
+    "build": "npm run build:embedded-web && npm --prefix frontend run build",
     "dev": "npm --prefix frontend run dev",
     "install-frontend": "npm --prefix frontend install"
   },

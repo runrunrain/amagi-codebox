@@ -12,6 +12,7 @@ mobile/node_modules
 # Build output
 frontend/dist
 mobile/dist
+frontend/package.json.md5
 
 # Claude WebUI SPA 构建产物（fresh checkout 依赖 .gitkeep 占位过 go:embed，
 # design §7.3/R6——空目录会让 go vet 失败）
@@ -43,6 +44,8 @@ frontend/qa-*.log
 .amagi/
 .amagi-worktrees/
 amagi-task/
+agent-outputs/
+.agent-outputs/
 
 # 历史备份，已脱离维护（工作区保留，不入库）
 frontend/src_legacy_backup/
@@ -87,3 +90,6 @@ playwright-report/
 
 # node compile-cache accidentally created inside the repo (frontend tooling bug, 2026-10-16)
 frontend/C:
+
+# WSL/DrvFS 将盘符冒号映射为私用区字符 U+F03A 时误创建的单字母盘符目录
+?/
