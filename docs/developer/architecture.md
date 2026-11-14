@@ -13,7 +13,7 @@ Amagi CodeBox 是一个基于 Wails v2 的桌面应用：Go 后端与 Vue 3/Type
 | 层 | 选型 |
 |---|---|
 | 桌面框架 | Wails v2 |
-| 后端语言 | Go（`go.mod` 基线 `go 1.25.0`） |
+| 后端语言 | Go（`go.mod` 基线 `go 1.26.0`） |
 | 前端 | Vue 3 + TypeScript（Vite 构建），自有 `frontend/src/components/ui/` 组件 kit + `tokens.css` 设计令牌（Element Plus 已移除，勿再引入） |
 | 终端渲染 | xterm.js |
 | 伪终端 | Windows ConPTY（`github.com/UserExistsError/conpty`）/ macOS `creack/pty` |

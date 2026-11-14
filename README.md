@@ -8,9 +8,9 @@
 
 [![Version](https://img.shields.io/badge/version-1.3.132-blue)](https://github.com/runrunrain/amagi-codebox)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26.0-00ADD8?logo=go)](https://go.dev)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)](https://vuejs.org)
-[![Wails](https://img.shields.io/badge/Wails-v2.11.0-4342ea?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjguOSAxMjguOSI+PGNpcmNsZSBjeD0iNjQuNSIgY3k9IjY0LjUiIHI9IjY0LjUiIGZpbGw9IiM0MzQyZWEiLz48cGF0aCBkPSJNNjQuNSAzMmMxNy43IDAgMzIgMTQuMyAzMiA0NHMtMTQuMyA0NC0zMiA0NC0zMi0xNC4zLTMyLTQ0IDE0LjMtNDQgMzItNDR6IiBmaWxsPSIjZmZmIi8+PC9zdmc+)](https://wails.io)
+[![Wails](https://img.shields.io/badge/Wails-v2.13.0-4342ea?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjguOSAxMjguOSI+PGNpcmNsZSBjeD0iNjQuNSIgY3k9IjY0LjUiIHI9IjY0LjUiIGZpbGw9IiM0MzQyZWEiLz48cGF0aCBkPSJNNjQuNSAzMmMxNy43IDAgMzIgMTQuMyAzMiA0NHMtMTQuMyA0NC0zMiA0NC0zMi0xNC4zLTMyLTQ0IDE0LjMtNDQgMzItNDR6IiBmaWxsPSIjZmZmIi8+PC9zdmc+)](https://wails.io)
 
 [快速开始](#快速开始) | [核心架构](#核心架构) | [远程控制](#远程控制) | [文档](#文档) | [贡献](#贡献)
 

@@ -11,7 +11,7 @@
 
 | 依赖 | 版本 | 说明 |
 |------|------|------|
-| Go | CI/release 精确 pin `1.25.0`（`ci.yml`/`release.yml` setup-go） | `go.mod` 声明 `go 1.25.0` 为语言基线；无 `toolchain` 指令、无 `.go-version`，本地装更新版本（如 1.26.x）按原样使用，不强制降级 |
+| Go | CI/release 精确 pin `1.26.0`（`ci.yml`/`release.yml` setup-go） | `go.mod` 声明 `go 1.26.0` 为语言基线；无 `toolchain` 指令、无 `.go-version`，本地装更新版本（如 1.26.x+）按原样使用，不强制降级 |
 | Node.js | CI 精确 pin `20.19.0`（setup-node） | **注意**：仓库根 `.node-version` 当前为 `22.23.2`（fnm/nodenv 消费），与 CI 的 20.19.0 不一致——遇到本地/CI 行为差异时先怀疑这一点（见"待核实项"） |
 | Wails CLI | v2 | `go install github.com/wailsapp/wails/v2/cmd/wails@latest` |
 | Git | 任意 | 构建脚本读取 `git describe --tags` 注入版本；缺失时回退 `wails.json` 的 `info.productVersion` |

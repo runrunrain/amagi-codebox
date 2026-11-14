@@ -193,7 +193,7 @@ E2E 不在 `ci.yml` 中执行，属手动/专项运行。
 
 **go-quality**（needs: frontend-mobile，matrix windows-latest + macos-latest）：
 1. 下载嵌入资源 artifact。
-2. Setup Go `1.25.0`。
+2. Setup Go `1.26.0`。
 3. `go vet ./...`（两腿）。
 4. `golangci-lint`（pinned `v2.12.2`，两腿——使 `_windows.go`/`_darwin.go` 平台文件均被静态检查）。
 5. macos 腿：`go test ./... -count=1`（全量）；windows 腿：`go test ./... -run '^$' -count=1`（仅编译检查）。

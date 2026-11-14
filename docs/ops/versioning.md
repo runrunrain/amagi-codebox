@@ -25,7 +25,7 @@ var (
 - `Version`：用户可见的版本号，如 `1.3.50` 或 `v1.3.50`。来源链见下文。
 - `BuildTime`：构建时刻，UTC ISO 8601（如 `2026-08-01T08:30:00Z`）。
 - `GitCommit`：构建对应的 `git rev-parse --short HEAD` 短哈希。
-- `GoVersion`：构建用的 Go 工具链版本（`go version` 第三字段或 `go env GOVERSION`，形如 `go1.25.0`）。
+- `GoVersion`：构建用的 Go 工具链版本（`go version` 第三字段或 `go env GOVERSION`，形如 `go1.26.0`）。
 
 未注入时（`go run`、未带 ldflags 的 `go build`），四者保持默认。`GetAppInfo` 会在运行时为 `Version` 与 `GoVersion` 做回退（见下文「运行时回退」）。
 

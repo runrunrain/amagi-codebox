@@ -108,7 +108,7 @@ on:
 `build-windows`（`windows-latest`）与 `build-macos-arm64`（`macos-latest`），**无 `needs` 依赖，并行执行**，共同挂到同一个 Release。两个 job 结构对称：
 
 1. Checkout（`actions/checkout@v4`）。
-2. Setup Go `1.25.0`（`actions/setup-go@v5`，精确版本，带 cache）。
+2. Setup Go `1.26.0`（`actions/setup-go@v5`，精确版本，带 cache）。
 3. Setup Node.js `20.19.0`（`actions/setup-node@v4`，npm cache，依赖 `frontend/package-lock.json` 与 `mobile/package-lock.json`）。
 4. Install Wails：`go install github.com/wailsapp/wails/v2/cmd/wails@latest`。
 5. `npm ci` → `npm run build`（frontend，working-directory `frontend/`）。

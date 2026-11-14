@@ -1,3 +1,10 @@
+# git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3
+## explicit; go 1.20
+git.sr.ht/~jackmordaunt/go-toast/v2
+git.sr.ht/~jackmordaunt/go-toast/v2/internal/winrt/data/xml/dom
+git.sr.ht/~jackmordaunt/go-toast/v2/internal/winrt/ui/notifications
+git.sr.ht/~jackmordaunt/go-toast/v2/tmpl
+git.sr.ht/~jackmordaunt/go-toast/v2/wintoast
 # github.com/UserExistsError/conpty v0.1.4
 ## explicit; go 1.15
 github.com/UserExistsError/conpty
@@ -40,10 +47,9 @@ github.com/jchv/go-winloader/internal/memloader
 github.com/jchv/go-winloader/internal/pe
 github.com/jchv/go-winloader/internal/vmem
 github.com/jchv/go-winloader/internal/winloader
-# github.com/labstack/echo/v4 v4.15.3
-## explicit; go 1.25.0
+# github.com/labstack/echo/v4 v4.16.4
+## explicit; go 1.26.0
 github.com/labstack/echo/v4
-github.com/labstack/echo/v4/internal/pathutil
 # github.com/labstack/gommon v0.5.0
 ## explicit; go 1.23.0
 github.com/labstack/gommon/color
@@ -61,7 +67,7 @@ github.com/leaanthony/slicer
 # github.com/leaanthony/u v1.1.1
 ## explicit; go 1.21
 github.com/leaanthony/u
-# github.com/mattn/go-colorable v0.1.14
+# github.com/mattn/go-colorable v0.1.15
 ## explicit; go 1.18
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.22
@@ -121,8 +127,8 @@ github.com/wailsapp/mimetype
 github.com/wailsapp/mimetype/internal/charset
 github.com/wailsapp/mimetype/internal/json
 github.com/wailsapp/mimetype/internal/magic
-# github.com/wailsapp/wails/v2 v2.11.0
-## explicit; go 1.22.0
+# github.com/wailsapp/wails/v2 v2.13.0
+## explicit; go 1.25.0
 github.com/wailsapp/wails/v2
 github.com/wailsapp/wails/v2/internal/app
 github.com/wailsapp/wails/v2/internal/binding
@@ -165,12 +171,12 @@ github.com/wailsapp/wails/v2/pkg/options/linux
 github.com/wailsapp/wails/v2/pkg/options/mac
 github.com/wailsapp/wails/v2/pkg/options/windows
 github.com/wailsapp/wails/v2/pkg/runtime
-# golang.org/x/crypto v0.54.0
-## explicit; go 1.25.0
+# golang.org/x/crypto v0.57.0
+## explicit; go 1.26.0
 golang.org/x/crypto/acme
 golang.org/x/crypto/acme/autocert
-# golang.org/x/net v0.57.0
-## explicit; go 1.25.0
+# golang.org/x/net v0.60.0
+## explicit; go 1.26.0
 golang.org/x/net/html
 golang.org/x/net/html/atom
 golang.org/x/net/http/httpguts
@@ -181,13 +187,13 @@ golang.org/x/net/http2/hpack
 golang.org/x/net/idna
 golang.org/x/net/internal/httpcommon
 golang.org/x/net/internal/httpsfv
-# golang.org/x/sys v0.47.0
-## explicit; go 1.25.0
+# golang.org/x/sys v0.48.0
+## explicit; go 1.26.0
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
-# golang.org/x/text v0.40.0
-## explicit; go 1.25.0
+# golang.org/x/text v0.42.0
+## explicit; go 1.26.0
 golang.org/x/text/cases
 golang.org/x/text/internal
 golang.org/x/text/internal/language

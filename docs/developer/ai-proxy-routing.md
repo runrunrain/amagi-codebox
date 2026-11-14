@@ -68,10 +68,10 @@ npm --prefix frontend run test
 
 验证覆盖：提供商双协议/旧格式/IDN/IPv6 域名提取与凭据隔离、来源更新/删除/共域冲突、启动恢复、三种出口模式、本地上游和 DNS 不可用时的回环 API、TLS/SSE、生命周期及五种 CLI 接入。浏览器验证了关联、API 地址变更后保留出口与名称草稿、添加第三种服务和指定物理网卡。TUN 开启的本机上，自动识别 en1、指定 en1 并使用独立 DNS 的 HTTPS 探测均返回 200；这不代表真实订阅节点或模型账号已验证。前端 25 个文件、213 项测试通过。完整 Go 套件仅平台路径解析 1 项在本机失败，在未修改的 `2b231d7` 基线上复现，涉及本机 Codex 路径优先级。
 
-本机打包使用项目 CI 的 Go 1.25.0。较新的 macOS SDK 需要额外链接 UniformTypeIdentifiers：
+本机打包使用项目 CI 的 Go 1.26.0。较新的 macOS SDK 需要额外链接 UniformTypeIdentifiers：
 
 ```sh
-GOTOOLCHAIN=go1.25.0 CGO_LDFLAGS='-framework UniformTypeIdentifiers' \
+GOTOOLCHAIN=go1.26.0 CGO_LDFLAGS='-framework UniformTypeIdentifiers' \
 wails build -s -skipbindings -m -nosyncgomod
 ```
 

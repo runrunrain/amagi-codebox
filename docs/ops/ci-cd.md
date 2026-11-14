@@ -67,7 +67,7 @@ jobs:
 |---|------|---------------|------|
 | 1 | Checkout | `actions/checkout@v4` | — |
 | 2 | Download embedded web assets | `actions/download-artifact@v4`，还原 `frontend/dist` + `mobile/dist` 到工作区 | Go 编译需要 embed 目标存在 |
-| 3 | Setup Go | `actions/setup-go@v5`，`go-version: '1.25.0'`（精确版本），cache | — |
+| 3 | Setup Go | `actions/setup-go@v5`，`go-version: '1.26.0'`（精确版本），cache | — |
 | 4 | Go vet | `go vet ./...` | 两条腿都跑 |
 | 5 | golangci-lint | `golangci/golangci-lint-action@v9`，pinned `v2.12.2`，配置 `.golangci.yml` | 两条腿都跑，使 `_windows.go`/`_darwin.go` 平台专属文件均被静态检查 |
 | 6 | Go test | `go test ./... -count=1` | **仅 macOS 腿全量跑**（`if: matrix.os == 'macos-latest'`） |
@@ -114,7 +114,7 @@ permissions:
 两个 job **无 `needs` 依赖，并行执行**，结构对称。共享步骤：
 
 1. `actions/checkout@v4`。
-2. `actions/setup-go@v5`，`go-version: '1.25.0'`（精确版本，与 CI 一致）。
+2. `actions/setup-go@v5`，`go-version: '1.26.0'`（精确版本，与 CI 一致）。
 3. `actions/setup-node@v4`，`node-version: '20.19.0'`（精确版本），npm cache。
 4. **Install Wails**：`go install github.com/wailsapp/wails/v2/cmd/wails@latest`（CI 无此步）。
 5. frontend：`npm ci` → `npm run build`。
@@ -141,7 +141,7 @@ permissions:
 |------|----------|---------------|-------------------------------|
 | 触发 | 手动（workflow_dispatch） | push tag `v*` | 手动 |
 | runner | `windows-latest` + `macos-latest` | 同左 | 本机 |
-| Go / Node 版本 | 1.25.0 / 20.19.0（精确 pin） | 1.25.0 / 20.19.0 | 本机安装（go.mod 声明 `go 1.25.0` 基线，无 toolchain 强制） |
+| Go / Node 版本 | 1.26.0 / 20.19.0（精确 pin） | 1.26.0 / 20.19.0 | 本机安装（go.mod 声明 `go 1.26.0` 基线，无 toolchain 强制） |
 | `wails build` | 不跑 | 跑（注入全部 4 个版本变量） | 跑（同样注入 4 个变量） |
 | `go vet` | 两条腿都跑 | 不跑 | 不跑 |
 | golangci-lint | 两条腿都跑（v2.12.2） | 不跑 | 不跑（可本地装同版本） |
@@ -154,7 +154,7 @@ permissions:
 - **CI 与 Release 的 npm 依赖安装用 `npm ci`**（要求 lockfile 与 package.json 一致），lockfile 漂移会在 CI 上失败而本地 `npm install` 可能通过。
 - **`wails build` 在 CI 中不跑**：PR/提交即便让 `wails build` 失败（如 `preBuildHooks` 失效导致 `mobile/dist` 缺失），CI 也不会发现；但 go-quality 通过 artifact 复用 `frontend/dist`/`mobile/dist`，至少保证 embed 目标存在时 Go 侧可编译。
 - **Release workflow 的 `wails.json` 同步不回写仓库**：tag 推送后仓库中的 `wails.json` 保持原值。这是设计预期，不是 bug。
-- 工具链版本在 CI/Release 精确 pin（Go `1.25.0`、Node `20.19.0`）；本地 Node 由根 `.node-version`（`20.19.0`，fnm/nodenv 消费）对齐，Go 无本地锁，新工具链按原样使用。
+- 工具链版本在 CI/Release 精确 pin（Go `1.26.0`、Node `20.19.0`）；本地 Node 由根 `.node-version`（`20.19.0`，fnm/nodenv 消费）对齐，Go 无本地锁，新工具链按原样使用。
 
 ## 修改建议
 
