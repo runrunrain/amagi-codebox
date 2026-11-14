@@ -22,6 +22,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -497,9 +498,15 @@ func TestPlannerResolveLaunchEnvForwardParity(t *testing.T) {
 	if got := strings.Join(resolver.request.EnvForwardKeys, ","); got != "TAVILY_API_KEY,UE_ROOT,MY_TOOL_HOME" {
 		t.Fatalf("EnvForwardKeys = %q", got)
 	}
-	// 1.3.126 起 WSL 内 pi 钉定共享 Windows agent 根（593270b），
-	// PI_CODING_AGENT_DIR 一并登记为路径放行键（/p 翻译 + 豁免剥离）。
-	if got := strings.Join(resolver.request.EnvPathFlagKeys, ","); got != "UE_ROOT,PI_CODING_AGENT_DIR" {
+	// 1.3.126 起 WSL 内 pi 钉定共享 agent 根（593270b）：仅当根为 Windows
+	// 盘符路径（Windows 宿主）时 PI_CODING_AGENT_DIR 登记为路径放行键
+	// （/p 翻译 + 豁免剥离）；非 Windows 宿主（macOS CI 全量口径）根非
+	// 盘符路径、不登记——期望按平台分叉。
+	wantPathFlagKeys := "UE_ROOT"
+	if runtime.GOOS == "windows" {
+		wantPathFlagKeys = "UE_ROOT,PI_CODING_AGENT_DIR"
+	}
+	if got := strings.Join(resolver.request.EnvPathFlagKeys, ","); got != wantPathFlagKeys {
 		t.Fatalf("EnvPathFlagKeys = %q", got)
 	}
 	kept := spec.Env.Variables
