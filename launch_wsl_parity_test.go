@@ -497,7 +497,9 @@ func TestPlannerResolveLaunchEnvForwardParity(t *testing.T) {
 	if got := strings.Join(resolver.request.EnvForwardKeys, ","); got != "TAVILY_API_KEY,UE_ROOT,MY_TOOL_HOME" {
 		t.Fatalf("EnvForwardKeys = %q", got)
 	}
-	if got := strings.Join(resolver.request.EnvPathFlagKeys, ","); got != "UE_ROOT" {
+	// 1.3.126 起 WSL 内 pi 钉定共享 Windows agent 根（593270b），
+	// PI_CODING_AGENT_DIR 一并登记为路径放行键（/p 翻译 + 豁免剥离）。
+	if got := strings.Join(resolver.request.EnvPathFlagKeys, ","); got != "UE_ROOT,PI_CODING_AGENT_DIR" {
 		t.Fatalf("EnvPathFlagKeys = %q", got)
 	}
 	kept := spec.Env.Variables
