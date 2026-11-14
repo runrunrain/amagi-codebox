@@ -274,7 +274,7 @@ func parseTranscriptLine(line []byte) (rec TranscriptRecord, ok bool) {
 		case "tool_use":
 			var b transcriptToolUseBlock
 			if json.Unmarshal(block, &b) == nil {
-				rec.ToolUses = append(rec.ToolUses, ToolUse{ID: b.ID, Name: b.Name, Input: b.Input})
+				rec.ToolUses = append(rec.ToolUses, ToolUse(b))
 			}
 		case "tool_result":
 			var b transcriptToolResultBlock
