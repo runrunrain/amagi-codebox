@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -27,18 +26,6 @@ func agentCLIArgErrf(format string, a ...any) *spec.Error {
 // agentCLINotFoundErrf 构造资源不存在错误（not_found → 退出码 1）。
 func agentCLINotFoundErrf(format string, a ...any) *spec.Error {
 	return spec.Errorf(spec.ErrNotFound, format, a...)
-}
-
-// agentCLIWrapErr 把任意 error 归一为 *spec.Error：已是 *spec.Error 原样透传，
-// 其余按 internal 包装（不吞原始错误文本）。
-func agentCLIWrapErr(err error) *spec.Error {
-	if err == nil {
-		return nil
-	}
-	if se, ok := err.(*spec.Error); ok {
-		return se
-	}
-	return spec.Errorf(spec.ErrInternal, "%s", err.Error())
 }
 
 // agentCLIServiceErr 按服务层错误的常见措辞映射稳定错误码：
@@ -100,11 +87,6 @@ func agentCLIHomeDir(a *App) string {
 		return a.configDir
 	}
 	return defaultConfigDir()
-}
-
-func agentCLIFileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 // agentCLICtxErr 把入口 ctx 检查失败映射为稳定错误：请求已超时/取消时
@@ -184,7 +166,7 @@ func (h *agentCLIHost) handleStatus(ctx context.Context, _ spec.Args) (any, erro
 	if a == nil {
 		return nil, spec.Errorf(spec.ErrNotReady, "app 未初始化")
 	}
-	appSection := map[string]any{}
+	var appSection map[string]any
 	if a.Sessions != nil {
 		appSection = a.GetAppInfo()
 	} else {

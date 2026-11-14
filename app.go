@@ -4220,14 +4220,6 @@ func (a wslsupplySupplyLog) Warn(scope, msg, detail string) {
 	}
 }
 
-// errStringForLog 把 error 转为日志 detail 字符串（nil → 空串）。
-func errStringForLog(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
 // LaunchOmpSession 启动一个新的 Oh My Pi (omp) 会话（完整复刻 LaunchPiSession）。
 //
 // omp 与 pi 同源：同样的 --provider/--model/--thinking CLI 契约、同样的

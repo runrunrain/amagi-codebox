@@ -112,12 +112,3 @@ func e2eCat(t *testing.T, distro, linuxPath string) string {
 	}
 	return string(out)
 }
-
-func e2eStatMtime(t *testing.T, distro, linuxPath string) string {
-	t.Helper()
-	out, err := exec.Command("wsl.exe", "-d", distro, "--", "stat", "-c", "%Y", linuxPath).Output()
-	if err != nil {
-		t.Fatalf("stat mtime %s: %v", linuxPath, err)
-	}
-	return strings.TrimSpace(strings.Trim(string(out), "\r\n\x00"))
-}

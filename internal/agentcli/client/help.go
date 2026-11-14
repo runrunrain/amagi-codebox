@@ -56,19 +56,20 @@ func commandDisplayName(c spec.Command) string {
 
 // renderOverview 输出总览帮助：用法、全局旗标、按首词分组的命令清单。
 func renderOverview(w io.Writer, table []spec.Command, appVersion string) {
-	fmt.Fprintf(w, "%s — Amagi CodeBox 命令行（供 AI agent 使用）v%s\n\n", progName, appVersion)
-	fmt.Fprintf(w, "用法：\n")
-	fmt.Fprintf(w, "  %s [全局旗标] <命令> [参数]\n", progName)
-	fmt.Fprintf(w, "  %s help <命令|组>\n", progName)
-	fmt.Fprintf(w, "  %s completion bash|zsh|fish\n\n", progName)
-	fmt.Fprintf(w, "全局旗标：\n")
-	fmt.Fprintf(w, "  --json             以 JSON 包络输出（stdout 仅一个 Envelope，诊断走 stderr）\n")
-	fmt.Fprintf(w, "  --yes, -y          确认执行 exec/destructive 命令\n")
-	fmt.Fprintf(w, "  --home <dir>       配置目录（默认 $AMAGI_CODEBOX_HOME 或 ~/.amagi-codebox）\n")
-	fmt.Fprintf(w, "  --timeout <秒>     命令超时覆盖（默认 120，探活固定 5）\n")
-	fmt.Fprintf(w, "  --help, -h         帮助\n")
-	fmt.Fprintf(w, "  --version          版本\n\n")
-	fmt.Fprintf(w, "命令（按组；help/completion/--version 为本地命令，不需要应用运行）：\n")
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
+	bw.printf("%s — Amagi CodeBox 命令行（供 AI agent 使用）v%s\n\n", progName, appVersion)
+	bw.printf("用法：\n")
+	bw.printf("  %s [全局旗标] <命令> [参数]\n", progName)
+	bw.printf("  %s help <命令|组>\n", progName)
+	bw.printf("  %s completion bash|zsh|fish\n\n", progName)
+	bw.printf("全局旗标：\n")
+	bw.printf("  --json             以 JSON 包络输出（stdout 仅一个 Envelope，诊断走 stderr）\n")
+	bw.printf("  --yes, -y          确认执行 exec/destructive 命令\n")
+	bw.printf("  --home <dir>       配置目录（默认 $AMAGI_CODEBOX_HOME 或 ~/.amagi-codebox）\n")
+	bw.printf("  --timeout <秒>     命令超时覆盖（默认 120，探活固定 5）\n")
+	bw.printf("  --help, -h         帮助\n")
+	bw.printf("  --version          版本\n\n")
+	bw.printf("命令（按组；help/completion/--version 为本地命令，不需要应用运行）：\n")
 	groups := groupCommands(table)
 	// 列宽 = 全部命令名的最大显示宽度（CJK 感知），padding 后固定追加 2 空格，
 	// 保证命令名再长也不与说明粘连（回归锚定：plugin uninstall / session clear-stopped）。
@@ -84,20 +85,21 @@ func renderOverview(w io.Writer, table []spec.Command, appVersion string) {
 		if len(g.cmds) == 1 && len(g.cmds[0].Path) == 1 {
 			c := g.cmds[0]
 			// 缩进 2 + 补到 maxw+2，与组内条目（缩进 4 + 补到 maxw）的说明列对齐。
-			fmt.Fprintf(w, "  %s  %s%s\n", padDisplay(c.Path[0], maxw+2), c.Summary, riskTag(c))
+			bw.printf("  %s  %s%s\n", padDisplay(c.Path[0], maxw+2), c.Summary, riskTag(c))
 			continue
 		}
-		fmt.Fprintf(w, "  %s\n", g.name)
+		bw.printf("  %s\n", g.name)
 		for _, c := range g.cmds {
-			fmt.Fprintf(w, "    %s  %s%s\n", padDisplay(commandDisplayName(c), maxw), c.Summary, riskTag(c))
+			bw.printf("    %s  %s%s\n", padDisplay(commandDisplayName(c), maxw), c.Summary, riskTag(c))
 		}
 	}
-	fmt.Fprintf(w, "\n退出码：0 成功 / 1 业务错误 / 2 用法错误 / 3 应用不可达或未开启 / 4 需要确认（--yes）。\n")
-	fmt.Fprintf(w, "单命令详情：%s help <命令>；参数旗标为 --kebab-case，`--` 之后全为位置参数。\n", progName)
+	bw.printf("\n退出码：0 成功 / 1 业务错误 / 2 用法错误 / 3 应用不可达或未开启 / 4 需要确认（--yes）。\n")
+	bw.printf("单命令详情：%s help <命令>；参数旗标为 --kebab-case，`--` 之后全为位置参数。\n", progName)
 }
 
 // renderGroupHelp 输出组帮助；组不存在返回 false。
 func renderGroupHelp(w io.Writer, table []spec.Command, group, appVersion string) bool {
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
 	var cmds []spec.Command
 	for _, c := range table {
 		if c.Path[0] == group {
@@ -107,7 +109,7 @@ func renderGroupHelp(w io.Writer, table []spec.Command, group, appVersion string
 	if len(cmds) == 0 {
 		return false
 	}
-	fmt.Fprintf(w, "%s %s — 命令组（%d 条）\n\n", progName, group, len(cmds))
+	bw.printf("%s %s — 命令组（%d 条）\n\n", progName, group, len(cmds))
 	width := 0
 	for _, c := range cmds {
 		if w := displayWidth(strings.Join(c.Path, " ")); w > width {
@@ -115,15 +117,16 @@ func renderGroupHelp(w io.Writer, table []spec.Command, group, appVersion string
 		}
 	}
 	for _, c := range cmds {
-		fmt.Fprintf(w, "  %s  %s%s\n", padDisplay(strings.Join(c.Path, " "), width), c.Summary, riskTag(c))
+		bw.printf("  %s  %s%s\n", padDisplay(strings.Join(c.Path, " "), width), c.Summary, riskTag(c))
 	}
-	fmt.Fprintf(w, "\n单命令详情：%s help %s <子命令>\n", progName, group)
+	bw.printf("\n单命令详情：%s help %s <子命令>\n", progName, group)
 	return true
 }
 
 // renderCommandHelp 输出单命令帮助：用法行、参数表、风险与确认值、示例、Notes。
 func renderCommandHelp(w io.Writer, cmd spec.Command, appVersion string) {
-	fmt.Fprintf(w, "%s %s — %s\n\n", progName, strings.Join(cmd.Path, " "), cmd.Summary)
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
+	bw.printf("%s %s — %s\n\n", progName, strings.Join(cmd.Path, " "), cmd.Summary)
 
 	// 用法行：命令词 + 位置参数（必填 <x> / 可选 [x]）。
 	usage := append([]string{}, cmd.Path...)
@@ -147,10 +150,10 @@ func renderCommandHelp(w io.Writer, cmd spec.Command, appVersion string) {
 	if hasFlags {
 		usage = append(usage, "[参数旗标]")
 	}
-	fmt.Fprintf(w, "用法：\n  %s %s\n\n", progName, strings.Join(usage, " "))
+	bw.printf("用法：\n  %s %s\n\n", progName, strings.Join(usage, " "))
 
 	if len(cmd.Params) > 0 {
-		fmt.Fprintf(w, "参数：\n")
+		bw.printf("参数：\n")
 		type row struct{ form, typ, req, desc string }
 		var rows []row
 		for _, p := range cmd.Params {
@@ -184,29 +187,29 @@ func renderCommandHelp(w io.Writer, cmd spec.Command, appVersion string) {
 			wr = max(wr, displayWidth(r.req))
 		}
 		for _, r := range rows {
-			fmt.Fprintf(w, "  %s  %s  %s  %s\n",
+			bw.printf("  %s  %s  %s  %s\n",
 				padDisplay(r.form, wf), padDisplay(r.typ, wt), padDisplay(r.req, wr), r.desc)
 		}
-		fmt.Fprintln(w)
+		bw.println()
 	}
 
-	fmt.Fprintf(w, "风险与确认：\n  风险级 %s", cmd.Risk)
+	bw.printf("风险与确认：\n  风险级 %s", cmd.Risk)
 	if cmd.Confirm != "" {
-		fmt.Fprintf(w, " — 执行需 --yes（确认值 %s）", cmd.Confirm)
+		bw.printf(" — 执行需 --yes（确认值 %s）", cmd.Confirm)
 	}
-	fmt.Fprintln(w)
+	bw.println()
 
 	if len(cmd.Examples) > 0 {
-		fmt.Fprintf(w, "\n示例：\n")
+		bw.printf("\n示例：\n")
 		for _, e := range cmd.Examples {
-			fmt.Fprintf(w, "  %s\n", e)
+			bw.printf("  %s\n", e)
 		}
 	}
 	if cmd.Notes != "" {
-		fmt.Fprintf(w, "\n说明：\n  %s\n", strings.ReplaceAll(cmd.Notes, "\n", "\n  "))
+		bw.printf("\n说明：\n  %s\n", strings.ReplaceAll(cmd.Notes, "\n", "\n  "))
 	}
 	if cmd.Timeout > 0 {
-		fmt.Fprintf(w, "\n超时：本命令默认 %d 秒（--timeout 可覆盖）\n", cmd.Timeout)
+		bw.printf("\n超时：本命令默认 %d 秒（--timeout 可覆盖）\n", cmd.Timeout)
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"amagi-codebox/internal/config"
-	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/wslsupply"
 )
@@ -58,39 +57,6 @@ func (s *stubSupplyRunner) calls_() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.calls...)
-}
-
-func (s *stubSupplyRunner) dirty_() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.dirty...)
-}
-
-// fakeSupplyCoordinatorWithUnit 构造带 S1 适配器能力的真协调器（fake 探测面；
-// StatMode 从 Chmod 记录读回——SA-06 staging 验证的假探测面）。
-func fakeSupplyCoordinatorWithUnit(t *testing.T) *wslsupply.Coordinator {
-	t.Helper()
-	uncRoot := t.TempDir()
-	modes := map[string]string{}
-	c := wslsupply.NewCoordinator(t.TempDir(), nil, wslsupply.Probes{
-		Identity: func(context.Context, string) platform.WSLUserIdentity {
-			return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m1", OK: true}
-		},
-		ToUNC: func(_, linuxPath string) string {
-			return filepath.Join(uncRoot, filepath.FromSlash(strings.TrimPrefix(linuxPath, "/")))
-		},
-		Chmod: func(_ context.Context, _, mode string, paths ...string) error {
-			for _, p := range paths {
-				modes[p] = mode
-			}
-			return nil
-		},
-		StatMode: func(_ context.Context, _, linuxPath string) (string, bool) {
-			m, ok := modes[linuxPath]
-			return m, ok
-		},
-	})
-	return c
 }
 
 func TestPushWSLSupplyGuards(t *testing.T) {

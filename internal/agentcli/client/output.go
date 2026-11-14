@@ -28,15 +28,16 @@ func writeEnvelopeJSON(w io.Writer, env spec.Envelope) error {
 
 // printHumanError 人类模式渲染错误（含错误码与 hint）。
 func printHumanError(w io.Writer, e *spec.Error) {
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
 	if e == nil {
 		return
 	}
-	fmt.Fprintf(w, "错误: %s\n", e.Message)
+	bw.printf("错误: %s\n", e.Message)
 	if e.Code != "" {
-		fmt.Fprintf(w, "错误码: %s\n", e.Code)
+		bw.printf("错误码: %s\n", e.Code)
 	}
 	if e.Hint != "" {
-		fmt.Fprintf(w, "提示: %s\n", e.Hint)
+		bw.printf("提示: %s\n", e.Hint)
 	}
 }
 
@@ -58,26 +59,28 @@ func exitCodeFor(code string) int {
 
 // renderData 人类模式渲染成功数据。
 func renderData(w io.Writer, data any) {
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
 	switch v := data.(type) {
 	case nil:
 		// 无数据：不输出
 	case string:
-		fmt.Fprintln(w, v)
+		bw.println(v)
 	case bool, float64:
-		fmt.Fprintln(w, scalarText(v))
+		bw.println(scalarText(v))
 	case []any:
 		renderSlice(w, v)
 	case map[string]any:
 		renderMap(w, v, "")
 	default:
 		b, _ := json.Marshal(v)
-		fmt.Fprintln(w, string(b))
+		bw.println(string(b))
 	}
 }
 
 func renderSlice(w io.Writer, items []any) {
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
 	if len(items) == 0 {
-		fmt.Fprintln(w, "（空列表，0 项）")
+		bw.println("（空列表，0 项）")
 		return
 	}
 	allObjects := true
@@ -99,23 +102,24 @@ func renderSlice(w io.Writer, items []any) {
 		switch t := it.(type) {
 		case map[string]any:
 			b, _ := json.Marshal(t)
-			fmt.Fprintln(w, string(b))
+			bw.println(string(b))
 		case []any:
-			fmt.Fprintf(w, "[%d项]\n", len(t))
+			bw.printf("[%d项]\n", len(t))
 		default:
-			fmt.Fprintln(w, scalarText(t))
+			bw.println(scalarText(t))
 		}
 	}
 }
 
 // renderMap 键值缩进渲染；对象第一层唯一数组字段命中表格形态时先打标量键再渲染表格。
 func renderMap(w io.Writer, m map[string]any, indent string) {
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
 	if key, rows, ok := soleObjectArray(m); ok {
 		for _, k := range sortedMapKeys(m) {
 			if k == key {
 				continue
 			}
-			fmt.Fprintf(w, "%s%s: %s\n", indent, k, valueSummary(m[k]))
+			bw.printf("%s%s: %s\n", indent, k, valueSummary(m[k]))
 		}
 		renderTable(w, rows)
 		return
@@ -123,11 +127,11 @@ func renderMap(w io.Writer, m map[string]any, indent string) {
 	for _, k := range sortedMapKeys(m) {
 		v := m[k]
 		if t, ok := v.(map[string]any); ok {
-			fmt.Fprintf(w, "%s%s:\n", indent, k)
+			bw.printf("%s%s:\n", indent, k)
 			renderMap(w, t, indent+"  ")
 			continue
 		}
-		fmt.Fprintf(w, "%s%s: %s\n", indent, k, valueSummary(v))
+		bw.printf("%s%s: %s\n", indent, k, valueSummary(v))
 	}
 }
 

@@ -33,7 +33,8 @@ func Run(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.
 		return failLocal(g.json, stdout, stderr, &spec.Error{Code: spec.ErrBadArgs, Message: err.Error(), Hint: usageHint}, spec.ExitUsage)
 	}
 	if g.version {
-		fmt.Fprintf(stdout, "%s %s\n", progName, appVersion)
+		// 版本打印：尽力而为（管道断开无可处理，见 besteffort.go 的同类裁定）。
+		_, _ = fmt.Fprintf(stdout, "%s %s\n", progName, appVersion)
 		return spec.ExitOK
 	}
 	// 本地命令（不连服务）：--version / help / completion / 空参数总览。
@@ -101,7 +102,8 @@ func Run(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.
 		return unreachable(err.Error())
 	}
 	if pd.TableHash != "" && pd.TableHash != hashOf(table) {
-		fmt.Fprintf(stderr, "警告: 客户端命令表与服务端不一致（本地 %s / 服务端 %s），帮助与参数校验可能有偏差\n", hashOf(table), pd.TableHash)
+		// 诊断警告：尽力而为（stderr 管道断开无可处理）。
+		_, _ = fmt.Fprintf(stderr, "警告: 客户端命令表与服务端不一致（本地 %s / 服务端 %s），帮助与参数校验可能有偏差\n", hashOf(table), pd.TableHash)
 	}
 	timeout := defaultTimeoutSec
 	if inv.cmd.Timeout > 0 {

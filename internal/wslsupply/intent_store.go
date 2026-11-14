@@ -203,14 +203,6 @@ func (r *observationRegistry) record(ob OperationObservation) {
 	}
 }
 
-// forOp 返回某操作的观察（深复制）。
-func (r *observationRegistry) forOp(opID string) (OperationObservation, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ob, ok := r.byOp[opID]
-	return ob, ok
-}
-
 func obUnitKey(targetKey string, unit UnitID) string { return targetKey + "|" + string(unit) }
 
 // recordObservation 是协调器侧入口（同步写注册表）。

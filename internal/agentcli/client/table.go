@@ -19,8 +19,9 @@ const (
 // renderTable 把对象数组渲染为对齐表格。列取标量值出现频率最高的前 8 个
 // （同频按首次出现顺序），显示顺序按首次出现保持稳定。
 func renderTable(w io.Writer, rows []map[string]any) {
+	bw := bestEffortWriter{w: w} // 尽力而为输出（见 besteffort.go）
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "（空列表，0 项）")
+		bw.println("（空列表，0 项）")
 		return
 	}
 	// 列首现顺序：按首行键字典序 + 后续行新键字典序（map 迭代序不确定，
@@ -85,16 +86,16 @@ func renderTable(w io.Writer, rows []map[string]any) {
 		head.WriteString(padDisplay(c, widths[i]))
 		head.WriteString("  ")
 	}
-	fmt.Fprintln(w, strings.TrimRight(head.String(), " "))
+	bw.println(strings.TrimRight(head.String(), " "))
 	for _, row := range rows {
 		var b strings.Builder
 		for i, c := range cols {
 			b.WriteString(padDisplay(cell(row, c), widths[i]))
 			b.WriteString("  ")
 		}
-		fmt.Fprintln(w, strings.TrimRight(b.String(), " "))
+		bw.println(strings.TrimRight(b.String(), " "))
 	}
-	fmt.Fprintf(w, "（共 %d 项；截断/省略字段可用 --json 查看全量）\n", len(rows))
+	bw.printf("（共 %d 项；截断/省略字段可用 --json 查看全量）\n", len(rows))
 }
 
 // cellText 单元格文本：标量直接呈现，嵌套显示 {…}/[n项]。

@@ -14,16 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
-
-func mustTime(layout string) time.Time {
-	t, err := time.Parse(time.RFC3339, layout)
-	if err != nil {
-		panic(err)
-	}
-	return t
-}
 
 // 敏感 chmod 失败必须发生在 rename 之前：已有混合配置（含用户自有 provider）
 // 原样保留，绝不整文件删除（SA-07 的 launcher 对应面——旧实现 rename 后才

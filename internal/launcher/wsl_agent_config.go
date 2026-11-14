@@ -54,23 +54,13 @@ import (
 // WSL 探测接缝：生产实现指向 platform 包，单测可在 launcher 包内替换
 // （platform 的探测 var 未导出，跨包不可注入）。探测接缝一律为 ctx 形态
 // （G0：ctx 必须贯通到真实 exec.CommandContext；旧无 ctx 入口以
-// context.Background() 包装，语义不变）；wslTargetIdentityContextFn 此前
-// 服务 Pi 登录凭据同步的身份复核（已退役），现保留为通用探测面。
+// context.Background() 包装，语义不变）。
 // wslStatModeFn 是敏感提交的隔离验证探测（SA-06，wsl-goal-closure）。
 var (
-	wslUserHomeFn              = platform.WSLUserHome
-	wslToUNCFn                 = platform.WSLToUNC
-	wslChmodFn                 = platform.WSLChmodContext
-	wslStatModeFn              = platform.WSLFileModeContext
-	wslTargetIdentityContextFn = platform.WSLTargetIdentityContext
-)
-
-// 宿主本地私有化接缝（G0）：生产指向 platform.EnsurePrivateDir/File
-// （真实 0700/0600 语义，Windows 为 owner-only DACL）；测试可注入故障
-// 形态（如目录不可写、私有化不可验证）。
-var (
-	hostEnsurePrivateDirFn  = platform.EnsurePrivateDir
-	hostEnsurePrivateFileFn = platform.EnsurePrivateFile
+	wslUserHomeFn = platform.WSLUserHome
+	wslToUNCFn    = platform.WSLToUNC
+	wslChmodFn    = platform.WSLChmodContext
+	wslStatModeFn = platform.WSLFileModeContext
 )
 
 // wslAgentConfigMu 串行化 WSL 侧 merge→write→chmod 全序列（diting m1）：
