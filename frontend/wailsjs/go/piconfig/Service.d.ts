@@ -4,8 +4,6 @@ import {piconfig} from '../models';
 
 export function GetAmagiConfig():Promise<string>;
 
-export function GetAmagiConfigAt(arg1:string):Promise<string>;
-
 export function GetAmagiConfigPath():Promise<string>;
 
 export function GetAuthConfig():Promise<string>;
@@ -25,8 +23,6 @@ export function ListCodexAdvisorChats(arg1:string):Promise<string>;
 export function ReadAgentFileAt(arg1:string,arg2:string):Promise<Array<number>>;
 
 export function SaveAmagiConfig(arg1:string):Promise<void>;
-
-export function SaveAmagiConfigAt(arg1:string,arg2:string):Promise<void>;
 
 export function SaveAuthConfig(arg1:string):Promise<void>;
 

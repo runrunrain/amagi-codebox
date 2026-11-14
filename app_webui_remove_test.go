@@ -52,7 +52,7 @@ func TestClearStoppedSessions_CleansWebUITracker(t *testing.T) {
 	app.Sessions.MarkStopped(sess.ID)
 	svc.RegisterSession(sess.ID, 23456, 0, "")
 
-	res := app.ClearStoppedSessionsDetailed()
+	res := app.clearStoppedSessionsDetailed()
 	if res.Cleared != 1 {
 		t.Fatalf("cleared=%d, want 1（failed=%+v）", res.Cleared, res.Failed)
 	}
@@ -111,7 +111,7 @@ func TestClearStoppedSessions_CleansClaudeWebPlane(t *testing.T) {
 	app.Sessions.MarkStopped(sess.ID)
 	port := startRegisteredClaudePlane(t, app, sess.ID)
 
-	res := app.ClearStoppedSessionsDetailed()
+	res := app.clearStoppedSessionsDetailed()
 	if res.Cleared != 1 {
 		t.Fatalf("cleared=%d, want 1（failed=%+v）", res.Cleared, res.Failed)
 	}

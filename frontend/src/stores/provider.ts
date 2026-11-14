@@ -16,8 +16,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { config } from '../../wailsjs/go/models';
 import { GetProviders } from '../../wailsjs/go/config/ConfigService';
-import { HasAPIKey } from '../../wailsjs/go/secrets/SecretsService';
-import { DeleteProvider } from '../../wailsjs/go/main/App';
+import { DeleteProvider, HasProviderAPIKey as HasAPIKey } from '../../wailsjs/go/main/App';
 import {
   getMergedTerminalPresets,
   getOpenCodeConfig,

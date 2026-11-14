@@ -10,7 +10,7 @@
 
 | 子项目 | 测试/门类型 | 工具 | CI 覆盖 |
 |---------|------------|------|----------|
-| Go 后端（`internal/`、根目录、`cmd/codebox/`） | 单元 + 集成 + 回归系列测试 | Go 自带 `testing` | macos 腿全量 `go test ./... -count=1`；windows 腿仅编译检查（`-run '^$'`）；两腿均 `go vet` + `golangci-lint` |
+| Go 后端（`internal/`、根目录、`cmd/codebox-agent/`） | 单元 + 集成 + 回归系列测试 | Go 自带 `testing` | macos 腿全量 `go test ./... -count=1`；windows 腿仅编译检查（`-run '^$'`）；两腿均 `go vet` + `golangci-lint` |
 | 桌面前端（`frontend/`） | 单元测试（Vitest，`src/__tests__/`）+ 类型检查门 | Vitest + `vue-tsc --noEmit`（内嵌于 `build`） | 均进 CI（`npm run build` + `npm run test`） |
 | 移动端前端（`mobile/`） | 单元测试 + 类型检查 | Vitest + `vue-tsc -b` | 均进 CI（`npm run build` + `npm run test` + 对比度检查） |
 | E2E（`e2e/`） | Playwright 端到端 + 性能套件 | `@playwright/test`（Chromium-only） | **不进 CI**，手动运行 |
@@ -71,12 +71,15 @@ PI_CONFIG_BROWSER_CHANNEL=chrome npx playwright test --config e2e/pi-amagi-confi
 
 根目录 `bind_manifest_test.go` 用反射冻结 Wails 绑定表面，属于每次 `go test` 都会执行的硬断言：
 
-- **禁止原始服务入列**：Bind 列表中不得出现 `pty.Service` / `headroom.HeadroomService`（C-01）。
+- **禁止原始服务入列**：Bind 列表中不得出现 `pty.Service` / `headroom.HeadroomService` / `secrets.SecretsService` / `envcheck.Service` / `logging.Service` / `updater.Service` / `ompconfig.Service` / `opencodeconfig.Service`（C-01 及 Phase 1–4 绑定收敛）。
 - **禁止 App 旁路方法**：`StopAllSessions`、`GetOutputHistory`、`Register/Unregister{Output,Exit,Resize}Callback` 不得存在于 `App` 导出方法面。
+- **App 收口与窄门面冻结**：`HasProviderAPIKey`、`GetProviderAPIKey`、`CleanHeadroom` 窄门面必须存在；已迁至 `remoteAppAdapter` 或下线/内部化的 `QuickLaunch`、`GetEnvCheckOperationState`、`GetEnvCheckStatus`、`GetConfigService`、`GetPathsService`、`GetSettingsService`、`GetSessionWebUI`、`ProbeSessionWebUI`、`SaveAllConfig`、`GetKeyDiagnostics`、`ClearStoppedSessionsDetailed`、`GetLaunchCompensationDebts`、`RetryLaunchCompensationDebt` 不得再暴露于 `App`。
 - **门控门面必须可达**：`PtyWrite`、`PtyWriteLarge`、`PtyResize`、`StopSession`、`RemoveSession`、`ClearStoppedSessions`、`GetOutputHistorySnapshot`、`HeadroomStart/Stop/GetStatus` 必须存在。
 - **原始变更名片段禁漏**：任何导出 App 方法名不得含 `WriteRaw`/`ResizeRaw`/`CloseSession`/`CloseAll`。
 - **已分类非会话变更登记**：`ConfirmExternalCleanupRecovery`、`SetCodexGlobalHeadroom` 等在 `appClassifiedNonSessionMutations` 表中显式登记门控语义，漂移可评审。
-- **Secrets 死绑定方法冻结**：`GetZhipuAPIKey` 等已删除的 shim 不得复活；`GetAllProviders` 必须保留（`cmd/codebox` 有真实调用）。
+- **Skins 禁止暴露 `SetContext`**：`skins.Service` 不得导出 `SetContext`（已改为构造时通过 `skins.NewServiceWithContext` 注入 context getter）。
+- **Secrets 死绑定方法冻结**：`GetZhipuAPIKey` 等已删除的 shim 不得复活；`GetAllProviders` 必须保留（`agentcli` 有真实调用：`agentcli_h_config.go`、`agentcli_h_usage.go`）。
+- **ConfigService 注入/回写面审查**：`Set*`/`Record*`/`Replace*` 方法集合必须与 `configServiceAcceptedMutationSurface` 登记清单一致。
 
 改动绑定表面（增删绑定对象、增删 App 导出方法）前先读这个文件。
 

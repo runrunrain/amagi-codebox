@@ -8,9 +8,15 @@ package main
 // assert that the raw pty.Service / headroom.HeadroomService
 // objects and the exported App.StopAllSessions are NOT reachable (T-24).
 //
-// Excluded (raw, behind the gate):
-//   - app.Pty       → terminal writes go through App.PtyWrite/PtyResize (gated)
-//   - app.Headroom  → mutations go through App.Headroom* facade (lease-guarded)
+// Excluded (raw, behind the gate or App facades):
+//   - app.Pty            → terminal writes go through App.PtyWrite/PtyResize (gated)
+//   - app.Headroom       → mutations go through App.Headroom* facade (lease-guarded)
+//   - app.Secrets        → key checks go through App.HasProviderAPIKey/GetProviderAPIKey
+//   - app.EnvCheck       → checks/fixes/cleanup go through App.* EnvCheck facades
+//   - app.Log            → log queries go through App.GetLogs / App.ClearLogs
+//   - app.Updater        → updates go through App.CheckForUpdate / DownloadAndApplyUpdate
+//   - app.OmpConfig      → config goes through App.*Omp* facades
+//   - app.OpenCodeConfig → config goes through App.*OpenCodeConfig* facades
 //
 // Remaining bound objects expose only read/config/gated-facade methods.
 
@@ -18,21 +24,15 @@ func buildWailsBindList(app *App) []any {
 	return []any{
 		app,
 		app.Config,
-		app.Secrets,
 		app.Paths,
-		app.Log,
 		app.Settings,
-		app.Updater,
 		app.Plugins,
 		app.CodexPlugins,
 		app.OpenCodePlugins,
 		app.PiPlugins,
 		app.OmpPlugins,
-		app.OpenCodeConfig,
 		app.PiConfig,
-		app.OmpConfig,
 		app.AgentProfiles,
-		app.EnvCheck,
 		app.Usage,
 		app.WebUI,
 		app.Skins,

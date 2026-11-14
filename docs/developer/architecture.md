@@ -56,32 +56,26 @@ HideWindowOnClose: capabilities.HideOnCloseSupported && capabilities.CloseAction
 
 版本信息通过 ldflags 注入到 `main.Version/BuildTime/GitCommit/GoVersion`，默认值为 `dev`/`unknown`；未注入时由 `GetAppInfo` 在运行时回退到 `wails.json` 的 `info.productVersion`。注入链详见 [./build-dev.md](./build-dev.md#版本注入)。
 
-## 绑定主干（21 个绑定）
+## 绑定主干（15 个绑定）
 
 ### Bind 列表的唯一事实源：`bind_list.go`
 
-`main.go` 的 `Bind` 字段不再内联手写切片，而是调用 `buildWailsBindList(app)`（`bind_list.go`）。当前精确清单（**App + 20 个服务 = 21 个绑定**）：
+`main.go` 的 `Bind` 字段不再内联手写切片，而是调用 `buildWailsBindList(app)`（`bind_list.go`）。当前精确清单（**App + 14 个服务 = 15 个绑定**）：
 
 ```go
 func buildWailsBindList(app *App) []any {
 	return []any{
 		app,               // *App（枢纽门面）
 		app.Config,        // *config.ConfigService
-		app.Secrets,       // *secrets.SecretsService
 		app.Paths,         // *paths.PathsService
-		app.Log,           // *logging.Service
 		app.Settings,      // *settings.Service
-		app.Updater,       // *updater.Service
 		app.Plugins,       // *plugin.Service（Claude Code 插件）
 		app.CodexPlugins,  // *codexplugin.Service
 		app.OpenCodePlugins,// *opencodeplugin.Service
 		app.PiPlugins,     // *piplugin.Service
 		app.OmpPlugins,    // *ompplugin.Service
-		app.OpenCodeConfig,// *opencodeconfig.Service
 		app.PiConfig,      // *piconfig.Service
-		app.OmpConfig,     // *ompconfig.Service
 		app.AgentProfiles, // *agentprofile.Service
-		app.EnvCheck,      // *envcheck.Service
 		app.Usage,         // *usage.Service
 		app.WebUI,         // *webui.Service
 		app.Skins,         // *skins.Service
@@ -90,16 +84,22 @@ func buildWailsBindList(app *App) []any {
 }
 ```
 
-### 有意排除的原始服务（门控门面，设计 §4.1/§6.3 C-01）
+### 有意排除的原始服务（门控与窄门面，设计 §4.1/§6.3 C-01）
 
-以下两个原始服务对象**不进入 Bind 列表**，全部读写经 `App` 上的门控门面方法：
+以下 8 个原始服务对象**不进入 Bind 列表**，前端只能经 `App` 上的门控或窄门面方法触达：
 
 | 原始服务 | 排除原因 | 前端可达的门面 |
 |---|---|---|
 | `app.Pty`（`*pty.Service`） | 原始终端写/缩放必须经 ControlGate 仲裁 | `App.PtyWrite` / `App.PtyWriteLarge` / `App.PtyResize` / `App.GetOutputHistorySnapshot` |
 | `app.Headroom`（`*headroom.HeadroomService`） | 变更必须经 lease 守卫 | `App.HeadroomStart` / `App.HeadroomStop` / `App.HeadroomGetStatus` 等 |
+| `app.Secrets`（`*secrets.SecretsService`） | 避免暴露全量密钥读取/导入导出内部方法 | `App.HasProviderAPIKey` / `App.GetProviderAPIKey` |
+| `app.EnvCheck`（`*envcheck.Service`） | 收口环境检测与安装动作 | `App.RunEnvCheck` / `CheckTool` / `GetEnvCheckSnapshot` / `CleanHeadroom` 等 |
+| `app.Log`（`*logging.Service`） | 仅暴露查询/清理/导出只读面 | `App.GetLogs` / `GetLogSources` / `GetLogFiles` / `GetLogFileContent` / `ClearLogs` / `ExportLogs` |
+| `app.Updater`（`*updater.Service`） | 收口检查/应用更新，隐藏内部生命周期方法 | `App.CheckForUpdate` / `App.DownloadAndApplyUpdate` |
+| `app.OmpConfig`（`*ompconfig.Service`） | 统一通过 App 门面读写 omp 配置 | `App.GetOmpConfig` / `SaveOmpConfig` / `GetOmpConfigPath` / `GetOmpModelsConfig*` / `GetOmpModelCatalog` |
+| `app.OpenCodeConfig`（`*opencodeconfig.Service`） | 统一通过 App 门面读写 OpenCode 配置 | `App.GetOpenCodeConfig` / `SaveOpenCodeConfig` / `GetOpenCodeConfigPath` |
 
-这一冻结边界由 `bind_manifest_test.go`（T-24）用反射断言守住：Bind 列表中不得出现 `pty.Service` / `headroom.HeadroomService` 类型；`App` 上不得存在 `StopAllSessions`、`RegisterOutputCallback` 等原始旁路方法；导出的会话/PTY 变更方法必须恰好是已登记的门控门面（M-005）。修改绑定表面前先读该测试（详见 [./testing.md](./testing.md)）。
+这一冻结边界由 `bind_manifest_test.go`（T-24）用反射断言守住：Bind 列表中不得出现上述 8 类原始服务类型；`App` 上不得存在 `StopAllSessions`、`RegisterOutputCallback` 等原始旁路方法或已收口的内部桥接方法（`GetConfigService`、`GetSettingsService`、`GetPathsService`、`SaveAllConfig`、`GetKeyDiagnostics`、`GetSessionWebUI`、`ProbeSessionWebUI`、`GetEnvCheckOperationState`、`GetEnvCheckStatus`、`QuickLaunch`、`ClearStoppedSessionsDetailed`、`GetLaunchCompensationDebts`、`RetryLaunchCompensationDebt`）；`skins.Service` 不得导出 `SetContext`；导出的会话/PTY 变更方法必须恰好是已登记的门控门面（M-005）。修改绑定表面前先读该测试（详见 [./testing.md](./testing.md)）。
 
 ### 不直接绑定的内部组件
 
@@ -109,12 +109,12 @@ func buildWailsBindList(app *App) []any {
 
 `App` 结构体（`app.go:201` 起）持有全部服务指针与跨服务协调状态：
 
-- **绑定服务**：上表 20 个服务指针。
+- **绑定服务**：上表 14 个服务指针（另有 6 个已从 Bind 收口的内部服务指针：`Secrets`、`EnvCheck`、`Log`、`Updater`、`OmpConfig`、`OpenCodeConfig`）。
 - **控制运行时**（M3-A2）：`control *remote.ControlRuntime` 是所有会话写副作用的仲裁机构；`sessionAdapter`、`sharedCoord`、`processRegistry`、`remotePlanner`、`compensationDebts` 支撑远程 v1 会话适配与启动计划/补偿债务。
 - **RemoteClient 域**：`rcRegistry`（宿主登记簿，构造时从 `configDir/remote-hosts.json` 装载）、`rcCreds`（凭据存储，复用 `App.Secrets` 的 DPAPI/Keychain，条目 `codebox-remoteclient/<DeviceID>`）、`rcPairing`、`rcConn`（当前至多一条已连接宿主）、`rcTerminals`（已连接宿主的 `/ws/v1` 终端长连接管理器）。
 - **平台能力快照**：`Capabilities platform.PlatformCapabilities`、`CLIResolver`、`FileOpener`，启动时一次性注入，运行期只读。
 
-`App` 同时实现 `remote.AppInterface`（`GetSettingsService`/`GetConfigService`/`GetPathsService` 三个 getter），让 `remote.Server` 反向访问配置层；这三个方法也会被 Wails 生成绑定，前端 `provider.ts` 用 `GetConfigService()` 拿服务句柄缓存复用（详见 [./frontend-backend.md](./frontend-backend.md)）。
+`*App` 不再直接向 Wails 绑定面暴露 `remote.AppInterface` 的内部桥接方法，而是通过未导出适配器 `remoteAppAdapter`（`a.remoteAdapter()`）实现 `remote.AppInterface`（`GetSettingsService`/`GetConfigService`/`GetPathsService`/`SaveAllConfig`/`GetKeyDiagnostics`/`GetSessionWebUI`/`ProbeSessionWebUI`），让 `remote.Server` 在进程内反向访问配置与状态层而不会把这些内部接口生成到 Wails 前端绑定；前端 `provider.ts` 直接导入并调用已绑定的 `config.ConfigService` 方法，不再经 `GetConfigService()` 拿句柄（详见 [./frontend-backend.md](./frontend-backend.md)）。
 
 ## internal/ 包分组（34 个一级包）
 
@@ -138,7 +138,7 @@ func buildWailsBindList(app *App) []any {
 
 `Startup(ctx)` 的实际顺序（核实自当前代码）：
 
-1. `a.Skins.SetContext(ctx)`：皮肤服务依赖 Wails ctx 弹原生文件选择对话框。
+1. `a.ctx = ctx`：记录 Wails app context。皮肤服务 `a.Skins` 在 `NewApp` 阶段即通过 `skins.NewServiceWithContext(..., app.wailsContext)` 注入上下文读取回调，在 `PickSkinImage` 时按需读取 `a.ctx` 弹原生文件选择对话框，不再在绑定面暴露 `SetContext`。
 2. `a.recoverExternalCleanups()`：恢复持久的外部进程清理所有权；失败转 startup warning 并 fail-close Headroom。
 3. **控制运行时接线**（M3-A2）：`Pty.SetRunEventSink(a.control.Projector())`（原始 PTY 输出/退出经 RunEventProjector，不再直接 EventsEmit）、`control.SetPTYRawPort/SetPTYLifecycleRawPort`、`control.SetWailsContext(ctx)`、`control.MarkReady()`；再挂 `Remote.SetControlLifecycleHook(...)`（fence-first：Stop/revoke/安全闩锁先冻结远程控制）。
 4. `a.Updater.CleanupOldBinary()`。

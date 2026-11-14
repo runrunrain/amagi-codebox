@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"amagi-codebox/internal/fsutil"
 )
 
 // defaultAmagiConfig 是 amagi.json 缺失时返回的默认骨架，
@@ -51,19 +53,6 @@ func modelsConfigPath() string {
 
 func authConfigPath() string {
 	return filepath.Join(agentDir(), "auth.json")
-}
-
-// ensureDir creates the parent directory of the given path if it does not exist.
-func ensureDir(path string) error {
-	dir := filepath.Dir(path)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create directory %s: %w", dir, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("stat directory %s: %w", dir, err)
-	}
-	return nil
 }
 
 // GetAmagiConfig 读取 amagi.json 内容。文件缺失时返回默认骨架；
@@ -107,10 +96,10 @@ func (s *Service) SaveAmagiConfig(content string) error {
 	formatted = append(formatted, '\n')
 
 	path := amagiConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, formatted)
+	return fsutil.WritePrivateFile(path, formatted)
 }
 
 // GetAmagiConfigPath 返回 amagi.json 的绝对路径（供前端展示/复制）。
@@ -121,7 +110,7 @@ func (s *Service) GetAmagiConfigPath() (string, error) {
 // ---------------------------------------------------------------------------
 // 显式目标窄接口（P3-S2，design §七）：原无 target 方法保持 Windows 默认语义；
 // 以下方法接受显式 agent 目录，不做任何进程级 PI_CODING_AGENT_DIR 变更。
-// WSL 私有文件的写入不走本接口（writePrivateFile 的 rename 失败直接覆盖回退
+// WSL 私有文件的写入不走本接口（fsutil.WritePrivateFile 的 rename 失败直接覆盖回退
 // 不能作为跨界 writer 复用）——必须经 wslsupply 协调器的安全提交原语。
 // ---------------------------------------------------------------------------
 
@@ -139,81 +128,6 @@ func (s *Service) ReadAgentFileAt(agentDir, name string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
-}
-
-// GetAmagiConfigAt 读取显式目录的 amagi.json（缺失返回默认骨架；非法 JSON
-// 原样返回，供源码模式修复）。与 GetAmagiConfig 同语义，仅目标显式。
-func (s *Service) GetAmagiConfigAt(agentDir string) (string, error) {
-	data, err := s.ReadAgentFileAt(agentDir, "amagi.json")
-	if err != nil {
-		return "", err
-	}
-	if len(data) == 0 {
-		return defaultAmagiConfig, nil
-	}
-	if !json.Valid(data) {
-		return string(data), nil
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
-		return string(data), nil
-	}
-	formatted, err := json.MarshalIndent(obj, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("format amagi config: %w", err)
-	}
-	return string(formatted) + "\n", nil
-}
-
-// SaveAmagiConfigAt 校验并保存 amagi.json 到显式目录（本地文件系统目标；
-// WSL UNC 目标拒绝——跨界私有文件写入必须经 wslsupply 安全提交原语）。
-func (s *Service) SaveAmagiConfigAt(agentDir, content string) error {
-	if err := ValidateAmagiConfig(content); err != nil {
-		return err
-	}
-	if isUNCPath(agentDir) {
-		return errors.New("refusing to write amagi.json into a WSL UNC target; use the config supply coordinator")
-	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(content), &obj); err != nil {
-		return err
-	}
-	formatted, err := json.MarshalIndent(obj, "", "  ")
-	if err != nil {
-		return fmt.Errorf("format JSON: %w", err)
-	}
-	formatted = append(formatted, '\n')
-	path := filepath.Join(agentDir, "amagi.json")
-	if err := ensureDir(path); err != nil {
-		return err
-	}
-	return writePrivateFile(path, formatted)
-}
-
-// isUNCPath 报告路径是否为 UNC 形态（\\wsl$… / \\wsl.localhost… 等网络根）。
-func isUNCPath(p string) bool {
-	return strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, `//`)
-}
-
-// writePrivateFile 临时文件 + rename 原子写入，权限 0600；
-// rename 失败（如 Windows 文件被占用）时回退直接覆盖。
-func writePrivateFile(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write temp file %s: %w", tmp, err)
-	}
-	defer func() { _ = os.Remove(tmp) }()
-	_ = os.Chmod(tmp, 0o600)
-
-	if err := os.Rename(tmp, path); err == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else if overwriteErr := os.WriteFile(path, data, 0o600); overwriteErr == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else {
-		return fmt.Errorf("replace config file %s: %w", path, err)
-	}
 }
 
 // GetModelsConfig 读取 models.json（provider 注册表）内容。
@@ -258,10 +172,10 @@ func (s *Service) SaveModelsConfig(content string) error {
 	formatted = append(formatted, '\n')
 
 	path := modelsConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, formatted)
+	return fsutil.WritePrivateFile(path, formatted)
 }
 
 // GetModelsConfigPath 返回 models.json 的绝对路径，供前端展示。
@@ -317,10 +231,10 @@ func (s *Service) SaveAuthConfig(content string) error {
 	formatted = append(formatted, '\n')
 
 	path := authConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, formatted)
+	return fsutil.WritePrivateFile(path, formatted)
 }
 
 // GetAuthConfigPath 返回 auth.json 的绝对路径，供前端展示。

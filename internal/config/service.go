@@ -1439,23 +1439,6 @@ func (s *ConfigService) GetAllOpenCodePresets() map[string]OpenCodePreset {
 	return cloneOpenCodePresetsMap(s.config.OpenCodePresets)
 }
 
-// SetAllTerminalPresets 批量设置终端预设配置（用于导入）。
-// 采用 replace 策略：以传入快照整体替换当前 terminal_presets。
-func (s *ConfigService) SetAllTerminalPresets(tp *TerminalPresetsConfig) error {
-	if tp == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.config == nil {
-		return errors.New("config not loaded")
-	}
-	s.config.TerminalPresets = cloneTerminalPresetsConfig(tp)
-	migrateTerminalPresetsToOpenCodePresets(s.config)
-	MigrateTerminalPresetsToFormats(s.config)
-	return s.saveLocked()
-}
-
 func cloneTerminalPresetsConfig(src *TerminalPresetsConfig) *TerminalPresetsConfig {
 	if src == nil {
 		return nil
@@ -1878,29 +1861,6 @@ func (s *ConfigService) SaveOpenCodePreset(key string, preset OpenCodePreset) er
 		s.config.OpenCodePresets = map[string]OpenCodePreset{}
 	}
 	s.config.OpenCodePresets[key] = preset
-	return s.saveLocked()
-}
-
-// DeleteOpenCodePreset 删除指定的 OpenCode 预设。
-func (s *ConfigService) DeleteOpenCodePreset(key string) error {
-	if key == "" {
-		return errors.New("opencode preset key is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.config == nil {
-		return errors.New("config not loaded")
-	}
-	if s.config.OpenCodePresets != nil {
-		delete(s.config.OpenCodePresets, key)
-	}
-	if s.config.TerminalPresets != nil {
-		legacy := s.config.TerminalPresets.GetMap(TerminalPresetOpenCode)
-		if legacy != nil {
-			delete(legacy, key)
-			s.config.TerminalPresets.SetMap(TerminalPresetOpenCode, legacy)
-		}
-	}
 	return s.saveLocked()
 }
 

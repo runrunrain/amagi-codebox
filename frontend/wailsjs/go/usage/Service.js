@@ -58,10 +58,6 @@ export function Record(arg1) {
   return window['go']['usage']['Service']['Record'](arg1);
 }
 
-export function RecordForce(arg1) {
-  return window['go']['usage']['Service']['RecordForce'](arg1);
-}
-
 export function ResetModelPricing() {
   return window['go']['usage']['Service']['ResetModelPricing']();
 }

@@ -463,7 +463,7 @@ func TestDailyTrendsSplitCostByCurrency(t *testing.T) {
 	}
 }
 
-// TestRecordForceIsNewSemantic 验证 M5：RecordForce 内部能区分真正新增 vs REPLACE 更新。
+// TestRecordForceIsNewSemantic 验证 M5：recordForceInternal 能区分真正新增 vs REPLACE 更新。
 func TestRecordForceIsNewSemantic(t *testing.T) {
 	dir := t.TempDir()
 	s := NewService(dir, nil)
@@ -490,7 +490,7 @@ func TestRecordForceIsNewSemantic(t *testing.T) {
 		t.Fatalf("first recordForceInternal: %v", err)
 	}
 	if !isNew1 {
-		t.Errorf("first RecordForce isNew = false, want true (new row)")
+		t.Errorf("first recordForceInternal isNew = false, want true (new row)")
 	}
 
 	// 第二次：dedup_key 存在 → REPLACE 更新，isNew=false。
@@ -500,12 +500,14 @@ func TestRecordForceIsNewSemantic(t *testing.T) {
 		t.Fatalf("second recordForceInternal: %v", err)
 	}
 	if isNew2 {
-		t.Errorf("second RecordForce isNew = true, want false (REPLACE existing)")
+		t.Errorf("second recordForceInternal isNew = true, want false (REPLACE existing)")
 	}
 
-	// 公共 API RecordForce 签名未变（error 单返回值）。
-	if err := s.RecordForce(evt); err != nil {
-		t.Errorf("public RecordForce returned err: %v", err)
+	// 第三次：再次 REPLACE 同一 dedup_key，仍返回 isNew=false。
+	if isNew3, err := s.recordForceInternal(evt); err != nil {
+		t.Errorf("third recordForceInternal returned err: %v", err)
+	} else if isNew3 {
+		t.Errorf("third recordForceInternal isNew = true, want false (REPLACE existing)")
 	}
 
 	// 行数仍为 1。

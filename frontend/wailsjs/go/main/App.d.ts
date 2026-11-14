@@ -7,13 +7,11 @@ import {envcheck} from '../models';
 import {updater} from '../models';
 import {aiproxy} from '../models';
 import {router} from '../models';
-import {config} from '../models';
 import {dockerwsl} from '../models';
 import {envvars} from '../models';
 import {headroom} from '../models';
-import {launchplan} from '../models';
 import {logging} from '../models';
-import {paths} from '../models';
+import {config} from '../models';
 import {platform} from '../models';
 import {session} from '../models';
 import {wslsetup} from '../models';
@@ -52,11 +50,11 @@ export function CheckWSLCliResourcesSupply(arg1:string):Promise<main.WSLSkillsSu
 
 export function CleanClaudeInstall(arg1:string):Promise<envcheck.InstallResult>;
 
+export function CleanHeadroom():Promise<envcheck.InstallResult>;
+
 export function ClearLogs():Promise<void>;
 
 export function ClearStoppedSessions():Promise<number>;
-
-export function ClearStoppedSessionsDetailed():Promise<main.ClearStoppedSessionsResult>;
 
 export function ConfirmExternalCleanupRecovery(arg1:string,arg2:boolean):Promise<remote.ExternalCleanupRecoveryResult>;
 
@@ -108,17 +106,11 @@ export function GetClaudeAccounts():Promise<main.ClaudeAccountsPoolDTO>;
 
 export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>;
 
-export function GetConfigService():Promise<config.ConfigService>;
-
 export function GetDockerWSLHealth():Promise<dockerwsl.HealthReport>;
 
 export function GetDrvFSAdvisories():Promise<string>;
 
-export function GetEnvCheckOperationState():Promise<envcheck.OperationState>;
-
 export function GetEnvCheckSnapshot():Promise<envcheck.EnvCheckSnapshot>;
-
-export function GetEnvCheckStatus():Promise<envcheck.OverallStatus>;
 
 export function GetEnvVars():Promise<Array<envvars.EnvVar>>;
 
@@ -133,10 +125,6 @@ export function GetGitHubToken():Promise<string>;
 export function GetHeadroomPerfByClient():Promise<Array<headroom.ClientPerfStat>>;
 
 export function GetHeadroomSavings():Promise<headroom.SavingsReport>;
-
-export function GetKeyDiagnostics():Promise<Record<string, Record<string, string>>>;
-
-export function GetLaunchCompensationDebts():Promise<Array<launchplan.CompensationDebt>>;
 
 export function GetLogFileContent(arg1:string):Promise<string>;
 
@@ -164,8 +152,6 @@ export function GetOpenCodeConfigPath():Promise<string>;
 
 export function GetOutputHistorySnapshot(arg1:string):Promise<string>;
 
-export function GetPathsService():Promise<paths.PathsService>;
-
 export function GetPiAuthConfig():Promise<string>;
 
 export function GetPiAuthConfigPath():Promise<string>;
@@ -179,6 +165,8 @@ export function GetPiModelsConfigPath():Promise<string>;
 export function GetPiPluginWSLStatus():Promise<main.PiPluginWSLStatus>;
 
 export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;
+
+export function GetProviderAPIKey(arg1:string):Promise<string>;
 
 export function GetProviderExportJSON(arg1:string):Promise<string>;
 
@@ -204,11 +192,7 @@ export function GetSession(arg1:string):Promise<session.SessionInfo>;
 
 export function GetSessionControlHolds():Promise<Array<main.SessionControlHoldView>>;
 
-export function GetSessionWebUI(arg1:string):Promise<remote.SessionWebUIInfo|boolean>;
-
 export function GetSessions():Promise<Array<session.SessionInfo>>;
-
-export function GetSettingsService():Promise<settings.Service>;
 
 export function GetStartupWarnings():Promise<Array<string>>;
 
@@ -229,6 +213,8 @@ export function GetWSLOpenCodeMCPPreview():Promise<Array<main.WSLOpenCodeMCPEntr
 export function GetWSLPluginTargetSupport():Promise<Array<main.WSLPluginTargetEntry>>;
 
 export function GrantWSLVisionConsent():Promise<void>;
+
+export function HasProviderAPIKey(arg1:string):Promise<boolean>;
 
 export function HeadroomGetPort():Promise<number>;
 
@@ -302,15 +288,11 @@ export function ProbeModelModalityNow(arg1:string,arg2:string):Promise<main.Moda
 
 export function ProbeProviderQuota(arg1:string):Promise<config.ProviderQuotaEntry>;
 
-export function ProbeSessionWebUI(arg1:string):Promise<remote.SessionWebUIInfo|boolean>;
-
 export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function PtyWrite(arg1:string,arg2:string):Promise<void>;
 
 export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
-
-export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function ReconcileClaudeAccounts(arg1:string,arg2:number):Promise<main.ClaudeAccountReconcileResultDTO>;
 
@@ -394,8 +376,6 @@ export function RenameClaudeAccount(arg1:string,arg2:string,arg3:number):Promise
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
 
-export function RetryLaunchCompensationDebt(arg1:string):Promise<void>;
-
 export function RevokeRemoteDevice(arg1:string,arg2:boolean):Promise<remote.RevokeDeviceResult>;
 
 export function RotateAgentCLIToken():Promise<void>;
@@ -405,8 +385,6 @@ export function RunEnvCheck():Promise<envcheck.OverallStatus>;
 export function RunEnvFixAction(arg1:string,arg2:string,arg3:string):Promise<envcheck.FixActionResult>;
 
 export function SaveAIProxySettings(arg1:aiproxy.Settings):Promise<aiproxy.State>;
-
-export function SaveAllConfig():Promise<void>;
 
 export function SaveAmagiConfig(arg1:string):Promise<void>;
 

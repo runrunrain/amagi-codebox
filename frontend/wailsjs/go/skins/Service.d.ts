@@ -3,7 +3,6 @@
 import {http} from '../models';
 import {settings} from '../models';
 import {skins} from '../models';
-import {context} from '../models';
 
 export function AssetHandler():Promise<http.Handler>;
 
@@ -16,7 +15,5 @@ export function ListSkins():Promise<Array<skins.Skin>>;
 export function PickSkinImage():Promise<skins.Skin>;
 
 export function RemoveSkin(arg1:string):Promise<void>;
-
-export function SetContext(arg1:context.Context):Promise<void>;
 
 export function SetSkinSettings(arg1:settings.SkinSettings):Promise<void>;

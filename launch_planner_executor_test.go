@@ -1092,14 +1092,14 @@ func TestConfigCompensationUnavailableProjectionAndRetry(t *testing.T) {
 		t.Fatalf("canceled compensation = %#v", outcome)
 	}
 	app := &App{compensationDebts: debts}
-	listed := app.GetLaunchCompensationDebts()
+	listed := app.getLaunchCompensationDebts()
 	if len(listed) != 1 || listed[0].Disposition != launchplan.CompensationUnavailable {
 		t.Fatalf("unavailable debt projection = %#v", listed)
 	}
-	if err := app.RetryLaunchCompensationDebt(effect.owner); err != nil {
+	if err := app.retryLaunchCompensationDebt(effect.owner); err != nil {
 		t.Fatal(err)
 	}
-	if len(app.GetLaunchCompensationDebts()) != 0 {
+	if len(app.getLaunchCompensationDebts()) != 0 {
 		t.Fatal("confirmed unavailable retry retained debt")
 	}
 	data, err := os.ReadFile(path)
@@ -1137,15 +1137,15 @@ func TestConfigCompensationDebtQueryAndExactRetry(t *testing.T) {
 		t.Fatal("post-rename durability failure was presented as success")
 	}
 	app := &App{compensationDebts: debts}
-	listed := app.GetLaunchCompensationDebts()
+	listed := app.getLaunchCompensationDebts()
 	if len(listed) != 1 || listed[0].Owner != effect.owner || listed[0].Disposition != launchplan.CompensationIndeterminate {
 		t.Fatalf("debt projection = %#v", listed)
 	}
 	injectDurabilityFailure = false
-	if err := app.RetryLaunchCompensationDebt(effect.owner); err != nil {
-		t.Fatalf("RetryLaunchCompensationDebt: %v", err)
+	if err := app.retryLaunchCompensationDebt(effect.owner); err != nil {
+		t.Fatalf("retryLaunchCompensationDebt: %v", err)
 	}
-	if remaining := app.GetLaunchCompensationDebts(); len(remaining) != 0 {
+	if remaining := app.getLaunchCompensationDebts(); len(remaining) != 0 {
 		t.Fatalf("resolved debt retained: %#v", remaining)
 	}
 	data, err := os.ReadFile(path)

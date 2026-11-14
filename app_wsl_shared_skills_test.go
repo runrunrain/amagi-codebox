@@ -34,7 +34,7 @@ func TestEnsureWSLSharedSkillsRootHappyPath(t *testing.T) {
 			t.Errorf("distro mismatch: %s", distro)
 		}
 		return platform.WSLSharedSkillsLinkResult{
-			State: platform.WSLSkillsBackedUp,
+			State:  platform.WSLSkillsBackedUp,
 			Target: "/mnt/c/Users/u/.agents/skills",
 			Backup: "/home/u/.agents/skills.pre-shared.20260101",
 			Detail: "既有目录已备份迁移",
@@ -98,7 +98,6 @@ func TestEnsureWSLSharedSkillsRootNegative(t *testing.T) {
 		t.Fatalf("no-distro must stay unchecked, got %+v", st)
 	}
 }
-
 
 // TestWSLSharedSkillsFunnelWaitsForInFlight（R2-F09 正式时序回归）：同 distro
 // 第二个首次启动（漏斗/显式检查）必须等待在途轮次真正完成并拿到真实结果，

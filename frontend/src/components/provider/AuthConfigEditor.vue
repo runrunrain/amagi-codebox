@@ -161,6 +161,17 @@
       </div>
     </template>
     </div>
+
+    <ConfirmDialog
+      v-model:open="showDeleteDialog"
+      title="删除认证条目"
+      :message="pendingDeleteName ? `确认删除 ${pendingDeleteName} 的认证条目？` : ''"
+      danger
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmRemoveEntry"
+      @cancel="clearPendingDelete"
+    />
   </div>
 </template>
 
@@ -178,11 +189,13 @@ import EmptyState from '../ui/EmptyState.vue';
 import StatusBanner from '../ui/StatusBanner.vue';
 import EditorToolbar from '../ui/EditorToolbar.vue';
 import InfoTip from '../ui/InfoTip.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
 import { pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const editorRoot = ref<HTMLElement | null>(null);
@@ -216,6 +229,13 @@ const data = ref<JsonRecord>({});
 const catalogProviders = ref<{ name: string; hasAuth?: boolean }[]>([]);
 const newName = ref('');
 const newKey = ref('');
+const showDeleteDialog = ref(false);
+const pendingDeleteName = ref('');
+const pendingDeleteRestoreFocus = ref(false);
+
+watch(showDeleteDialog, (open) => {
+  if (!open) clearPendingDelete();
+});
 
 function entryField(name: string, key: string): unknown {
   const e = data.value[name];
@@ -378,12 +398,25 @@ function updateApiKey(name: string, key: string) {
   serialize();
 }
 
+function clearPendingDelete() {
+  pendingDeleteName.value = '';
+  pendingDeleteRestoreFocus.value = false;
+}
+
 function removeEntry(name: string) {
-  if (!confirm(`确认删除 ${name} 的认证条目？`)) return;
+  pendingDeleteName.value = name;
+  pendingDeleteRestoreFocus.value = !!editorRoot.value?.contains(document.activeElement);
+  showDeleteDialog.value = true;
+}
+
+function confirmRemoveEntry() {
+  const name = pendingDeleteName.value;
+  const restoreFocus = pendingDeleteRestoreFocus.value;
+  clearPendingDelete();
+  if (!name || !(name in data.value)) return;
   const index = entries.value.findIndex(row => row.name === name);
   const successor = entries.value[index + 1] || entries.value[index - 1];
   const removedId = entryId(name);
-  const restoreFocus = !!editorRoot.value?.contains(document.activeElement);
   delete data.value[name];
   entryIdByName.delete(name);
   data.value = { ...data.value };
@@ -425,14 +458,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

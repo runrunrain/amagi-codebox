@@ -532,7 +532,7 @@ func newTestAppWithRemote(t *testing.T) *App {
 	// Wire Remote with embedded test FS.
 	// The embed directive is `//go:embed internal/remote/testdata/mobile/dist`
 	// so the FS keys are "internal/remote/testdata/mobile/dist/...".
-	srv := remote.NewServer(8680, app, logSvc, appTestMobileFSSource)
+	srv := remote.NewServer(8680, app.remoteAdapter(), logSvc, appTestMobileFSSource)
 	srv.SetMobileAssetsPrefix("internal/remote/testdata/mobile/dist")
 	app.Remote = srv
 
@@ -784,7 +784,7 @@ func TestAppConfigEventOnUserChange(t *testing.T) {
 	opts := remote.NewProductionSecurityOptions(secDir, func() (contract.HostSummary, error) {
 		return validHostSummaryMain(), nil
 	})
-	secSrv := remote.NewServerWithSecurity(0, app, app.Log, embed.FS{}, opts)
+	secSrv := remote.NewServerWithSecurity(0, app.remoteAdapter(), app.Log, embed.FS{}, opts)
 	app.Remote = secSrv
 	if err := secSrv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)
@@ -829,7 +829,7 @@ func TestAppListRemoteSecurityEventsWrapper(t *testing.T) {
 	opts := remote.NewProductionSecurityOptions(secDir, func() (contract.HostSummary, error) {
 		return validHostSummaryMain(), nil
 	})
-	secSrv := remote.NewServerWithSecurity(0, app, app.Log, embed.FS{}, opts)
+	secSrv := remote.NewServerWithSecurity(0, app.remoteAdapter(), app.Log, embed.FS{}, opts)
 	app.Remote = secSrv
 	if err := secSrv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)
@@ -872,7 +872,7 @@ func newRemoteAppForEndpoint(t *testing.T) *App {
 	opts := remote.NewProductionSecurityOptions(secDir, func() (contract.HostSummary, error) {
 		return validHostSummaryMain(), nil
 	})
-	secSrv := remote.NewServerWithSecurity(0, app, app.Log, embed.FS{}, opts)
+	secSrv := remote.NewServerWithSecurity(0, app.remoteAdapter(), app.Log, embed.FS{}, opts)
 	app.Remote = secSrv
 	if err := secSrv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)

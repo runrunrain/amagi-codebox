@@ -360,6 +360,17 @@
       </div>
     </template>
     </div>
+
+    <ConfirmDialog
+      v-model:open="showDeleteProviderDialog"
+      title="删除提供商"
+      :message="pendingDeleteProvider ? `确认删除提供商 ${pendingDeleteProvider} 及其全部模型配置？` : ''"
+      danger
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmRemoveProvider"
+      @cancel="clearPendingDeleteProvider"
+    />
   </div>
 </template>
 
@@ -387,12 +398,14 @@ import EditorToolbar from '../ui/EditorToolbar.vue';
 import FieldLabel from '../ui/FieldLabel.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import { providerSectionId, pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot, type ConfigSectionItem } from './configNavigation';
 import ConfigContentGroup from './ConfigContentGroup.vue';
 import StringListEditor from './StringListEditor.vue';
 import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
 
 interface RegistryModelEntry {
   id?: string;
@@ -467,6 +480,13 @@ const data = ref<RegistryData>({});
 const activeSection = ref(props.sectionId || '');
 const visited = ref<Record<string, boolean>>({});
 const newProviderName = ref('');
+const showDeleteProviderDialog = ref(false);
+const pendingDeleteProvider = ref('');
+const pendingDeleteRestoreFocus = ref(false);
+
+watch(showDeleteProviderDialog, (open) => {
+  if (!open) clearPendingDeleteProvider();
+});
 
 const providersMap = computed<Record<string, RegistryProviderEntry>>(() => {
   const v = data.value.providers;
@@ -780,12 +800,26 @@ function addProvider() {
   focusSelection();
 }
 
+function clearPendingDeleteProvider() {
+  pendingDeleteProvider.value = '';
+  pendingDeleteRestoreFocus.value = false;
+}
+
 function removeProvider(name: string) {
-  if (!confirm(`确认删除提供商 ${name} 及其全部模型配置？`)) return;
+  pendingDeleteProvider.value = name;
+  pendingDeleteRestoreFocus.value = !!editorRoot.value?.contains(document.activeElement);
+  showDeleteProviderDialog.value = true;
+}
+
+function confirmRemoveProvider() {
+  const name = pendingDeleteProvider.value;
+  const restoreFocus = pendingDeleteRestoreFocus.value;
+  clearPendingDeleteProvider();
+  if (!name) return;
   const index = providerNames.value.indexOf(name);
   const successor = providerNames.value[index + 1] || providerNames.value[index - 1];
-  const restoreFocus = !!editorRoot.value?.contains(document.activeElement);
   const providers = ensureProviders();
+  if (!(name in providers)) return;
   delete providers[name];
   data.value.providers = { ...providers };
   serialize();
@@ -860,14 +894,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

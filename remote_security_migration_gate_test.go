@@ -50,7 +50,7 @@ func newMigrationGateApp(t *testing.T) (*App, string) {
 	opts := remote.NewProductionSecurityOptions(configDir, func() (contract.HostSummary, error) {
 		return validHostSummaryMain(), nil
 	})
-	srv := remote.NewServerWithSecurity(0, app, logSvc, embed.FS{}, opts)
+	srv := remote.NewServerWithSecurity(0, app.remoteAdapter(), logSvc, embed.FS{}, opts)
 	srv.SetHost("127.0.0.1")
 	app.Remote = srv
 	return app, configDir

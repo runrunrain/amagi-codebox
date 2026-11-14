@@ -43,7 +43,7 @@
       <template #actions>
         <Segmented
           v-model="modeModel"
-          :options="MODE_OPTIONS"
+          :options="EDITOR_MODE_OPTIONS"
           variant="pill"
         />
         <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
@@ -148,6 +148,8 @@ import ErrorState from '../ui/ErrorState.vue';
 import EditorToolbar from '../ui/EditorToolbar.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { highlightJsonWithComments } from './openCodeHighlight';
+import { EDITOR_MODE_OPTIONS, copyConfigPath } from './editorUtils';
 
 defineEmits<{ (e: 'add'): void }>();
 
@@ -159,11 +161,6 @@ const editingPreset = ref<config.OpenCodePreset | null>(null);
 // Loading and error states
 const loading = ref(true);
 const error = ref('');
-
-const MODE_OPTIONS = [
-  { value: 'visual', label: '可视化' },
-  { value: 'json', label: 'JSON' },
-];
 
 // 可视化/JSON 双模式本地状态
 const mode = ref<'visual' | 'json'>('visual');
@@ -240,24 +237,7 @@ const visualItems = computed<VisualItem[]>(() => {
 });
 
 /** 轻量 JSON 语法高亮：键名蓝 / 字符串绿 / 注释灰 */
-const highlightedJson = computed<string>(() => {
-  const raw = store.ocConfigContent;
-  if (!raw) return '';
-  // 先转义 HTML
-  const escaped = raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-  // 行内注释 // ... （注意避免误伤 URL 中的 //）
-  return escaped
-    .replace(/("(?:\\.|[^"\\])*")(\s*:)?/g, (_m, str: string, colon: string | undefined) => {
-      // colon 存在 => 是键名
-      if (colon) return `<span class="k">${str}</span>${colon}`;
-      // 否则是字符串值
-      return `<span class="s">${str}</span>`;
-    })
-    .replace(/(^|[^:])\/\/(.*)$/gm, '<span class="c">//$2</span>');
-});
+const highlightedJson = computed<string>(() => highlightJsonWithComments(store.ocConfigContent));
 
 function handleAdd() {
   editingPreset.value = null;
@@ -265,15 +245,8 @@ function handleAdd() {
 }
 
 /** 复制 config.json 路径（路径胶囊点击，写法同其他编辑器） */
-async function copyPath() {
-  const path = store.ocConfigPath;
-  if (!path) return;
-  try {
-    await navigator.clipboard.writeText(path);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(store.ocConfigPath, { showSuccess, showError });
 }
 
 /**

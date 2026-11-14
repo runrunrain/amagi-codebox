@@ -18,9 +18,8 @@ import {
   UninstallClaudeCode,
   CheckClaudeConfig,
   FixClaudeConfig,
+  CleanHeadroom,
 } from '../../wailsjs/go/main/App';
-
-import { CleanHeadroom } from '../../wailsjs/go/envcheck/Service';
 
 import { envcheck } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -125,8 +124,7 @@ export function checkClaudeConfig(): Promise<envcheck.ClaudeConfigStatus> {
 }
 
 /**
- * Clean (uninstall) Headroom via pip.
- * Calls envcheck.Service.CleanHeadroom directly (no App-level wrapper exists).
+ * Clean (uninstall) Headroom via App.CleanHeadroom facade.
  * R3-002: when active sessions still hold a headroom lease, the backend returns
  * the Go sentinel `headroom is in use by active sessions` (envcheck.ErrHeadroomInUse)
  * as the error string and does NOT remove the venv. We surface this as a typed

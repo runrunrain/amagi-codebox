@@ -167,6 +167,7 @@ import AppButton from '../ui/AppButton.vue';
 import { ICONS } from './icons';
 import { useToast } from '../../composables/useToast';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { genId, hexToRgb } from './editorUtils';
 
 const { showError } = useToast();
 
@@ -206,13 +207,6 @@ const VARIANT_OPTIONS = [
   { value: 'max', label: 'max' },
 ];
 
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
 interface ToolEntry {
   id: string;
   key: string;
@@ -237,16 +231,6 @@ function isExpanded(id: string): boolean {
 }
 function toggleExpanded(id: string) {
   expandedKeys.value[id] = !expandedKeys.value[id];
-}
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return null;
-  return {
-    r: parseInt(m[1].slice(0, 2), 16),
-    g: parseInt(m[1].slice(2, 4), 16),
-    b: parseInt(m[1].slice(4, 6), 16),
-  };
 }
 
 // 略缩图色调：优先使用 agent 自定义 color（透明度 0.16），否则 systemGreen

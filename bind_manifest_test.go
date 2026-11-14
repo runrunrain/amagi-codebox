@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"amagi-codebox/internal/skins"
 )
 
 // forbiddenTypePrefixes are package-qualified type suffixes that must NEVER be
@@ -16,6 +18,12 @@ import (
 var forbiddenTypePrefixes = []string{
 	"pty.Service",
 	"headroom.HeadroomService",
+	"secrets.SecretsService",
+	"envcheck.Service",
+	"logging.Service",
+	"updater.Service",
+	"ompconfig.Service",
+	"opencodeconfig.Service",
 }
 
 // appForbiddenMethods are App-level methods that must NOT be exported (raw
@@ -179,11 +187,11 @@ func TestBindManifest_HeadroomFacadesReachable(t *testing.T) {
 
 // TestBindManifest_SecretsDeadBindMethodsRemoved freezes the removal of the
 // provider-specific key accessor shim methods that had no Go or frontend/src
-// callers (verified by grep across .go and frontend/src — only stale
-// frontend/wailsjs generated stubs remained, which wails build regenerates).
-// They reached the frontend directly via app.Secrets (bind_list.go) and so were
-// dead surface on the bound SecretsService. GetAllProviders is intentionally
-// retained: it has a real Go caller in cmd/codebox (secretProviderNames).
+// callers. SecretsService itself is no longer directly bound in bind_list.go
+// (replaced by narrow App.HasProviderAPIKey / App.GetProviderAPIKey facades),
+// and these dead shim methods must stay removed. GetAllProviders is
+// intentionally retained: it has real Go callers in agentcli (handleKeyStatus
+// in agentcli_h_config.go and knownStoredSecrets in agentcli_h_usage.go).
 func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 	app := newTestApp(t)
 	if app.Secrets == nil {
@@ -195,9 +203,9 @@ func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 			t.Errorf("removed dead bind method %s reappeared on SecretsService", name)
 		}
 	}
-	// Sanity: GetAllProviders must remain (cmd/codebox depends on it).
+	// Sanity: GetAllProviders must remain (agentcli callers depend on it).
 	if _, ok := rt.MethodByName("GetAllProviders"); !ok {
-		t.Errorf("GetAllProviders must remain on SecretsService (cmd/codebox caller)")
+		t.Errorf("GetAllProviders must remain on SecretsService (agentcli caller)")
 	}
 }
 
@@ -213,9 +221,10 @@ var configServiceAcceptedMutationSurface = map[string]string{
 	"SetPiLoginPresetChangeListener": "组装期注入登录预设保存/删除回调；把 contextWindow 覆写同步到 canonical root 的 models.json（锁外触发，不进 ConfigService 写路径）；webview 伪造仅写本机窗口覆写，无凭据面",
 	"RecordModalityProbe":            "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
 	"RecordProviderQuota":            "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
-	"SetAllTerminalPresets":          "预设整体导入的合法入口",
 	"SetAgentTeams":                  "Agent Teams 设置的合法入口",
 	"SetClaudeAccountRotation":       "Claude 订阅账号轮换配置唯一写入口（design §3.2：账号服务不自行写 models.json；严格 Validate 拒绝未知 strategy）",
+	"ReplaceProviders":               "整设备配置导入的事务性提供商快照替换入口；经 scrubProviderAPIKeys 剥离明文密钥且无凭据落盘，仅影响本地 models.json",
+	"ReplaceImportedPresetSnapshots": "整设备配置导入的预设快照整体替换入口（terminal_presets / opencode_presets）；仅更新本地 models.json 预设，无凭据与系统命令面",
 }
 
 func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
@@ -227,7 +236,7 @@ func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
 	actual := map[string]bool{}
 	for i := 0; i < rt.NumMethod(); i++ {
 		name := rt.Method(i).Name
-		if strings.HasPrefix(name, "Set") || strings.HasPrefix(name, "Record") {
+		if strings.HasPrefix(name, "Set") || strings.HasPrefix(name, "Record") || strings.HasPrefix(name, "Replace") {
 			actual[name] = true
 		}
 	}
@@ -238,6 +247,43 @@ func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
 		delete(actual, name)
 	}
 	for name := range actual {
-		t.Errorf("ConfigService exposes unreviewed Set*/Record* method %s —— 注入/回写面扩张须在 bind_manifest_test.go 登记理由", name)
+		t.Errorf("ConfigService exposes unreviewed Set*/Record*/Replace* method %s —— 注入/回写面扩张须在 bind_manifest_test.go 登记理由", name)
+	}
+}
+
+func TestBindManifest_SkinsNoSetContext(t *testing.T) {
+	rt := reflect.TypeOf((*skins.Service)(nil))
+	if _, ok := rt.MethodByName("SetContext"); ok {
+		t.Error("skins.Service must NOT expose SetContext on Wails bind surface")
+	}
+}
+
+func TestBindManifest_AppHardenedSurface(t *testing.T) {
+	app := newTestApp(t)
+	appType := reflect.TypeOf(app)
+
+	for _, name := range []string{"CleanHeadroom", "HasProviderAPIKey", "GetProviderAPIKey"} {
+		if _, ok := appType.MethodByName(name); !ok {
+			t.Errorf("App narrow facade %s is missing", name)
+		}
+	}
+	for _, removed := range []string{
+		"QuickLaunch",
+		"GetEnvCheckOperationState",
+		"GetConfigService",
+		"GetPathsService",
+		"GetSettingsService",
+		"GetSessionWebUI",
+		"ProbeSessionWebUI",
+		"SaveAllConfig",
+		"GetKeyDiagnostics",
+		"ClearStoppedSessionsDetailed",
+		"GetEnvCheckStatus",
+		"GetLaunchCompensationDebts",
+		"RetryLaunchCompensationDebt",
+	} {
+		if _, ok := appType.MethodByName(removed); ok {
+			t.Errorf("App exposes hardened/internal/dead method %s (must not be bound)", removed)
+		}
 	}
 }

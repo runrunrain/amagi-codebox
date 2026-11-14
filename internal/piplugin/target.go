@@ -105,28 +105,6 @@ func (s *Service) ResolvedEntityCommit(source string) string {
 	return readGitHeadCommit(filepath.Join(root, ".git"))
 }
 
-// WindowsEntryFilters 返回 Windows settings.json 中该源登记的子资源过滤清单
-// （packages[] 元素为过滤对象时携带）。返回的 []string 无法区分「键省略」
-// 与「显式空数组 []」——本方法为既有 Wails 绑定面保留原签名/原语义；需要
-// 三态语义（nil=全部加载、空切片=一项都不加载）的调用方改用包级函数
-// EntryFiltersFor（不进 Wails 绑定面）。
-func (s *Service) WindowsEntryFilters(source string) (extensions, skills, prompts, themes []string) {
-	configured, err := s.readConfiguredPackages()
-	if err != nil {
-		return nil, nil, nil, nil
-	}
-	registered := s.findRegistered(source, configured)
-	if registered == "" {
-		return nil, nil, nil, nil
-	}
-	for _, cfg := range configured {
-		if cfg.source == registered {
-			return cfg.extensions, cfg.skills, cfg.prompts, cfg.themes
-		}
-	}
-	return nil, nil, nil, nil
-}
-
 // EntryFilters 是 Windows 侧登记的子资源过滤清单三态快照（SA12 补全）：
 // 每个字段 nil = 该键省略（此类型加载全部）；非 nil 空切片 = 显式空数组
 // []（此类型一项都不加载）；非空 = 按清单过滤（模式串原样由 pi 解释）。

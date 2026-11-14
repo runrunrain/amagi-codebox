@@ -37,7 +37,7 @@
 - **Agent CLI**：面向 AI agent 的本机命令行 `codebox-agent`（回环令牌服务 + shim + agent 技能），见下方 [Agent CLI](#agent-clicodebox-agent) 与 [用户文档](docs/user/agent-cli.md)
 - **自动更新**：GitHub Releases 检测，支持 Windows 和 macOS 一键下载安装
 - **环境检测与一键修复**：CLI 工具安装状态检测、问题诊断、一键修复（修复 PATH、安装工具、安装 Node.js）；Windows 下支持 WSL 发行版内 CLI 安装辅助
-- **CLI 工具**：独立命令行工具（`cmd/codebox`），支持无头模式操作
+- **CLI 子命令与开发入口**：主程序内置 `amagi-codebox cli` 子命令，另提供薄入口 `cmd/codebox-agent/`（供开发/CI 调试，与 `codebox-agent` shim 共用命令表）
 - **单实例保护**：使用操作系统机制防止多实例运行
 - **系统托盘驻留**：最小化到托盘，右键菜单退出
 
@@ -80,9 +80,9 @@ wails build   # 生产构建，产物在 build/bin/
 
 Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译为**单一二进制**，前端产物由 `//go:embed` 嵌入。
 
-**绑定主干**：`main.go` 通过 Wails `Bind` 把 `App` 枢纽与 20 个服务 struct（共 21 个绑定，清单见 `bind_list.go` 的 `buildWailsBindList`）暴露给前端：Config、Secrets、Paths、Log、Settings、Updater、Plugins、CodexPlugins、OpenCodePlugins、PiPlugins、OmpPlugins、OpenCodeConfig、PiConfig、OmpConfig、AgentProfiles、EnvCheck、Usage、WebUI、Skins、GitAssist。raw `pty.Service` 与 `headroom.HeadroomService` 被有意排除在绑定之外，前端只能经 `App` 上的门控门面方法（PtyWrite/PtyResize、Headroom*）触达。`app.go` 是中央枢纽，持有所有服务指针并负责会话编排、环境检测、远程控制等跨服务协调。每个被绑定 struct 的导出方法会被 Wails 自动生成为 TypeScript 绑定（`frontend/wailsjs/go/`），前端经 `frontend/src/api/*.ts` 包装层与 Pinia store 调用。
+**绑定主干**：`main.go` 通过 Wails `Bind` 把 `App` 枢纽与 14 个服务 struct（共 15 个绑定，清单见 `bind_list.go` 的 `buildWailsBindList`）暴露给前端：Config、Paths、Settings、Plugins、CodexPlugins、OpenCodePlugins、PiPlugins、OmpPlugins、PiConfig、AgentProfiles、Usage、WebUI、Skins、GitAssist。raw `pty.Service`、`headroom.HeadroomService` 以及收口后的 `secrets.SecretsService`、`envcheck.Service`、`logging.Service`、`updater.Service`、`ompconfig.Service`、`opencodeconfig.Service` 被有意排除在绑定之外，前端只能经 `App` 上的门控/窄门面方法（如 `PtyWrite`/`PtyResize`、`Headroom*`/`CleanHeadroom`、`HasProviderAPIKey`/`GetProviderAPIKey`、`GetLogs` 等、`CheckForUpdate`/`DownloadAndApplyUpdate`、`RunEnvCheck`/`GetEnvCheckSnapshot` 等、`GetOmp*`/`SaveOmp*`、`GetOpenCodeConfig*`/`SaveOpenCodeConfig`）触达。`app.go` 是中央枢纽，持有所有服务指针并负责会话编排、环境检测、远程控制等跨服务协调（远程层内部桥接经未导出的 `remoteAppAdapter` 提供 `remote.AppInterface`）。每个被绑定 struct 的导出方法会被 Wails 自动生成为 TypeScript 绑定（`frontend/wailsjs/go/`），前端经 `frontend/src/api/*.ts` 包装层与 Pinia store 调用。
 
-**后端服务包**：`internal/` 下 34 个顶层包（含子包共 39 个 Go 包）遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`launcher`/`launchplan`（各 CLI 启动与配置写入）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`/`piplugin`/`ompplugin`（五引擎插件系统）、`headroom`（上下文压缩）、`remote` + `remote/contract`（远程控制与 v1 契约）、`remoteclient`（作为客户端连接其他实例）、`gitassist`（AI 辅助 Git）、`usage`（用量统计）、`agentprofile`（Agent 档案）、`skins`（皮肤）、`webui`（pi Web UI 壳集成）、`wslsetup`（WSL 安装辅助）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
+**后端服务包**：`internal/` 下 42 个顶层包（含子包共 54 个 Go 包）遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`launcher`/`launchplan`（各 CLI 启动与配置写入）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`/`piplugin`/`ompplugin`（五引擎插件系统）、`headroom`（上下文压缩）、`remote` + `remote/contract`（远程控制与 v1 契约）、`remoteclient`（作为客户端连接其他实例）、`gitassist`（AI 辅助 Git）、`usage`（用量统计）、`agentprofile`（Agent 档案）、`skins`（皮肤）、`webui`（pi Web UI 壳集成）、`wslsetup`（WSL 安装辅助）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
 
 **五种应用类型**：`claudecode` / `opencode` / `codex` / `pi` / `omp`（定义于 `internal/session/types.go`）。`app.go` 中 Claude Code 走 `LaunchSession`，Pi / omp 走 `LaunchPiSession` / `LaunchOmpSession`，由 `internal/launcher` 把提供商配置写入各 CLI 自己的 agent 根目录（如 `~/.pi/agent` / `~/.omp/agent`）。
 
@@ -99,10 +99,10 @@ Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译
 ```
 amagi-codebox/
 ├── main.go                  # Wails 启动、版本注入、资源嵌入
-├── bind_list.go             # Wails Bind 冻结边界（21 个绑定）
+├── bind_list.go             # Wails Bind 冻结边界（15 个绑定）
 ├── app.go                   # 应用枢纽：绑定 + 会话/环境/远程编排
-├── cmd/codebox/             # 独立 CLI 工具（无头模式）
-├── internal/                # 后端服务模块（34 个顶层包，见上）
+├── cmd/codebox-agent/       # Agent CLI 独立薄入口（开发/CI 调试，与 amagi-codebox cli 共用实现）
+├── internal/                # 后端服务模块（42 个顶层包，见上）
 ├── frontend/                # Vue 3 + TypeScript 前端
 │   └── src/api/             # 包装 Wails 绑定的类型化 API 层
 ├── mobile/                  # Capacitor 移动端客户端

@@ -6,10 +6,6 @@ export function AddUrlToHistory(arg1, arg2) {
   return window['go']['config']['ConfigService']['AddUrlToHistory'](arg1, arg2);
 }
 
-export function DeleteOpenCodePreset(arg1) {
-  return window['go']['config']['ConfigService']['DeleteOpenCodePreset'](arg1);
-}
-
 export function DeletePiLoginPreset(arg1) {
   return window['go']['config']['ConfigService']['DeletePiLoginPreset'](arg1);
 }
@@ -138,10 +134,6 @@ export function ResolvePiLoginLaunch(arg1, arg2) {
   return window['go']['config']['ConfigService']['ResolvePiLoginLaunch'](arg1, arg2);
 }
 
-export function ResolvePiLoginPreset(arg1) {
-  return window['go']['config']['ConfigService']['ResolvePiLoginPreset'](arg1);
-}
-
 export function ResolvePiOmpTerminalPreset(arg1) {
   return window['go']['config']['ConfigService']['ResolvePiOmpTerminalPreset'](arg1);
 }
@@ -184,10 +176,6 @@ export function SetAPIKeyResolver(arg1) {
 
 export function SetAgentTeams(arg1) {
   return window['go']['config']['ConfigService']['SetAgentTeams'](arg1);
-}
-
-export function SetAllTerminalPresets(arg1) {
-  return window['go']['config']['ConfigService']['SetAllTerminalPresets'](arg1);
 }
 
 export function SetClaudeAccountRotation(arg1) {

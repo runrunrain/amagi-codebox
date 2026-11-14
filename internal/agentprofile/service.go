@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"amagi-codebox/internal/fsutil"
 )
 
 // storeVersion 是配置档存储的当前版本；不兼容的未来版本应迁移而非混读。
@@ -145,45 +147,10 @@ func saveStore(store profileStore) error {
 	out = append(out, '\n')
 
 	path := storePath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, out)
-}
-
-// ensureDir creates the parent directory of the given path if it does not
-// exist (0700：存储含 agent 配置全文，按私有对待)。
-func ensureDir(path string) error {
-	dir := filepath.Dir(path)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create directory %s: %w", dir, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("stat directory %s: %w", dir, err)
-	}
-	return nil
-}
-
-// writePrivateFile 临时文件 + rename 原子写入，权限 0600；
-// rename 失败（如 Windows 文件被占用）时回退直接覆盖。
-func writePrivateFile(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write temp file %s: %w", tmp, err)
-	}
-	defer func() { _ = os.Remove(tmp) }()
-	_ = os.Chmod(tmp, 0o600)
-
-	if err := os.Rename(tmp, path); err == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else if overwriteErr := os.WriteFile(path, data, 0o600); overwriteErr == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else {
-		return fmt.Errorf("replace config file %s: %w", path, err)
-	}
+	return fsutil.WritePrivateFile(path, out)
 }
 
 // ListAgentProfiles 返回存储全文 JSON（前端解析展示）。文件缺失时返回
@@ -339,10 +306,10 @@ func (s *Service) ApplyAgentProfile(name string) error {
 		if err := backupLiveFile(path, nowMs); err != nil {
 			return err
 		}
-		if err := ensureDir(path); err != nil {
+		if err := fsutil.EnsurePrivateDir(path); err != nil {
 			return err
 		}
-		if err := writePrivateFile(path, []byte(p.Pi)); err != nil {
+		if err := fsutil.WritePrivateFile(path, []byte(p.Pi)); err != nil {
 			return err
 		}
 	}
@@ -354,7 +321,7 @@ func (s *Service) ApplyAgentProfile(name string) error {
 			if err := backupLiveFile(path, nowMs); err != nil {
 				return err
 			}
-			if err := writePrivateFile(path, []byte(p.Omp)); err != nil {
+			if err := fsutil.WritePrivateFile(path, []byte(p.Omp)); err != nil {
 				return err
 			}
 		}

@@ -46,7 +46,7 @@
         <template #actions>
           <Segmented
             v-model="modeModel"
-            :options="MODE_OPTIONS"
+            :options="EDITOR_MODE_OPTIONS"
             variant="pill"
           />
           <AppButton
@@ -199,14 +199,10 @@ import StringListEditor from './StringListEditor.vue';
 import TypedKeyValueEditor from './TypedKeyValueEditor.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
 import { asJsonRecord, isJsonRecord, type JsonRecord } from './jsonTypes';
+import { EDITOR_MODE_OPTIONS, copyConfigPath } from './editorUtils';
 
 const { showSuccess, showError } = useToast();
 const store = useProviderStore();
-
-const MODE_OPTIONS = [
-  { value: 'visual', label: '可视化' },
-  { value: 'json', label: 'JSON' },
-];
 
 /** 顶层模型卡片 InfoTip（design §5.2 T43）：原「Model 说明卡」的正文收进这里，卡片仅在键存在时渲染 */
 const MODEL_TIP = 'OpenCode 通常在 agent 级配置模型（agent.<名称>.model），顶层 model 较少使用。';
@@ -414,24 +410,8 @@ async function handleSave() {
 }
 
 // 复制路径
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    const textarea = document.createElement('textarea');
-    textarea.value = configPath.value;
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand('copy');
-      showSuccess('路径已复制到剪贴板');
-    } catch {
-      showError('复制失败');
-    }
-    document.body.removeChild(textarea);
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 // 模式切换时同步数据

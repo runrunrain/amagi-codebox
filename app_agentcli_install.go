@@ -28,11 +28,11 @@ type AgentCLISkillInstallStatus struct {
 
 // AgentCLIInstallStatus 是安装面状态快照（不含令牌）。
 type AgentCLIInstallStatus struct {
-	ShimPath     string                      `json:"shimPath"`
-	ShimStatus   string                      `json:"shimStatus"`
+	ShimPath     string                       `json:"shimPath"`
+	ShimStatus   string                       `json:"shimStatus"`
 	Skills       []AgentCLISkillInstallStatus `json:"skills"`
-	CommandCount int                         `json:"commandCount"`
-	Command      string                      `json:"command"` // shim 调用名（codebox-agent，Windows 为 codebox-agent.cmd）
+	CommandCount int                          `json:"commandCount"`
+	Command      string                       `json:"command"` // shim 调用名（codebox-agent，Windows 为 codebox-agent.cmd）
 }
 
 // constructAgentCLIInstall 在 NewApp 构造安装管理器（与 constructAgentCLI 同
