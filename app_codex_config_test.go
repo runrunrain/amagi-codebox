@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -896,5 +897,50 @@ func TestResolveCodexLaunchSettings_WireAPI(t *testing.T) {
 				t.Fatalf("WireAPI = %q, want %q", settings.WireAPI, tc.want)
 			}
 		})
+	}
+}
+
+// TestSyncCodexConfigFile_AtomicWritePrivateNoBackup verifies syncCodexConfigFile
+// writes atomically with 0600 permissions without creating .bak.* or leaving .tmp
+// artifacts in the target directory.
+func TestSyncCodexConfigFile_AtomicWritePrivateNoBackup(t *testing.T) {
+	codexDir := filepath.Join(t.TempDir(), ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(codexDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("model = \"gpt-5.4\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncCodexConfigFile(configPath, codexConfigSyncOptions{
+		Model:                "gpt-5.5",
+		CleanupManagedConfig: true,
+	}); err != nil {
+		t.Fatalf("syncCodexConfigFile: %v", err)
+	}
+
+	entries, err := os.ReadDir(codexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		t.Fatalf("expected only config.toml in %s, got: %s", codexDir, gotDirListing(codexDir))
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `model = "gpt-5.5"`) {
+		t.Fatalf("updated model missing in config.toml:\n%s", string(data))
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("config.toml mode = %04o, want 0600", perm)
+		}
 	}
 }

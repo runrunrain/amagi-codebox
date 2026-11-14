@@ -7,6 +7,7 @@ package skins
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -279,6 +280,21 @@ func TestPickSkinImage_RequiresContext(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	if _, err := svc.PickSkinImage(); err == nil {
 		t.Fatal("PickSkinImage without ctx succeeded, want explicit error")
+	}
+
+	// NewServiceWithContext returning nil still fails explicitly; returning a
+	// non-nil context makes s.context() observe the injected callback value.
+	var injected context.Context
+	withCtx := NewServiceWithContext(svc.settings, svc.dir, svc.log, func() context.Context {
+		return injected
+	})
+	if _, err := withCtx.PickSkinImage(); err == nil {
+		t.Fatal("PickSkinImage with nil ctxFn result succeeded, want explicit error")
+	}
+	wantCtx := context.Background()
+	injected = wantCtx
+	if got := withCtx.context(); got != wantCtx {
+		t.Fatalf("context() = %v, want %v", got, wantCtx)
 	}
 }
 

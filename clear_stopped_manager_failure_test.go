@@ -41,7 +41,7 @@ func TestR4_005_ManagerRemoveFailureIsPropagatedAndCountedAsPartial(t *testing.T
 		return app.Sessions.Remove(id)
 	}
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	if result.Cleared != 2 {
 		t.Fatalf("cleared=%d want 2 actual Manager.Remove successes; result=%+v", result.Cleared, result)
 	}
@@ -79,7 +79,7 @@ func TestR4_005_ManagerRemoveRunningRaceIsPropagatedAndRetained(t *testing.T) {
 		return tracingManager.Remove(running.ID)
 	}
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	if result.Cleared != 0 || len(result.ClearedIDs) != 0 {
 		t.Fatalf("running-race Manager.Remove was falsely counted: %+v", result)
 	}
@@ -102,7 +102,7 @@ func TestR4_005_ControlClearedButManagerFailedIsNotReportedSuccessful(t *testing
 	app.sessionRemove = func(id string) error {
 		return session.NewManager().Remove(id)
 	}
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	if result.Cleared != 0 || len(result.ClearedIDs) != 0 {
 		t.Fatalf("manager failure was falsely reported successful: %+v", result)
 	}

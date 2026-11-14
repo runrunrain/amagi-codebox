@@ -26,10 +26,6 @@ export function RemoveSkin(arg1) {
   return window['go']['skins']['Service']['RemoveSkin'](arg1);
 }
 
-export function SetContext(arg1) {
-  return window['go']['skins']['Service']['SetContext'](arg1);
-}
-
 export function SetSkinSettings(arg1) {
   return window['go']['skins']['Service']['SetSkinSettings'](arg1);
 }

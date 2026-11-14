@@ -256,6 +256,17 @@
       :preset-pattern="presetPattern"
       :preset-provider="presetProvider"
     />
+
+    <ConfirmDialog
+      v-model:open="resetDialogOpen"
+      title="恢复内置价格"
+      message="确认恢复全部内置价格？自定义条目会被移除，历史的本地估算成本会按默认价格重算。"
+      danger
+      confirm-text="恢复内置"
+      cancel-text="取消"
+      @confirm="confirmResetPricing"
+      @cancel="resetDialogOpen = false"
+    />
   </div>
 </template>
 
@@ -289,6 +300,7 @@ import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import ModelPricingTable from './ModelPricingTable.vue';
 import PricingDialog from './PricingDialog.vue';
 import { useUsageStore } from '../../stores/usage';
@@ -668,13 +680,24 @@ async function handleDeletePricing(entry: ModelPricing): Promise<void> {
   }
 }
 
-async function handleResetPricing(): Promise<void> {
-  if (!confirm('确认恢复全部内置价格？自定义条目会被移除，历史的本地估算成本会按默认价格重算。')) return;
+const resetDialogOpen = ref(false);
+const resettingPricing = ref(false);
+
+function handleResetPricing(): void {
+  if (resettingPricing.value) return;
+  resetDialogOpen.value = true;
+}
+
+async function confirmResetPricing(): Promise<void> {
+  if (resettingPricing.value) return;
+  resettingPricing.value = true;
   try {
     await store.resetPricing();
     showSuccess('内置价格已恢复，历史估算成本已重算');
   } catch (err) {
     showError(`恢复失败：${errToString(err)}`);
+  } finally {
+    resettingPricing.value = false;
   }
 }
 

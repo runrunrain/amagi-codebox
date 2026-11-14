@@ -2190,7 +2190,7 @@ func (s *Service) resolveNPMPath() string {
 // `headroom-ai[proxy]` (only the proxy extra CodeBox needs, not [all]);
 // updates use `-U` to force an upgrade.
 func (s *Service) headroomVenvInstallCommand(operation installOperation) installCommand {
-	pythonPath := headroomVenvPythonPath(s.headroomVenvDir)
+	pythonPath := headroomVenvPythonPath(s.getHeadroomVenvDir())
 	if operation == installOperationUpdate {
 		return installCommand{
 			description: "venv pip install --upgrade headroom-ai[proxy]",
@@ -2237,7 +2237,7 @@ func headroomVenvPythonPath(venvDir string) string {
 // headroomVenvBinDir is the Service-level helper used by buildEnhancedEnv and
 // detection to derive the venv bin directory from the injected root.
 func (s *Service) headroomVenvBinDir() string {
-	return headroomVenvBinDir(s.headroomVenvDir)
+	return headroomVenvBinDir(s.getHeadroomVenvDir())
 }
 
 const (
@@ -2406,7 +2406,7 @@ func (s *Service) probePythonRuntime(path string, env []string) (pythonRuntime, 
 // one created with macOS Python 3.9), rebuild it in place using --clear; the
 // directory is CodeBox-owned and cannot contain a user-managed environment.
 func (s *Service) ensureHeadroomVenv() error {
-	venvDir := strings.TrimSpace(s.headroomVenvDir)
+	venvDir := strings.TrimSpace(s.getHeadroomVenvDir())
 	if venvDir == "" {
 		return fmt.Errorf("headroom venv 目录未配置")
 	}
@@ -2777,7 +2777,7 @@ func (s *Service) cleanHeadroom() (*InstallResult, error) {
 		return &InstallResult{Success: true, Message: "未检测到 Headroom，无需卸载", Tool: ToolHeadroom}, nil
 	}
 
-	venvDir := strings.TrimSpace(s.headroomVenvDir)
+	venvDir := strings.TrimSpace(s.getHeadroomVenvDir())
 	if venvDir == "" {
 		err := fmt.Errorf("headroom venv 目录未配置，无法卸载")
 		return installFailure(ToolHeadroom, err.Error(), err), err

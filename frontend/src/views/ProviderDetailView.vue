@@ -186,9 +186,9 @@ import AddProviderDialog from '../components/provider/AddProviderDialog.vue';
 import { useProviderStore } from '../stores/provider';
 import { useToast } from '../composables/useToast';
 import {
-  HasAPIKey,
-  GetAPIKey,
-} from '../../wailsjs/go/secrets/SecretsService';
+  HasProviderAPIKey as HasAPIKey,
+  GetProviderAPIKey as GetAPIKey,
+} from '../../wailsjs/go/main/App';
 import { config } from '../../wailsjs/go/models';
 import { getProviderExportJSON, saveProviderFromJSON } from '../api/provider';
 

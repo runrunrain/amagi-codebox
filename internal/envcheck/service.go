@@ -166,6 +166,15 @@ func (s *Service) SetHeadroomVenvDir(dir string) {
 	s.headroomVenvDir = strings.TrimSpace(dir)
 }
 
+// getHeadroomVenvDir returns the configured CodeBox headroom venv directory
+// under s.mu.RLock so concurrent SetHeadroomVenvDir calls cannot race with
+// checker/installer readers.
+func (s *Service) getHeadroomVenvDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.headroomVenvDir
+}
+
 // SetHeadroomStopper injects the callback used to stop the headroom proxy
 // child process before CleanHeadroom removes the venv directory. This is
 // required on Windows where a running headroom.exe inside the venv is locked

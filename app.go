@@ -523,7 +523,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		Log:             log,
 		Pty:             pty.NewService(log),
 		Settings:        settingsSvc,
-		Skins:           skins.NewService(settingsSvc, filepath.Join(configDir, "skins"), log),
 		EnvVars:         envVarsSvc,
 		Updater:         updater.NewService(resolveAppVersion(), log),
 		Plugins:         pluginsSvc,
@@ -553,6 +552,7 @@ func NewApp(mobileAssets embed.FS) *App {
 		WSLSetup:            wslsetup.NewService(log),
 		DockerWSL:           dockerwsl.NewService(log),
 	}
+	app.Skins = skins.NewServiceWithContext(settingsSvc, filepath.Join(configDir, "skins"), log, app.wailsContext)
 	// WSL 供给协调器携带 shared 小文件与 S4 键级投影适配器（Pi 的供给单元已随
 	// 1.3.126「WSL 内 Pi 共享 Windows agent 根」退役）；业务快照源闭包引用
 	// app，在字面量之后装配。
@@ -570,7 +570,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
 	// desktop-equivalent builder 未接线，因此两条路径一致地 fail closed。
-	app.Remote = remote.NewServerWithSecurity(8680, app, log, mobileAssets,
+	app.Remote = remote.NewServerWithSecurity(8680, app.remoteAdapter(), log, mobileAssets,
 		remote.NewProductionSecurityOptions(configDir, app.buildRemoteHostSummary))
 	// 方案 P：注入用户主目录，供 List 回填已退出 claudecode 会话的标题（直读历史 jsonl）。
 	// 获取失败时记日志但不阻塞启动（标题功能降级，不影响会话启动主流程）。
@@ -885,17 +885,17 @@ func (a claudeWebUILogAdapter) Warn(scope, msg, detail string) {
 	}
 }
 
-// GetLaunchCompensationDebts returns the conservative, secret-free projection
+// getLaunchCompensationDebts returns the conservative, secret-free projection
 // of config compensation that could not be confirmed.
-func (a *App) GetLaunchCompensationDebts() []launchplan.CompensationDebt {
+func (a *App) getLaunchCompensationDebts() []launchplan.CompensationDebt {
 	if a.compensationDebts == nil {
 		return nil
 	}
 	return a.compensationDebts.List()
 }
 
-// RetryLaunchCompensationDebt retries one exact receipt/key owner.
-func (a *App) RetryLaunchCompensationDebt(owner string) error {
+// retryLaunchCompensationDebt retries one exact receipt/key owner.
+func (a *App) retryLaunchCompensationDebt(owner string) error {
 	if a.compensationDebts == nil {
 		return fmt.Errorf("compensation debt registry is unavailable")
 	}
@@ -904,6 +904,8 @@ func (a *App) RetryLaunchCompensationDebt(owner string) error {
 	_, err := a.compensationDebts.Retry(ctx, owner)
 	return err
 }
+
+func (a *App) wailsContext() context.Context { return a.ctx }
 
 func (a *App) setPersistentLoadState(state persistentLoadState) {
 	a.persistenceMu.Lock()
@@ -929,29 +931,39 @@ func (a *App) skipPersistentSaveError(name string) error {
 	return errors.New(msg)
 }
 
-// --- remote.AppInterface 实现 ---
+// --- remote.AppInterface 窄适配器（不把内部服务 getter/工具方法暴露给 Wails JS 桥） ---
 
-func (a *App) GetSettingsService() *settings.Service   { return a.Settings }
-func (a *App) GetPathsService() *paths.PathsService    { return a.Paths }
-func (a *App) GetConfigService() *config.ConfigService { return a.Config }
+type remoteAppAdapter struct{ *App }
+
+func (a *App) remoteAdapter() remote.AppInterface {
+	return &remoteAppAdapter{a}
+}
+
+func (r *remoteAppAdapter) GetSettingsService() *settings.Service   { return r.Settings }
+func (r *remoteAppAdapter) GetPathsService() *paths.PathsService    { return r.Paths }
+func (r *remoteAppAdapter) GetConfigService() *config.ConfigService { return r.Config }
+func (r *remoteAppAdapter) SaveAllConfig() error                    { return r.saveAllConfig() }
+func (r *remoteAppAdapter) GetKeyDiagnostics() map[string]map[string]string {
+	return r.getKeyDiagnostics()
+}
 
 // GetSessionWebUI 返回会话 webui 平面的缓存快照（remote.AppInterface 扩展，
 // remote-webui-plane 切片；供 remote server 的 /webui/{sid} 反向代理使用）。
 // WebUI 服务未接线（测试构造）时返回 unknown。
-func (a *App) GetSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
-	if a.WebUI == nil {
+func (r *remoteAppAdapter) GetSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
+	if r.WebUI == nil {
 		return remote.SessionWebUIInfo{State: string(webui.StateUnknown)}, false
 	}
-	return a.sessionWebUIInfo(sessionID, a.WebUI.GetWebUIStatus(sessionID)), true
+	return r.sessionWebUIInfo(sessionID, r.WebUI.GetWebUIStatus(sessionID)), true
 }
 
 // ProbeSessionWebUI 先执行一轮 webui 探测（与桌面端轮询同一状态机推进路径）
 // 再返回快照；remote v1 状态端点按此节奏轮询。
-func (a *App) ProbeSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
-	if a.WebUI == nil {
+func (r *remoteAppAdapter) ProbeSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
+	if r.WebUI == nil {
 		return remote.SessionWebUIInfo{State: string(webui.StateUnknown)}, false
 	}
-	return a.sessionWebUIInfo(sessionID, a.WebUI.ProbeWebUI(sessionID)), true
+	return r.sessionWebUIInfo(sessionID, r.WebUI.ProbeWebUI(sessionID)), true
 }
 
 // sessionWebUIInfo 把 webui.Status 投影为 remote 侧快照；仅 available 时
@@ -991,8 +1003,8 @@ func (a *App) GetPlatformCapabilities() platform.PlatformCapabilities {
 	return a.platformCapabilities()
 }
 
-// GetEnvCheckStatus 获取最近一次环境检测结果（可能为缓存）。
-func (a *App) GetEnvCheckStatus() *envcheck.OverallStatus {
+// getEnvCheckStatus 获取最近一次环境检测结果（可能为缓存）。
+func (a *App) getEnvCheckStatus() *envcheck.OverallStatus {
 	return a.EnvCheck.GetCachedStatus()
 }
 
@@ -1075,11 +1087,6 @@ func (a *App) StartUpdateToolAsync(tool string) (*envcheck.OperationState, error
 		return nil, fmt.Errorf("start update tool: %w", err)
 	}
 	return a.EnvCheck.StartUpdateTool(t)
-}
-
-// GetEnvCheckOperationState 获取当前异步操作状态（无操作时返回 nil）。
-func (a *App) GetEnvCheckOperationState() *envcheck.OperationState {
-	return a.EnvCheck.GetOperationState()
 }
 
 // GetEnvCheckSnapshot 获取环境检测快照（包含工具状态和当前操作）。
@@ -1190,6 +1197,12 @@ func (a *App) UninstallClaudeCode(method string) (*envcheck.InstallResult, error
 		return result, err
 	}
 	return result, nil
+}
+
+// CleanHeadroom removes the CodeBox-managed Headroom venv directory via the
+// lease-guarded EnvCheck service.
+func (a *App) CleanHeadroom() (*envcheck.InstallResult, error) {
+	return a.EnvCheck.CleanHeadroom()
 }
 
 // CheckClaudeConfig scans Claude Code configuration files and reports
@@ -2121,9 +2134,6 @@ func (a *App) SetRemoteEndpoint(host string, port int) error {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// 皮肤服务依赖 Wails ctx 弹原生文件选择对话框（PickSkinImage）。
-	a.Skins.SetContext(ctx)
-
 	// Recover durable post-start cleanup ownership before any startup restore or
 	// user mutation can touch Headroom. A recovered admission fail-closes the
 	// fresh coordinator until the identity-verified process reaches terminal.
@@ -2361,7 +2371,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.shutdownExternalOwnershipBounded()
 
 	// 先保存配置和密钥
-	if err := a.SaveAllConfig(); err != nil {
+	if err := a.saveAllConfig(); err != nil {
 		a.Log.Error("app", "关闭时保存配置失败", err.Error())
 	}
 
@@ -3319,7 +3329,7 @@ func (a *App) removeWebUITracker(sessionID string) {
 // capabilities and receipt-keyed GC; only isolated legacy mode falls back.
 // Returns the count of records authoritatively cleared.
 func (a *App) ClearStoppedSessions() int {
-	return a.ClearStoppedSessionsDetailed().Cleared
+	return a.clearStoppedSessionsDetailed().Cleared
 }
 
 // ClearStoppedSessionFailure is one per-ID failure from either the control Gate
@@ -3358,11 +3368,11 @@ func (a *App) removeStoppedSessionRecord(id string) error {
 	return nil
 }
 
-// ClearStoppedSessionsDetailed clears stopped sessions and returns a typed
+// clearStoppedSessionsDetailed clears stopped sessions and returns a typed
 // partial result. With SessionAuthority wired, every embedded or external ID
 // uses DesktopRemoveAuthoritative; only legacy fallback IDs call Manager.Remove
 // directly. Failures are retained and never counted as cleared.
-func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
+func (a *App) clearStoppedSessionsDetailed() ClearStoppedSessionsResult {
 	result := ClearStoppedSessionsResult{}
 	var eligible []string
 	var controlManaged []string
@@ -4502,7 +4512,54 @@ func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, rendered, 0644)
+	return writeCodexConfigAtomic(configPath, rendered)
+}
+
+// writeCodexConfigAtomic atomically writes rendered Codex config.toml content
+// inside the target directory with 0600 permissions without generating .bak.*
+// files on every launch. On Windows, falls back to direct overwrite if an
+// open handle prevents os.Rename, while still cleaning up the temp file.
+func writeCodexConfigAtomic(configPath string, rendered []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config.toml.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary codex config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	closed := false
+	cleanup := true
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(rendered); err != nil {
+		return fmt.Errorf("write temporary codex config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temporary codex config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("close temporary codex config: %w", err)
+	}
+	closed = true
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return fmt.Errorf("chmod temporary codex config: %w", err)
+	}
+	if err := os.Rename(tmpPath, configPath); err != nil {
+		if runtime.GOOS == "windows" {
+			if overwriteErr := os.WriteFile(configPath, rendered, 0o600); overwriteErr == nil {
+				_ = os.Chmod(configPath, 0o600)
+				return nil
+			}
+		}
+		return fmt.Errorf("replace config.toml: %w", err)
+	}
+	cleanup = false
+	return nil
 }
 
 // renderCodexConfig is the pure Codex TOML transform shared by desktop writes
@@ -5921,16 +5978,8 @@ func (a *App) BrowseDirectory() (string, error) {
 	return dir, nil
 }
 
-// --- 原有兼容方法 ---
-
-// QuickLaunch 兼容原有接口（使用终端模式）
-func (a *App) QuickLaunch(providerName, presetName string, useHeadroom bool) error {
-	_, err := a.LaunchSession(providerName, presetName, "terminal", "", useHeadroom, "")
-	return err
-}
-
-// SaveAllConfig 保存配置和密钥到磁盘。
-func (a *App) SaveAllConfig() error {
+// saveAllConfig 保存配置和密钥到磁盘。
+func (a *App) saveAllConfig() error {
 	state := a.getPersistentLoadState()
 	var saveErrs []error
 
@@ -6270,10 +6319,22 @@ func (a *App) OpenFileInEditor(filePath string, line int) error {
 	return nil
 }
 
-// --- 诊断 API ---
+// --- 诊断与密钥查询 API ---
 
-// GetKeyDiagnostics 返回所有提供商的密钥来源诊断信息
-func (a *App) GetKeyDiagnostics() map[string]map[string]string {
+// HasProviderAPIKey reports whether an API key exists for the given provider or
+// legacy provider key name.
+func (a *App) HasProviderAPIKey(provider string) bool {
+	return a.Secrets.HasAPIKey(provider)
+}
+
+// GetProviderAPIKey returns the stored API key for the given provider or
+// legacy provider key name.
+func (a *App) GetProviderAPIKey(provider string) (string, error) {
+	return a.Secrets.GetAPIKey(provider)
+}
+
+// getKeyDiagnostics 返回所有提供商的密钥来源诊断信息
+func (a *App) getKeyDiagnostics() map[string]map[string]string {
 	providers := a.Config.GetProviderNames()
 	return a.Secrets.GetKeyDiagnostics(providers)
 }

@@ -247,7 +247,7 @@ func TestR8_002_StoppingSessionRemoveFailsTypedUntilTerminal(t *testing.T) {
 
 func TestR8_002_StoppingSessionClearFailsTypedUntilTerminal(t *testing.T) {
 	app, fake, id := launchR8AsyncStoppingSession(t)
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	if result.Cleared != 0 || len(result.ClearedIDs) != 0 {
 		t.Fatalf("ClearStopped cleared stopping process: %+v", result)
 	}
@@ -266,7 +266,7 @@ func TestR8_002_StoppingSessionClearFailsTypedUntilTerminal(t *testing.T) {
 		return app.Sessions.GetStatus(id) == session.StatusStopped &&
 			app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom) == 0
 	}, "clear-path Stop terminal receipt")
-	result = app.ClearStoppedSessionsDetailed()
+	result = app.clearStoppedSessionsDetailed()
 	if result.Cleared != 1 || !containsR8String(result.ClearedIDs, id) {
 		t.Fatalf("ClearStopped after terminal=%+v", result)
 	}

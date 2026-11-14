@@ -177,7 +177,7 @@ func (h *agentCLIHost) handleStatus(ctx context.Context, _ spec.Args) (any, erro
 
 	var envView agentCLIEnvStatusView
 	if a.EnvCheck != nil {
-		envView = buildAgentCLIEnvStatusView(a.GetEnvCheckStatus())
+		envView = buildAgentCLIEnvStatusView(a.getEnvCheckStatus())
 	}
 
 	sessions := map[string]int{"total": 0, "running": 0, "stopping": 0, "stopped": 0, "exited": 0, "failed": 0}
@@ -292,7 +292,7 @@ func (h *agentCLIHost) handleEnvStatus(ctx context.Context, _ spec.Args) (any, e
 	if h.app == nil || h.app.EnvCheck == nil {
 		return nil, spec.Errorf(spec.ErrNotReady, "envcheck 服务未初始化")
 	}
-	return buildAgentCLIEnvStatusView(h.app.GetEnvCheckStatus()), nil
+	return buildAgentCLIEnvStatusView(h.app.getEnvCheckStatus()), nil
 }
 
 func (h *agentCLIHost) handleEnvCheck(ctx context.Context, args spec.Args) (any, error) {

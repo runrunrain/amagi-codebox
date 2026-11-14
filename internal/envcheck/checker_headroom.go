@@ -157,7 +157,7 @@ func (s *Service) detectHeadroomInstallMethod(executablePath string) InstallMeth
 	// "site-packages" marker. Resolve symlinks on the venv root so the prefix
 	// comparison agrees with the already-resolved executable path (e.g. macOS
 	// /var → /private/var).
-	if venvDir := strings.TrimSpace(s.headroomVenvDir); venvDir != "" {
+	if venvDir := strings.TrimSpace(s.getHeadroomVenvDir()); venvDir != "" {
 		venvRootNormalized := normalizeHeadroomPath(resolveRealExecutablePath(venvDir))
 		if venvRootNormalized != "" && pathHasPrefix(normalized, venvRootNormalized) {
 			return InstallMethodCodeboxVenv

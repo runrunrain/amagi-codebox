@@ -1182,18 +1182,6 @@ export namespace config {
 		    return a;
 		}
 	}
-	export class ConfigService {
-	
-	
-	    static createFrom(source: any = {}) {
-	        return new ConfigService(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	
-	    }
-	}
 	
 	export class MergedTerminalPreset {
 	    key: string;
@@ -1907,22 +1895,6 @@ export namespace envcheck {
 	}
 	
 	
-	export class ConfigFixRequest {
-	    key: string;
-	    value: string;
-	    filePath: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ConfigFixRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.key = source["key"];
-	        this.value = source["value"];
-	        this.filePath = source["filePath"];
-	    }
-	}
 	export class ConfigFixResult {
 	    success: boolean;
 	    message: string;
@@ -2134,30 +2106,6 @@ export namespace envcheck {
 		    }
 		    return a;
 		}
-	}
-	export class FixActionRequest {
-	    action: string;
-	    tool?: string;
-	    extraPath?: string;
-	    method?: string;
-	    key?: string;
-	    value?: string;
-	    filePath?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new FixActionRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.action = source["action"];
-	        this.tool = source["tool"];
-	        this.extraPath = source["extraPath"];
-	        this.method = source["method"];
-	        this.key = source["key"];
-	        this.value = source["value"];
-	        this.filePath = source["filePath"];
-	    }
 	}
 	export class FixActionResult {
 	    success: boolean;
@@ -2446,54 +2394,6 @@ export namespace headroom {
 	        this.windows = this.convertValues(source["windows"], SavingsWindows);
 	        this.by_model = this.convertValues(source["by_model"], ModelSavings);
 	        this.by_client = this.convertValues(source["by_client"], ClientSavings);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-
-}
-
-export namespace launchplan {
-	
-	export class CompensationDebt {
-	    owner: string;
-	    effect: number;
-	    step: string;
-	    disposition: string;
-	    message?: string;
-	    attempts: number;
-	    // Go type: time
-	    updatedAt: any;
-	
-	    static createFrom(source: any = {}) {
-	        return new CompensationDebt(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.owner = source["owner"];
-	        this.effect = source["effect"];
-	        this.step = source["step"];
-	        this.disposition = source["disposition"];
-	        this.message = source["message"];
-	        this.attempts = source["attempts"];
-	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2852,56 +2752,6 @@ export namespace main {
 	        this.transactionKind = source["transactionKind"];
 	        this.enrollmentDrifted = source["enrollmentDrifted"];
 	        this.recoveryActions = source["recoveryActions"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class ClearStoppedSessionFailure {
-	    id: string;
-	    reason: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ClearStoppedSessionFailure(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.reason = source["reason"];
-	    }
-	}
-	export class ClearStoppedSessionsResult {
-	    cleared: number;
-	    clearedIds: string[];
-	    retainedIds: string[];
-	    failed: ClearStoppedSessionFailure[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ClearStoppedSessionsResult(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.cleared = source["cleared"];
-	        this.clearedIds = source["clearedIds"];
-	        this.retainedIds = source["retainedIds"];
-	        this.failed = this.convertValues(source["failed"], ClearStoppedSessionFailure);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3869,18 +3719,6 @@ export namespace paths {
 		    return a;
 		}
 	}
-	export class PathsService {
-	
-	
-	    static createFrom(source: any = {}) {
-	        return new PathsService(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	
-	    }
-	}
 
 }
 
@@ -4815,22 +4653,6 @@ export namespace remote {
 		    return a;
 		}
 	}
-	export class SessionWebUIInfo {
-	    State: string;
-	    Port: number;
-	    Token: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SessionWebUIInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.State = source["State"];
-	        this.Port = source["Port"];
-	        this.Token = source["Token"];
-	    }
-	}
 
 }
 
@@ -5482,18 +5304,6 @@ export namespace settings {
 	}
 	
 	
-	export class Service {
-	
-	
-	    static createFrom(source: any = {}) {
-	        return new Service(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	
-	    }
-	}
 	
 	
 	

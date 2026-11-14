@@ -718,3 +718,45 @@ func TestHeadroomVenvInstallCommand_UsesProxyExtrasAndVenvPython(t *testing.T) {
 		}
 	})
 }
+
+// TestHeadroomVenvDir_ConcurrentReadWriteRaceFree verifies that concurrent
+// SetHeadroomVenvDir updates and reader calls across checker/installer helpers
+// execute without data races or inconsistent empty/non-empty panics.
+func TestHeadroomVenvDir_ConcurrentReadWriteRaceFree(t *testing.T) {
+	svc := NewServiceWithRunner(&mockRunner{})
+	dirA := filepath.Join(t.TempDir(), "venv-a")
+	dirB := filepath.Join(t.TempDir(), "venv-b")
+
+	const writers = 4
+	const readers = 8
+	const iters = 200
+
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				if (id+i)%2 == 0 {
+					svc.SetHeadroomVenvDir(dirA)
+				} else {
+					svc.SetHeadroomVenvDir(dirB)
+				}
+			}
+		}(w)
+	}
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				_ = svc.getHeadroomVenvDir()
+				_ = svc.headroomVenvBinDir()
+				_ = svc.headroomVenvInstallCommand(installOperationInstall)
+				_ = svc.detectHeadroomInstallMethod(filepath.Join(dirA, "bin", "headroom"))
+				_ = svc.buildEnhancedEnv()
+			}
+		}()
+	}
+	wg.Wait()
+}

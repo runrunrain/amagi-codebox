@@ -485,7 +485,7 @@ func (h *agentCLIHost) sessionClearStopped(ctx context.Context, _ spec.Args) (an
 	if err := ctx.Err(); err != nil {
 		return nil, agentCLICtxErr(err)
 	}
-	return h.app.ClearStoppedSessionsDetailed(), nil
+	return h.app.clearStoppedSessionsDetailed(), nil
 }
 
 // ---- 错误映射 ----

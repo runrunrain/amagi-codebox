@@ -66,16 +66,16 @@ export function CleanClaudeInstall(arg1) {
   return window['go']['main']['App']['CleanClaudeInstall'](arg1);
 }
 
+export function CleanHeadroom() {
+  return window['go']['main']['App']['CleanHeadroom']();
+}
+
 export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
 
 export function ClearStoppedSessions() {
   return window['go']['main']['App']['ClearStoppedSessions']();
-}
-
-export function ClearStoppedSessionsDetailed() {
-  return window['go']['main']['App']['ClearStoppedSessionsDetailed']();
 }
 
 export function ConfirmExternalCleanupRecovery(arg1, arg2) {
@@ -178,10 +178,6 @@ export function GetCodexGlobalHeadroom() {
   return window['go']['main']['App']['GetCodexGlobalHeadroom']();
 }
 
-export function GetConfigService() {
-  return window['go']['main']['App']['GetConfigService']();
-}
-
 export function GetDockerWSLHealth() {
   return window['go']['main']['App']['GetDockerWSLHealth']();
 }
@@ -190,16 +186,8 @@ export function GetDrvFSAdvisories() {
   return window['go']['main']['App']['GetDrvFSAdvisories']();
 }
 
-export function GetEnvCheckOperationState() {
-  return window['go']['main']['App']['GetEnvCheckOperationState']();
-}
-
 export function GetEnvCheckSnapshot() {
   return window['go']['main']['App']['GetEnvCheckSnapshot']();
-}
-
-export function GetEnvCheckStatus() {
-  return window['go']['main']['App']['GetEnvCheckStatus']();
 }
 
 export function GetEnvVars() {
@@ -228,14 +216,6 @@ export function GetHeadroomPerfByClient() {
 
 export function GetHeadroomSavings() {
   return window['go']['main']['App']['GetHeadroomSavings']();
-}
-
-export function GetKeyDiagnostics() {
-  return window['go']['main']['App']['GetKeyDiagnostics']();
-}
-
-export function GetLaunchCompensationDebts() {
-  return window['go']['main']['App']['GetLaunchCompensationDebts']();
 }
 
 export function GetLogFileContent(arg1) {
@@ -290,10 +270,6 @@ export function GetOutputHistorySnapshot(arg1) {
   return window['go']['main']['App']['GetOutputHistorySnapshot'](arg1);
 }
 
-export function GetPathsService() {
-  return window['go']['main']['App']['GetPathsService']();
-}
-
 export function GetPiAuthConfig() {
   return window['go']['main']['App']['GetPiAuthConfig']();
 }
@@ -320,6 +296,10 @@ export function GetPiPluginWSLStatus() {
 
 export function GetPlatformCapabilities() {
   return window['go']['main']['App']['GetPlatformCapabilities']();
+}
+
+export function GetProviderAPIKey(arg1) {
+  return window['go']['main']['App']['GetProviderAPIKey'](arg1);
 }
 
 export function GetProviderExportJSON(arg1) {
@@ -370,16 +350,8 @@ export function GetSessionControlHolds() {
   return window['go']['main']['App']['GetSessionControlHolds']();
 }
 
-export function GetSessionWebUI(arg1) {
-  return window['go']['main']['App']['GetSessionWebUI'](arg1);
-}
-
 export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
-}
-
-export function GetSettingsService() {
-  return window['go']['main']['App']['GetSettingsService']();
 }
 
 export function GetStartupWarnings() {
@@ -420,6 +392,10 @@ export function GetWSLPluginTargetSupport() {
 
 export function GrantWSLVisionConsent() {
   return window['go']['main']['App']['GrantWSLVisionConsent']();
+}
+
+export function HasProviderAPIKey(arg1) {
+  return window['go']['main']['App']['HasProviderAPIKey'](arg1);
 }
 
 export function HeadroomGetPort() {
@@ -566,10 +542,6 @@ export function ProbeProviderQuota(arg1) {
   return window['go']['main']['App']['ProbeProviderQuota'](arg1);
 }
 
-export function ProbeSessionWebUI(arg1) {
-  return window['go']['main']['App']['ProbeSessionWebUI'](arg1);
-}
-
 export function PtyResize(arg1, arg2, arg3) {
   return window['go']['main']['App']['PtyResize'](arg1, arg2, arg3);
 }
@@ -580,10 +552,6 @@ export function PtyWrite(arg1, arg2) {
 
 export function PtyWriteLarge(arg1, arg2) {
   return window['go']['main']['App']['PtyWriteLarge'](arg1, arg2);
-}
-
-export function QuickLaunch(arg1, arg2, arg3) {
-  return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
 }
 
 export function ReconcileClaudeAccounts(arg1, arg2) {
@@ -750,10 +718,6 @@ export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
 }
 
-export function RetryLaunchCompensationDebt(arg1) {
-  return window['go']['main']['App']['RetryLaunchCompensationDebt'](arg1);
-}
-
 export function RevokeRemoteDevice(arg1, arg2) {
   return window['go']['main']['App']['RevokeRemoteDevice'](arg1, arg2);
 }
@@ -772,10 +736,6 @@ export function RunEnvFixAction(arg1, arg2, arg3) {
 
 export function SaveAIProxySettings(arg1) {
   return window['go']['main']['App']['SaveAIProxySettings'](arg1);
-}
-
-export function SaveAllConfig() {
-  return window['go']['main']['App']['SaveAllConfig']();
 }
 
 export function SaveAmagiConfig(arg1) {

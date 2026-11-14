@@ -39,7 +39,7 @@ func TestR4_005_ClearStopped_RaceRestart_RetainedByBothStores(t *testing.T) {
 	rt.Projector().TrackRun(contract.SessionID(sid), obsPermit)
 	// Deliberately do NOT observe an exit: the gate entry is runActive (restarted).
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, retained := result.Cleared, result.RetainedIDs
 	if cleared != 0 {
 		t.Fatalf("R4-005 race regression: %d cleared; the restarted (active) session must be retained", cleared)
@@ -69,7 +69,7 @@ func TestR4_005_ClearStopped_ClearedIDRemovedFromManager(t *testing.T) {
 	wireTestControl(t, app)
 	sid := registerGateSession(t, app) // embedded + stopped (terminal) + gate entry
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, retained := result.Cleared, result.RetainedIDs
 	if cleared != 1 {
 		t.Fatalf("expected 1 cleared, got %d (retained=%v)", cleared, retained)
@@ -109,7 +109,7 @@ func TestR4_005_ClearStopped_PartialClearMixedSync(t *testing.T) {
 	}
 	rt.Projector().TrackRun(contract.SessionID(active.ID), op)
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, retained := result.Cleared, result.RetainedIDs
 	if cleared != 1 {
 		t.Fatalf("expected exactly 1 cleared (the stopped one), got %d (retained=%v)", cleared, retained)

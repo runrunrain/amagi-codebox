@@ -225,6 +225,17 @@
       </div>
     </ConfigCard>
     </template>
+
+    <ConfirmDialog
+      v-model:open="clearDialogOpen"
+      title="清除内存日志"
+      message="确定要清除内存中的日志吗？"
+      danger
+      confirm-text="清除"
+      cancel-text="取消"
+      @confirm="confirmClear"
+      @cancel="clearDialogOpen = false"
+    />
   </section>
 </template>
 
@@ -238,6 +249,7 @@ import AppButton from '../components/ui/AppButton.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import LoadingState from '../components/ui/LoadingState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
+import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import { useToast } from '../composables/useToast'
 import {
   GetLogs,
@@ -410,14 +422,25 @@ const loadFileContent = async (filename: string) => {
   }
 }
 
-const handleClear = async () => {
-  if (!confirm('确定要清除内存中的日志吗？')) return
+const clearDialogOpen = ref(false)
+const clearingLogs = ref(false)
+
+const handleClear = () => {
+  if (clearingLogs.value) return
+  clearDialogOpen.value = true
+}
+
+const confirmClear = async () => {
+  if (clearingLogs.value) return
+  clearingLogs.value = true
   try {
     await ClearLogs()
     await refreshLogs()
     showSuccess('日志已清除')
   } catch (err) {
     showError('清除失败: ' + err)
+  } finally {
+    clearingLogs.value = false
   }
 }
 

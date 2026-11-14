@@ -148,6 +148,7 @@ import ErrorState from '../ui/ErrorState.vue';
 import EditorToolbar from '../ui/EditorToolbar.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { highlightJsonWithComments } from './openCodeHighlight';
 
 defineEmits<{ (e: 'add'): void }>();
 
@@ -240,24 +241,7 @@ const visualItems = computed<VisualItem[]>(() => {
 });
 
 /** 轻量 JSON 语法高亮：键名蓝 / 字符串绿 / 注释灰 */
-const highlightedJson = computed<string>(() => {
-  const raw = store.ocConfigContent;
-  if (!raw) return '';
-  // 先转义 HTML
-  const escaped = raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-  // 行内注释 // ... （注意避免误伤 URL 中的 //）
-  return escaped
-    .replace(/("(?:\\.|[^"\\])*")(\s*:)?/g, (_m, str: string, colon: string | undefined) => {
-      // colon 存在 => 是键名
-      if (colon) return `<span class="k">${str}</span>${colon}`;
-      // 否则是字符串值
-      return `<span class="s">${str}</span>`;
-    })
-    .replace(/(^|[^:])\/\/(.*)$/gm, '<span class="c">//$2</span>');
-});
+const highlightedJson = computed<string>(() => highlightJsonWithComments(store.ocConfigContent));
 
 function handleAdd() {
   editingPreset.value = null;

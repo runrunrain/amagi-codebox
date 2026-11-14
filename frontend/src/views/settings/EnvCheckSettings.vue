@@ -386,6 +386,17 @@
   </div>
   </div>
   </template>
+
+  <ConfirmDialog
+    v-model:open="confirmDialogOpen"
+    :title="confirmDialogTitle"
+    :message="confirmDialogMessage"
+    :danger="confirmDialogDanger"
+    :confirm-text="confirmDialogConfirmText"
+    cancel-text="取消"
+    @confirm="onConfirmDialogConfirm"
+    @cancel="onConfirmDialogCancel"
+  />
 </template>
 
 <script setup lang="ts">
@@ -408,6 +419,7 @@ import {
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
+import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
 import { errorMessage } from '../../utils/format'
 import {
   planSolutionExecution,
@@ -548,6 +560,55 @@ async function withWriteGuard(fn: () => Promise<void>): Promise<void> {
     writeBusy.value = false
   }
 }
+
+interface ConfirmRequestOptions {
+  title: string
+  message: string
+  confirmText?: string
+  danger?: boolean
+}
+
+const confirmDialogOpen = ref(false)
+const confirmDialogTitle = ref('')
+const confirmDialogMessage = ref('')
+const confirmDialogConfirmText = ref('确认')
+const confirmDialogDanger = ref(true)
+let pendingConfirmResolve: ((ok: boolean) => void) | null = null
+
+function settleConfirm(ok: boolean): void {
+  const resolve = pendingConfirmResolve
+  pendingConfirmResolve = null
+  confirmDialogOpen.value = false
+  resolve?.(ok)
+}
+
+function requestConfirm(opts: ConfirmRequestOptions): Promise<boolean> {
+  if (pendingConfirmResolve) return Promise.resolve(false)
+  confirmDialogTitle.value = opts.title
+  confirmDialogMessage.value = opts.message
+  confirmDialogConfirmText.value = opts.confirmText ?? '确认'
+  confirmDialogDanger.value = opts.danger ?? true
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve
+    confirmDialogOpen.value = true
+  })
+}
+
+function onConfirmDialogConfirm(): void {
+  settleConfirm(true)
+}
+
+function onConfirmDialogCancel(): void {
+  settleConfirm(false)
+}
+
+watch(
+  confirmDialogOpen,
+  (open) => {
+    if (!open) settleConfirm(false)
+  },
+  { flush: 'sync' },
+)
 
 const operationLabel = computed(() => {
   const op = runningOperation.value
@@ -1070,9 +1131,12 @@ async function startClaudeInstallWithMethod(displayName: string, reinstall: bool
 
 async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void> {
   const method = (status.installMethod as string) || claudeInstallMethod.value || 'native'
-  const confirmed = window.confirm(
-    `确定要卸载当前 ${method === 'native' ? 'Native' : 'npm'} 安装的 Claude Code 吗？卸载后不会自动重新安装。`,
-  )
+  const confirmed = await requestConfirm({
+    title: '卸载 Claude Code',
+    message: `确定要卸载当前 ${method === 'native' ? 'Native' : 'npm'} 安装的 Claude Code 吗？卸载后不会自动重新安装。`,
+    confirmText: '卸载',
+    danger: true,
+  })
   if (!confirmed) return
   claudeUninstalling.value = true
   try {
@@ -1138,7 +1202,13 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
 const headroomUninstalling = ref(false)
 
 async function handleUninstallHeadroom(): Promise<void> {
-  if (!confirm('确定要卸载 Headroom 吗？将删除 CodeBox 管理的 headroom venv 目录（包含 headroom-ai 及其依赖），卸载后不会自动重新安装。')) {
+  const confirmed = await requestConfirm({
+    title: '卸载 Headroom',
+    message: '确定要卸载 Headroom 吗？将删除 CodeBox 管理的 headroom venv 目录（包含 headroom-ai 及其依赖），卸载后不会自动重新安装。',
+    confirmText: '卸载',
+    danger: true,
+  })
+  if (!confirmed) {
     return
   }
   headroomUninstalling.value = true
@@ -1322,7 +1392,15 @@ async function executeSolution(sol: envcheck.ResolutionAction, cardKey: string, 
   // without explicit opt-in). 决策层给出文案；requiresConfirm 的其余动作
   // （如 npm shim 修复重装）也有确认。无需确认的动作返回 null。
   const confirmMsg = solutionConfirmMessage(sol, displayName)
-  if (confirmMsg && !window.confirm(confirmMsg)) return
+  if (confirmMsg) {
+    const confirmed = await requestConfirm({
+      title: sol.type === 'uninstall_tool' ? `卸载 ${displayName}` : `${solutionLabel(sol.type)}确认`,
+      message: confirmMsg,
+      confirmText: sol.type === 'uninstall_tool' ? '卸载' : '继续',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
 
   // 集成批次 Major 2：稳定 key（无位置下标）—— 模板 issue/顶层按钮与
   // executeSolution 用同一 identity，处理中禁用与 loading 文案不再错位。
@@ -1515,6 +1593,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   mounted.value = false
+  settleConfirm(false)
   stopPolling()
   stopInitialLoadingTimer()
 })

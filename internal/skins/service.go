@@ -72,34 +72,34 @@ type Service struct {
 	settings *settings.Service
 	dir      string
 	log      *logging.Service
+	ctxFn    func() context.Context
 
-	// mu 串行化文件写入/删除与 ctx 读写；ListSkins / AssetHandler 只读不持锁。
-	mu  sync.Mutex
-	ctx context.Context
+	// mu 串行化文件写入/删除；ListSkins / AssetHandler 只读不持锁。
+	mu sync.Mutex
 }
 
 // NewService 创建皮肤服务。dir 为皮肤图片库目录（~/.amagi-codebox/skins）。
 func NewService(settingsSvc *settings.Service, dir string, log *logging.Service) *Service {
+	return NewServiceWithContext(settingsSvc, dir, log, nil)
+}
+
+// NewServiceWithContext 创建皮肤服务，并注入在需要时读取 Wails app context 的
+// 回调函数，避免导出 SetContext 暴露给 Wails JS 桥。
+func NewServiceWithContext(settingsSvc *settings.Service, dir string, log *logging.Service, ctxFn func() context.Context) *Service {
 	return &Service{
 		settings: settingsSvc,
 		dir:      dir,
 		log:      log,
+		ctxFn:    ctxFn,
 	}
-}
-
-// SetContext 注入 Wails app context（Startup 后可用）。PickSkinImage 依赖
-// 它弹出原生文件选择对话框；未注入时 PickSkinImage 返回明确错误。
-func (s *Service) SetContext(ctx context.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ctx = ctx
 }
 
 // context 返回已注入的 Wails ctx（可能为 nil）。
 func (s *Service) context() context.Context {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ctx
+	if s.ctxFn != nil {
+		return s.ctxFn()
+	}
+	return nil
 }
 
 // PickSkinImage 弹出文件选择对话框（png/jpg/jpeg/webp），用户确认后导入
