@@ -405,6 +405,7 @@ import StringListEditor from './StringListEditor.vue';
 import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
 
 interface RegistryModelEntry {
   id?: string;
@@ -893,14 +894,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

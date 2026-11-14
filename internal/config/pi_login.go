@@ -123,7 +123,7 @@ func (s *ConfigService) SavePiLoginPreset(p PiLoginPreset) error {
 	}
 	key := PiLoginPresetKey(p.Provider, p.Name)
 	// 与公共 stable key 的互斥：同字符串 key 不允许同时存在两个语义，
-	// 否则导入/旧数据路径（SetAllTerminalPresets 不走 Save 校验）会产生歧义。
+	// 否则导入/旧数据路径（如 ReplaceImportedPresetSnapshots 不走 Save 校验）会产生歧义。
 	if collision := s.publicPresetKeyExists(key); collision {
 		return fmt.Errorf("login preset key %q collides with an existing public preset", key)
 	}
@@ -214,7 +214,7 @@ func (s *ConfigService) changePiLoginPreset(key string, preset *PiLoginPreset) e
 	return nil
 }
 
-func (s *ConfigService) ResolvePiLoginPreset(key string) (*PiLoginPreset, error) {
+func (s *ConfigService) resolvePiLoginPreset(key string) (*PiLoginPreset, error) {
 	presets, err := s.GetPiLoginPresets()
 	if err != nil {
 		return nil, err

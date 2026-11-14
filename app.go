@@ -33,6 +33,7 @@ import (
 	"amagi-codebox/internal/dockerwsl"
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
+	"amagi-codebox/internal/fsutil"
 	"amagi-codebox/internal/gitassist"
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
@@ -4512,54 +4513,7 @@ func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
 	if err != nil {
 		return err
 	}
-	return writeCodexConfigAtomic(configPath, rendered)
-}
-
-// writeCodexConfigAtomic atomically writes rendered Codex config.toml content
-// inside the target directory with 0600 permissions without generating .bak.*
-// files on every launch. On Windows, falls back to direct overwrite if an
-// open handle prevents os.Rename, while still cleaning up the temp file.
-func writeCodexConfigAtomic(configPath string, rendered []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config.toml.*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temporary codex config: %w", err)
-	}
-	tmpPath := tmp.Name()
-	closed := false
-	cleanup := true
-	defer func() {
-		if !closed {
-			_ = tmp.Close()
-		}
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(rendered); err != nil {
-		return fmt.Errorf("write temporary codex config: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync temporary codex config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		closed = true
-		return fmt.Errorf("close temporary codex config: %w", err)
-	}
-	closed = true
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		return fmt.Errorf("chmod temporary codex config: %w", err)
-	}
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		if runtime.GOOS == "windows" {
-			if overwriteErr := os.WriteFile(configPath, rendered, 0o600); overwriteErr == nil {
-				_ = os.Chmod(configPath, 0o600)
-				return nil
-			}
-		}
-		return fmt.Errorf("replace config.toml: %w", err)
-	}
-	cleanup = false
-	return nil
+	return fsutil.WritePrivateFile(configPath, rendered)
 }
 
 // renderCodexConfig is the pure Codex TOML transform shared by desktop writes

@@ -173,6 +173,7 @@ import ModelSubEditor from './ModelSubEditor.vue';
 import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { genId, hexToRgb } from './editorUtils';
 
 const { showError } = useToast();
 
@@ -195,13 +196,6 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   'update:modelValue': [value: JsonRecord];
 }>();
-
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
 
 interface ProviderEntry {
   id: string;
@@ -230,16 +224,6 @@ const thumbStyle = computed(() => {
     background: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.12)`,
   };
 });
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return null;
-  return {
-    r: parseInt(m[1].slice(0, 2), 16),
-    g: parseInt(m[1].slice(2, 4), 16),
-    b: parseInt(m[1].slice(4, 6), 16),
-  };
-}
 
 function isExpanded(id: string): boolean {
   return !!expandedKeys.value[id];

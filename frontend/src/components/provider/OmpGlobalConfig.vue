@@ -166,6 +166,7 @@ import { OMP_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
 import { isJsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
 
 interface OmpTaskConfig {
   agentModelOverrides?: Record<string, string>;
@@ -409,14 +410,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

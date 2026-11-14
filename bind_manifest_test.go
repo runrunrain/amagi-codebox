@@ -221,7 +221,6 @@ var configServiceAcceptedMutationSurface = map[string]string{
 	"SetPiLoginPresetChangeListener": "组装期注入登录预设保存/删除回调；把 contextWindow 覆写同步到 canonical root 的 models.json（锁外触发，不进 ConfigService 写路径）；webview 伪造仅写本机窗口覆写，无凭据面",
 	"RecordModalityProbe":            "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
 	"RecordProviderQuota":            "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
-	"SetAllTerminalPresets":          "预设整体导入的合法入口",
 	"SetAgentTeams":                  "Agent Teams 设置的合法入口",
 	"SetClaudeAccountRotation":       "Claude 订阅账号轮换配置唯一写入口（design §3.2：账号服务不自行写 models.json；严格 Validate 拒绝未知 strategy）",
 	"ReplaceProviders":               "整设备配置导入的事务性提供商快照替换入口；经 scrubProviderAPIKeys 剥离明文密钥且无凭据落盘，仅影响本地 models.json",

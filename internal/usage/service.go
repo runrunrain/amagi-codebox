@@ -211,16 +211,8 @@ func (s *Service) Record(evt UsageEvent) (bool, error) {
 	return insertRecord(ctx, s.db, rec)
 }
 
-// RecordForce 与 Record 类似，但用 INSERT OR REPLACE（累计语义场景，如 OpenCode 同 session 更新）。
-//
-// 公共 API（19 个前端绑定之一）：保持 `error` 单返回值，签名不变。
-// 是否为"真正新增行"的细节由内部 recordForceInternal 暴露给 sync 路径使用（见 M5）。
-func (s *Service) RecordForce(evt UsageEvent) error {
-	_, err := s.recordForceInternal(evt)
-	return err
-}
-
-// recordForceInternal 是 RecordForce 的内部变体，返回是否为真正新增行（INSERT 生效）。
+// recordForceInternal 使用 INSERT OR REPLACE 写入用量记录（累计语义场景，如 OpenCode 同 session 更新），
+// 返回是否为真正新增行（INSERT 生效）。
 //
 // 区分语义（设计 M5）：
 //   - true：dedup_key 原本不存在，本次 INSERT 生效。

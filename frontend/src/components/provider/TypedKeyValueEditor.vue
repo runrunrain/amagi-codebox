@@ -73,6 +73,7 @@ import Switch from '../ui/Switch.vue';
 import AppButton from '../ui/AppButton.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
+import { genId } from './editorUtils';
 
 interface Props {
   modelValue: Record<string, unknown>;
@@ -92,13 +93,6 @@ interface Entry {
   id: string;
   key: string;
   value: unknown;
-}
-
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 const entries = ref<Entry[]>([]);

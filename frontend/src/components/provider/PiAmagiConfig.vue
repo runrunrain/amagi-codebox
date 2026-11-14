@@ -33,7 +33,7 @@
           <button v-if="codemodeError && mode === 'visual' && activeSection !== 'codemode'" type="button" class="pac-error-link" @click="selectSection('codemode')">CodeMode 待修正</button>
         </template>
         <template #actions>
-          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
+          <Segmented v-model="modeModel" :options="EDITOR_MODE_OPTIONS" variant="pill" />
           <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
             {{ saving ? '保存中...' : '保存配置' }}
           </AppButton>
@@ -406,6 +406,7 @@ import {
   type ConcurrencyConfig,
 } from './piConcurrency';
 import { isJsonRecord } from './jsonTypes';
+import { EDITOR_MODE_OPTIONS, copyConfigPath, genId } from './editorUtils';
 
 interface PiAgentConfigEntry {
   model?: string;
@@ -431,11 +432,6 @@ interface PiAmagiConfigData {
 }
 
 const { showSuccess, showError } = useToast();
-
-const MODE_OPTIONS = [
-  { value: 'visual', label: '可视化' },
-  { value: 'json', label: 'JSON' },
-];
 
 const PROFILE_OPTIONS = [
   { value: 'tiered', label: 'tiered（分层默认）' },
@@ -529,21 +525,16 @@ const customModelKeys = ref<Set<string>>(new Set());
 const providerRowIds = ref<Record<string, string>>({});
 const modelRowIds = ref<Record<string, string>>({});
 
-let rowIdSeq = 0;
-function genConcurrencyRowId(prefix: string) {
-  return `${prefix}-${++rowIdSeq}-${Date.now().toString(36)}`;
-}
-
 function getProviderRowId(key: string): string {
   if (!providerRowIds.value[key]) {
-    providerRowIds.value[key] = genConcurrencyRowId('p-row');
+    providerRowIds.value[key] = genId('p-row');
   }
   return providerRowIds.value[key];
 }
 
 function getModelRowId(key: string): string {
   if (!modelRowIds.value[key]) {
-    modelRowIds.value[key] = genConcurrencyRowId('m-row');
+    modelRowIds.value[key] = genId('m-row');
   }
   return modelRowIds.value[key];
 }
@@ -1184,14 +1175,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 const modeModel = computed({

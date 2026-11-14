@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"amagi-codebox/internal/fsutil"
 	"amagi-codebox/internal/platform"
 )
 
@@ -88,10 +89,10 @@ func (s *Service) SaveOmpConfig(content string) error {
 	}
 
 	path := configPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, []byte(formatted))
+	return fsutil.WritePrivateFile(path, []byte(formatted))
 }
 
 // GetOmpConfigPath 返回 config.yml 的绝对路径（供前端展示/复制）。
@@ -109,39 +110,6 @@ func marshalYAML(root map[string]any) (string, error) {
 	}
 	_ = enc.Close()
 	return buf.String(), nil
-}
-
-// ensureDir creates the parent directory of the given path if it does not exist.
-func ensureDir(path string) error {
-	dir := filepath.Dir(path)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create directory %s: %w", dir, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("stat directory %s: %w", dir, err)
-	}
-	return nil
-}
-
-// writePrivateFile 临时文件 + rename 原子写入，权限 0600。
-func writePrivateFile(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write temp file %s: %w", tmp, err)
-	}
-	defer func() { _ = os.Remove(tmp) }()
-	_ = os.Chmod(tmp, 0o600)
-
-	if err := os.Rename(tmp, path); err == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else if overwriteErr := os.WriteFile(path, data, 0o600); overwriteErr == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else {
-		return fmt.Errorf("replace config file %s: %w", path, err)
-	}
 }
 
 // GetModelsConfig 读取 models.yml（provider 注册表）内容。
@@ -182,10 +150,10 @@ func (s *Service) SaveModelsConfig(content string) error {
 	}
 
 	path := modelsConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, []byte(formatted))
+	return fsutil.WritePrivateFile(path, []byte(formatted))
 }
 
 // GetModelsConfigPath 返回 models.yml 的绝对路径，供前端展示。

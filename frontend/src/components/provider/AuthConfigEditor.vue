@@ -195,6 +195,7 @@ import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
 import { pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const editorRoot = ref<HTMLElement | null>(null);
@@ -457,14 +458,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

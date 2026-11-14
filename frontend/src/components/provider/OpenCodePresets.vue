@@ -43,7 +43,7 @@
       <template #actions>
         <Segmented
           v-model="modeModel"
-          :options="MODE_OPTIONS"
+          :options="EDITOR_MODE_OPTIONS"
           variant="pill"
         />
         <AppButton variant="primary" size="small" @click="handleAdd">+ 添加预设</AppButton>
@@ -149,6 +149,7 @@ import EditorToolbar from '../ui/EditorToolbar.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
 import { isJsonRecord, type JsonRecord } from './jsonTypes';
 import { highlightJsonWithComments } from './openCodeHighlight';
+import { EDITOR_MODE_OPTIONS, copyConfigPath } from './editorUtils';
 
 defineEmits<{ (e: 'add'): void }>();
 
@@ -160,11 +161,6 @@ const editingPreset = ref<config.OpenCodePreset | null>(null);
 // Loading and error states
 const loading = ref(true);
 const error = ref('');
-
-const MODE_OPTIONS = [
-  { value: 'visual', label: '可视化' },
-  { value: 'json', label: 'JSON' },
-];
 
 // 可视化/JSON 双模式本地状态
 const mode = ref<'visual' | 'json'>('visual');
@@ -249,15 +245,8 @@ function handleAdd() {
 }
 
 /** 复制 config.json 路径（路径胶囊点击，写法同其他编辑器） */
-async function copyPath() {
-  const path = store.ocConfigPath;
-  if (!path) return;
-  try {
-    await navigator.clipboard.writeText(path);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(store.ocConfigPath, { showSuccess, showError });
 }
 
 /**

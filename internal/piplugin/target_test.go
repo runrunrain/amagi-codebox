@@ -126,22 +126,6 @@ func TestResolvedEntityCommit(t *testing.T) {
 	}
 }
 
-func TestWindowsEntryFilters(t *testing.T) {
-	agentDir := t.TempDir()
-	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
-	writeTargetFixture(t, agentDir, []any{
-		"npm:plain",
-		map[string]any{"source": "npm:filtered", "extensions": []string{"a.ts"}, "skills": []string{"b"}},
-	})
-	ext, sk, pr, th := svc.WindowsEntryFilters("npm:filtered")
-	if len(ext) != 1 || ext[0] != "a.ts" || len(sk) != 1 || sk[0] != "b" || pr != nil || th != nil {
-		t.Fatalf("filters: ext=%v skills=%v prompts=%v themes=%v", ext, sk, pr, th)
-	}
-	if ext, _, _, _ := svc.WindowsEntryFilters("npm:plain"); len(ext) != 0 {
-		t.Fatalf("plain entry has no filters: %v", ext)
-	}
-}
-
 // TestEntryFiltersForDistinguishesEmptyArrayFromOmitted：SA12 补全——三态
 // 读面必须保留「显式空数组 []（该类型一项都不加载）」与「键省略（全部加载）」
 // 的区别（旧 WindowsEntryFilters/toStringSlice 把两者都折叠为 nil，重放侧会

@@ -5,8 +5,6 @@ import {claudeaccounts} from '../models';
 
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
-export function DeleteOpenCodePreset(arg1:string):Promise<void>;
-
 export function DeletePiLoginPreset(arg1:string):Promise<void>;
 
 export function DeletePreset(arg1:string,arg2:string):Promise<void>;
@@ -71,8 +69,6 @@ export function ReplaceProviders(arg1:Record<string, config.Provider>):Promise<v
 
 export function ResolvePiLoginLaunch(arg1:string,arg2:string):Promise<config.PiLoginPreset>;
 
-export function ResolvePiLoginPreset(arg1:string):Promise<config.PiLoginPreset>;
-
 export function ResolvePiOmpTerminalPreset(arg1:string):Promise<string>;
 
 export function ResolveTerminalPreset(arg1:string,arg2:string):Promise<string>;
@@ -94,8 +90,6 @@ export function SetAPIKeyReadyProbe(arg1:any):Promise<void>;
 export function SetAPIKeyResolver(arg1:any):Promise<void>;
 
 export function SetAgentTeams(arg1:config.AgentTeamsConfig):Promise<void>;
-
-export function SetAllTerminalPresets(arg1:config.TerminalPresetsConfig):Promise<void>;
 
 export function SetClaudeAccountRotation(arg1:claudeaccounts.ClaudeAccountRotationConfig):Promise<void>;
 

@@ -31,8 +31,6 @@ export function Pricing():Promise<usage.PricingService>;
 
 export function Record(arg1:usage.UsageEvent):Promise<boolean>;
 
-export function RecordForce(arg1:usage.UsageEvent):Promise<void>;
-
 export function ResetModelPricing():Promise<void>;
 
 export function StartBackgroundSync(arg1:time.Duration):Promise<void>;

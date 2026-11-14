@@ -25,7 +25,7 @@ func TestPiLoginOutputLimitPersistenceAndAlignment(t *testing.T) {
 	if err := loaded.Load(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := loaded.ResolvePiLoginPreset(PiLoginPresetKey("p", "A"))
+	got, err := loaded.resolvePiLoginPreset(PiLoginPresetKey("p", "A"))
 	if err != nil || got.MaxTokens != 32768 {
 		t.Fatalf("reload: %+v %v", got, err)
 	}
@@ -35,7 +35,7 @@ func TestPiLoginOutputLimitPersistenceAndAlignment(t *testing.T) {
 	if err := svc.SavePiLoginPreset(b); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = svc.ResolvePiLoginPreset(PiLoginPresetKey("p", "A"))
+	got, _ = svc.resolvePiLoginPreset(PiLoginPresetKey("p", "A"))
 	if got.MaxTokens != 65536 {
 		t.Fatalf("sibling not aligned: %+v", got)
 	}
@@ -43,7 +43,7 @@ func TestPiLoginOutputLimitPersistenceAndAlignment(t *testing.T) {
 	if err := svc.SavePiLoginPreset(b); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = svc.ResolvePiLoginPreset(PiLoginPresetKey("p", "A"))
+	got, _ = svc.resolvePiLoginPreset(PiLoginPresetKey("p", "A"))
 	if got.MaxTokens != 0 {
 		t.Fatal("default not aligned")
 	}
@@ -51,7 +51,7 @@ func TestPiLoginOutputLimitPersistenceAndAlignment(t *testing.T) {
 	if err := svc.SavePiLoginPreset(b); err == nil {
 		t.Fatal("negative output accepted")
 	}
-	got, _ = svc.ResolvePiLoginPreset(PiLoginPresetKey("p", "B"))
+	got, _ = svc.resolvePiLoginPreset(PiLoginPresetKey("p", "B"))
 	if got.MaxTokens != 0 {
 		t.Fatal("failed save mutated state")
 	}
