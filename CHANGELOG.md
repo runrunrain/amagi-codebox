@@ -4,6 +4,18 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.134] - 2026-11-14
+
+### Fixed
+
+- **WebUI「发送失败，请重试」（1.3.133 真机事故根因）**：`webui-claude` Composer 在组件 setup 期一次性值捕获 `props.token`，而宿主 `App.vue` 在 `onMounted`（`startSource`）才解析 `location.hash` 里的 capability token——Vue 子组件 setup 先于父组件 mounted 执行，捕获值永久定格为初始空串，`/api/input`、`/api/draft` 全部携带空 `Bearer` 被 401/403 拒绝（与 CORS/服务端/控制门无关，curl 直打均 200）。修复：`ComposerDeps.token` 与 `DraftSyncOptions.token` 改为 getter（与既有 `busy()/ended()` 取值器惯例对齐），请求时取值；草稿恢复改由 token 就绪 watch 触发（子组件 mounted 早于父赋值时不再静默丢恢复）。新增回归测试锚定「token 后就绪 → 请求带就绪后 token」。真机浏览器端到端验证通过（发送、清空、GLM 回复渲染、回复完成播报）。
+- **中文/特殊字符工作目录的转录空白（消息流/标题/用量同源缺失）**：Claude Code 转录目录编码实为「仅保留 ASCII 字母数字、其余每个 rune 折叠为单个 `-`」，原实现只替换 `:\/` 三类分隔符，中文用户名路径（如 `C:\Users\毛润` → 实际 `C--Users---`）推不出目录，Web 平面消息流空白、会话标题空、用量统计缺失。修复：`internal/appmeta/claude` 统一走 `claudeDirName`（四处调用点），以本机实测样本锚定单测（`C:\Users\毛润`、`a_b.c d(e)` 等真实目录名）。
+
+### Notes
+
+- 真机诊断附带处理：本机 `~/.claude.json` 曾把 glm key 加入 `customApiKeyResponses.rejected`，导致 claude 本地合成「Not logged in · Please run /login」错误（`model:"<synthetic>"`、零网络请求）——该状态已清除（备份 `.bak-20261114`）。新目录首次进入 claude 的信任确认对话框仍会消费 WebUI 首条输入（与共用键盘同构，1.3.133 已记录该边界）。
+- 已验证：`gofmt`、`go vet ./...`、`golangci-lint`（改动包 0 issues）、`go test ./internal/appmeta/claude/... ./internal/claudewebui/...`、CI 口径定向测试（root 双车道/平面接线 + remote 设备平面车道）、`go test -run '^$'` 全仓编译、webui-claude vitest 69/69（含新回归锚）与构建；真机浏览器复现事故 → 验证修复全链路（含转录尾随渲染历史消息）。
+
 ## [1.3.133] - 2026-11-14
 
 ### Added

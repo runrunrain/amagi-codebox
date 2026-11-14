@@ -36,7 +36,8 @@ export interface DraftSync {
 export interface DraftSyncOptions {
   transport: Transport
   loc: PlaneLocation
-  token: string
+  /** token 取值器（非值捕获）：宿主 token 在父组件 mounted 才就绪，见 composerState.ComposerDeps。 */
+  token(): string
 }
 
 export function createDraftSync(opts: DraftSyncOptions): DraftSync {
@@ -47,7 +48,7 @@ export function createDraftSync(opts: DraftSyncOptions): DraftSync {
   let disposed = false
 
   function authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${opts.token}` }
+    return { Authorization: `Bearer ${opts.token()}` }
   }
 
   /** 静默 PUT：状态码不看（非 2xx 含 403 写面门拒绝一律忽略），异常吞掉。 */

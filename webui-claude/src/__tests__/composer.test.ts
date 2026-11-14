@@ -89,7 +89,7 @@ function makeComposer(overrides: Partial<ComposerDeps> = {}) {
   const composer = createComposer({
     transport,
     loc: ROOT_LOC,
-    token: TOKEN,
+    token: () => TOKEN,
     busy: () => busy.value,
     ended: () => ended.value,
     focusInput: focus,
@@ -222,6 +222,31 @@ describe('composer 提交字节流', () => {
       'Content-Type': 'application/json',
     })
     expect(posts[0].init?.body).toBe('{}')
+  })
+
+  // 2026-11-14 真机事故回归锚：App.vue 在 onMounted 才给 planeToken 赋值，
+  // Composer setup（先于父 mounted）若值捕获 token 会永久定格为空串——
+  // 所有请求带「Bearer 」空凭证 → 401/403 →「发送失败，请重试」。
+  it('token 后就绪：创建时为空、发送前就绪 → 请求带就绪后的 token（非空捕获）', async () => {
+    const transport = new FakeTransport()
+    let liveToken = '' // 模拟 planeToken ref：初始空串，父 mounted 后赋值
+    const composer = createComposer({
+      transport,
+      loc: ROOT_LOC,
+      token: () => liveToken,
+      busy: () => false,
+      ended: () => false,
+      focusInput: () => {},
+    })
+    composer.setText('你好')
+    liveToken = TOKEN // 父组件 mounted：token 就绪
+    await composer.submit()
+    const posts = transport.posts()
+    expect(posts).toHaveLength(1)
+    expect(posts[0].init?.headers).toEqual({
+      Authorization: `Bearer ${TOKEN}`,
+      'Content-Type': 'application/json',
+    })
   })
 })
 

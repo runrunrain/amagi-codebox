@@ -78,7 +78,7 @@
  * Enter 提交 / Shift+Enter 换行 / busy 态 Esc 中断在 composerKeyEvent
  * 裁决；preventDefault 在裁决通过后才调用（输入法组合态的 Enter 不拦截）。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { PlaneLocation } from '../data/basePath'
 import { browserTransport, extractPlaneToken } from '../data/httpSource'
 import type { Transport } from '../data/source'
@@ -107,7 +107,10 @@ let uninstallBridge: (() => void) | null = null
 const composer: Composer = createComposer({
   transport: props.transport ?? browserTransport(),
   loc: props.loc ?? window.location,
-  token: props.token,
+  // getter 而非值捕获：App.vue 在 onMounted 才给 planeToken 赋值，本组件
+  // setup 先于父 mounted 执行（Vue 挂载顺序），值捕获会定格为空串——
+  // 真机「发送失败，请重试」的根因（2026-11-14）。
+  token: () => props.token,
   busy: () => props.busy === true,
   ended: () => props.ended === true,
   focusInput: () => textareaRef.value?.focus(),
@@ -133,8 +136,20 @@ function onEscape(e: KeyboardEvent): void {
   void composer.interrupt()
 }
 
+// 草稿恢复等 token 就绪：本组件 mounted 先于父 App 的 onMounted（token
+// 赋值点），立即恢复会带空 Bearer 401 被静默吞掉。watch immediate 兼容
+// 两种时序——token 已就绪立即恢复，未就绪等 planeToken 赋值后一次恢复。
+const stopDraftWatch = watch(
+  () => props.token,
+  (tok) => {
+    if (!tok) return
+    stopDraftWatch()
+    void composer.restoreDraft()
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
-  void composer.restoreDraft()
   uninstallBridge = installHostBridge(window, {
     getOwnToken: () => extractPlaneToken(window.location.hash),
     onInsertText: (text) => composer.insertText(text),
@@ -142,6 +157,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopDraftWatch() // token 全程未就绪（异常时序）时回收 watcher
   uninstallBridge?.()
   uninstallBridge = null
   composer.dispose()

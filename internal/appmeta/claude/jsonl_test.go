@@ -68,6 +68,23 @@ func TestSessionJSONLPath(t *testing.T) {
 			session:    "z",
 			wantSuffix: filepath.Join(".claude", "projects", "X--a-b-c", "z.jsonl"),
 		},
+		{
+			// 本机真实目录锚点（2026-11-14 实测）：中文用户名的 home 作 workDir 时，
+			// Claude Code 创建的目录是 C--Users---（毛润 → --，逐字符替换）。
+			name:       "cjk_workdir_real_anchor",
+			homeDir:    "C:/Users/毛润",
+			workDir:    `C:\Users\毛润`,
+			session:    "sid",
+			wantSuffix: filepath.Join(".claude", "projects", "C--Users---", "sid.jsonl"),
+		},
+		{
+			// 探针目录锚点（2026-11-14 实测）：_ . 空格 括号等非字母数字一律替换为连字符。
+			name:       "special_chars_workdir_real_anchor",
+			homeDir:    "C:/Users/x",
+			workDir:    `C:\tmp\encprobe\a_b.c d(e)`,
+			session:    "sid",
+			wantSuffix: filepath.Join(".claude", "projects", "C--tmp-encprobe-a-b-c-d-e-", "sid.jsonl"),
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -366,14 +383,14 @@ func TestFindLatestActiveJSONL(t *testing.T) {
 	cases := []struct {
 		name      string
 		setup     func(t *testing.T, homeDir string) // 在 homeDir 下构造伪 projects 目录
-		wantID    string                              // 期望返回的 sessionId；空表示期望 err
+		wantID    string                             // 期望返回的 sessionId；空表示期望 err
 		wantErr   bool
 		wantEmpty bool // path 应为空
 	}{
 		{
 			name: "picks_latest_mtime",
 			setup: func(t *testing.T, homeDir string) {
-				encoded := pathSepReplacer.Replace(workDir)
+				encoded := claudeDirName(workDir)
 				dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatalf("mkdir: %v", err)
@@ -381,8 +398,8 @@ func TestFindLatestActiveJSONL(t *testing.T) {
 				// 3 个 jsonl，base=time，每个递增 10s，最新的是 "newest.jsonl"
 				base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 				paths := []struct {
-					name  string
-					off   time.Duration
+					name string
+					off  time.Duration
 				}{
 					{"old.jsonl", 0},
 					{"mid.jsonl", 10 * time.Second},
@@ -401,7 +418,7 @@ func TestFindLatestActiveJSONL(t *testing.T) {
 		{
 			name: "single_file",
 			setup: func(t *testing.T, homeDir string) {
-				encoded := pathSepReplacer.Replace(workDir)
+				encoded := claudeDirName(workDir)
 				dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatalf("mkdir: %v", err)
@@ -416,7 +433,7 @@ func TestFindLatestActiveJSONL(t *testing.T) {
 		{
 			name: "ignores_non_jsonl",
 			setup: func(t *testing.T, homeDir string) {
-				encoded := pathSepReplacer.Replace(workDir)
+				encoded := claudeDirName(workDir)
 				dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatalf("mkdir: %v", err)
@@ -442,7 +459,7 @@ func TestFindLatestActiveJSONL(t *testing.T) {
 		{
 			name: "empty_dir",
 			setup: func(t *testing.T, homeDir string) {
-				encoded := pathSepReplacer.Replace(workDir)
+				encoded := claudeDirName(workDir)
 				dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatalf("mkdir: %v", err)

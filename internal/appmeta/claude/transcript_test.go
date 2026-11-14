@@ -636,7 +636,7 @@ func TestSessionJSONLPathInRoot(t *testing.T) {
 func TestFindLatestActiveJSONLInRoot(t *testing.T) {
 	const workDir = "X:/WorkSpace/demo"
 	root := t.TempDir()
-	encoded := pathSepReplacer.Replace(workDir)
+	encoded := claudeDirName(workDir)
 	dir := filepath.Join(root, "projects", encoded)
 	if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 		t.Fatalf("mkdir: %v", mkErr)

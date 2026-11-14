@@ -85,7 +85,14 @@ export function composerKeyEvent(
 export interface ComposerDeps {
   transport: Transport
   loc: PlaneLocation
-  token: string
+  /**
+   * 平面 capability token 取值器。必须是 getter 而非值捕获：宿主
+   * App.vue 在 onMounted（startSource）才给 planeToken 赋值，而本
+   * 控制器在 Composer.vue setup（父 mounted 之前）创建——值捕获会
+   * 永久定格为初始空串，所有请求带空 Bearer（2026-11-14 真机事故：
+   * 「发送失败，请重试」即此因）。与下方 busy/ended 同一惯例。
+   */
+  token(): string
   /**
    * 平面忙闲 / 结束态取值器。须读响应式来源（组件 props / ref）——
    * 派生态用 computed 缓存，非响应式来源变化不会触发重算。
@@ -152,7 +159,7 @@ export function createComposer(deps: ComposerDeps): Composer {
     return deps.transport.fetchJson(base.api(path), {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${deps.token}`,
+        Authorization: `Bearer ${deps.token()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),

@@ -366,17 +366,13 @@ func lookupEnvFold(env []string, key string) string {
 // SessionJSONLPathInRoot 拼接指定转录根下的会话 jsonl 路径。
 //
 // 规则：<root>/projects/<encoded-cwd>/<sessionID>.jsonl
-// encoded-cwd 复用既有 pathSepReplacer（: \ / → -）编码。
-// 与既有 SessionJSONLPath 的关系：后者等价于 SessionJSONLPathInRoot(<homeDir>/.claude, ...)，
-// 签名保持不动（既有调用方零改动）；本函数供转录根可自定义（CLAUDE_CONFIG_DIR /
-// HOME 重定向）的新链路使用（设计 §5.1/§5.2）。
-//
-// 已知边界（实测，2.1.319）：Claude Code 对含非 ASCII 字符的 cwd 做逐字符替换
-// （如中文用户名「毛润」→ "--"），与本包 pathSepReplacer 的「保留原样」编码在
-// 非 ASCII 路径上有分歧；既有编码行为按任务契约保持不动（锁定 sid 的桌面链路
-// workDir 为项目目录、通常纯 ASCII，不受影响）。
+// encoded-cwd 统一走 claudeDirName（见 jsonl.go：实测 Claude Code 仅保留 ASCII
+// 字母数字，其余字符逐个替换为连字符）。与既有 SessionJSONLPath 的关系：后者
+// 等价于 SessionJSONLPathInRoot(<homeDir>/.claude, ...)，签名保持不动（既有
+// 调用方零改动）；本函数供转录根可自定义（CLAUDE_CONFIG_DIR / HOME 重定向）的
+// 新链路使用（设计 §5.1/§5.2）。
 func SessionJSONLPathInRoot(root, workDir, sessionID string) string {
-	encoded := pathSepReplacer.Replace(workDir)
+	encoded := claudeDirName(workDir)
 	return filepath.Join(root, "projects", encoded, sessionID+".jsonl")
 }
 
@@ -384,7 +380,7 @@ func SessionJSONLPathInRoot(root, workDir, sessionID string) string {
 // .jsonl（方案 P 语义，与既有 FindLatestActiveJSONL 同一判定；后者签名保持不动，
 // 本函数供转录根可自定义的新链路使用）。
 func FindLatestActiveJSONLInRoot(root, workDir string) (path, sessionID string, err error) {
-	encoded := pathSepReplacer.Replace(workDir)
+	encoded := claudeDirName(workDir)
 	dir := filepath.Join(root, "projects", encoded)
 
 	entries, readErr := os.ReadDir(dir)
