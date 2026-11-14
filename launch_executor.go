@@ -28,12 +28,15 @@ import (
 	"strings"
 	"sync"
 
+	"amagi-codebox/internal/appmeta/claude"
+	"amagi-codebox/internal/claudewebui"
 	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/session"
+	"amagi-codebox/internal/webui"
 	"amagi-codebox/internal/wslsupply"
 	"gopkg.in/yaml.v3"
 )
@@ -50,6 +53,14 @@ type launchExecutorDeps struct {
 	// webui-plane：对齐桌面 LaunchPiSession T-1.5）。nil = 未接线（测试），
 	// pi 会话照常启动、只是不做 webui 注入与 tracker 注册。
 	webui webuiLaunchPlane
+	// claudeWebUI 是 remote 创建/重启 embedded claude 会话的 Web 平面接线
+	//（claude-webui design §5.4）。nil = 未接线（测试），claude 会话照常
+	// 启动、只是 commit 后不起数据面 server 也不注册 tracker（平面 unknown）。
+	claudeWebUI claudeWebUILaunchPlane
+	// claudePlaneLog 是 claude Web 平面链路的可选日志接缝（nil 安全）：端口/
+	// token 预分配失败与数据面 Start 失败均「仅记日志不阻断启动」，executor
+	// 不直接持有 logging.Service（对齐 supplyLog 的窄接缝纪律）。
+	claudePlaneLog claudePlaneLog
 	// wslSupply 是 WSL 配置供给协调器接缝（P3-S0：EffectWSLConfigSupply 的
 	// 执行面；nil = 未接线，计划含 WSL 供给 effect 时 Prepare 失败 fail closed，
 	// 不静默降级旧 shell 载荷路径）。
@@ -69,6 +80,24 @@ type launchExecutorDeps struct {
 type webuiLaunchPlane interface {
 	PrepareEnv() (port int, token string)
 	RegisterSession(sessionID string, pid, port int, token string)
+}
+
+// claudeWebUILaunchPlane 是 remote 启动链与 claude Web 平面（进程内数据面
+// server，claude-webui design §5.4/§5.2）的窄接口切片：Start 在 PTY commit
+// 后启动 per-session 回环 server 并返回实际 bind 端口（App 适配器补
+// InputPort 双车道写口并桥 internal/claudewebui.Manager）；RecordClaudeSessionID
+// 把 --session-id 注入值落到 session.Manager（tracker/列表语义与桌面
+// LaunchSession 同一落点）；RegisterTracker 发布 webui.Service 探测 tracker
+// （pi 与 claudecode 共用同一状态机，design §4-D3）。
+type claudeWebUILaunchPlane interface {
+	Start(cfg claudewebui.PlaneConfig) (boundPort int, err error)
+	RecordClaudeSessionID(sessionID, claudeSessionID string)
+	RegisterTracker(sessionID string, pid, port int, token string)
+}
+
+// claudePlaneLog 是 claude Web 平面链路的最小日志接缝（nil 安全）。
+type claudePlaneLog interface {
+	Warn(scope, msg, detail string)
 }
 
 type ptyStartPort interface {
@@ -268,15 +297,68 @@ func (b *preparedEffectBuilder) buildPTYStart(proc *launchplan.ProcessStartSpec)
 			spec.Env.Variables = overrideWebUIEnv(spec.Env.Variables, entries)
 		}
 	}
+	// claude Web 平面（claude-webui design §5.4）：数据面 server 在 CodeBox
+	// 进程内，不经 env 通道（claudecode 无扩展宿主消费 AMAGI_WEBUI_*，D2）
+	// ——不注 env，只在 Prepare 组装 commit 材料：sid/workDir 来自计划与
+	// 最终 spec；transcriptRoot 用与桌面 t3 同一助手 claude.ClaudeConfigRoot
+	// 从进程 env 解析（CLAUDE_CONFIG_DIR 优先 → HOME/USERPROFILE → 缺省
+	// homeDir——重定向过的 remote 会话转录路径才不会错）；port/token 此刻
+	// 预分配，失败仅记日志不阻断启动（port=0 由 Manager 自选；token 空则
+	// commit 时 Start 报错跳过注册，会话照常、平面 unknown）。门控要求
+	// 计划携带 WebUIPlane（planner 仅非 WSL 目标置字段，R8）且已接线。
+	var claudePlane *claudeWebPlaneMaterial
+	if b.deps.claudeWebUI != nil && proc.WebUIPlane != nil && spec.AppType == string(session.AppTypeClaudeCode) {
+		material := &claudeWebPlaneMaterial{
+			claudeSessionID: proc.WebUIPlane.ClaudeSessionID,
+			workDir:         spec.WorkDir,
+		}
+		homeDir := ""
+		if home, homeErr := os.UserHomeDir(); homeErr != nil {
+			b.warnClaudePlane("claude Web 平面解析用户主目录失败，转录根缺省为空", homeErr.Error())
+		} else {
+			homeDir = home
+		}
+		material.transcriptRoot = claude.ClaudeConfigRoot(homeDir, spec.Env.Variables)
+		if port, portErr := webui.AllocateFreePort(); portErr == nil {
+			material.port = port
+		} else {
+			b.warnClaudePlane("claude Web 平面端口分配失败，将由数据面 server 自选端口", portErr.Error())
+		}
+		if token, tokenErr := webui.GenerateToken(); tokenErr == nil {
+			material.token = token
+		} else {
+			b.warnClaudePlane("claude Web 平面 token 生成失败，本会话将无 Web 平面", tokenErr.Error())
+		}
+		claudePlane = material
+	}
 	return &ptyStartEffect{
-		deps:       b.deps,
-		sessionID:  b.sessionID,
-		spec:       spec,
-		runHandle:  b.runHandle,
-		webuiPlane: webuiPlane,
-		webuiPort:  webuiPort,
-		webuiToken: webuiToken,
+		deps:        b.deps,
+		sessionID:   b.sessionID,
+		spec:        spec,
+		runHandle:   b.runHandle,
+		webuiPlane:  webuiPlane,
+		webuiPort:   webuiPort,
+		webuiToken:  webuiToken,
+		claudePlane: claudePlane,
 	}, nil
+}
+
+// claudeWebPlaneMaterial 是 PTY effect 在 Prepare 阶段组装的 claude Web 平面
+// 启动材料（design §5.4）：commit 后经 deps.claudeWebUI 依次
+// RecordClaudeSessionID → Start → RegisterTracker 消费。
+type claudeWebPlaneMaterial struct {
+	claudeSessionID string
+	workDir         string
+	transcriptRoot  string
+	port            int
+	token           string
+}
+
+// warnClaudePlane 经可选日志接缝记 WARN（nil 安全）。
+func (b *preparedEffectBuilder) warnClaudePlane(msg, detail string) {
+	if b.deps.claudePlaneLog != nil {
+		b.deps.claudePlaneLog.Warn("claudewebui", msg, detail)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -874,6 +956,11 @@ type ptyStartEffect struct {
 	webuiPlane bool
 	webuiPort  int
 	webuiToken string
+	// claudeWebPlane（claude-webui design §5.4）：embedded claude 会话的平面
+	// 材料（Prepare 阶段组装：sid/workDir/transcriptRoot + 预分配 port/token，
+	// 不注 env）。nil = 非 claude 会话、计划未携带 WebUIPlane（WSL 目标）
+	// 或未接线。与 pi 分支按 AppType 天然互斥。
+	claudePlane *claudeWebPlaneMaterial
 }
 
 func (e *ptyStartEffect) Kind() launchplan.EffectKind { return launchplan.EffectPTYStart }
@@ -1056,11 +1143,37 @@ func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 	}
 }
 
-// commitWebUIPlane 在启动 commit 后发布 webui tracker（对齐桌面
-// LaunchPiSession：PTY 启动成功后 RegisterSession，供 /session/{id}/webui
-// 探测与 /webui/{sid} 反向代理消费）。Abort 路径不会调用本方法，无残留
-// tracker；注入失败（port=0/token=""）仍注册——走注册表回退发现。
+// commitWebUIPlane 在启动 commit 后发布 Web 平面（Abort 路径不会调用本
+// 方法，零调用零残留）。两分支按 AppType 互斥：
+//   - pi（remote-webui-plane，对齐桌面 LaunchPiSession）：PTY 启动成功后
+//     RegisterSession，供 /session/{id}/webui 探测与 /webui/{sid} 反向代理
+//     消费；注入失败（port=0/token=""）仍注册——走注册表回退发现。
+//   - claude（claude-webui design §5.4）：PID 就绪后依次 RecordClaudeSessionID
+//     （落 session.Manager，先于 Start——sid 映射不依赖平面成败）→ Start
+//     （进程内数据面 server；失败仅记日志不注册，会话照常、平面 unknown，
+//     对齐桌面 §5.3-2 降级）→ RegisterTracker（注册端口用 Start 返回的
+//     boundPort）。
 func (e *ptyStartEffect) commitWebUIPlane() {
+	if e.claudePlane != nil && e.deps.claudeWebUI != nil && e.start.PID > 0 {
+		e.deps.claudeWebUI.RecordClaudeSessionID(e.sessionID, e.claudePlane.claudeSessionID)
+		boundPort, err := e.deps.claudeWebUI.Start(claudewebui.PlaneConfig{
+			SessionID:       e.sessionID,
+			ClaudeSessionID: e.claudePlane.claudeSessionID,
+			WorkDir:         e.claudePlane.workDir,
+			TranscriptRoot:  e.claudePlane.transcriptRoot,
+			PID:             e.start.PID,
+			Port:            e.claudePlane.port,
+			Token:           e.claudePlane.token,
+		})
+		if err != nil {
+			if e.deps.claudePlaneLog != nil {
+				e.deps.claudePlaneLog.Warn("claudewebui", "claude Web 平面启动失败，本会话无 Web 平面", fmt.Sprintf("id=%s err=%v", e.sessionID, err))
+			}
+			return
+		}
+		e.deps.claudeWebUI.RegisterTracker(e.sessionID, e.start.PID, boundPort, e.claudePlane.token)
+		return
+	}
 	if !e.webuiPlane || e.deps.webui == nil || e.start.PID <= 0 {
 		return
 	}

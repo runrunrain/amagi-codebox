@@ -1,0 +1,71 @@
+/**
+ * Design System Tokens — webui-claude 1:1 值快照（t7）。
+ *
+ * 同步义务：本文件是 frontend/src/styles/tokens.css 的逐值拷贝（零手写色值），
+ * 不得在本工程内单独改值——上游变更时必须整体重新拷贝同步（含本头注释
+ * 之外的任何 token 增删）。design §7.2：设计令牌复制主仓为 1:1 值快照。
+ *
+ * 值快照来源：frontend/src/styles/tokens.css（2026-11-14）。
+ */
+
+:root {
+  /* Surface Colors */
+  --window: #FBFBFD;
+  --card: #FFFFFF;
+  --sidebar: #F5F5F7;
+  --control: #F2F2F5;
+  --controlHover: #E5E5EA;
+
+  /* Semantic Colors */
+  --accent: #007AFF;
+  --accentHover: #0066CC;
+  --label: #1D1D1F;
+  --secondary: #6E6E73;
+  --tertiary: #8E8E93;
+  --separator: #D2D2D7;
+  --success: #34C759;
+  --warning: #FF9500;
+  --purple: #AF52DE;
+  --danger: #FF3B30;
+
+  /*
+   * Strong semantic colors for text on tinted backgrounds.
+   * Apple HIG accessibility: when a semantic color is used as a light tinted
+   * background (e.g. severity tag, status pill), the foreground text needs a
+   * darker shade of the same hue to meet contrast ratios. These tokens are the
+   * canonical source for such text colors; do not hardcode hex in components.
+   */
+  --success-strong: #1d6a3a;
+  --warning-strong: #b25000;
+  --danger-strong: #b3261e;
+  --accent-strong: #0a5cb8;
+
+  /* Terminal Theme */
+  --termBg: #1B1B1F;
+  --termText: #E6E6E6;
+  --termGreen: #3BC260;
+  --termBlue: #5EA6FF;
+  --termGray: #8E8E93;
+
+  /* Typography */
+  --mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  /* Border Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-card: 14px;
+
+  /* Elevation */
+  --shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 6px 18px rgba(0, 0, 0, .05);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+
+  /*
+   * provider-center-layout-redesign（spec change，仅新增）：
+   * --popover / --shadow-pop 供浮层（InfoTip）使用，实色，skin.css 不覆盖，
+   * 因此皮肤模式下浮层仍是不透明底；--warning-tint 配合 --warning-strong
+   * 文字用于「受管」等警示 meta 标签的浅色底。
+   */
+  --popover: #FFFFFF;
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, .16);
+  --warning-tint: rgba(255, 149, 0, .12);
+}

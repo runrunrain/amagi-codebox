@@ -81,6 +81,7 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             mobile/package-lock.json
+            webui-claude/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci
@@ -110,6 +111,21 @@ jobs:
         run: node scripts/check-contrast.mjs
         working-directory: mobile
 
+      # webui-claude（Claude Code Web 平面 SPA）：构建产物直接落
+      # internal/claudewebui/dist（vite outDir），build 先于 test，
+      # dist-base 回归测试需要真实产物存在（design §7.2/§7.3）。
+      - name: Install claude-webui dependencies
+        run: npm ci
+        working-directory: webui-claude
+
+      - name: Build claude-webui
+        run: npm run build
+        working-directory: webui-claude
+
+      - name: Test claude-webui
+        run: npm run test
+        working-directory: webui-claude
+
       - name: Upload embedded web assets
         uses: actions/upload-artifact@v7
         with:
@@ -117,4 +133,5 @@ jobs:
           path: |
             frontend/dist
             mobile/dist
+            internal/claudewebui/dist
           if-no-files-found: error

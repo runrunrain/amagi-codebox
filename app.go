@@ -26,6 +26,7 @@ import (
 	"amagi-codebox/internal/agentprofile"
 	"amagi-codebox/internal/aiproxy"
 	"amagi-codebox/internal/claudeaccounts"
+	"amagi-codebox/internal/claudewebui"
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
@@ -261,6 +262,11 @@ type App struct {
 	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
 	// 仅 embedded pi 会话注册；其他 CLI 不感知。
 	WebUI *webui.Service
+	// ClaudeWebUI 是 Claude Code 会话的进程内 Web 数据面管理器（claude-webui
+	// design §5.2/§5.3，2026-11）：per-session 回环 server + 转录尾随 + 双车道
+	// 输入端口（claudewebui.Manager，起停助手见 app_claudewebui.go）。
+	// **非 Wails 绑定**——禁进 bind_list.go（design §10：Bind 清单冻结 21 项）。
+	ClaudeWebUI *claudewebui.Manager
 	// Skins 是本地图片皮肤管理服务（皮肤图片库 ~/.amagi-codebox/skins +
 	// /skins/ 只读资源 Handler）。Startup 注入 Wails ctx 后才能弹选择对话框。
 	Skins *skins.Service
@@ -504,34 +510,37 @@ func NewApp(mobileAssets embed.FS) *App {
 	settingsSvc := settings.NewService(configDir)
 
 	app := &App{
-		configDir:           configDir,
-		aiProxy:             aiproxy.New(filepath.Join(configDir, "ai-proxy")),
-		Config:              config.NewConfigService(configDir),
-		Secrets:             secrets.NewSecretsService(configDir),
-		Launcher:            launcher.NewLauncherService(log, envVarsSvc),
-		Headroom:            headroomSvc,
-		CodexHeadroom:       codexHeadroomSvc,
-		Tray:                tray.NewService(),
-		Sessions:            session.NewManager(),
-		Paths:               paths.NewPathsService(configDir),
-		Log:                 log,
-		Pty:                 pty.NewService(log),
-		Settings:            settingsSvc,
-		Skins:               skins.NewService(settingsSvc, filepath.Join(configDir, "skins"), log),
-		EnvVars:             envVarsSvc,
-		Updater:             updater.NewService(resolveAppVersion(), log),
-		Plugins:             pluginsSvc,
-		CodexPlugins:        codexPluginsSvc,
-		OpenCodePlugins:     openCodePluginsSvc,
-		PiPlugins:           piPluginsSvc,
-		OmpPlugins:          ompPluginsSvc,
-		OpenCodeConfig:      opencodeconfig.NewService(),
-		PiConfig:            piconfig.NewService(),
-		OmpConfig:           ompconfig.NewService(),
-		AgentProfiles:       agentprofile.NewService(),
-		EnvCheck:            envCheckSvc,
-		Usage:               usage.NewService(configDir, log),
-		WebUI:               webui.NewService(log, filepath.Join(defaultPiAgentDir(), "amagi", "webui-registry")),
+		configDir:       configDir,
+		aiProxy:         aiproxy.New(filepath.Join(configDir, "ai-proxy")),
+		Config:          config.NewConfigService(configDir),
+		Secrets:         secrets.NewSecretsService(configDir),
+		Launcher:        launcher.NewLauncherService(log, envVarsSvc),
+		Headroom:        headroomSvc,
+		CodexHeadroom:   codexHeadroomSvc,
+		Tray:            tray.NewService(),
+		Sessions:        session.NewManager(),
+		Paths:           paths.NewPathsService(configDir),
+		Log:             log,
+		Pty:             pty.NewService(log),
+		Settings:        settingsSvc,
+		Skins:           skins.NewService(settingsSvc, filepath.Join(configDir, "skins"), log),
+		EnvVars:         envVarsSvc,
+		Updater:         updater.NewService(resolveAppVersion(), log),
+		Plugins:         pluginsSvc,
+		CodexPlugins:    codexPluginsSvc,
+		OpenCodePlugins: openCodePluginsSvc,
+		PiPlugins:       piPluginsSvc,
+		OmpPlugins:      ompPluginsSvc,
+		OpenCodeConfig:  opencodeconfig.NewService(),
+		PiConfig:        piconfig.NewService(),
+		OmpConfig:       ompconfig.NewService(),
+		AgentProfiles:   agentprofile.NewService(),
+		EnvCheck:        envCheckSvc,
+		Usage:           usage.NewService(configDir, log),
+		WebUI:           webui.NewService(log, filepath.Join(defaultPiAgentDir(), "amagi", "webui-registry")),
+		// Claude Code Web 平面（design §5.3）：per-session 数据面管理器，非 Wails
+		// 绑定；nil 安全（测试构造可省略，相关助手零操作）。
+		ClaudeWebUI:         claudewebui.NewManager(log),
 		Capabilities:        capabilities,
 		CLIResolver:         platform.NewCLIResolver(capabilities),
 		FileOpener:          platform.NewFileOpener(processRunner),
@@ -684,7 +693,10 @@ func NewApp(mobileAssets embed.FS) *App {
 	// remote-webui-plane：run-scoped PTY 退出（remote v1 创建/重启会话的进程
 	// 退出径）先把 webui tracker 落 ended，再释放该 run 代的共享租约。桌面
 	// embedded 会话另有各自的退出 goroutine 调 Invalidate，此处幂等。
+	// claude Web 平面（design §5.3-4）：同 commit 点收掉进程内数据面 server
+	//（Stop + Invalidate，幂等；三处 commit 点全覆盖防 listener 泄漏，R9）。
 	app.control.Projector().SetRunTerminalCleanup(func(sessionID string, runEpoch uint64) {
+		app.stopClaudeWebPlane(sessionID)
 		if app.WebUI != nil {
 			app.WebUI.Invalidate(sessionID)
 		}
@@ -744,7 +756,9 @@ func NewApp(mobileAssets embed.FS) *App {
 	m2aAdapter.SetSessionAuthority(app.Sessions, app.processRegistry, app.remotePlanner)
 	// remote-webui-plane：v1 remove GC 完成后同步清理 webui tracker（对齐
 	// App.RemoveSession 的 removeWebUITracker commit 点），再释放共享租约。
+	// claude Web 平面（design §5.3-4）：同 commit 点收掉进程内数据面 server。
 	m2aAdapter.SetPostRemoveCleanup(func(sessionID string) {
+		app.stopClaudeWebPlane(sessionID)
 		if app.WebUI != nil {
 			app.WebUI.RemoveSession(sessionID)
 		}
@@ -753,15 +767,17 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Production executor: applies typed Effects for remote create.
 	if _, ok := app.remotePlanner.(*appLaunchPlanner); ok {
 		exec := newAppLaunchExecutor(launchExecutorDeps{
-			pty:           app.Pty,
-			headroom:      app.Headroom,
-			codexHeadroom: app.CodexHeadroom,
-			sharedCoord:   app.sharedCoord,
-			debts:         app.compensationDebts,
-			configMu:      &app.providerSyncMu,
-			webui:         appWebUILaunchPlane{app: app},
-			wslSupply:     app.WSLSupply,
-			supplyLog:     wslsupplySupplyLog{log: log},
+			pty:            app.Pty,
+			headroom:       app.Headroom,
+			codexHeadroom:  app.CodexHeadroom,
+			sharedCoord:    app.sharedCoord,
+			debts:          app.compensationDebts,
+			configMu:       &app.providerSyncMu,
+			webui:          appWebUILaunchPlane{app: app},
+			claudeWebUI:    appClaudeWebUILaunchPlane{app: app},
+			claudePlaneLog: claudeWebUILogAdapter{log: log},
+			wslSupply:      app.WSLSupply,
+			supplyLog:      wslsupplySupplyLog{log: log},
 			openCodeLayerPrep: func(ctx context.Context, distro string, cfg map[string]any) (string, error) {
 				return app.prepareWSLOpenCodeLayer(distro, cfg)
 			},
@@ -820,6 +836,52 @@ func (p appWebUILaunchPlane) PrepareEnv() (int, string) {
 func (p appWebUILaunchPlane) RegisterSession(sessionID string, pid, port int, token string) {
 	if p.app.WebUI != nil {
 		p.app.WebUI.RegisterSession(sessionID, pid, port, token)
+	}
+}
+
+// appClaudeWebUILaunchPlane 把 App 的 claude Web 平面接线适配为 launch
+// executor 的 claudeWebUILaunchPlane 窄接口（claude-webui design §5.4）：
+// remote v1 创建/重启的 embedded claude 会话在 PTY commit 后经此启动进程内
+// 数据面 server、记录 --session-id 映射并注册探测 tracker。全部方法 nil
+// 安全（服务未接线的测试构造零操作/返回错误，不 panic）。
+type appClaudeWebUILaunchPlane struct{ app *App }
+
+// Start 启动 per-session 回环数据面 server，InputPort 桥 t3 的双车道适配器
+// appClaudeInputPort（桌面车道 take-first / 设备平面车道无夺权，design
+// §5.3/§5.6）。ClaudeWebUI 未接线时返回错误（调用方仅记日志，会话照常）。
+func (p appClaudeWebUILaunchPlane) Start(cfg claudewebui.PlaneConfig) (int, error) {
+	if p.app == nil || p.app.ClaudeWebUI == nil {
+		return 0, errors.New("claude webui manager unavailable")
+	}
+	return p.app.ClaudeWebUI.Start(cfg, appClaudeInputPort{a: p.app})
+}
+
+// RecordClaudeSessionID 把 --session-id 注入值写入 session.Manager（与桌面
+// LaunchSession app.go:2793 同一落点：tracker 优先读锁定的 jsonl，列表直读
+// 历史 jsonl 的语义同步受益）。
+func (p appClaudeWebUILaunchPlane) RecordClaudeSessionID(sessionID, claudeSessionID string) {
+	if p.app == nil || p.app.Sessions == nil {
+		return
+	}
+	p.app.Sessions.SetClaudeSessionID(sessionID, claudeSessionID)
+}
+
+// RegisterTracker 发布 webui.Service 探测 tracker（pi 与 claudecode 共用
+// 同一状态机，design §4-D3；注册端口用 Start 返回的 boundPort）。
+func (p appClaudeWebUILaunchPlane) RegisterTracker(sessionID string, pid, port int, token string) {
+	if p.app == nil || p.app.WebUI == nil {
+		return
+	}
+	p.app.WebUI.RegisterSession(sessionID, pid, port, token)
+}
+
+// claudeWebUILogAdapter 把 logging.Service 适配为 launch executor 的
+// claudePlaneLog 最小日志接缝（nil 安全）。
+type claudeWebUILogAdapter struct{ log *logging.Service }
+
+func (a claudeWebUILogAdapter) Warn(scope, msg, detail string) {
+	if a.log != nil {
+		a.log.Warn(scope, msg, detail)
 	}
 }
 
@@ -2798,6 +2860,25 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			spec = managedClaudeIdentityBoundarySpec(spec)
 		}
 
+		// Claude Web 平面材料预分配（design §5.3-1）：开关开（claudeWebUIEnabled，
+		// 默认 true）+ 非 WSL 目标 + Manager 已接线才分配端口/token。任何失败
+		// 仅 WARN 放弃平面（本会话 unknown，前端无切换控件），不阻断启动——
+		// 对齐 pi 的 env 注入口径（app.go:3935-3951）。转录根在 SetPID 后的
+		// startClaudeWebPlane 内从最终 spec env 解析（含受管边界剥离结果）。
+		claudePlanePort, claudePlaneToken := 0, ""
+		if a.claudeWebPlaneEnabled(spec) {
+			if p, pErr := webui.AllocateFreePort(); pErr == nil {
+				claudePlanePort = p
+			} else {
+				a.Log.Warn("claudewebui", "claude Web 平面端口分配失败，本会话无 Web 平面", pErr.Error())
+			}
+			if tok, tErr := webui.GenerateToken(); tErr == nil {
+				claudePlaneToken = tok
+			} else {
+				a.Log.Warn("claudewebui", "claude Web 平面 token 生成失败，本会话无 Web 平面", tErr.Error())
+			}
+		}
+
 		// M-006: acquire the shared Headroom lease so the
 		// coordinator guard is non-empty while this run is active.
 		var sharedKinds []remote.SharedServiceKind
@@ -2828,6 +2909,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		// 仅 claudecode 启动（opencode/codex 不写 ~/.claude/projects jsonl）。
 		a.startTitleTracker(sess.ID, workDir)
 
+		// Claude Web 平面（design §5.3-2）：PTY 成功 + 材料齐备 → 起进程内数据面
+		// server 并注册 webui tracker（app_claudewebui.go；失败仅 WARN 不注册，
+		// 状态 unknown → 前端无切换控件）。
+		a.startClaudeWebPlane(sess.ID, claudeSID, spec, pid, claudePlanePort, claudePlaneToken)
+
 		// 监控 PTY 进程退出
 		go func(id string) {
 			for a.Pty.IsRunning(id) {
@@ -2838,6 +2924,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 				}
 			}
 			a.Sessions.MarkExited(id)
+			a.stopClaudeWebPlane(id)  // claude Web 平面随 PTY 退出收尾（Stop + Invalidate，design §5.3-3）
 			a.releaseSharedLeases(id) // M-006: release shared leases on natural PTY exit
 			a.Log.Info("session", "PTY进程已退出", "id="+id)
 		}(sess.ID)
@@ -3208,8 +3295,11 @@ func (a *App) RemoveSession(sessionID string) error {
 }
 
 // removeWebUITracker 在会话删除 commit 点清理 webui 探测 tracker（Minor6）。
-// WebUI 服务未接线（测试构造）时为空操作。
+// WebUI 服务未接线（测试构造）时为空操作。claude Web 平面（design §5.3-4）
+// 同 commit 点收掉进程内数据面 server（Stop + Invalidate；RemoveSession 随后
+// 彻底摘除 tracker，双调用幂等）。
 func (a *App) removeWebUITracker(sessionID string) {
+	a.stopClaudeWebPlane(sessionID)
 	if a.WebUI != nil {
 		a.WebUI.RemoveSession(sessionID)
 	}

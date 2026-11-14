@@ -26,8 +26,11 @@ package remote
 // 代理面鉴权与 v1 完全一致（device cookie，经 enforceAuthPolicy 同一判定
 // 与错误映射；唯一豁免：CORS 预检 OPTIONS（Origin:null + 非空 ACRM）
 // 按规范不携带凭据，本地应答 204，镜像 v1 中央派发器 OPTIONS 纪律）；
-// 会话写面（POST /api/input、POST /api/agent-interact、PUT /api/draft）
-// 要求当前控制（plane token 解析出的绑定设备即请求者身份）；宁紧勿松。
+// 会话写面（POST /api/input、POST /api/agent-interact、POST /api/interrupt、
+// PUT /api/draft）要求当前控制（plane token 解析出的绑定设备即请求者身份）；
+// 宁紧勿松。写面转发时把已鉴权设备身份覆盖式透传给后端
+//（webuiPlaneActorDeviceHeader，客户端自带值一律剥离——design §5.5），
+// 供后端把写入分流到设备平面车道（无夺权、写时校验持控）。
 // 本地生成的错误响应（401/403/503）在 Origin:null 时携带 ACAO:null，
 // 确保 opaque iframe 能读到真实错误码而非被浏览器掩盖成 network_error。
 //
@@ -61,6 +64,8 @@ import (
 // Major-02：控制门写面集合化；无控制权设备一律 403 control.forbidden)：
 //   - POST /api/input          —— canonical 输入注入；
 //   - POST /api/agent-interact —— resume/background 派生新任务，效果等同输入注入；
+//   - POST /api/interrupt      —— 中断注入（Esc），效果等同输入注入——宁紧勿松，
+//                                 遗漏即免控制中断（t6/R5：随 claudewebui 平面补入）；
 //   - PUT  /api/draft          —— 平面草稿覆写（低危写面，同样收敛）。
 //
 // GET /api/fs/dirs（宿主机目录名枚举，读面、暴露度低）经 diting 裁定维持
@@ -68,7 +73,64 @@ import (
 var webuiBackendWriteFaces = map[webuiWriteFace]bool{
 	{http.MethodPost, "/api/input"}:          true,
 	{http.MethodPost, "/api/agent-interact"}: true,
+	{http.MethodPost, "/api/interrupt"}:      true,
 	{http.MethodPut, "/api/draft"}:           true,
+}
+
+// webuiPlaneActorDeviceHeader 是反代在写面转发时透传已鉴权设备身份的
+// wire 头（值冻结 "X-Amagi-Plane-Actor-Device"）。它只是后端的「车道选择
+// 信号」而非鉴权（鉴权永远是 Bearer/子协议 token）；由代理覆盖式注入，
+// 客户端自带值一律剥离（见 serveWebUIReverseProxy 的 Director）。
+//
+// 权威常量在 contract（design §5.5-3：两侧共同 import，单一事实源）；
+// 本名仅作包内短名。t2 已落地 contract.WebUIPlaneActorDeviceHeader，
+// 两侧合流完成（wire 值不变）。
+const webuiPlaneActorDeviceHeader = contract.WebUIPlaneActorDeviceHeader
+
+// stripConnectionTokensNamed removes the RFC 7230 hop-by-hop token `name` from
+// every Connection header value. ReverseProxy removes headers listed in
+// Connection AFTER the Director returns (go1.25 net/http/httputil order:
+// Director → removeHopByHopHeaders), so a client listing the actor header in
+// its Connection header would strip the proxy's own injection and let the
+// write fall into the header-less desktop (take-first) lane — bypassing the
+// device-plane lane's write-time holder re-validation. Only the matching token
+// is dropped; every other Connection token (Upgrade etc.) is preserved
+// byte-for-byte.
+func stripConnectionTokensNamed(header http.Header, name string) {
+	vals := header.Values("Connection")
+	if len(vals) == 0 {
+		return
+	}
+	out := make([]string, 0, len(vals))
+	changed := false
+	for _, v := range vals {
+		toks := strings.Split(v, ",")
+		kept := toks[:0]
+		dropped := false
+		for _, tok := range toks {
+			if strings.EqualFold(strings.TrimSpace(tok), name) {
+				dropped = true
+				continue
+			}
+			kept = append(kept, tok)
+		}
+		if !dropped {
+			out = append(out, v)
+			continue
+		}
+		changed = true
+		if s := strings.Join(kept, ","); strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	if !changed {
+		return
+	}
+	if len(out) == 0 {
+		header.Del("Connection")
+	} else {
+		header["Connection"] = out
+	}
 }
 
 // webuiWriteFace identifies one backend write (method, path) pair.
@@ -464,9 +526,11 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write-face control gate (frozen C1 + G2 Major-02 集合化)：平面写面
-	//（POST /api/input、POST /api/agent-interact、PUT /api/draft）要求当前
-	// 控制（快照判定，grace 持有者视为控制者）；无控制权 → 403。
-	if webuiBackendWriteFaces[webuiWriteFace{method: r.Method, path: target}] && !s.webUIProxyControlHeld(principal.DeviceID, sid) {
+	//（POST /api/input、POST /api/agent-interact、POST /api/interrupt、
+	// PUT /api/draft）要求当前控制（快照判定，grace 持有者视为控制者）；
+	// 无控制权 → 403。
+	isWriteFace := webuiBackendWriteFaces[webuiWriteFace{method: r.Method, path: target}]
+	if isWriteFace && !s.webUIProxyControlHeld(principal.DeviceID, sid) {
 		// 本地 403 必须可被 opaque iframe 读到（无 CORS 头会被浏览器掩盖成
 		// network_error，用户看到的是误导性的「连接中断，消息未发送」）。
 		allowOpaqueOriginRead(w, r)
@@ -488,7 +552,19 @@ func (s *Server) handleWebUIProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveWebUIReverseProxy(w, r, reqID, sid, info.Port, info.Token, target)
+	// 设备身份透传（design §5.5-2）：仅当请求命中写面集合且 principal 带有
+	// 已鉴权设备身份（plane token 解析出的绑定设备；device-cookie 通道同样是
+	// 真实设备）时，把该设备 ID 交给 Director 覆盖式注入
+	// webuiPlaneActorDeviceHeader——后端据此把写入分流到设备平面车道（无夺权、
+	// 写时校验该设备持控）。非写面、或零 principal（raw 后端 token 只读兼容
+	// 通道）保持空值：Director 只剥离客户端自带值、不注入。走到这里的写面
+	// 请求已通过上方控制门（该设备此刻持控）。
+	var actorDevice contract.DeviceID
+	if isWriteFace && principal.DeviceID != "" {
+		actorDevice = principal.DeviceID
+	}
+
+	s.serveWebUIReverseProxy(w, r, reqID, sid, info.Port, info.Token, target, actorDevice)
 }
 
 // writeWebUIPlaneUnavailable maps non-available plane states to fixed proxy
@@ -557,7 +633,12 @@ func (s *Server) webUIProxyControlHeld(deviceID contract.DeviceID, sessionID str
 // serveWebUIReverseProxy forwards one request to the session's loopback pi
 // webui server. The proxy is built per request so the freshest port/token
 // snapshot is honored (a /resume session switch may move the plane).
-func (s *Server) serveWebUIReverseProxy(w http.ResponseWriter, r *http.Request, reqID contract.RequestID, sessionID string, port int, token, targetPath string) {
+//
+// actorDevice is the authenticated device identity to pass through on this
+// forward (design §5.5-2): non-empty ONLY for a write-face request whose
+// principal carries a device identity; empty for every other request (read
+// faces, static plane, WS upgrades, and the zero-principal raw-token channel).
+func (s *Server) serveWebUIReverseProxy(w http.ResponseWriter, r *http.Request, reqID contract.RequestID, sessionID string, port int, token, targetPath string, actorDevice contract.DeviceID) {
 	hostPort := net.JoinHostPort(webuiProxyLoopbackHost, strconv.Itoa(port))
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -577,6 +658,20 @@ func (s *Server) serveWebUIReverseProxy(w http.ResponseWriter, r *http.Request, 
 			//     CORS 头，后端白名单语义“头缺失即合法”天然通过。
 			if req.Header.Get("Origin") != "null" {
 				req.Header.Del("Origin")
+			}
+			// 设备身份透传（design §5.5-2；与下方 Authorization 覆盖注入同一
+			// 纪律）：先无条件剥离客户端自带的 webuiPlaneActorDeviceHeader——该头
+			// 只允许由代理设置，客户端伪造值绝不出向；仅当本次转发是写面且
+			// principal 解析出绑定设备（actorDevice 非空）时，再覆盖式注入已鉴权
+			// 的设备身份。非写面与零 principal（raw token 只读兼容通道）只剥离
+			// 不注入。后端把该头当作「车道选择信号」（有头 → 设备平面车道：无夺权、
+			// 写时校验该设备持控；无头 → 桌面车道），鉴权仍只认 token。
+			req.Header.Del(webuiPlaneActorDeviceHeader)
+			if actorDevice != "" {
+				// 先拆除 Connection 里点名本头的 hop-by-hop token，注入才不会被
+				// ReverseProxy 的 removeHopByHopHeaders 事后剥掉（见上方注释）。
+				stripConnectionTokensNamed(req.Header, webuiPlaneActorDeviceHeader)
+				req.Header.Set(webuiPlaneActorDeviceHeader, string(actorDevice))
 			}
 			if token != "" {
 				// 覆盖式注入：任何客户端自带的 Authorization 被覆盖。

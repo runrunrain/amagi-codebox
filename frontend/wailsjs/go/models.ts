@@ -3192,28 +3192,6 @@ export namespace main {
 	        this.configuredPort = source["configuredPort"];
 	    }
 	}
-	export class WSLSharedSkillsRootStatus {
-	    distro: string;
-	    state: string;
-	    target?: string;
-	    backup?: string;
-	    detail: string;
-	    checked: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLSharedSkillsRootStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.distro = source["distro"];
-	        this.state = source["state"];
-	        this.target = source["target"];
-	        this.backup = source["backup"];
-	        this.detail = source["detail"];
-	        this.checked = source["checked"];
-	    }
-	}
 	export class WSLSkillSummary {
 	    name: string;
 	    state: string;
@@ -3535,6 +3513,28 @@ export namespace main {
 	        this.cli = source["cli"];
 	        this.support = source["support"];
 	        this.detail = source["detail"];
+	    }
+	}
+	export class WSLSharedSkillsRootStatus {
+	    distro: string;
+	    state: string;
+	    target?: string;
+	    backup?: string;
+	    detail: string;
+	    checked: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSharedSkillsRootStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.state = source["state"];
+	        this.target = source["target"];
+	        this.backup = source["backup"];
+	        this.detail = source["detail"];
+	        this.checked = source["checked"];
 	    }
 	}
 	export class WSLSkillPreview {
@@ -5094,6 +5094,120 @@ export namespace router {
 	        this.logs = source["logs"];
 	    }
 	}
+	export class TrafficGroup {
+	    provider: string;
+	    domain: string;
+	    expected: string;
+	    actual: string;
+	    verdict: string;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TrafficGroup(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.domain = source["domain"];
+	        this.expected = source["expected"];
+	        this.actual = source["actual"];
+	        this.verdict = source["verdict"];
+	        this.count = source["count"];
+	    }
+	}
+	export class TrafficRecord {
+	    id: string;
+	    time: string;
+	    revision: number;
+	    provider: string;
+	    domain: string;
+	    destination: string;
+	    network: string;
+	    inbound: string;
+	    expected: string;
+	    actual: string;
+	    verdict: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TrafficRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.time = source["time"];
+	        this.revision = source["revision"];
+	        this.provider = source["provider"];
+	        this.domain = source["domain"];
+	        this.destination = source["destination"];
+	        this.network = source["network"];
+	        this.inbound = source["inbound"];
+	        this.expected = source["expected"];
+	        this.actual = source["actual"];
+	        this.verdict = source["verdict"];
+	    }
+	}
+	export class TrafficPage {
+	    records: TrafficRecord[];
+	    groups: TrafficGroup[];
+	    total: number;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TrafficPage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.records = this.convertValues(source["records"], TrafficRecord);
+	        this.groups = this.convertValues(source["groups"], TrafficGroup);
+	        this.total = source["total"];
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TrafficQuery {
+	    search: string;
+	    verdict: string;
+	    provider: string;
+	    exit: string;
+	    since: string;
+	    until: string;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TrafficQuery(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.search = source["search"];
+	        this.verdict = source["verdict"];
+	        this.provider = source["provider"];
+	        this.exit = source["exit"];
+	        this.since = source["since"];
+	        this.until = source["until"];
+	        this.offset = source["offset"];
+	    }
+	}
 
 }
 
@@ -5305,6 +5419,7 @@ export namespace settings {
 	    webPlaneSkin?: string;
 	    systemProxy: SystemProxySettings;
 	    agentCLIEnabled?: boolean;
+	    claudeWebUIEnabled?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppSettings(source);
@@ -5328,6 +5443,7 @@ export namespace settings {
 	        this.webPlaneSkin = source["webPlaneSkin"];
 	        this.systemProxy = this.convertValues(source["systemProxy"], SystemProxySettings);
 	        this.agentCLIEnabled = source["agentCLIEnabled"];
+	        this.claudeWebUIEnabled = source["claudeWebUIEnabled"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -6305,117 +6421,3 @@ export namespace wslsupply {
 
 }
 
-
-export namespace router {
-	export class TrafficGroup {
-	    provider: string;
-	    domain: string;
-	    expected: string;
-	    actual: string;
-	    verdict: string;
-	    count: number;
-
-	    static createFrom(source: any = {}) {
-	        return new TrafficGroup(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.provider = source["provider"];
-	        this.domain = source["domain"];
-	        this.expected = source["expected"];
-	        this.actual = source["actual"];
-	        this.verdict = source["verdict"];
-	        this.count = source["count"];
-	    }
-	}	export class TrafficRecord {
-	    id: string;
-	    time: string;
-	    revision: number;
-	    provider: string;
-	    domain: string;
-	    destination: string;
-	    network: string;
-	    inbound: string;
-	    expected: string;
-	    actual: string;
-	    verdict: string;
-
-	    static createFrom(source: any = {}) {
-	        return new TrafficRecord(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.time = source["time"];
-	        this.revision = source["revision"];
-	        this.provider = source["provider"];
-	        this.domain = source["domain"];
-	        this.destination = source["destination"];
-	        this.network = source["network"];
-	        this.inbound = source["inbound"];
-	        this.expected = source["expected"];
-	        this.actual = source["actual"];
-	        this.verdict = source["verdict"];
-	    }
-	}	export class TrafficPage {
-	    records: TrafficRecord[];
-	    groups: TrafficGroup[];
-	    total: number;
-	    error: string;
-
-	    static createFrom(source: any = {}) {
-	        return new TrafficPage(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.records = this.convertValues(source["records"], TrafficRecord);
-	        this.groups = this.convertValues(source["groups"], TrafficGroup);
-	        this.total = source["total"];
-	        this.error = source["error"];
-	    }
-
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}	export class TrafficQuery {
-	    search: string;
-	    verdict: string;
-	    provider: string;
-	    exit: string;
-	    since: string;
-	    until: string;
-	    offset: number;
-
-	    static createFrom(source: any = {}) {
-	        return new TrafficQuery(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.search = source["search"];
-	        this.verdict = source["verdict"];
-	        this.provider = source["provider"];
-	        this.exit = source["exit"];
-	        this.since = source["since"];
-	        this.until = source["until"];
-	        this.offset = source["offset"];
-	    }
-	}
-}

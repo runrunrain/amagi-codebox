@@ -55,19 +55,31 @@ const isTuiCli = computed(() => {
   return cli === 'pi' || cli === 'omp';
 });
 
-// --- Web 会话平面探测与轮询（C2/C4）：仅针对 pi/omp 会话 ---
+// --- Web 平面能力闸门（design §7.4 / t10）：Web 会话平面入口不再绑定 TUI 形态。
+// pi/omp 的平面由 CLI 扩展进程宿主提供；claudecode 的平面由 CodeBox 进程内
+// claudewebui server 提供（服从同一 /webui 探测契约）；opencode/codex 无平面。
+// 取舍：本闸门只放行「显式入口」——探测 enable、「切换至 Web 平面视图」菜单项、
+// Web 平面徽标与 ?view=webplane 深链；**缺省视图策略不变**（claudecode 仍时间线，
+// 见 activeView 内 D5 注释），避免恒 available 的内置平面劫持既有主阅读面。 ---
+const webPlaneCapable = computed(() => isTuiCli.value || store.detail?.cliType === 'claudecode');
+
+// --- Web 会话平面探测与轮询（C2/C4）：仅针对具备平面的会话（pi/omp/claudecode，
+// §7.4；composable 本体 appType 无关，enabled=false 时不探测） ---
 const {
   state: webuiState,
   url: webuiUrl,
   isAvailable: webuiAvailable,
   refresh: refreshWebUI,
-} = useSessionWebUI(sessionId, isTuiCli);
+} = useSessionWebUI(sessionId, webPlaneCapable);
 
 export type WorkspaceView = 'timeline' | 'terminal' | 'webplane';
 
-// 若显式带有 ?view=terminal 则进入终端面；?view=timeline 则进入时间线；?view=webplane 则进入 Web 平面；
+// 若显式带有 ?view=terminal 则进入终端面；?view=timeline 则进入时间线；?view=webplane 则进入 Web 平面
+// （深链放行以 webPlaneCapable 为准，§7.4：无平面会话 opencode/codex 不放行，回落缺省视图）；
 // 缺省时：
 //   - 非 TUI CLI（claudecode/opencode/codex）：默认结构化时间线（R3）
+//     · claudecode 虽具备 Web 平面，缺省仍时间线（D5 取舍：内置平面恒 available，
+//       不得劫持既有主阅读面）——仅经菜单项或 ?view=webplane 深链显式进入。
 //   - TUI CLI（pi/omp）：默认视图策略：
 //     - webui available → webplane
 //     - probing → webplane（显示加载态，0.5–1s 轮询）
@@ -76,8 +88,9 @@ const activeView = computed<WorkspaceView>(() => {
   const queryView = route.query.view;
   if (queryView === 'terminal') return 'terminal';
   if (queryView === 'timeline') return 'timeline';
-  if (queryView === 'webplane') return 'webplane';
+  if (queryView === 'webplane' && webPlaneCapable.value) return 'webplane';
 
+  // 缺省分支刻意保持 isTuiCli（而非 webPlaneCapable）判定：闸门泛化不改变缺省视图。
   if (!isTuiCli.value) {
     return 'timeline';
   }
@@ -304,7 +317,7 @@ function jumpToGap(): void {
         <span class="title-text">{{ title }}</span>
         <span v-if="isDiagnostic" class="diagnostic-badge">诊断视图</span>
         <span v-else-if="isTuiCli && isTerminalView" class="tui-cli-badge">终端仿真</span>
-        <span v-else-if="isTuiCli && isWebPlaneView" class="webplane-badge">Web 平面</span>
+        <span v-else-if="webPlaneCapable && isWebPlaneView" class="webplane-badge">Web 平面</span>
       </h1>
       <div class="menu-wrap" @keydown="onMenuKeydown">
         <button ref="menuBtnRef" type="button" class="menu-btn" aria-label="更多操作" aria-haspopup="menu" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
@@ -352,8 +365,19 @@ function jumpToGap(): void {
             </button>
           </template>
 
-          <!-- 常规 CLI 会话 (claudecode/opencode/codex) 保持原有菜单行为 -->
+          <!-- 常规 CLI 会话 (claudecode/opencode/codex) 保持原有菜单行为；
+               claudecode（webPlaneCapable，§7.4/t10）额外获得「切换至 Web 平面视图」入口，
+               webuiAvailable 条件保留——非 available（WSL/外部终端/开关关闭等降级）不显示 -->
           <template v-else>
+            <button
+              v-if="webPlaneCapable && webuiAvailable && activeView !== 'webplane'"
+              type="button"
+              class="menu-item"
+              role="menuitem"
+              @click="switchToWebPlane"
+            >
+              切换至 Web 平面视图
+            </button>
             <button
               v-if="!isTerminalView"
               type="button"
@@ -458,7 +482,7 @@ function jumpToGap(): void {
       @data="(data: string) => store.sendRaw(data)"
     />
 
-    <!-- Web 会话平面：嵌入 pi webui（pi/omp 默认/首选，C2/C4） -->
+    <!-- Web 会话平面：嵌入 webui 页面（pi/omp 默认/首选，C2/C4；claudecode 仅显式进入，§7.4） -->
     <template v-else-if="activeView === 'webplane'">
       <!-- 控制权引导条（条幅在上、iframe 在下，不遮挡 iframe 输入台；
            接管为显式用户动作，失败走 store 既有 controlNotice 展示） -->

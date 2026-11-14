@@ -10,6 +10,9 @@
  *     control.state 恢复 you → 横幅消失、按键恢复、可发（横幅出现/消失全链）；
  *   · 合成全屏 TUI 帧 + restart boundary：store 原样透传帧字节到 xterm 写入，
  *     重启提示行按序注入，重绘语义不破坏（oracle 验证）。
+ *   · Web 平面闸门泛化回归（design §7.4 / t10，R13）：webPlaneCapable 引入后
+ *     isTuiCli 语义不变——omp 在 webui available 时缺省仍进入 Web 平面、
+ *     不可用时缺省仍终端仿真面（TUI 缺省视图策略两个方向都锚死）。
  * WS/xterm 均为结构替身，无真实网络。
  * ---------------------------------------------------------------------------
  */
@@ -152,10 +155,20 @@ function b64(text: string): string {
   return btoa(bin);
 }
 
-function mockFetch(detail: Record<string, unknown>) {
+/**
+ * webui 缺省（既有用例）：所有请求（含 /webui 探测）一律返回 detail——探测结果
+ * 非 available，TUI 会话缺省走终端仿真面（既有行为，原样保留）。
+ * 传入 webui 时 /webui 探测返回该状态体（Web 平面缺省策略回归用例）。
+ */
+function mockFetch(detail: Record<string, unknown>, webui?: Record<string, unknown>) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => ({ ok: true, status: 200, json: async () => detail }) as Response),
+    vi.fn(async (url: string) => {
+      if (webui && String(url).includes('/webui')) {
+        return { ok: true, status: 200, json: async () => webui } as Response;
+      }
+      return { ok: true, status: 200, json: async () => detail } as Response;
+    }),
   );
 }
 
@@ -180,7 +193,12 @@ function attachedEvent(over: Record<string, unknown> = {}) {
   };
 }
 
-async function mountWithRoute(pinia: Pinia, detail: Record<string, unknown>, initialQuery: Record<string, string> = {}) {
+async function mountWithRoute(
+  pinia: Pinia,
+  detail: Record<string, unknown>,
+  initialQuery: Record<string, string> = {},
+  webui?: Record<string, unknown>,
+) {
   const router: Router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -190,7 +208,7 @@ async function mountWithRoute(pinia: Pinia, detail: Record<string, unknown>, ini
       { path: '/workspace/:sessionId', name: 'workspace', component: WorkspacePage },
     ],
   });
-  mockFetch(detail);
+  mockFetch(detail, webui);
   const wrapper = mount(AppShell, { global: { plugins: [pinia, router] } });
   activeWrapper = wrapper;
   await router.push({ name: 'workspace', params: { sessionId: 'sess-1' }, query: initialQuery });
@@ -267,6 +285,33 @@ describe('WorkspacePage TUI 会话页面级集成（P1-C）', () => {
     expect(wrapper.find('.diagnostic-badge').exists()).toBe(false);
     expect(wrapper.find('.back-btn .btn-label').text()).toBe('大厅');
     expect(wrapper.find('[data-testid="terminal-key-tray"]').exists()).toBe(true);
+  });
+
+  it('omp 会话在 webui available 时缺省进入 Web 平面（闸门泛化后 TUI 缺省策略不回归）', async () => {
+    // design §7.4 / t10（R13）：webPlaneCapable 泛化只新增 claudecode 的显式入口，
+    // isTuiCli 的「available → 缺省 webplane」策略对第二 TUI CLI 原样生效；
+    // 与上一用例（不可用 → 终端仿真面）构成 TUI 缺省策略的双向回归锚。
+    const { wrapper } = await mountWithRoute(
+      pinia,
+      piDetail({ cliType: 'omp', title: 'Omp Session' }),
+      {},
+      { state: 'available', url: '/webui/sess-1/#/t=token123' },
+    );
+
+    // webui 探测为异步链（detail 水合 → enabledRef 翻转 → 首轮 poll），慢速
+    // runner 上可晚于挂载——waitFor 轮询断言（webplane 套件同款纪律）。
+    await vi.waitFor(
+      () => {
+        expect(wrapper.find('[data-testid="webplane-host"]').exists()).toBe(true);
+      },
+      { timeout: 5000, interval: 50 },
+    );
+    expect(wrapper.find('.webplane-badge').text()).toBe('Web 平面');
+    expect(wrapper.find('.tui-cli-badge').exists()).toBe(false);
+    expect(wrapper.find('.diagnostic-badge').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="terminal-host"]').exists()).toBe(false);
+    // TUI 会话在 Web 平面缺省面：返回键为大厅（非「返回终端面」）
+    expect(wrapper.find('.back-btn .btn-label').text()).toBe('大厅');
   });
 
   it('pi 会话显式 ?view=terminal 进入终端面（R3 语义升级）', async () => {

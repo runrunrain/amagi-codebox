@@ -107,6 +107,20 @@ type ProcessStartSpec struct {
 	Mode             Mode
 	Resolved         platform.ResolvedLaunchSpec
 	RequireRunHandle bool
+	// WebUIPlane 是 claudecode 平面计划材料（claude-webui design §5.4）：
+	// 非 nil 时执行器在该 PTY commit 后启动进程内 Web 数据面并注册探测
+	// tracker；nil = 无平面（WSL 目标 / 非 claudecode 计划）。由 planner 在
+	// 构建 --session-id 注入时一并携带，执行器以此为门控（R8：字段缺位
+	// 即不起平面，不注册 tracker）。
+	WebUIPlane *WebUIPlaneSpec
+}
+
+// WebUIPlaneSpec 描述 claudecode 进程的 Web 平面计划材料（design §5.4）。
+// ClaudeSessionID 是 planner 生成的 --session-id 注入值（uuid，纯内存无
+// 副作用），既是转录 jsonl 的锁定文件名，也是 commit 后落 session.Manager
+// 的 claude 会话映射值。
+type WebUIPlaneSpec struct {
+	ClaudeSessionID string
 }
 
 type BootstrapWriteSpec struct {

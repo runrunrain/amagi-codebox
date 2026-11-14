@@ -10,8 +10,15 @@
         <span class="model-pill" v-if="session?.model">{{ session.model }}</span>
       </div>
       <div class="term-tb-right">
-        <!-- TUI ⇄ Web 切换（蓝图 T-1.6；A-4：仅 pi 会话且 webui available 才显示） -->
-        <div v-if="webUIToggleVisible" class="plane-toggle" role="group" aria-label="会话显示平面切换">
+        <!-- TUI ⇄ Web 切换（蓝图 T-1.6；A-4：仅具备 Web 平面的会话类型
+             （pi/claudecode，webPlaneGate）且 webui available 才显示） -->
+        <div
+          v-if="webUIToggleVisible"
+          class="plane-toggle"
+          role="group"
+          aria-label="会话显示平面切换"
+          :title="planeToggleTitle"
+        >
           <Segmented
             :model-value="activePlane"
             :options="planeOptions"
@@ -52,8 +59,10 @@
       @wheel.stop
       @contextmenu.prevent="handleContextMenu"
     >
-      <!-- Web 平面（pi + webui available）：与 xterm 平面互斥 v-show，
-           切走后保留不销毁（交互文档 §3）；xterm 由 .web-active 类隐藏。 -->
+      <!-- Web 平面（具备平面的会话类型 + webui available）：与 xterm 平面互斥
+           v-show，切走后保留不销毁（交互文档 §3）；xterm 由 .web-active 类隐藏。
+           额度条是 pi 专属概念：非 pi 会话传 :quota-strip="false" 整条不渲染，
+           iframe 独占全高。 -->
       <WebPlaneHost
         v-if="webPlaneMounted"
         ref="webPlaneHostRef"
@@ -61,6 +70,7 @@
         :url="webPlaneSrc"
         :session-id="sessionId"
         :ended="webEnded"
+        :quota-strip="isPiSession"
         @error="onWebPlaneError"
         @retry="handleWebRetry"
         @switch-to-tui="handleSwitchToTui"
@@ -165,6 +175,7 @@ import TerminalContextMenu from './TerminalContextMenu.vue'
 import WebPlaneHost from './WebPlaneHost.vue'
 import SessionQuotaStrip from './SessionQuotaStrip.vue'
 import { dispatchPathConfirm, quickMenuStateFor, withWebPlaneSkinParam } from './quickPathInsert'
+import { autoPreferWeb, webPlaneCapable, webPlaneToggleTitle } from './webPlaneGate'
 import PathPickerDialog from './PathPickerDialog.vue'
 import Segmented from '../ui/Segmented.vue'
 import { openWebPlane } from '../../api/webui'
@@ -318,7 +329,7 @@ const sessionTitle = computed(() => {
 
 const isStopping = computed(() => stopping.value || session.value?.status === 'stopping')
 
-// ---- pi Web 平面切换（蓝图 T-1.6）----
+// ---- Web 平面切换（蓝图 T-1.6；pi 与 claudecode 共用，闸门见 webPlaneGate）----
 // 切换状态按组件实例（= 按 sessionId，TerminalPage 每会话一实例 v-show 缓存）
 // 隔离，内存持有不持久化（TD-9）。
 const planeOptions = [
@@ -339,16 +350,23 @@ const webEnded = ref(false)
 const appearanceStore = useAppearanceStore()
 const webPlaneSrc = computed(() => withWebPlaneSkinParam(webUrl.value, appearanceStore.webPlaneSkin))
 
+// pi 会话专用判定（额度条 TUI/Web 两实例、CSI-U 键位编码仍是 pi/omp 专属），
+// 不承载 Web 平面闸门——后者见 isWebPlaneCapable。
 const isPiSession = computed(() => session.value?.appType === 'pi')
+// Web 平面闸门（webPlaneGate）：具备「终端 ⇄ 网页」双平面的会话类型（pi、
+// claudecode）。与 isPiSession 解耦：额度条等 pi 专属能力不随闸门泛化。
+const isWebPlaneCapable = computed(() => webPlaneCapable(session.value?.appType))
+// 切换控件悬浮提示（按 CLI 类型给出；非平面类型返回空串使 title 不渲染）。
+const planeToggleTitle = computed(() => webPlaneToggleTitle(session.value?.appType))
 const webuiState = computed(
   () => sessionStore.webuiStatus[props.sessionId]?.state ?? 'unknown',
 )
-// A-4：仅 pi 会话且探测 available 且会话运行中才显示切换控件；
+// A-4：仅具备 Web 平面的会话类型且探测 available 且会话运行中才显示切换控件；
 // 会话结束后 toolbar 仅 TUI 可切（交互文档 §3.4）——ended 后隐藏控件，
 // 若用户仍在 Web 平面则由 WebPlaneHost 结束态提供“切回终端”。
 const webUIToggleVisible = computed(
   () =>
-    isPiSession.value &&
+    isWebPlaneCapable.value &&
     webuiState.value === 'available' &&
     session.value?.status === 'running',
 )
@@ -362,11 +380,14 @@ function onPlaneSelect(plane: string) {
 
 // 需求：pi 会话装有 web 插件（webui available）时，点击活动会话优先显示
 // 网页平面；用户显式切回终端后不再自动切换（sticky，切回 web 时清除）。
-// 守卫：surfaceActive 拦住后台/缓存会话，webUIToggleVisible 拦住非 pi、
+// 守卫：surfaceActive 拦住后台/缓存会话，webUIToggleVisible 拦住无平面、
 // 未 available 或已结束的会话，userPinnedTui 尊重用户显式选择。
+// autoPreferWeb（design.md §4-D5）：claudecode 具备平面但 TUI 是其既有默认
+// 平面——不自动切 Web，由用户显式切换（仅 pi 自动偏好）。
 function preferWebPlane() {
   if (!surfaceActive.value) return
   if (!webUIToggleVisible.value) return
+  if (!autoPreferWeb(session.value?.appType)) return
   if (userPinnedTui.value) return
   if (activePlane.value === 'web') return
   activePlane.value = 'web'
@@ -505,9 +526,11 @@ watch(
 )
 
 onMounted(async () => {
-  // pi 会话启动 webui 探测轮询（0.5–1s 节奏，available/终态后自动停止）。
-  // 必须在 mountTerm 之前启动与否无关，幂等可重入。
-  if (isPiSession.value) {
+  // 具备 Web 平面的会话（pi/claudecode）启动 webui 探测轮询（0.5–1s 节奏，
+  // available/终态后自动停止）。探测按 sessionId 键控、与 appType 无关，
+  // claudecode 会话注册进同一 webui.Service 即被采纳。幂等可重入，
+  // 在 mountTerm 之前启动与否无关。
+  if (isWebPlaneCapable.value) {
     sessionStore.ensureWebUIProbe(props.sessionId)
   }
 

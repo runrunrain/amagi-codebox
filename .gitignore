@@ -13,6 +13,11 @@ mobile/node_modules
 frontend/dist
 mobile/dist
 
+# Claude WebUI SPA 构建产物（fresh checkout 依赖 .gitkeep 占位过 go:embed，
+# design §7.3/R6——空目录会让 go vet 失败）
+internal/claudewebui/dist/*
+!internal/claudewebui/dist/.gitkeep
+
 # Config with secrets
 *-config.json
 

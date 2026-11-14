@@ -22,10 +22,6 @@ export function ApplyWSLCliResourcesSupply(arg1, arg2) {
   return window['go']['main']['App']['ApplyWSLCliResourcesSupply'](arg1, arg2);
 }
 
-export function ApplyWSLPiConfigSupply() {
-  return window['go']['main']['App']['ApplyWSLPiConfigSupply']();
-}
-
 export function BeginClaudeAccountEnrollment(arg1) {
   return window['go']['main']['App']['BeginClaudeAccountEnrollment'](arg1);
 }
@@ -64,10 +60,6 @@ export function CheckTool(arg1) {
 
 export function CheckWSLCliResourcesSupply(arg1) {
   return window['go']['main']['App']['CheckWSLCliResourcesSupply'](arg1);
-}
-
-export function CheckWSLPiConfigSupply() {
-  return window['go']['main']['App']['CheckWSLPiConfigSupply']();
 }
 
 export function CleanClaudeInstall(arg1) {
@@ -118,14 +110,12 @@ export function DownloadAndApplyUpdate() {
   return window['go']['main']['App']['DownloadAndApplyUpdate']();
 }
 
-export function EnableWSLPiConfigSupply() {
-  return window['go']['main']['App']['EnableWSLPiConfigSupply']();
-}
-export function EnsureWSLSharedSkillsRoot() {
-  return window['go']['main']['App']['EnsureWSLSharedSkillsRoot']();
-}
 export function EnableWSLUnifiedSupply() {
   return window['go']['main']['App']['EnableWSLUnifiedSupply']();
+}
+
+export function EnsureWSLSharedSkillsRoot() {
+  return window['go']['main']['App']['EnsureWSLSharedSkillsRoot']();
 }
 
 export function ExportConfigToFile() {
@@ -150,6 +140,10 @@ export function FixClaudeConfig(arg1, arg2, arg3) {
 
 export function GetAIProxyState() {
   return window['go']['main']['App']['GetAIProxyState']();
+}
+
+export function GetAIProxyTraffic(arg1) {
+  return window['go']['main']['App']['GetAIProxyTraffic'](arg1);
 }
 
 export function GetAgentCLIInstallStatus() {
@@ -424,7 +418,6 @@ export function GetWSLPluginTargetSupport() {
   return window['go']['main']['App']['GetWSLPluginTargetSupport']();
 }
 
-
 export function GrantWSLVisionConsent() {
   return window['go']['main']['App']['GrantWSLVisionConsent']();
 }
@@ -501,10 +494,6 @@ export function KeepWSLCliResourceLocal(arg1, arg2) {
   return window['go']['main']['App']['KeepWSLCliResourceLocal'](arg1, arg2);
 }
 
-export function KeepWSLPiConfigUnitLocal(arg1) {
-  return window['go']['main']['App']['KeepWSLPiConfigUnitLocal'](arg1);
-}
-
 export function LaunchCodexSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchCodexSession'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -563,10 +552,6 @@ export function PreviewWSLCliConfigSupply(arg1) {
 
 export function PreviewWSLCliResourcesSupply(arg1) {
   return window['go']['main']['App']['PreviewWSLCliResourcesSupply'](arg1);
-}
-
-export function PreviewWSLPiConfigSupply() {
-  return window['go']['main']['App']['PreviewWSLPiConfigSupply']();
 }
 
 export function ProbeAllProviderQuotas() {
@@ -929,10 +914,6 @@ export function TakeOverWSLCliResource(arg1, arg2, arg3) {
   return window['go']['main']['App']['TakeOverWSLCliResource'](arg1, arg2, arg3);
 }
 
-export function TakeOverWSLPiConfigUnit(arg1, arg2) {
-  return window['go']['main']['App']['TakeOverWSLPiConfigUnit'](arg1, arg2);
-}
-
 export function ToggleRemoteServer(arg1) {
   return window['go']['main']['App']['ToggleRemoteServer'](arg1);
 }
@@ -955,8 +936,4 @@ export function UpdateProvider(arg1, arg2, arg3) {
 
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
-}
-
-export function GetAIProxyTraffic(arg1) {
-  return window['go']['main']['App']['GetAIProxyTraffic'](arg1);
 }

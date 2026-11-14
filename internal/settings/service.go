@@ -184,6 +184,11 @@ type AppSettings struct {
 	// = 默认 true；显式 false = 用户关闭。bool 零值无法区分“未写入”与
 	// “显式关闭”，故不用裸 bool。与 RemoteEnabled 无关联（独立开关）。
 	AgentCLIEnabled *bool `json:"agentCLIEnabled,omitempty"`
+	// ClaudeWebUIEnabled 控制 Claude Code 会话的 Web 平面（claude-webui 设计
+	// §8，默认 true）。照 AgentCLIEnabled 的指针三态：nil（老 settings.json
+	// 无该键）= 默认 true；显式 false = 用户关闭。该开关只在会话启动时读取，
+	// 运行中翻转不影响已起平面（WSL/外部终端会话始终无平面，与开关无关）。
+	ClaudeWebUIEnabled *bool `json:"claudeWebUIEnabled,omitempty"`
 }
 
 func defaultSettings() *AppSettings {
@@ -290,6 +295,7 @@ func (s *Service) Load() error {
 	}
 	// AgentCLIEnabled 无需归一：nil（老文件无键）本身就是“默认 true”的
 	// 持久化形态（指针三态），显式 true/false 原样保留。
+	// ClaudeWebUIEnabled 同理（claude-webui 设计 §8，nil = 默认 true）。
 	normalizeDashboardDefaults(&cfg.Dashboard)
 	s.settings = &cfg
 	return nil
@@ -839,6 +845,38 @@ func (s *Service) SetAgentCLIEnabled(enabled bool) error {
 		// Revert in-memory so a Save failure leaves memory == disk.
 		s.mu.Lock()
 		s.settings.AgentCLIEnabled = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// GetClaudeWebUIEnabled 返回 Claude Code Web 平面开关（nil = 默认 true，
+// claude-webui 设计 §8）。开关只在会话启动时读取（App 门面职责）。
+func (s *Service) GetClaudeWebUIEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.settings.ClaudeWebUIEnabled == nil {
+		return true
+	}
+	return *s.settings.ClaudeWebUIEnabled
+}
+
+// SetClaudeWebUIEnabled 事务式持久化 Claude Code Web 平面开关（claude-webui
+// 设计 §8）：saveMu → mutate under mu → saveLocked，保存失败回滚内存（同
+// SetAgentCLIEnabled 的事务式模式）。运行中翻转不影响已起平面——平面材料
+// 在会话启动时按当时的开关值一次性分配。
+func (s *Service) SetClaudeWebUIEnabled(enabled bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	old := s.settings.ClaudeWebUIEnabled
+	s.settings.ClaudeWebUIEnabled = &enabled
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk.
+		s.mu.Lock()
+		s.settings.ClaudeWebUIEnabled = old
 		s.mu.Unlock()
 		return err
 	}

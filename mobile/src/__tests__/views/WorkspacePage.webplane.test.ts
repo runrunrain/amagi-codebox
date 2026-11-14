@@ -23,9 +23,16 @@
  *       显示「Web 平面输入需要会话控制权」引导条与「接管控制」按钮；
  *     - 点击接管按钮调用 store.acquire；WS control.state 事件驱动变为 you 后引导条消失；
  *     - 非 webplane 视图 / webuiUrl 为空 / 会话非 running 时引导条不出现。
+ *   · claudecode 会话 Web 平面入口（design §7.4 / t10 闸门泛化）：
+ *     - 探测启用（/webui 端点被命中，泛化前 enabledRef=isTuiCli 不探测）；
+ *     - webui available 后菜单出现「切换至 Web 平面视图」入口，点击可进入 Web 平面；
+ *     - unavailable 时入口隐藏（webuiAvailable 条件保留），常规菜单行为不变；
+ *     - 缺省视图仍结构化时间线（D5：claudecode 不被 available 劫持缺省面）；
+ *     - ?view=webplane 深链放行进入 Web 平面；
+ *     - 无平面会话（opencode）?view=webplane 深链不放行，回落缺省时间线。
  * ---------------------------------------------------------------------------
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { createRouter, createMemoryHistory, type Router } from 'vue-router';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
@@ -140,7 +147,7 @@ let activeWrapper: VueWrapper | null = null;
 function mockEndpoints(options: {
   detail?: Record<string, unknown>;
   webui?: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>);
-}) {
+}): Mock {
   const defaultDetail = {
     id: 'sess-1',
     title: 'Pi TUI Session',
@@ -156,29 +163,29 @@ function mockEndpoints(options: {
 
   const detailData = { ...defaultDetail, ...(options.detail ?? {}) };
 
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => {
-      if (url.includes('/webui')) {
-        let webuiData: Record<string, unknown>;
-        if (typeof options.webui === 'function') {
-          webuiData = await options.webui();
-        } else {
-          webuiData = options.webui ?? { state: 'unavailable' };
-        }
-        return {
-          ok: true,
-          status: 200,
-          json: async () => webuiData,
-        } as Response;
+  // 返回 fetch mock 实例供「探测是否发起」类断言读取调用记录（§7.4 探测 enable）。
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.includes('/webui')) {
+      let webuiData: Record<string, unknown>;
+      if (typeof options.webui === 'function') {
+        webuiData = await options.webui();
+      } else {
+        webuiData = options.webui ?? { state: 'unavailable' };
       }
       return {
         ok: true,
         status: 200,
-        json: async () => detailData,
+        json: async () => webuiData,
       } as Response;
-    }),
-  );
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => detailData,
+    } as Response;
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
 }
 
 function attachedEvent(control: { state: string; deviceName?: string } = { state: 'you' }) {
@@ -566,5 +573,120 @@ describe('WorkspacePage Web会话平面集成（C2/C4）', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="webplane-control-hint"]').exists()).toBe(false);
+  });
+
+  // --- claudecode 会话（design §7.4 / t10：WorkspacePage Web 平面闸门泛化） ---
+  // 上方 pi 用例为既有回归锚（R13：闸门泛化不得误伤 pi/omp 的缺省视图与菜单策略）。
+
+  describe('claudecode 会话 Web 平面入口（§7.4/t10）', () => {
+    it('claudecode 会话启用 Web 平面探测（/webui 端点被命中），缺省视图仍结构化时间线', async () => {
+      const fetchMock = mockEndpoints({
+        detail: { cliType: 'claudecode', title: 'Claude Code Session' },
+        webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+      });
+
+      const { wrapper } = await mountWithRoute(pinia);
+
+      // 探测 enable：泛化前 enabledRef=isTuiCli=false，composable 直接不探测。
+      // 探测链为异步（detail 水合 → enabledRef 翻转 → 首轮 poll），waitFor 轮询断言。
+      await vi.waitFor(
+        () => {
+          expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/webui'))).toBe(true);
+        },
+        { timeout: 5000, interval: 50 },
+      );
+
+      // 缺省视图仍时间线（D5 取舍：claudecode 即使 available 也不劫持缺省面）
+      expect(wrapper.find('.timeline').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="webplane-host"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="terminal-host"]').exists()).toBe(false);
+      // 非诊断视图、非 TUI 会话：三枚徽标均不出现
+      expect(wrapper.find('.diagnostic-badge').exists()).toBe(false);
+      expect(wrapper.find('.tui-cli-badge').exists()).toBe(false);
+      expect(wrapper.find('.webplane-badge').exists()).toBe(false);
+    });
+
+    it('claudecode 会话 webui available 后菜单出现「切换至 Web 平面视图」入口，点击进入 Web 平面', async () => {
+      mockEndpoints({
+        detail: { cliType: 'claudecode', title: 'Claude Code Session' },
+        webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+      });
+
+      const { wrapper, router } = await mountWithRoute(pinia);
+
+      await wrapper.find('.menu-btn').trigger('click');
+
+      // available 后入口可见（webuiAvailable 条件保留；探测首轮可晚于挂载，轮询等待）
+      await vi.waitFor(
+        () => {
+          expect(wrapper.findAll('.menu-item').map((i) => i.text())).toContain('切换至 Web 平面视图');
+        },
+        { timeout: 5000, interval: 50 },
+      );
+
+      const toWebPlane = wrapper
+        .findAll('.menu-item')
+        .find((b) => b.text().includes('切换至 Web 平面视图'));
+      await toWebPlane?.trigger('click');
+      await flushPromises();
+
+      expect(router.currentRoute.value.query.view).toBe('webplane');
+      await vi.waitFor(
+        () => {
+          expect(wrapper.find('[data-testid="webplane-host"]').exists()).toBe(true);
+        },
+        { timeout: 5000, interval: 50 },
+      );
+      // Web 平面徽标（闸门泛化后对 claudecode 生效）
+      expect(wrapper.find('.webplane-badge').exists()).toBe(true);
+      expect(wrapper.findComponent(ComposerBar).exists()).toBe(false);
+    });
+
+    it('claudecode 会话 webui unavailable 时菜单隐藏 Web 平面入口，常规菜单行为不变', async () => {
+      mockEndpoints({
+        detail: { cliType: 'claudecode', title: 'Claude Code Session' },
+        webui: { state: 'unavailable' },
+      });
+
+      const { wrapper } = await mountWithRoute(pinia);
+
+      await wrapper.find('.menu-btn').trigger('click');
+
+      // probing/unavailable 均隐藏（webuiAvailable 条件保留）；诊断视图入口原样
+      const menuItems = wrapper.findAll('.menu-item').map((i) => i.text());
+      expect(menuItems).not.toContain('切换至 Web 平面视图');
+      expect(menuItems).toContain('原始终端诊断视图');
+    });
+
+    it('claudecode ?view=webplane 深链直接进入 Web 平面（放行以 webPlaneCapable 为准）', async () => {
+      mockEndpoints({
+        detail: { cliType: 'claudecode', title: 'Claude Code Session' },
+        webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+      });
+
+      const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' });
+
+      await vi.waitFor(
+        () => {
+          expect(wrapper.find('[data-testid="webplane-host"]').exists()).toBe(true);
+        },
+        { timeout: 5000, interval: 50 },
+      );
+      expect(wrapper.find('.webplane-badge').exists()).toBe(true);
+      expect(wrapper.findComponent(ComposerBar).exists()).toBe(false);
+    });
+
+    it('无平面会话（opencode）?view=webplane 深链不放行：回落缺省时间线，不渲染不可用降级卡', async () => {
+      mockEndpoints({
+        detail: { cliType: 'opencode', title: 'OpenCode Session' },
+        webui: { state: 'available', url: '/webui/sess-1/#/t=token123' },
+      });
+
+      const { wrapper } = await mountWithRoute(pinia, { view: 'webplane' });
+
+      expect(wrapper.find('.timeline').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="webplane-host"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="webplane-unavailable"]').exists()).toBe(false);
+    });
   });
 });

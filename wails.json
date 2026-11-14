@@ -8,7 +8,7 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "preBuildHooks": {
-    "*/*": "npm --prefix ../.. run build:mobile"
+    "*/*": "npm --prefix ../.. run build:embedded-web"
   },
   "author": {
     "name": "Amagi CodeBox Contributors",
@@ -16,7 +16,7 @@
   },
   "info": {
     "productName": "Amagi CodeBox",
-    "productVersion": "1.3.132",
+    "productVersion": "1.3.133",
     "copyright": "Copyright © Amagi CodeBox Contributors"
   }
 }

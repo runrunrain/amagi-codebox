@@ -24,6 +24,8 @@ import {
   SetCommitSummaryPreset,
   GetWebPlaneSkin,
   SetWebPlaneSkin,
+  GetClaudeWebUIEnabled,
+  SetClaudeWebUIEnabled,
   GetSettings,
   Load,
   Save,
@@ -199,4 +201,18 @@ export function getWebPlaneSkin(): Promise<WebPlaneSkin> {
  */
 export function setWebPlaneSkin(value: WebPlaneSkin): Promise<void> {
   return callApi('[api.settings.setWebPlaneSkin]', () => SetWebPlaneSkin(value));
+}
+
+/**
+ * Get Claude Code Web 视图开关（后端三态：未设置 = 默认开启）
+ */
+export function getClaudeWebUIEnabled(): Promise<boolean> {
+  return callApi('[api.settings.getClaudeWebUIEnabled]', () => GetClaudeWebUIEnabled());
+}
+
+/**
+ * Set Claude Code Web 视图开关（只在会话启动时读取，运行中切换不影响已启动会话）
+ */
+export function setClaudeWebUIEnabled(enabled: boolean): Promise<void> {
+  return callApi('[api.settings.setClaudeWebUIEnabled]', () => SetClaudeWebUIEnabled(enabled));
 }

@@ -80,6 +80,17 @@ type ControlGate interface {
 	DoDevicePTY(ctx context.Context, lease *ControlConnectionLease, sessionID contract.SessionID, op PTYOperation, mutate RawEffect) error
 	DoDeviceLifecycle(ctx context.Context, principal DevicePrincipal, sessionID contract.SessionID, op LifecycleOperation, mutate RawSessionEffect) (SessionMutationResult, error)
 
+	// --- Device plane PTY (holder-by-DeviceID, NO-TAKE; Web-plane writes) ---
+	// DoDevicePlanePTY executes one device-originated Web-plane write (the
+	// input/interrupt requests the /webui reverse proxy forwards for a
+	// control-holding device). It NEVER takes or transfers control: the write is
+	// admitted only while deviceID is the CURRENT holder in the connected or
+	// grace phase (the same snapshot projection the proxy write-face gate uses,
+	// SnapshotForDevice). Contrast with DoDesktopPTY (take-first) and
+	// DoDevicePTY (exact live connection lease, connected-only). See the
+	// implementation comment for the full rationale.
+	DoDevicePlanePTY(ctx context.Context, deviceID contract.DeviceID, sessionID contract.SessionID, op PTYOperation, mutate RawEffect) error
+
 	// --- Launch staging / fencing ---
 	BeginDesktopLaunch(ctx context.Context, authority *DesktopAuthority) (*LaunchPermit, error)
 	BeginDeviceLaunch(ctx context.Context, principal DevicePrincipal) (*LaunchPermit, error)
@@ -407,6 +418,62 @@ func (g *controlGate) DoDevicePTY(ctx context.Context, lease *ControlConnectionL
 }
 
 // ---------------------------------------------------------------------------
+// Device plane PTY (holder-by-DeviceID, no-take; Web-plane writes)
+// ---------------------------------------------------------------------------
+
+// DoDevicePlanePTY executes one device-originated Web-plane write (the
+// /api/input / /api/interrupt requests that the /webui reverse proxy forwards
+// for a control-holding device) WITHOUT changing control ownership (no-take).
+// It is the third data lane next to the two existing ones, and exists because
+// neither of them fits an HTTP-request-scoped plane write:
+//
+//   - DoDesktopPTY is take-first (TakeDesktop on every call). Routing a remote
+//     device's plane input through it would preempt that very device on its
+//     FIRST input: the proxy write-face gate would then answer 403
+//     control.forbidden from the second input on, and the device's /ws/v1 input
+//     lane would be silently revoked.
+//   - DoDevicePTY needs the exact LIVE connection lease (deviceID + connectionID
+//     + attachmentGeneration, connected-only). A plane write is one HTTP request
+//     that the proxy authenticates by plane token; it holds no connection lease.
+//
+// Structure mirrors DoDevicePTY: checkReady → public entry → lane (or
+// quarantine) → permit minted under stateMu → bounded raw effect →
+// finishOperation. Only the identity rule differs (createDevicePlanePermit).
+//
+// This method NEVER calls TakeDesktop/Acquire/Release and never commits a
+// control transition: owner, phase, controlEpoch and holderGeneration are all
+// left untouched (the write is admitted against the CURRENT holder or denied).
+// Fail-closed: an empty deviceID (the "desktop viewer" spelling of the snapshot
+// API) is never a device holder and is denied before any lane work.
+func (g *controlGate) DoDevicePlanePTY(ctx context.Context, deviceID contract.DeviceID, sessionID contract.SessionID, op PTYOperation, mutate RawEffect) error {
+	if err := g.arbiter.checkReady(); err != nil {
+		return err
+	}
+	if deviceID == "" {
+		return &ControlGateError{Kind: DenyNotController}
+	}
+	entry := g.arbiter.entryFor(sessionID)
+	if !isEntryPublic(entry) {
+		return &ControlGateError{Kind: DenySessionNotFound}
+	}
+	// Acquire lane.
+	if err := g.acquireLaneOrQuarantine(ctx, entry); err != nil {
+		return err
+	}
+	defer entry.opLane.release()
+
+	// Create permit under stateMu (validates the holder is exactly this device,
+	// connected or grace; never takes control).
+	permit, gErr := g.createDevicePlanePermit(ctx, entry, deviceID)
+	if gErr != nil {
+		return gErr
+	}
+	rawErr := g.runBoundedRawEffect(entry, func() error { return mutate(permit.ctx(), permit) })
+	g.finishOperation(entry, permit)
+	return rawErr
+}
+
+// ---------------------------------------------------------------------------
 // Device lifecycle
 // ---------------------------------------------------------------------------
 
@@ -680,6 +747,64 @@ func (g *controlGate) createDevicePTYPermit(ctx context.Context, entry *controlE
 		return nil, &ControlGateError{Kind: DenyControlUnavailable, Detach: entry.backendDetach.disposition}
 	}
 	return g.mintOperationPermit(ctx, entry, lease.DeviceID(), 0), nil
+}
+
+// createDevicePlanePermit validates a device-plane write under stateMu. Unlike
+// createDevicePTYPermit it needs NO connection lease: identity is exactly the
+// bound deviceID of the plane token the proxy resolved, and the holder check is
+// the SNAPSHOT projection the proxy write-face gate itself uses
+// (webUIProxyControlHeld → SnapshotForDevice): holder must be this deviceID in
+// the connected OR grace phase; anything else (none/other device/desktop,
+// including an empty deviceID) denies DenyNotController.
+//
+// The grace relaxation vs the WS lane's connected-only rule
+// (createDevicePTYPermit) is deliberate and must stay in lockstep with the
+// proxy gate: the WS lane forbids grace because it exists to guard ZOMBIE
+// connections (no live exact lease to validate), while a plane write is
+// request-scoped — its identity is re-resolved by the proxy on EVERY request
+// (plane token → deviceID → device re-validated against the live store), so
+// the snapshot projection is the only shared truth. Tightening either side
+// alone would split the two gates' verdicts ("proxy allows, backend denies").
+//
+// revokedDevices / acceptingRemote checks mirror createDevicePTYPermit (M-002:
+// a revoked device or a non-accepting server must be stably rejected in the
+// revoke window). Permit: mintOperationPermit(ctx, entry, deviceID, 0) — the
+// no-lease mint already used by lifecycle drain paths (a plane write holds no
+// connection lease by design, so there is nothing to exact-match beyond the
+// device identity itself; Checkpoint re-validates per-entry epochs + revoke +
+// acceptance generations as for every data permit).
+func (g *controlGate) createDevicePlanePermit(ctx context.Context, entry *controlEntry, deviceID contract.DeviceID) (*operationPermit, *ControlGateError) {
+	entry.stateMu.Lock()
+	defer entry.stateMu.Unlock()
+	if entry.removed {
+		return nil, &ControlGateError{Kind: DenySessionNotFound}
+	}
+	if entry.owner.kind != ownerDevice || entry.owner.deviceID != deviceID {
+		return nil, &ControlGateError{Kind: DenyNotController}
+	}
+	if entry.owner.phase != deviceConnected && entry.owner.phase != deviceGrace {
+		// Phase must be an explicitly admitted one (defense in depth: a zero or
+		// future phase value never passes).
+		return nil, &ControlGateError{Kind: DenyNotController}
+	}
+	// M-002 mirror of createDevicePTYPermit: stable rejection in the revoke
+	// window. Lock order is stateMu → permitMu (no path nests permitMu → stateMu).
+	if !g.arbiter.acceptingRemote.Load() {
+		return nil, &ControlGateError{Kind: DenyNotAccepting}
+	}
+	g.arbiter.permitMu.Lock()
+	revoked := g.arbiter.revokedDevices[deviceID]
+	g.arbiter.permitMu.Unlock()
+	if revoked {
+		return nil, &ControlGateError{Kind: DenyDeviceRevoked}
+	}
+	if entry.runPhase != runActive {
+		return nil, &ControlGateError{Kind: DenySessionNotWritable}
+	}
+	if entry.backend == backendQuarantined {
+		return nil, &ControlGateError{Kind: DenyControlUnavailable, Detach: entry.backendDetach.disposition}
+	}
+	return g.mintOperationPermit(ctx, entry, deviceID, 0), nil
 }
 
 // mintOperationPermit creates and registers an operation permit. Caller holds

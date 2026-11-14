@@ -4,7 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
-## [Unreleased]
+## [1.3.133] - 2026-11-14
+
+### Added
+
+- **Claude Code WebUI 视图模式**：内嵌 Claude Code 会话在 `/terminal` 获得「终端 ⇄ 网页」双平面切换（与 pi 会话同构；claude 不自动偏好，仅显式切换）。数据面 server 移入 CodeBox 进程内（`internal/claudewebui`，每会话独立回环端口 + 128bit token），结构化流来自 Claude Code 落盘的会话转录 jsonl 增量尾随——消息流/思考折叠/工具卡配对（running/failed/success）/用量四分项，输入与中断（Esc）经控制门写回 PTY、与 TUI 平面同步，草稿服务端内存暂存（sandbox iframe 无 localStorage）。
+- **输入双车道**：本地 WebUI 输入走桌面车道（take-first，与 xterm 打字同语义）；远程设备经反代的输入走新增的设备平面车道（无夺权、写时校验该设备持控——否则首条输入即夺走设备自身控制权），中断同规则；远程连发不再第 2 条起 403。反代写面透传已鉴权设备身份头（`X-Amagi-Plane-Actor-Device`，覆盖式注入、剥离客户端自带值），`POST /api/interrupt` 纳入写面控制门集合。
+- **远程反代与移动端入口**：remote v1 创建/重启的 claude 会话经 `--session-id` 注入锁定转录文件（消除同目录多会话串扰）后同样获得平面；移动端会话页出现「切换至 Web 平面视图」入口（claude 缺省视图仍为时间线，pi/omp 行为不变）。
+- **双 base SPA**：独立 `webui-claude` 工程（Vue3 + TS，`go:embed` 进二进制），同一份产物同时运行于桌面回环根路径与远程 `/webui/{sid}/` 子路径（vite `base:'./'` 资源相对化 + 运行时 `resolvePlaneBase` 推导 API/WS 地址 + 首屏页内错误态——三重白屏防线；构建产物含根绝对引用即测试失败）。构建链接入 wails 聚合钩子（`build:embedded-web` = mobile + claude 两产物）与 CI/release workflow（artifact 含真实 dist，防发布产物退化为占位提示页）。
+- 设置新增「Claude Code Web 视图」开关（`claudeWebUIEnabled`，默认开启；只在会话启动时读取）。WSL 目标与外部终端/VSCode/Zed 会话不适用（无切换控件）。转录 jsonl 依赖为非官方冻结契约：解析行级容错（坏行/未知行类型跳过）、以真实采集样本回放为单测依据（实测字段清单见 `docs/developer/claude-webui.md` §8），schema 升级最坏表现为对应字段留空，不影响 TUI 主平面。
+
+### Notes
+
+- 已验证：`go vet ./...`、定向 Go 包测试（转录解析/claudewebui 服务/设置/launchplan/root 接线与双车道/remote 设备平面车道与反代透传）、`go test ./... -run '^$'` 全仓编译检查、前端与 webui-claude 的构建（vue-tsc 门禁）及 vitest、移动端 vitest 均通过；wailsjs 再生成仅 settings 服务新增两方法（Bind 清单仍 21 项）。尚未执行：桌面/移动端真机冒烟（含远程形态非白屏、停止会话后端口无残留、连发输入不夺权自锁的实机确认）与发布产物二进制抽验。
+- 已知边界：Web 平面消息粒度为「API message 完成」（转录落盘粒度），长生成期间有数秒静默（busy 态动效提示）；claude TUI 处于菜单/对话框态时 WebUI 输入会触达选项（与共用一个键盘同构）；转录根解析未覆盖的自定义重定向形态表现为空转录（非错误）。
 
 ## [1.3.132] - 2026-11-11
 

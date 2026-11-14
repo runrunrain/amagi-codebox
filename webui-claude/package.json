@@ -1,0 +1,28 @@
+{
+  "name": "amagi-codebox-claude-webui",
+  "private": true,
+  "version": "1.3.133",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <23",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "postbuild": "node -e \"require('node:fs').writeFileSync('../internal/claudewebui/dist/.gitkeep', '')\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "vue": "^3.5.30"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.0",
+    "vue-tsc": "^3.2.5"
+  }
+}

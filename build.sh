@@ -26,9 +26,9 @@ if [ -d frontend ]; then
 fi
 
 if [ -d mobile ]; then
-    echo "[2/3] 构建移动端前端..."
-    if [ -f package.json ] && grep -q '"build:mobile"' package.json; then
-        npm run build:mobile
+    echo "[2/3] 构建内嵌 Web 前端（mobile + claude-webui）..."
+    if [ -f package.json ] && grep -q '"build:embedded-web"' package.json; then
+        npm run build:embedded-web
     fi
 fi
 

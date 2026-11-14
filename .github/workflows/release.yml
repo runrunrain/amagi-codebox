@@ -40,6 +40,7 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             mobile/package-lock.json
+            webui-claude/package-lock.json
 
       - name: Install Wails
         shell: bash
@@ -62,6 +63,19 @@ jobs:
       - name: Build mobile
         run: npm run build
         working-directory: mobile
+
+      # webui-claude（Claude Code Web 平面 SPA）：镜像 mobile 步骤构建，
+      # 产物落 internal/claudewebui/dist（vite outDir），供 wails build 嵌入。
+      # Windows job 的 wails build -s 虽仍会执行 preBuildHooks（聚合脚本
+      # build:embedded-web，hook 在 IgnoreFrontend 判定之前运行），此处显式
+      # 构建保证日志可见且不依赖 hook 行为。
+      - name: Install claude-webui dependencies
+        run: npm ci
+        working-directory: webui-claude
+
+      - name: Build claude-webui
+        run: npm run build
+        working-directory: webui-claude
 
       - name: Get version
         id: get_version
@@ -149,6 +163,7 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             mobile/package-lock.json
+            webui-claude/package-lock.json
 
       - name: Install Wails
         shell: bash
@@ -171,6 +186,19 @@ jobs:
       - name: Build mobile
         run: npm run build
         working-directory: mobile
+
+      # webui-claude（Claude Code Web 平面 SPA）：镜像 mobile 步骤构建，
+      # 产物落 internal/claudewebui/dist（vite outDir），供 wails build 嵌入。
+      # macOS job 的 wails build 不带 -s，本就会执行 preBuildHooks（聚合脚本
+      # build:embedded-web）重建两个 dist；此处显式构建保证日志可见、
+      # 失败点独立可读，不依赖 hook 行为。
+      - name: Install claude-webui dependencies
+        run: npm ci
+        working-directory: webui-claude
+
+      - name: Build claude-webui
+        run: npm run build
+        working-directory: webui-claude
 
       - name: Get version
         id: get_version

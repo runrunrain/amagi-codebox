@@ -64,6 +64,21 @@ popd
 echo [提示] 移动端前端构建完成
 echo.
 
+rem 聚合关系：wails.json preBuildHooks "*/*" 指向根 package.json 的聚合脚本
+rem build:embedded-web（= build:mobile && build:claude-webui；npm run 经 shell 执行，
+rem 与 hook 的直接 exec 不同，&& 在脚本内合法）。此处与上方 mobile 手工构建段对应，
+rem 在 wails build 之前先行构建 webui-claude（当前目录为仓库根，直接调根脚本），
+rem 保证产物 internal/claudewebui/dist 为真实内容而非 .gitkeep 占位。
+echo 正在构建 Claude Code WebUI (webui-claude)...
+call npm run build:claude-webui
+if errorlevel 1 (
+    echo [错误] Claude Code WebUI 构建失败!
+    pause
+    exit /b 1
+)
+echo [提示] Claude Code WebUI 构建完成
+echo.
+
 echo [3/5] 正在构建项目...
 echo.
 set GIT_VERSION=

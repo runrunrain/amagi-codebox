@@ -7,6 +7,10 @@ package remote
 //     Bearer 覆盖式注入）、WS upgrade 子协议透传往返、/api/input 控制门
 //     （无控制权 403 / 持有控制权放行 / 桌面持有时 403）、probing→503 与
 //     其余非 available→404、legacy 无安全面 fail-closed 404；
+//   - t6：POST /api/interrupt 入写面集合（无控制 403 / 持控制 200 透传）；
+//     写面转发透传设备身份头 X-Amagi-Plane-Actor-Device（plane token 设备 →
+//     头==deviceID 且客户端伪造值/Connection hop-by-hop 攻击被剥离；读面与
+//     raw token 零 principal 通道一律剥离不注入）；
 //   - 错误信封（根因修复 A）：iframe 数据面本地 JSON 错误均为协议兼容
 //     信封（v1 字段齐全 + "v":1 + "error"==code，见
 //     TestWebUIProxy_ErrorEnvelope），v1 REST 面错误体保持冻结无附加字段
@@ -35,7 +39,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/webui"
 
@@ -54,16 +57,18 @@ type webuiBackendProbe struct {
 	auth     string
 	origin   string
 	rawQuery string
+	actor    string // X-Amagi-Plane-Actor-Device（设备身份透传断言，t6）
 }
 
 type webuiFakeBackend struct {
-	mu            sync.Mutex
-	ts            *httptest.Server
-	probes        []webuiBackendProbe
-	inputCalls    int
-	interactCalls int
-	wsUpgraded    bool
-	wsSubproto    string
+	mu             sync.Mutex
+	ts             *httptest.Server
+	probes         []webuiBackendProbe
+	inputCalls     int
+	interactCalls  int
+	interruptCalls int
+	wsUpgraded     bool
+	wsSubproto     string
 }
 
 func newWebuiFakeBackend(t *testing.T) *webuiFakeBackend {
@@ -140,6 +145,19 @@ func newWebuiFakeBackend(t *testing.T) *webuiFakeBackend {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
+	// t6：中断写面（claudewebui 平面的 POST /api/interrupt；pi 后端无此路由，
+	// 代理侧写面门与路径无关地生效）。
+	mux.HandleFunc("/api/interrupt", func(w http.ResponseWriter, r *http.Request) {
+		if !b.assertInbound(w, r) {
+			return
+		}
+		b.record(r)
+		b.mu.Lock()
+		b.interruptCalls++
+		b.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"v":1,"ok":true}`))
+	})
 	// 读面（diting 裁定：配对设备可读，不设控制门）。
 	mux.HandleFunc("/api/fs/dirs", func(w http.ResponseWriter, r *http.Request) {
 		if !b.assertInbound(w, r) {
@@ -194,6 +212,7 @@ func (b *webuiFakeBackend) record(r *http.Request) {
 		auth:     r.Header.Get("Authorization"),
 		origin:   r.Header.Get("Origin"),
 		rawQuery: r.URL.RawQuery,
+		actor:    r.Header.Get(webuiPlaneActorDeviceHeader),
 	})
 }
 
@@ -233,6 +252,12 @@ func (b *webuiFakeBackend) interactCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.interactCalls
+}
+
+func (b *webuiFakeBackend) interruptCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.interruptCalls
 }
 
 func (b *webuiFakeBackend) lastProbe() webuiBackendProbe {
@@ -313,7 +338,7 @@ func newWebUIProxyFixture(t *testing.T) *webuiProxyFixture {
 	app := &webuiProxyTestApp{b2aSpyApp: &b2aSpyApp{}}
 	clk := newSecFakeClock(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
 	opts := newSecurityOptions(t.TempDir(), validHostSummary, clk, rand.Reader, NewVolatileSecurityEventSink())
-	srv := NewServerWithSecurity(0, app, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(0, app, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)
@@ -837,7 +862,123 @@ func TestWebUIProxy_InputControlGate_DesktopHolder(t *testing.T) {
 		t.Fatalf("input under desktop holder: status=%v body=%s", resp, body)
 	}
 	if f.backend.inputCount() != 0 {
-		t.Fatalf("backend input must not be touched, got %d", f.backend.inputCount())
+		t.Fatalf("backend must not be touched, got %d calls", f.backend.inputCount())
+	}
+}
+
+// TestWebUIProxy_InterruptWriteFace（t6/R5）：POST /api/interrupt 属于写面集合
+// （宁紧勿松——遗漏该集合即「免控制中断」）：无控制权 → 403 control.forbidden
+// （后端零调用）；持控制权 → 200 透传转发（后端收到 1 次 interrupt）。
+func TestWebUIProxy_InterruptWriteFace(t *testing.T) {
+	f := newWebUIProxyFixture(t)
+	f.markAvailable("sess-int")
+
+	// 已配对但无控制权：403，本地错误（错误体携带 code、不含 token）。
+	resp, body := f.do(http.MethodPost, "/webui/sess-int/api/interrupt", `{}`)
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("interrupt without control: status=%v body=%s", resp, body)
+	}
+	if !strings.Contains(body, string(contract.ErrorCodeControlForbidden)) {
+		t.Fatalf("body must carry control.forbidden: %s", body)
+	}
+	if strings.Contains(body, webuiTestToken) {
+		t.Fatalf("token leaked in 403 body: %s", body)
+	}
+	if f.backend.interruptCount() != 0 {
+		t.Fatalf("backend interrupt must not be touched, got %d", f.backend.interruptCount())
+	}
+
+	// 持有控制权：200 且转发到后端。
+	f.holdControl(t, "sess-int")
+	resp, body = f.do(http.MethodPost, "/webui/sess-int/api/interrupt", `{}`)
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("interrupt with control: status=%v body=%s", resp, body)
+	}
+	if !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("backend body not forwarded: %s", body)
+	}
+	if f.backend.interruptCount() != 1 {
+		t.Fatalf("backend interrupt calls=%d want 1", f.backend.interruptCount())
+	}
+}
+
+// TestWebUIProxy_DeviceIdentityHeaderPassthrough（design §5.5-2，t6）：写面转发
+// 透传已鉴权设备身份——
+//
+//	· plane token（绑定设备持控）写面：后端收到 X-Amagi-Plane-Actor-Device ==
+//	  deviceID，客户端自带伪造值被剥离覆盖；
+//	· 客户端把该头列进 Connection（RFC 7230 hop-by-hop 剥除在 Director 之后
+//	  执行）也剥不掉代理注入的值；
+//	· 读面（plane token / raw 后端 token 零 principal 兼容通道）：一律剥离
+//	  不注入（车道信号只在写面出现）；
+//	· device-cookie 通道写面（principal 同为真实设备）：同样注入设备身份。
+func TestWebUIProxy_DeviceIdentityHeaderPassthrough(t *testing.T) {
+	f := newWebUIProxyFixture(t)
+	f.markAvailable("sess-actor")
+	f.holdControl(t, "sess-actor")
+	tok := f.planeTokenFor(t, "sess-actor")
+
+	do := func(method, path, auth, forgedActor, connToken string) int {
+		req, _ := http.NewRequest(method, f.ts.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+auth)
+		req.Header.Set("Origin", "null") // opaque iframe 形态
+		if forgedActor != "" {
+			req.Header.Set(webuiPlaneActorDeviceHeader, forgedActor)
+		}
+		if connToken != "" {
+			req.Header.Set("Connection", connToken)
+		}
+		resp, err := f.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// ① 写面（plane token，持控）：注入 == 绑定 deviceID；伪造值被覆盖。
+	if code := do(http.MethodPost, "/webui/sess-actor/api/input", tok, "forged-device-9999", ""); code != http.StatusOK {
+		t.Fatalf("write face via plane token: %d", code)
+	}
+	if probe := f.backend.lastProbe(); probe.actor != f.deviceID {
+		t.Fatalf("write face actor header=%q want bound deviceID %q", probe.actor, f.deviceID)
+	}
+
+	// ② Connection hop-by-hop 攻击：注入值不得被 ReverseProxy 事后剥掉。
+	if code := do(http.MethodPost, "/webui/sess-actor/api/input", tok, "forged-device-9999", webuiPlaneActorDeviceHeader); code != http.StatusOK {
+		t.Fatalf("write face with Connection attack: %d", code)
+	}
+	if probe := f.backend.lastProbe(); probe.actor != f.deviceID {
+		t.Fatalf("Connection attack stripped the injected actor header: got %q", probe.actor)
+	}
+
+	// ③ 读面（plane token）：剥离不注入。
+	if code := do(http.MethodGet, "/webui/sess-actor/api/info", tok, "forged-device-9999", ""); code != http.StatusOK {
+		t.Fatalf("read face via plane token: %d", code)
+	}
+	if probe := f.backend.lastProbe(); probe.actor != "" {
+		t.Fatalf("read face must not carry the actor header, got %q", probe.actor)
+	}
+
+	// ④ raw 后端 token 只读兼容通道（零 principal）：写面 403 本地拒绝；
+	//    读面剥离不注入。
+	if code := do(http.MethodPost, "/webui/sess-actor/api/input", webuiTestToken, "forged-device-9999", ""); code != http.StatusForbidden {
+		t.Fatalf("raw-token write face must stay 403: %d", code)
+	}
+	if code := do(http.MethodGet, "/webui/sess-actor/api/info", webuiTestToken, "forged-device-9999", ""); code != http.StatusOK {
+		t.Fatalf("read face via raw token: %d", code)
+	}
+	if probe := f.backend.lastProbe(); probe.actor != "" {
+		t.Fatalf("raw-token channel must not carry the actor header, got %q", probe.actor)
+	}
+
+	// ⑤ device-cookie 通道写面：principal 同为真实设备 → 同样注入。
+	if resp, raw := f.do(http.MethodPost, "/webui/sess-actor/api/input", `{"text":"hi"}`); resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("cookie-channel write face: status=%v body=%s", resp, raw)
+	}
+	if probe := f.backend.lastProbe(); probe.actor != f.deviceID {
+		t.Fatalf("cookie-channel actor header=%q want %q", probe.actor, f.deviceID)
 	}
 }
 
@@ -1158,34 +1299,34 @@ func TestWebUIProxy_AuthMirrorEnvelopes(t *testing.T) {
 	unpairedCookie := &http.Cookie{Name: deviceCookieName, Value: "v1." + badID + "." + badSecret}
 
 	cases := []struct {
-		name     string
-		code     contract.ErrorCode
-		status   int
-		setup    func(t *testing.T, f *webuiProxyFixture) *http.Cookie
+		name              string
+		code              contract.ErrorCode
+		status            int
+		setup             func(t *testing.T, f *webuiProxyFixture) *http.Cookie
 		wantClearedCookie bool
 	}{
 		{
-			name:               "malformed cookie shape",
-			code:               contract.ErrorCodeAuthUnpaired,
-			status:             http.StatusUnauthorized,
+			name:   "malformed cookie shape",
+			code:   contract.ErrorCodeAuthUnpaired,
+			status: http.StatusUnauthorized,
 			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
 				return &http.Cookie{Name: deviceCookieName, Value: "v1.not-base64!!"}
 			},
 			wantClearedCookie: true,
 		},
 		{
-			name:               "well-formed cookie unknown device",
-			code:               contract.ErrorCodeAuthUnpaired,
-			status:             http.StatusUnauthorized,
+			name:   "well-formed cookie unknown device",
+			code:   contract.ErrorCodeAuthUnpaired,
+			status: http.StatusUnauthorized,
 			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
 				return unpairedCookie
 			},
 			wantClearedCookie: true,
 		},
 		{
-			name:               "credential window expired",
-			code:               contract.ErrorCodeAuthWindowExpired,
-			status:             http.StatusUnauthorized,
+			name:   "credential window expired",
+			code:   contract.ErrorCodeAuthWindowExpired,
+			status: http.StatusUnauthorized,
 			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
 				f.clk.Advance(31 * 24 * time.Hour) // CredentialTTL=30d (device.go) + 1d
 				return f.cookie
@@ -1193,9 +1334,9 @@ func TestWebUIProxy_AuthMirrorEnvelopes(t *testing.T) {
 			wantClearedCookie: true,
 		},
 		{
-			name:               "device revoked",
-			code:               contract.ErrorCodeAuthRevoked,
-			status:             http.StatusUnauthorized,
+			name:   "device revoked",
+			code:   contract.ErrorCodeAuthRevoked,
+			status: http.StatusUnauthorized,
 			setup: func(t *testing.T, f *webuiProxyFixture) *http.Cookie {
 				if _, err := f.srv.RevokeDevice(f.deviceID, true); err != nil {
 					t.Fatalf("revoke: %v", err)
@@ -1236,9 +1377,12 @@ func TestWebUIProxy_AuthMirrorEnvelopes(t *testing.T) {
 }
 
 // TestWebUIProxy_LegacyServerFailClosed：无安全面（legacy NewServer）时
-// 代理面 fail-closed 404。
+// 代理面 fail-closed 404。（t6 顺带：关闭 log 句柄——Windows 上未关闭的日志
+// 文件会令 t.TempDir 清理失败，污染测试结果。）
 func TestWebUIProxy_LegacyServerFailClosed(t *testing.T) {
-	srv := NewServer(0, &b2aSpyApp{}, logging.NewService(t.TempDir()), embed.FS{})
+	log := newTestLogService(t)
+	t.Cleanup(log.Close)
+	srv := NewServer(0, &b2aSpyApp{}, log, embed.FS{})
 	h := srv.buildHandler()
 	r := httptest.NewRequest(http.MethodGet, "/webui/sess/api/info", nil)
 	rr := rec(h, r)
@@ -1418,7 +1562,9 @@ func TestV1WebUIStatus_FrozenManifestUntouched(t *testing.T) {
 // RemoveSession 后归零。假后端即上方 pi webui 模拟。
 func TestWebUIServiceSessionEndpoint(t *testing.T) {
 	backend := newWebuiFakeBackend(t)
-	svc := webui.NewService(logging.NewService(t.TempDir()), t.TempDir())
+	log := newTestLogService(t)
+	t.Cleanup(log.Close) // Windows：未关闭的日志文件会令 t.TempDir 清理失败
+	svc := webui.NewService(log, t.TempDir())
 
 	if port, token := svc.SessionEndpoint("s1"); port != 0 || token != "" {
 		t.Fatalf("unregistered: got (%d,%q)", port, token)

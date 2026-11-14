@@ -31,6 +31,7 @@ import (
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
+	"github.com/google/uuid"
 )
 
 // launchConfigPort is the narrow read-only interface over config.ConfigService
@@ -307,14 +308,35 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 	overrides := computeClaudeOverrides(*provider, presetName, apiKey, p.config.GetAgentTeams(), effectiveHeadroomPort)
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), overrides)
 
+	// 方案 R 的 remote 链补齐（claude-webui design §5.4）：非 WSL 目标生成
+	// claude 会话 sid 并注入 --session-id（锁定转录 jsonl，消除同 workDir
+	// 串扰），同时经 ProcessStartSpec.WebUIPlane 携带平面材料——执行器以
+	// 字段非 nil 为门控才起平面（R8），WSL 目标不注入不携带（Web 平面降级
+	// 为 unknown，与桌面口径一致）。CLIArgs 必须在解析前给定，而目标形态
+	// （spec.BootstrapMode）解析后才知道：解析前用 launchTargetsWSLFn
+	//（resolveLaunch 自身的 WSL 预判接缝，同一判定面）决定是否注入；解析后
+	// 再以 spec.BootstrapMode 复核置字段。预判失准（罕见：shell 解析环境
+	// 差异导致预判非 WSL 而落点 WSL）时仅表现为该 WSL 会话带锁定的 sid
+	//（桌面链本就无条件注入 --session-id，无害）且不起平面。
+	var claudePlane *launchplan.WebUIPlaneSpec
+	var claudeCLIArgs []string
+	if !launchTargetsWSLFn(string(session.ModeEmbedded), recipe.ShellRef) {
+		sid := uuid.NewString()
+		claudeCLIArgs = []string{"--session-id", sid}
+		claudePlane = &launchplan.WebUIPlaneSpec{ClaudeSessionID: sid}
+	}
 	// Resolve CLI/shell.
 	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(session.AppTypeClaudeCode), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
+		CLIArgs: claudeCLIArgs,
 		PTYCols: 120, PTYRows: 40,
 	})
 	if err != nil {
 		return fail(launchplan.FailureCapability)
+	}
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		claudePlane = nil
 	}
 
 	// Build effects in canonical order: Headroom → PTY → Bootstrap.
@@ -361,6 +383,7 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 		Kind: launchplan.EffectPTYStart,
 		Process: &launchplan.ProcessStartSpec{
 			Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,
+			WebUIPlane: claudePlane,
 		},
 	})
 	// C-01: Bootstrap write effect carries the canonical startup command so the
