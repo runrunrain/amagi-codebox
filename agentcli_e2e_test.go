@@ -194,7 +194,7 @@ func TestAgentCLIEndToEnd(t *testing.T) {
 	}
 	info, _ := env.Data.(map[string]any)
 	shim, _ := info["shim"].(map[string]any)
-	if shim == nil || !strings.HasSuffix(shim["path"].(string), "codebox-agent") || shim["status"] == "" {
+	if shim == nil || shim["path"] != app.agentCLIInstaller().ShimPath() || shim["status"] == "" {
 		t.Fatalf("cli info 应含 shim 安装状态：%#v", info)
 	}
 	server, _ := info["server"].(map[string]any)

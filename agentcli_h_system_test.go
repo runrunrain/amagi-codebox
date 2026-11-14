@@ -164,7 +164,7 @@ func TestAgentCLICLIInfo(t *testing.T) {
 		t.Errorf("home = %v, want %s", m["home"], configDir)
 	}
 	shim := m["shim"].(map[string]any)
-	if shim["path"] != filepath.Join(configDir, "bin", "codebox-agent") {
+	if shim["path"] != app.agentCLIInstaller().ShimPath() {
 		t.Errorf("shim.path = %v", shim["path"])
 	}
 	if shim["status"] != string(install.StateNotInstalled) {

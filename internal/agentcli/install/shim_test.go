@@ -71,7 +71,9 @@ func TestUnixShimContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o755 {
+	// Windows 文件系统不保留 POSIX 0755 位（恒为 0666）；借已有 build-tag 常量
+	// currentShimPlatform（无 runtime.GOOS 分支）仅在 Unix 宿主校验权限位。
+	if currentShimPlatform == shimUnix && fi.Mode().Perm() != 0o755 {
 		t.Fatalf("权限 = %o, want 755", fi.Mode().Perm())
 	}
 	data, err := os.ReadFile(m.ShimPath())
@@ -116,8 +118,11 @@ func TestWindowsShimContent(t *testing.T) {
 	if !strings.Contains(body, "\"C:\\Apps\\Amagi CodeBox\\amagi-codebox.exe\" cli %*") {
 		t.Fatalf("调用行错误，got:\n%s", body)
 	}
-	if !strings.Contains(body, "set \"AMAGI_CODEBOX_HOME=") {
-		t.Fatal("应设置 AMAGI_CODEBOX_HOME")
+	if !strings.Contains(body, "for %%I in (\"%~dp0..\") do set \"AMAGI_CODEBOX_HOME=%%~fI\"") {
+		t.Fatalf("应通过 %%~dp0.. 设置 AMAGI_CODEBOX_HOME，got:\n%s", body)
+	}
+	if !isASCII(body) {
+		t.Fatalf("纯 ASCII exe 路径下整份 shim 应为 7-bit ASCII，got:\n%s", body)
 	}
 	// % 转义为 %%（批处理内双引号中 % 仍会展开）
 	weird := newManager(t.TempDir(), t.TempDir(), `C:\100%\codebox.exe`, nil, shimWindows)
@@ -128,6 +133,78 @@ func TestWindowsShimContent(t *testing.T) {
 	mark := spec.mark("x")
 	if !strings.HasPrefix(mark, "rem amagi-codebox managed sha256:") || !strings.HasSuffix(mark, "\r\n") {
 		t.Fatalf("Windows 标记格式异常：%q", mark)
+	}
+}
+
+func TestWindowsShimNonASCIIHomeAndExe(t *testing.T) {
+	home := `C:\Users\毛润\.amagi-codebox`
+
+	// Case A：中文 home + 纯 ASCII exePath → 通过 %~dp0.. 保持整份 .cmd 纯 ASCII。
+	specA := shimSpec(home, `X:\MyTool\amagi-codebox.exe`, shimWindows)
+	if !isASCII(specA.body) {
+		t.Fatalf("Case A 应保持纯 7-bit ASCII，got:\n%s", specA.body)
+	}
+	if !strings.Contains(specA.body, `"%~dp0.."`) || !strings.Contains(specA.body, `"X:\MyTool\amagi-codebox.exe" cli %*`) {
+		t.Fatalf("Case A 内容异常：\n%s", specA.body)
+	}
+	if strings.Contains(specA.body, "chcp") {
+		t.Fatalf("Case A 不应包含 chcp：\n%s", specA.body)
+	}
+
+	// Case B：中文 home + 同用户目录下的 exePath → 折叠为 %AMAGI_CODEBOX_HOME%\...，零中文。
+	for _, tc := range []struct {
+		name string
+		exe  string
+		want string
+	}{
+		{
+			name: "LocalPrograms",
+			exe:  `C:\Users\毛润\AppData\Local\Programs\Amagi CodeBox\amagi-codebox.exe`,
+			want: `"%AMAGI_CODEBOX_HOME%\..\AppData\Local\Programs\Amagi CodeBox\amagi-codebox.exe" cli %*`,
+		},
+		{
+			name: "HomeRoot",
+			exe:  `C:\Users\毛润\.amagi-codebox\amagi-codebox.exe`,
+			want: `"%AMAGI_CODEBOX_HOME%\amagi-codebox.exe" cli %*`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			specB := shimSpec(home, tc.exe, shimWindows)
+			if !isASCII(specB.body) {
+				t.Fatalf("Case B(%s) 应保持纯 7-bit ASCII，got:\n%s", tc.name, specB.body)
+			}
+			if strings.Contains(specB.body, "毛润") || strings.Contains(specB.body, "chcp") {
+				t.Fatalf("Case B(%s) 不应出现中文或 chcp：\n%s", tc.name, specB.body)
+			}
+			if !strings.Contains(specB.body, tc.want) {
+				t.Fatalf("Case B(%s) 缺少 %q，got:\n%s", tc.name, tc.want, specB.body)
+			}
+		})
+	}
+
+	// Case C：中文 home + 跨盘/非 ASCII 子目录 exePath → 前导 chcp 65001 切换并在退出前恢复原代码页。
+	specC := shimSpec(home, `D:\工具\100%\amagi-codebox.exe`, shimWindows)
+	if strings.Contains(specC.body, "毛润") {
+		t.Fatalf("Case C 不应硬编码 home 中文目录：\n%s", specC.body)
+	}
+	for _, want := range []string{
+		`chcp 65001 >nul 2>&1`,
+		`"D:\工具\100%%\amagi-codebox.exe" cli %*`,
+		`chcp %_CB_CP% >nul 2>&1`,
+		`exit /b %_CB_RC%`,
+	} {
+		if !strings.Contains(specC.body, want) {
+			t.Fatalf("Case C 缺少 %q，got:\n%s", want, specC.body)
+		}
+	}
+	lines := strings.Split(specC.body, "\r\n")
+	for _, line := range lines {
+		if strings.Contains(line, `D:\工具\`) {
+			break
+		}
+		if !isASCII(line) {
+			t.Fatalf("Case C 执行行之前的前导行必须为纯 ASCII：%q", line)
+		}
 	}
 }
 

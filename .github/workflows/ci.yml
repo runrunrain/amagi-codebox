@@ -57,7 +57,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         env:
           AMAGI_WSL_E2E: ''
-        run: go test ./internal/wslsupply ./internal/envvars -count=1
+        run: go test ./internal/agentcli/install ./internal/wslsupply ./internal/envvars -count=1
 
       - name: Windows WSL launch regressions
         if: matrix.os == 'windows-latest'
