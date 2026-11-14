@@ -9,7 +9,7 @@
     <!-- string -->
     <TextInput
       v-if="type === 'string'"
-      :model-value="modelValue"
+      :model-value="stringValue"
       mono
       class="vve-string"
       @update:model-value="$emit('update:modelValue', $event)"
@@ -20,14 +20,14 @@
       v-else-if="type === 'number'"
       type="number"
       class="vve-number"
-      :value="modelValue"
+      :value="numberValue"
       @input="onNumberInput(($event.target as HTMLInputElement).value)"
     />
 
     <!-- boolean -->
     <Switch
       v-else-if="type === 'boolean'"
-      :model-value="modelValue"
+      :model-value="booleanValue"
       @update:model-value="$emit('update:modelValue', $event)"
     />
 
@@ -41,7 +41,7 @@
     <!-- 纯字符串数组 -->
     <StringListEditor
       v-else-if="type === 'stringArray'"
-      :model-value="(modelValue as string[])"
+      :model-value="stringArrayValue"
       item-placeholder="列表项"
       add-label="添加项"
       empty-text="空列表"
@@ -51,7 +51,7 @@
 
     <!-- 其他数组：逐项递归编辑 -->
     <div v-else-if="type === 'array'" class="vve-array">
-      <div v-for="(item, idx) in (modelValue as any[])" :key="idx" class="vve-item">
+      <div v-for="(item, idx) in arrayValue" :key="idx" class="vve-item">
         <span class="vve-index">{{ idx + 1 }}</span>
         <VisualValueEditor
           :model-value="item"
@@ -81,7 +81,7 @@
           @update:model-value="renameKey(entryKey, $event)"
         />
         <VisualValueEditor
-          :model-value="(modelValue as Record<string, any>)[entryKey]"
+          :model-value="objectValue[entryKey]"
           class="vve-entry-value"
           @update:model-value="setKey(entryKey, $event)"
         />
@@ -113,10 +113,23 @@ import StringListEditor from './StringListEditor.vue';
 
 const props = defineProps<{
   /** 任意 JSON 值（类型在写回时保持） */
-  modelValue: any;
+  modelValue: unknown;
 }>();
 
-const emit = defineEmits<{ 'update:modelValue': [value: any] }>();
+const emit = defineEmits<{ 'update:modelValue': [value: unknown] }>();
+
+const stringValue = computed<string>(() => (typeof props.modelValue === 'string' ? props.modelValue : ''));
+const numberValue = computed<number>(() => (typeof props.modelValue === 'number' ? props.modelValue : 0));
+const booleanValue = computed<boolean>(() => Boolean(props.modelValue));
+const stringArrayValue = computed<string[]>(() =>
+  Array.isArray(props.modelValue) ? props.modelValue.map((x) => String(x)) : []
+);
+const arrayValue = computed<unknown[]>(() => (Array.isArray(props.modelValue) ? props.modelValue : []));
+const objectValue = computed<Record<string, unknown>>(() =>
+  props.modelValue !== null && typeof props.modelValue === 'object' && !Array.isArray(props.modelValue)
+    ? (props.modelValue as Record<string, unknown>)
+    : {}
+);
 
 const type = computed<string>(() => {
   const v = props.modelValue;
@@ -132,7 +145,7 @@ const type = computed<string>(() => {
 });
 
 const objectKeys = computed<string[]>(() =>
-  type.value === 'object' ? Object.keys(props.modelValue) : []
+  type.value === 'object' ? Object.keys(objectValue.value) : []
 );
 
 function onNumberInput(raw: string) {
@@ -140,13 +153,13 @@ function onNumberInput(raw: string) {
   if (!Number.isNaN(n)) emit('update:modelValue', n);
 }
 
-function objectPatch(fn: (obj: Record<string, any>) => void) {
-  const out: Record<string, any> = { ...(props.modelValue || {}) };
+function objectPatch(fn: (obj: Record<string, unknown>) => void) {
+  const out: Record<string, unknown> = { ...objectValue.value };
   fn(out);
   emit('update:modelValue', out);
 }
 
-function setKey(key: string, value: any) {
+function setKey(key: string, value: unknown) {
   objectPatch((obj) => {
     obj[key] = value;
   });
@@ -167,7 +180,7 @@ function removeKey(key: string) {
   });
 }
 
-function addKey(defaultValue: any) {
+function addKey(defaultValue: unknown) {
   objectPatch((obj) => {
     let k = 'new_key';
     let i = 1;
@@ -176,20 +189,20 @@ function addKey(defaultValue: any) {
   });
 }
 
-function updateArrayItem(idx: number, value: any) {
-  const out = [...(props.modelValue as any[])];
+function updateArrayItem(idx: number, value: unknown) {
+  const out = [...arrayValue.value];
   out[idx] = value;
   emit('update:modelValue', out);
 }
 
 function removeArrayItem(idx: number) {
-  const out = [...(props.modelValue as any[])];
+  const out = [...arrayValue.value];
   out.splice(idx, 1);
   emit('update:modelValue', out);
 }
 
-function addArrayItem(defaultValue: any) {
-  emit('update:modelValue', [...(props.modelValue as any[]), defaultValue]);
+function addArrayItem(defaultValue: unknown) {
+  emit('update:modelValue', [...arrayValue.value, defaultValue]);
 }
 </script>
 

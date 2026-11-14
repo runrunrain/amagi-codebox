@@ -166,6 +166,7 @@ import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
 import { ICONS } from './icons';
 import { useToast } from '../../composables/useToast';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
 
 const { showError } = useToast();
 
@@ -177,11 +178,11 @@ interface AgentConfig {
   prompt?: string;
   variant?: string;
   tools?: Record<string, boolean>;
-  [k: string]: any;
+  [k: string]: unknown;
 }
 
 interface Props {
-  modelValue: Record<string, AgentConfig>;
+  modelValue: JsonRecord;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -189,7 +190,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, AgentConfig>];
+  'update:modelValue': [value: JsonRecord];
 }>();
 
 const MODE_OPTIONS = [
@@ -269,8 +270,8 @@ function normalizeColor(c: string | undefined): string {
   return /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#000000';
 }
 
-function toolEntriesFrom(tools: any): ToolEntry[] {
-  if (!tools || typeof tools !== 'object') return [];
+function toolEntriesFrom(tools: unknown): ToolEntry[] {
+  if (!isJsonRecord(tools)) return [];
   return Object.entries(tools).map(([k, v]) => ({
     id: genId(),
     key: k,
@@ -279,16 +280,15 @@ function toolEntriesFrom(tools: any): ToolEntry[] {
 }
 
 function syncFromModel() {
-  const obj =
-    props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {};
+  const obj = isJsonRecord(props.modelValue) ? props.modelValue : {};
   agents.value = Object.entries(obj).map(([k, v]) => {
     const exist = agents.value.find((a) => a.key === k);
-    const valueCopy: AgentConfig = v && typeof v === 'object' ? { ...(v as object) } : {};
+    const valueCopy: AgentConfig = isJsonRecord(v) ? ({ ...v } as AgentConfig) : {};
     return {
       id: exist ? exist.id : genId(),
       key: k,
       value: valueCopy,
-      toolEntries: toolEntriesFrom((valueCopy as any).tools),
+      toolEntries: toolEntriesFrom(valueCopy.tools),
     };
   });
 }
@@ -332,13 +332,13 @@ function updateKey(id: string, key: string) {
   a.key = key;
   emitAll();
 }
-function updateProp(id: string, prop: string, value: any) {
+function updateProp(id: string, prop: string, value: unknown) {
   const a = agents.value.find((x) => x.id === id);
   if (!a) return;
   if (prop === 'variant' && value === '') {
     delete a.value.variant;
   } else {
-    a.value[prop] = value;
+    (a.value as JsonRecord)[prop] = value;
   }
   emitAll();
 }
@@ -409,8 +409,8 @@ function addAgent() {
 watch(
   () => props.modelValue,
   (next) => {
-    const obj = next && typeof next === 'object' ? next : {};
-    const cur: Record<string, any> = {};
+    const obj = isJsonRecord(next) ? next : {};
+    const cur: JsonRecord = {};
     for (const a of agents.value) if (a.key !== '') cur[a.key] = a.value;
     const nk = Object.keys(obj);
     const ck = Object.keys(cur);

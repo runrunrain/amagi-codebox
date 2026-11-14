@@ -10,7 +10,7 @@
     <div v-else class="ple-items">
       <template v-if="isObject">
         <div
-          v-for="(perm, key) in permissions"
+          v-for="(perm, key) in objectPermissions"
           :key="String(key)"
           class="ple-item"
         >
@@ -34,7 +34,7 @@
       </template>
       <template v-else>
         <div
-          v-for="(perm, index) in permissions"
+          v-for="(perm, index) in arrayPermissions"
           :key="index"
           class="ple-item"
         >
@@ -70,31 +70,41 @@ import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
 
 interface Props {
-  permissions: Record<string, any> | any[];
+  permissions: Record<string, unknown> | unknown[];
 }
 
 const props = defineProps<Props>();
 
 const emit = defineEmits<{
-  update: [permissions: Record<string, any> | any[]];
+  update: [permissions: Record<string, unknown> | unknown[]];
 }>();
 
 const isObject = computed(() => !Array.isArray(props.permissions));
 
+const objectPermissions = computed<Record<string, unknown>>(() =>
+  !Array.isArray(props.permissions) && props.permissions !== null && typeof props.permissions === 'object'
+    ? props.permissions
+    : {}
+);
+
+const arrayPermissions = computed<unknown[]>(() =>
+  Array.isArray(props.permissions) ? props.permissions : []
+);
+
 const isEmpty = computed(() => {
   if (isObject.value) {
-    return Object.keys(props.permissions as Record<string, any>).length === 0;
+    return Object.keys(objectPermissions.value).length === 0;
   }
-  return (props.permissions as any[]).length === 0;
+  return arrayPermissions.value.length === 0;
 });
 
 function updatePermission(key: string | number, value: string) {
   if (isObject.value) {
-    const updated = { ...(props.permissions as Record<string, any>) };
+    const updated = { ...objectPermissions.value };
     updated[String(key)] = value;
     emit('update', updated);
   } else {
-    const updated = [...(props.permissions as any[])];
+    const updated = [...arrayPermissions.value];
     updated[Number(key)] = value;
     emit('update', updated);
   }
@@ -102,13 +112,13 @@ function updatePermission(key: string | number, value: string) {
 
 function addPermission() {
   if (isObject.value) {
-    const keys = Object.keys(props.permissions as Record<string, any>);
+    const keys = Object.keys(objectPermissions.value);
     const newKey = `perm_${keys.length + 1}`;
-    const updated = { ...(props.permissions as Record<string, any>) };
+    const updated = { ...objectPermissions.value };
     updated[newKey] = '';
     emit('update', updated);
   } else {
-    const updated = [...(props.permissions as any[])];
+    const updated = [...arrayPermissions.value];
     updated.push('');
     emit('update', updated);
   }
@@ -116,11 +126,11 @@ function addPermission() {
 
 function removePermission(key: string | number) {
   if (isObject.value) {
-    const updated = { ...(props.permissions as Record<string, any>) };
+    const updated = { ...objectPermissions.value };
     delete updated[String(key)];
     emit('update', updated);
   } else {
-    const updated = (props.permissions as any[]).filter((_, i) => i !== Number(key));
+    const updated = arrayPermissions.value.filter((_, i) => i !== Number(key));
     emit('update', updated);
   }
 }

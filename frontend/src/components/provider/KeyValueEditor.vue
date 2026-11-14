@@ -44,7 +44,7 @@ import AppButton from '../ui/AppButton.vue';
 import EmptyState from '../ui/EmptyState.vue';
 
 interface Props {
-  data: Record<string, any>;
+  data: Record<string, unknown>;
   emptyDescription?: string;
 }
 
@@ -53,12 +53,12 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  update: [data: Record<string, any>];
+  update: [data: Record<string, unknown>];
 }>();
 
 const isEmpty = computed(() => Object.keys(props.data).length === 0);
 
-function formatValue(value: any): string {
+function formatValue(value: unknown): string {
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }

@@ -1,24 +1,28 @@
 import { parseModelSpec } from './useModelCatalog';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
+
 export type AdvisorMode = 'unset' | 'off' | 'pi' | 'codex-chat';
-export function advisorMode(value: any): AdvisorMode {
+
+export function advisorMode(value: unknown): AdvisorMode {
   if (value === undefined) return 'unset';
-  if (value?.backend === 'codex-chat') return 'codex-chat';
-  return value?.model === null ? 'off' : 'pi';
+  if (isJsonRecord(value) && value.backend === 'codex-chat') return 'codex-chat';
+  return isJsonRecord(value) && value.model === null ? 'off' : 'pi';
 }
-export function validateAdvisorConfig(config: Record<string, any>): string {
+
+export function validateAdvisorConfig(config: JsonRecord): string {
   if (config.advisor === undefined) return '';
   const c = config.advisor;
-  if (!c || typeof c !== 'object' || Array.isArray(c)) return 'advisor 必须是对象';
+  if (!isJsonRecord(c)) return 'advisor 必须是对象';
   if (Object.keys(c).some(k => !['backend', 'model', 'codex', 'leader', 'roles', 'maxCalls', 'maxTokens', 'timeoutMs'].includes(k))) return 'advisor 含未知字段，请在 JSON 模式修复';
-  if (c.backend !== undefined && !['pi', 'codex-chat'].includes(c.backend)) return 'advisor.backend 只允许 pi/codex-chat';
+  if (c.backend !== undefined && c.backend !== 'pi' && c.backend !== 'codex-chat') return 'advisor.backend 只允许 pi/codex-chat';
   if (c.backend === 'codex-chat') {
-    const t = c.codex === undefined ? { mode: 'managed' } : c.codex;
-    if (!t || typeof t !== 'object' || Array.isArray(t) || Object.keys(t).some(k => !['mode', 'socketPath', 'threadId', 'model', 'reasoningEffort'].includes(k))) return 'Codex 配置字段无效';
+    const t: JsonRecord = c.codex === undefined ? { mode: 'managed' } : (isJsonRecord(c.codex) ? c.codex : {});
+    if ((c.codex !== undefined && !isJsonRecord(c.codex)) || Object.keys(t).some(k => !['mode', 'socketPath', 'threadId', 'model', 'reasoningEffort'].includes(k))) return 'Codex 配置字段无效';
     const mode = t.mode ?? (t.threadId ? 'existing' : 'managed');
     if (mode === 'managed') {
       if (t.threadId !== undefined || t.socketPath !== undefined) return '自有咨询会话不接受其他聊天 ID 或共享连接';
       if (t.model !== undefined && (typeof t.model !== 'string' || !/^\S+$/.test(t.model))) return 'Codex 模型 ID 无效';
-      if (t.reasoningEffort !== undefined && !['low','medium','high','xhigh','max'].includes(t.reasoningEffort)) return 'Codex 思考档位无效';
+      if (t.reasoningEffort !== undefined && (typeof t.reasoningEffort !== 'string' || !['low','medium','high','xhigh','max'].includes(t.reasoningEffort))) return 'Codex 思考档位无效';
     } else if (mode === 'existing') {
       if (typeof t.socketPath !== 'string' || (t.socketPath !== 'auto' && !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(t.socketPath))) return '请填写 Codex 桌面共享 socket 的本机绝对路径或 auto';
       if (typeof t.threadId !== 'string' || !/^[a-zA-Z0-9-]{8,128}$/.test(t.threadId)) return '请选择或填写 Codex 目标聊天 ID';
@@ -31,6 +35,9 @@ export function validateAdvisorConfig(config: Record<string, any>): string {
   }
   if (c.leader !== undefined && typeof c.leader !== 'boolean') return 'advisor.leader 必须是 boolean';
   if (c.roles !== undefined && (!Array.isArray(c.roles) || c.roles.some((r: unknown) => typeof r !== 'string' || !/^[a-z][a-z0-9-]*$/.test(r)))) return 'advisor.roles 必须是 canonical 角色名数组';
-  for (const [k, max] of [['maxCalls', 50], ['maxTokens', 16384], ['timeoutMs', 300000]] as const) if (c[k] !== undefined && (!Number.isSafeInteger(c[k]) || c[k] < 1 || c[k] > max)) return `advisor.${k} 必须是 1–${max} 的整数`;
+  for (const [k, max] of [['maxCalls', 50], ['maxTokens', 16384], ['timeoutMs', 300000]] as const) {
+    const v = c[k];
+    if (v !== undefined && (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1 || v > max)) return `advisor.${k} 必须是 1–${max} 的整数`;
+  }
   return '';
 }

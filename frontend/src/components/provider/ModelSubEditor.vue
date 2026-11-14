@@ -23,7 +23,7 @@
     <div class="mse-field">
       <label class="mse-label">name（显示名）</label>
       <TextInput
-        :model-value="model.name || ''"
+        :model-value="modelName"
         placeholder="如 gpt-5.5"
         mono
         @update:model-value="updateField('name', $event)"
@@ -36,7 +36,7 @@
         <span class="mse-hint">预设标记（high/medium/xhigh 等）</span>
       </div>
       <VariantsMapEditor
-        :model-value="model.variants || {}"
+        :model-value="modelVariants"
         @update:model-value="updateField('variants', $event)"
       />
     </div>
@@ -47,7 +47,7 @@
         <span class="mse-hint">类型保持（boolean/number/string/object 自动适配）</span>
       </div>
       <TypedKeyValueEditor
-        :model-value="model.options || {}"
+        :model-value="modelOptions"
         empty-text="该 model 无 options（如 enable_search/thinking 等）"
         @update:model-value="updateField('options', $event)"
       />
@@ -72,13 +72,9 @@ import TextInput from '../ui/TextInput.vue';
 import VariantsMapEditor from './VariantsMapEditor.vue';
 import TypedKeyValueEditor from './TypedKeyValueEditor.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
+import { asJsonRecord, isJsonRecord, type JsonRecord } from './jsonTypes';
 
-interface ModelConfig {
-  name?: string;
-  variants?: Record<string, any>;
-  options?: Record<string, any>;
-  [k: string]: any;
-}
+type ModelConfig = JsonRecord;
 
 interface Props {
   modelValue: ModelConfig;
@@ -93,13 +89,16 @@ const emit = defineEmits<{
 }>();
 
 // 保留对 model 的稳定引用，避免每帧重渲染
-const model = computed(() => props.modelValue || {});
+const model = computed(() => asJsonRecord(props.modelValue));
+const modelName = computed<string>(() => (typeof model.value.name === 'string' ? model.value.name : ''));
+const modelVariants = computed<JsonRecord>(() => asJsonRecord(model.value.variants));
+const modelOptions = computed<JsonRecord>(() => asJsonRecord(model.value.options));
 
 const KNOWN_FIELDS = new Set(['name', 'variants', 'options']);
 
 const extraFields = computed(() => {
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(props.modelValue || {})) {
+  const out: JsonRecord = {};
+  for (const [k, v] of Object.entries(model.value)) {
     if (!KNOWN_FIELDS.has(k)) out[k] = v;
   }
   return out;
@@ -111,32 +110,32 @@ function emitUpdate(next: ModelConfig) {
   emit('update:modelValue', { ...next });
 }
 
-function updateField(field: string, value: any) {
-  const next: ModelConfig = { ...props.modelValue };
-  if (value === '' || value === null || (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)) {
+function updateField(field: string, value: unknown) {
+  const next: ModelConfig = { ...model.value };
+  if (value === '' || value === null || (isJsonRecord(value) && Object.keys(value).length === 0)) {
     // 空 object / 空字符串：删除字段以保持 JSON 干净（不写空 {} 污染）
     // 但 variants/options 即使空也保留结构（用于用户继续编辑），仅在明确为空字符串时删除
     if (value === '' || value === null) {
-      delete (next as any)[field];
+      delete next[field];
     } else {
       // 空 object：保留（variants/options 可能正在编辑中）
-      (next as any)[field] = value;
+      next[field] = value;
     }
   } else {
-    (next as any)[field] = value;
+    next[field] = value;
   }
   emitUpdate(next);
 }
 
-function updateExtra(extra: any) {
-  const next: ModelConfig = { ...props.modelValue };
+function updateExtra(extra: unknown) {
+  const next: ModelConfig = { ...model.value };
   // 移除所有非已知字段，再写入 extra
   for (const k of Object.keys(next)) {
-    if (!KNOWN_FIELDS.has(k)) delete (next as any)[k];
+    if (!KNOWN_FIELDS.has(k)) delete next[k];
   }
-  if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+  if (isJsonRecord(extra)) {
     for (const [k, v] of Object.entries(extra)) {
-      (next as any)[k] = v;
+      next[k] = v;
     }
   }
   emitUpdate(next);

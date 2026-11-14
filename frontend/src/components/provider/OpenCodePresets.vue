@@ -147,6 +147,7 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import EditorToolbar from '../ui/EditorToolbar.vue';
 import OpenCodePresetDialog from './OpenCodePresetDialog.vue';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
 
 defineEmits<{ (e: 'add'): void }>();
 
@@ -188,11 +189,12 @@ interface VisualItem {
   model: string | null;
 }
 
-const parsedConfig = computed<any>(() => {
+const parsedConfig = computed<JsonRecord | null>(() => {
   const raw = store.ocConfigContent;
   if (!raw) return null;
   try {
-    return JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
+    return isJsonRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -200,19 +202,23 @@ const parsedConfig = computed<any>(() => {
 
 const allPresetItems = computed<VisualItem[]>(() => {
   const cfg = parsedConfig.value;
-  if (!cfg || typeof cfg !== 'object') return [];
+  if (!cfg) return [];
   const presetMap = cfg.preset;
-  if (!presetMap || typeof presetMap !== 'object') return [];
+  if (!isJsonRecord(presetMap)) return [];
   const items: VisualItem[] = [];
-  for (const [key, val] of Object.entries(presetMap as Record<string, any>)) {
-    if (!val || typeof val !== 'object') continue;
+  for (const [key, val] of Object.entries(presetMap)) {
+    if (!isJsonRecord(val)) continue;
+    const name = typeof val.name === 'string' && val.name ? val.name : typeof val.title === 'string' && val.title ? val.title : key;
+    const desc = typeof val.description === 'string' ? val.description : typeof val.desc === 'string' ? val.desc : '';
+    const provider = typeof val.provider === 'string' && val.provider ? val.provider : null;
+    const model = typeof val.model === 'string' && val.model ? val.model : null;
     items.push({
       key,
-      name: val.name || val.title || key,
-      desc: val.description || val.desc || '',
+      name,
+      desc,
       bindCount: Number(val.bindingCount || val.bindCount || 0),
-      provider: val.provider || null,
-      model: val.model || null,
+      provider,
+      model,
     });
   }
   return items;
@@ -277,8 +283,9 @@ async function copyPath() {
  */
 function handleEdit(item: VisualItem) {
   const cfg = parsedConfig.value;
-  const presetMap = cfg && typeof cfg === 'object' ? (cfg as any).preset : null;
-  const raw = presetMap && typeof presetMap === 'object' ? presetMap[item.key] : null;
+  const presetMap = cfg && isJsonRecord(cfg.preset) ? cfg.preset : null;
+  const rawCandidate = presetMap ? presetMap[item.key] : null;
+  const raw = isJsonRecord(rawCandidate) ? rawCandidate : null;
 
   const preset = new config.OpenCodePreset();
   preset.id = item.key;
@@ -286,8 +293,8 @@ function handleEdit(item: VisualItem) {
   preset.description = item.desc || undefined;
 
   // 将原始 preset 对象（剥除 OpenCodePresets.vue 本地展示用的派生字段）整体作为可编辑 JSON
-  if (raw && typeof raw === 'object') {
-    const editable: Record<string, any> = {};
+  if (raw) {
+    const editable: JsonRecord = {};
     for (const [k, v] of Object.entries(raw)) {
       // 跳过本组件用于展示的派生字段，避免污染编辑器中的 JSON
       if (k === 'bindingCount' || k === 'bindCount') continue;
@@ -301,14 +308,18 @@ function handleEdit(item: VisualItem) {
     }
 
     // 还原 bindings（OpenCodeBinding 结构）
-    if (raw.bindings && typeof raw.bindings === 'object') {
+    if (isJsonRecord(raw.bindings)) {
       const bindingMap: Record<string, config.OpenCodeBinding> = {};
-      for (const [providerId, bRaw] of Object.entries(raw.bindings as Record<string, any>)) {
-        if (!bRaw || typeof bRaw !== 'object') continue;
+      for (const [providerId, bRaw] of Object.entries(raw.bindings)) {
+        if (!isJsonRecord(bRaw)) continue;
         const binding = new config.OpenCodeBinding();
-        binding.local_provider = bRaw.local_provider || bRaw.localProvider || '';
-        binding.format = bRaw.format || undefined;
-        binding.inject = Array.isArray(bRaw.inject) ? bRaw.inject : undefined;
+        binding.local_provider = typeof bRaw.local_provider === 'string'
+          ? bRaw.local_provider
+          : typeof bRaw.localProvider === 'string'
+            ? bRaw.localProvider
+            : '';
+        binding.format = typeof bRaw.format === 'string' ? bRaw.format : undefined;
+        binding.inject = Array.isArray(bRaw.inject) ? (bRaw.inject as string[]) : undefined;
         bindingMap[providerId] = binding;
       }
       preset.bindings = Object.keys(bindingMap).length > 0 ? bindingMap : undefined;

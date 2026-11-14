@@ -403,7 +403,32 @@ import {
   cleanConcurrencyConfig,
   buildProviderDropdownOptions,
   buildModelDropdownOptions,
+  type ConcurrencyConfig,
 } from './piConcurrency';
+import { isJsonRecord } from './jsonTypes';
+
+interface PiAgentConfigEntry {
+  model?: string;
+  [k: string]: unknown;
+}
+
+interface PiMcpConfig {
+  leader?: unknown;
+  default?: unknown;
+  agents?: Record<string, string[]>;
+  [k: string]: unknown;
+}
+
+interface PiAmagiConfigData {
+  profile?: string;
+  agents?: Record<string, PiAgentConfigEntry>;
+  mcp?: PiMcpConfig;
+  concurrency?: ConcurrencyConfig;
+  compaction?: unknown;
+  advisor?: unknown;
+  codemode?: unknown;
+  [k: string]: unknown;
+}
 
 const { showSuccess, showError } = useToast();
 
@@ -482,7 +507,7 @@ const mode = ref<'visual' | 'json'>('visual');
 const jsonContent = ref('');
 const jsonError = ref('');
 const configPath = ref('');
-const configData = ref<Record<string, any>>({});
+const configData = ref<PiAmagiConfigData>({});
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const activeSection = ref(props.sectionId || 'agents');
@@ -750,12 +775,12 @@ function parseJsonToConfig() {
     return;
   }
   try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isJsonRecord(parsed)) {
       jsonError.value = '配置根必须是 JSON 对象';
       return;
     }
-    configData.value = parsed;
+    configData.value = parsed as PiAmagiConfigData;
     compactionDraft.value = compactionModelOf(parsed.compaction);
     jsonError.value = '';
     syncMcpUiModesFromConfig();
@@ -870,14 +895,16 @@ function addMcpAgent() {
 
 function renameMcpAgent(oldRole: string, newRole: string) {
   const trimmed = newRole.trim();
-  const agents = configData.value.mcp?.agents;
-  if (!trimmed || trimmed === oldRole || !agents || agents[trimmed]) return;
+  const mcp = configData.value.mcp;
+  const agents = mcp?.agents;
+  if (!mcp || !trimmed || trimmed === oldRole || !agents || agents[trimmed]) return;
   const entries = Object.keys(agents).map((k) => [k === oldRole ? trimmed : k, agents[k]] as const);
-  configData.value.mcp.agents = Object.fromEntries(entries);
+  mcp.agents = Object.fromEntries(entries);
   serialize();
 }
 
 function updateMcpAgentServers(role: string, raw: string) {
+  if (!configData.value.mcp?.agents) return;
   const servers = raw.split(',').map((s) => s.trim()).filter(Boolean);
   configData.value.mcp.agents[role] = servers;
   serialize();
@@ -931,7 +958,7 @@ function cleanEmptyLimits() {
   }
 }
 
-function updateConcurrencyDefault(v: any) {
+function updateConcurrencyDefault(v: unknown) {
   const c = ensureConcurrency();
   c.default = normalizeLimitInput(v);
   serialize();
@@ -998,7 +1025,7 @@ function renameConcurrencyProvider(oldKey: string, newKey: string) {
     return;
   }
   const entries = Object.keys(providers).map((k) => [k === oldKey ? trimmed : k, providers[k]] as const);
-  configData.value.concurrency.providers = Object.fromEntries(entries);
+  ensureConcurrency().providers = Object.fromEntries(entries);
   if (customProviderKeys.value.has(oldKey)) {
     customProviderKeys.value.delete(oldKey);
     customProviderKeys.value.add(trimmed);
@@ -1011,7 +1038,7 @@ function renameConcurrencyProvider(oldKey: string, newKey: string) {
   serialize();
 }
 
-function updateConcurrencyProviderLimit(key: string, val: any) {
+function updateConcurrencyProviderLimit(key: string, val: unknown) {
   if (!configData.value.concurrency?.providers) return;
   configData.value.concurrency.providers[key] = normalizeLimitInput(val);
   // 中间态输入过程中不调用 cleanEmptyLimits/cleanupConcurrency，绝不删键不删行
@@ -1089,7 +1116,7 @@ function renameConcurrencyModel(oldKey: string, newKey: string) {
     return;
   }
   const entries = Object.keys(models).map((k) => [k === oldKey ? trimmed : k, models[k]] as const);
-  configData.value.concurrency.models = Object.fromEntries(entries);
+  ensureConcurrency().models = Object.fromEntries(entries);
   if (customModelKeys.value.has(oldKey)) {
     customModelKeys.value.delete(oldKey);
     customModelKeys.value.add(trimmed);
@@ -1102,7 +1129,7 @@ function renameConcurrencyModel(oldKey: string, newKey: string) {
   serialize();
 }
 
-function updateConcurrencyModelLimit(key: string, val: any) {
+function updateConcurrencyModelLimit(key: string, val: unknown) {
   if (!configData.value.concurrency?.models) return;
   configData.value.concurrency.models[key] = normalizeLimitInput(val);
   // 中间态输入过程中不调用 cleanEmptyLimits/cleanupConcurrency，绝不删键不删行
@@ -1119,9 +1146,9 @@ function removeConcurrencyModel(key: string) {
   }
 }
 
-function updateAdvisor(value: any) { if (value === undefined) delete configData.value.advisor; else configData.value.advisor = value; serialize(); }
+function updateAdvisor(value: unknown) { if (value === undefined) delete configData.value.advisor; else configData.value.advisor = value; serialize(); }
 
-function updateCodemode(value: any) { if (value === undefined) delete configData.value.codemode; else configData.value.codemode = value; serialize(); }
+function updateCodemode(value: unknown) { if (value === undefined) delete configData.value.codemode; else configData.value.codemode = value; serialize(); }
 
 async function handleSave() {
   const codemodeError = validateCodemodeConfig(configData.value);

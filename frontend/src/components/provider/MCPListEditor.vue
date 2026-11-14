@@ -51,7 +51,7 @@ import EmptyState from '../ui/EmptyState.vue';
 interface MCPServer {
   command?: string;
   args?: string | string[];
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface ServerItem {
@@ -66,7 +66,7 @@ interface Props {
 const props = defineProps<Props>();
 
 const emit = defineEmits<{
-  'update': [servers: any];
+  'update': [servers: Record<string, MCPServer> | MCPServer[]];
 }>();
 
 const serverList = computed<ServerItem[]>(() => {

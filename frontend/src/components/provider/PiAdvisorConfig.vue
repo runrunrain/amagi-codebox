@@ -5,7 +5,7 @@
     <template v-if="mode === 'pi' || mode === 'codex-chat'">
       <template v-if="mode === 'pi'">
         <FieldLabel text="咨询模型" code="advisor.model" />
-        <ModelSpecSelector :model-value="value?.model || ''" :catalog="catalog" @update:model-value="patch({ model: $event })" />
+        <ModelSpecSelector :model-value="typeof advisor?.model === 'string' ? advisor.model : ''" :catalog="catalog" @update:model-value="patch({ model: $event })" />
       </template>
       <template v-else>
         <FieldLabel text="咨询会话" code="advisor.codex.mode" />
@@ -31,14 +31,14 @@
         </template>
       </template>
       <FieldLabel text="Leader 咨询" code="advisor.leader" />
-      <Segmented :model-value="value?.leader === false ? 'off' : 'on'" :options="[{value:'on',label:'允许'},{value:'off',label:'关闭'}]" @update:model-value="patch({ leader: $event === 'on' })" />
+      <Segmented :model-value="advisor?.leader === false ? 'off' : 'on'" :options="[{value:'on',label:'允许'},{value:'off',label:'关闭'}]" @update:model-value="patch({ leader: $event === 'on' })" />
       <FieldLabel text="可申请咨询的子角色" code="advisor.roles" />
-      <StringListEditor :model-value="value?.roles || []" placeholder="如 luban" @update:model-value="patch({ roles: $event })" />
+      <StringListEditor :model-value="Array.isArray(advisor?.roles) ? advisor.roles : []" placeholder="如 luban" @update:model-value="patch({ roles: $event })" />
       <p class="advisor-note">角色配置仅给出上限；每次派发仍须显式 scope.advisor=consult。已有任务不自动扩权。</p>
       <div class="advisor-budgets">
-        <label>会话尝试次数<TextInput type="number" :model-value="String(value?.maxCalls ?? 5)" @update:model-value="patch({ maxCalls: Number($event) })" /></label>
-        <label>单次输出 tokens<TextInput type="number" :model-value="String(value?.maxTokens ?? 4096)" @update:model-value="patch({ maxTokens: Number($event) })" /></label>
-        <label>单次时限（毫秒）<TextInput type="number" :model-value="String(value?.timeoutMs ?? 120000)" @update:model-value="patch({ timeoutMs: Number($event) })" /></label>
+        <label>会话尝试次数<TextInput type="number" :model-value="String(advisor?.maxCalls ?? 5)" @update:model-value="patch({ maxCalls: Number($event) })" /></label>
+        <label>单次输出 tokens<TextInput type="number" :model-value="String(advisor?.maxTokens ?? 4096)" @update:model-value="patch({ maxTokens: Number($event) })" /></label>
+        <label>单次时限（毫秒）<TextInput type="number" :model-value="String(advisor?.timeoutMs ?? 120000)" @update:model-value="patch({ timeoutMs: Number($event) })" /></label>
       </div>
     </template>
     <StatusBanner v-if="error" role="alert" type="error" :message="error" compact />
@@ -56,19 +56,47 @@ import ModelSpecSelector from './ModelSpecSelector.vue';
 import StringListEditor from './StringListEditor.vue';
 import { type ModelCatalog } from './useModelCatalog';
 import { advisorMode, validateAdvisorConfig } from './piAdvisor';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
 import { listCodexAdvisorChats } from '../../api/piConfig';
-const props = defineProps<{ value: any; catalog: ModelCatalog }>();
-const emit = defineEmits<{ change: [value: any] }>();
+
+interface AdvisorCodexTarget {
+  mode?: string;
+  socketPath?: string;
+  threadId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  [key: string]: unknown;
+}
+
+interface AdvisorConfigValue {
+  backend?: string;
+  model?: string | null;
+  codex?: AdvisorCodexTarget;
+  leader?: boolean;
+  roles?: string[];
+  maxCalls?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+  [key: string]: unknown;
+}
+
+const props = defineProps<{ value?: unknown; catalog: ModelCatalog }>();
+const emit = defineEmits<{ change: [value: AdvisorConfigValue | undefined] }>();
+const advisor = computed<AdvisorConfigValue | undefined>(() =>
+  isJsonRecord(props.value) ? (props.value as AdvisorConfigValue) : undefined
+);
 const mode = computed(() => advisorMode(props.value));
-const target = computed(() => props.value?.codex || {});
+const target = computed<AdvisorCodexTarget>(() =>
+  isJsonRecord(advisor.value?.codex) ? (advisor.value.codex as AdvisorCodexTarget) : {}
+);
 const error = computed(() => validateAdvisorConfig({ advisor: props.value }));
 const modes = [{value:'unset',label:'未配置'},{value:'off',label:'关闭'},{value:'pi',label:'pi 内模型'},{value:'codex-chat',label:'Codex Work 咨询'}];
-function patch(value: Record<string, unknown>) { emit('change', { ...props.value, ...value }); }
-function patchTarget(value: Record<string, unknown>) { patch({ codex: { ...target.value, ...value } }); connected.value = false; probeError.value = ''; }
+function patch(value: JsonRecord) { emit('change', { ...(advisor.value || {}), ...value }); }
+function patchTarget(value: JsonRecord) { patch({ codex: { ...target.value, ...value } }); connected.value = false; probeError.value = ''; }
 function changeSessionMode(mode: string) { patch({ codex: mode === 'managed' ? { mode: 'managed', model: 'gpt-6-astra', reasoningEffort: 'high' } : { mode: 'existing', socketPath: 'auto', threadId: '' } }); chats.value = []; connected.value = false; probeError.value = ''; }
 function changeMode(value: string) {
   if (value === 'unset') { emit('change', undefined); return; }
-  const next = { ...props.value, backend: value === 'codex-chat' ? 'codex-chat' : 'pi' };
+  const next: AdvisorConfigValue = { ...(advisor.value || {}), backend: value === 'codex-chat' ? 'codex-chat' : 'pi' };
   if (value === 'codex-chat') next.codex = Object.keys(target.value).length ? { ...target.value } : { mode: 'managed', model: 'gpt-6-astra', reasoningEffort: 'high' };
   else { delete next.codex; next.model = value === 'off' ? null : typeof next.model === 'string' ? next.model : ''; }
   emit('change', next);
@@ -77,7 +105,7 @@ const probing = ref(false), connected = ref(false), probeError = ref('');
 const chats = ref<Array<{value:string;label:string}>>([]);
 async function loadChats() {
   probing.value = true; probeError.value = ''; connected.value = false;
-  const socket = target.value.socketPath;
+  const socket = target.value.socketPath || '';
   try { const result = await listCodexAdvisorChats(socket); if (target.value.socketPath !== socket) return; chats.value = result.data.map(t => ({value:t.id,label:`${t.name || t.id} · ${t.status?.type || '未知'}`})); connected.value = true; }
   catch (e) { probeError.value = String(e); }
   finally { probing.value = false; }

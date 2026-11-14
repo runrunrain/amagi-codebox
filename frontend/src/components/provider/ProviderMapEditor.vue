@@ -172,19 +172,20 @@ import RawJsonEditor from './RawJsonEditor.vue';
 import ModelSubEditor from './ModelSubEditor.vue';
 import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
 
 const { showError } = useToast();
 
 interface ProviderConfig {
-  models?: Record<string, any>;
-  options?: Record<string, any>;
+  models?: Record<string, JsonRecord>;
+  options?: JsonRecord;
   name?: string;
   npm?: string;
-  [k: string]: any;
+  [k: string]: unknown;
 }
 
 interface Props {
-  modelValue: Record<string, ProviderConfig>;
+  modelValue: JsonRecord;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -192,7 +193,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, ProviderConfig>];
+  'update:modelValue': [value: JsonRecord];
 }>();
 
 function genId(): string {
@@ -265,9 +266,9 @@ function getBaseUrl(entry: ProviderEntry): string {
   return String(entry.value.options?.baseURL ?? '');
 }
 // options 中除 apiKey/baseURL 外的其他键（兜底 JSON）
-function getOptionsExtra(entry: ProviderEntry): Record<string, any> {
+function getOptionsExtra(entry: ProviderEntry): JsonRecord {
   const opts = entry.value.options || {};
-  const extra: Record<string, any> = {};
+  const extra: JsonRecord = {};
   for (const [k, v] of Object.entries(opts)) {
     if (k !== 'apiKey' && k !== 'baseURL') extra[k] = v;
   }
@@ -275,11 +276,10 @@ function getOptionsExtra(entry: ProviderEntry): Record<string, any> {
 }
 
 function syncFromModel() {
-  const obj =
-    props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {};
+  const obj = isJsonRecord(props.modelValue) ? props.modelValue : {};
   providers.value = Object.entries(obj).map(([k, v]) => {
     const exist = providers.value.find((p) => p.key === k);
-    const valueCopy: ProviderConfig = v && typeof v === 'object' ? { ...(v as object) } : {};
+    const valueCopy: ProviderConfig = isJsonRecord(v) ? ({ ...v } as ProviderConfig) : {};
     // 复用既有 id（provider id + 各 model id），保证重命名/modelValue 变更时组件稳定
     return {
       id: exist ? exist.id : genId(),
@@ -316,33 +316,33 @@ function updateKey(id: string, key: string) {
   p.key = key;
   emitAll();
 }
-function updateProp(id: string, prop: string, value: any) {
+function updateProp(id: string, prop: string, value: unknown) {
   const p = providers.value.find((x) => x.id === id);
   if (!p) return;
   if (value === '' || value === null) {
-    delete (p.value as any)[prop];
+    delete (p.value as JsonRecord)[prop];
   } else {
-    p.value[prop] = value;
+    (p.value as JsonRecord)[prop] = value;
   }
   emitAll();
 }
-function updateOption(id: string, optionKey: string, value: any) {
+function updateOption(id: string, optionKey: string, value: unknown) {
   const p = providers.value.find((x) => x.id === id);
   if (!p) return;
-  if (!p.value.options || typeof p.value.options !== 'object') {
+  if (!isJsonRecord(p.value.options)) {
     p.value.options = {};
   }
   p.value.options[optionKey] = value;
   emitAll();
 }
-function updateOptionsExtra(id: string, extra: any) {
+function updateOptionsExtra(id: string, extra: unknown) {
   const p = providers.value.find((x) => x.id === id);
   if (!p) return;
   // 合并 apiKey/baseURL（保留）+ extra
-  const opts: Record<string, any> = {};
+  const opts: JsonRecord = {};
   if (p.value.options?.apiKey !== undefined) opts.apiKey = p.value.options.apiKey;
   if (p.value.options?.baseURL !== undefined) opts.baseURL = p.value.options.baseURL;
-  if (extra && typeof extra === 'object') {
+  if (isJsonRecord(extra)) {
     for (const [k, v] of Object.entries(extra)) opts[k] = v;
   }
   p.value.options = opts;
@@ -362,23 +362,23 @@ function removeProvider(id: string) {
 interface ModelEntry {
   id: string;
   key: string;
-  value: any;
+  value: JsonRecord;
 }
 function getModelEntries(entry: ProviderEntry): ModelEntry[] {
   const models = entry.value.models;
-  if (!models || typeof models !== 'object' || Array.isArray(models)) return [];
+  if (!isJsonRecord(models)) return [];
   const idMap = entry.modelIds || {};
   return Object.entries(models).map(([k, v]) => ({
     id: idMap[k] || genId(),
     key: k,
-    value: v && typeof v === 'object' ? v : { _raw: v },
+    value: isJsonRecord(v) ? v : { _raw: v },
   }));
 }
-function ensureModels(entry: ProviderEntry): Record<string, any> {
-  if (!entry.value.models || typeof entry.value.models !== 'object' || Array.isArray(entry.value.models)) {
+function ensureModels(entry: ProviderEntry): Record<string, JsonRecord> {
+  if (!isJsonRecord(entry.value.models)) {
     entry.value.models = {};
   }
-  return entry.value.models as Record<string, any>;
+  return entry.value.models as Record<string, JsonRecord>;
 }
 function updateModelKey(entryId: string, modelId: string, newKey: string) {
   const entry = providers.value.find((x) => x.id === entryId);
@@ -393,7 +393,7 @@ function updateModelKey(entryId: string, modelId: string, newKey: string) {
     return;
   }
   // 重名校验：新 model id 已存在则阻止（Min-2 受控 DOM 回滚 + Min-3 id 稳定）
-  if (Object.prototype.hasOwnProperty.call(entry.value.models, newKey)) {
+  if (entry.value.models && Object.prototype.hasOwnProperty.call(entry.value.models, newKey)) {
     showError(`model「${newKey}」已存在，请换一个`);
     // 先在 entries 层面回滚 DOM：把 target.key 临时改成 newKey 再恢复 oldKey
     target.key = newKey;
@@ -404,7 +404,7 @@ function updateModelKey(entryId: string, modelId: string, newKey: string) {
   }
   // 重命名：保持插入顺序（先构建新对象）+ 同步 modelIds
   const models = ensureModels(entry);
-  const reordered: Record<string, any> = {};
+  const reordered: Record<string, JsonRecord> = {};
   for (const [k, v] of Object.entries(models)) {
     if (k === oldKey) reordered[newKey] = v;
     else reordered[k] = v;
@@ -419,7 +419,7 @@ function updateModelKey(entryId: string, modelId: string, newKey: string) {
   }
   emitAll();
 }
-function updateModelValue(entryId: string, key: string, value: any) {
+function updateModelValue(entryId: string, key: string, value: JsonRecord) {
   const entry = providers.value.find((x) => x.id === entryId);
   if (!entry) return;
   const models = ensureModels(entry);
@@ -430,7 +430,7 @@ function updateModelValue(entryId: string, key: string, value: any) {
 function removeModel(entryId: string, key: string) {
   const entry = providers.value.find((x) => x.id === entryId);
   if (!entry || !entry.value.models) return;
-  const models = { ...(entry.value.models as Record<string, any>) };
+  const models: Record<string, JsonRecord> = { ...entry.value.models };
   delete models[key];
   entry.value.models = models;
   // 清理 modelIds 孤儿映射
@@ -473,8 +473,8 @@ function addProvider() {
 watch(
   () => props.modelValue,
   (next) => {
-    const obj = next && typeof next === 'object' ? next : {};
-    const cur: Record<string, any> = {};
+    const obj = isJsonRecord(next) ? next : {};
+    const cur: JsonRecord = {};
     for (const p of providers.value) if (p.key !== '') cur[p.key] = p.value;
     const nk = Object.keys(obj);
     const ck = Object.keys(cur);

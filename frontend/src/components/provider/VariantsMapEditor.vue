@@ -71,7 +71,7 @@ import AppButton from '../ui/AppButton.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
 
 interface Props {
-  modelValue: Record<string, any>;
+  modelValue: Record<string, unknown>;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -79,13 +79,13 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, any>];
+  'update:modelValue': [value: Record<string, unknown>];
 }>();
 
 interface VariantEntry {
   id: string;
   key: string;
-  value: any;
+  value: unknown;
 }
 
 function genId(): string {
@@ -95,8 +95,8 @@ function genId(): string {
   return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function isEmptyObject(v: any): boolean {
-  return v === null || v === undefined || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+function isEmptyObject(v: unknown): boolean {
+  return v === null || v === undefined || (v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
 }
 
 const variants = ref<VariantEntry[]>([]);
@@ -123,7 +123,7 @@ function syncFromModel() {
 }
 
 function emitAll() {
-  const out: Record<string, any> = {};
+  const out: Record<string, unknown> = {};
   for (const e of variants.value) {
     if (e.key === '') continue;
     out[e.key] = e.value;
@@ -138,7 +138,7 @@ function onKeyInput(id: string, newKey: string) {
     emitAll();
   }
 }
-function updateValue(id: string, newValue: any) {
+function updateValue(id: string, newValue: unknown) {
   const e = variants.value.find((v) => v.id === id);
   if (e) {
     e.value = newValue === null ? {} : newValue;
@@ -165,7 +165,7 @@ watch(
   () => props.modelValue,
   (next) => {
     const obj = next && typeof next === 'object' && !Array.isArray(next) ? next : {};
-    const cur: Record<string, any> = {};
+    const cur: Record<string, unknown> = {};
     for (const e of variants.value) {
       if (e.key !== '') cur[e.key] = e.value;
     }

@@ -1,11 +1,12 @@
 import type { DropdownOption } from '../ui/Dropdown.vue';
+import type { JsonRecord } from './jsonTypes';
 import { parseModelSpec, buildModelSpec, type ModelCatalog } from './useModelCatalog';
 
 export interface ConcurrencyConfig {
   default?: number | string;
   providers?: Record<string, number | string>;
   models?: Record<string, number | string>;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**
@@ -112,7 +113,7 @@ export function cleanConcurrencyConfig(
 export function buildProviderDropdownOptions(
   catalog: ModelCatalog | null | undefined,
   agentModels: string[],
-  existingProviders?: Record<string, any> | null
+  existingProviders?: JsonRecord | null
 ): DropdownOption[] {
   const providersSet = new Set<string>();
 
@@ -160,7 +161,7 @@ export function buildProviderDropdownOptions(
 export function buildModelDropdownOptions(
   catalog: ModelCatalog | null | undefined,
   agentModels: string[],
-  existingModels?: Record<string, any> | null
+  existingModels?: JsonRecord | null
 ): DropdownOption[] {
   const modelsSet = new Set<string>();
 

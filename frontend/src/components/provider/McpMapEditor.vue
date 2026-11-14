@@ -169,6 +169,7 @@ import MaskedValue from '../ui/MaskedValue.vue';
 import StringListEditor from './StringListEditor.vue';
 import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
 
 const { showError } = useToast();
 
@@ -178,11 +179,11 @@ interface McpServerConfig {
   headers?: Record<string, string>;
   command?: string;
   args?: string[];
-  [k: string]: any;
+  [k: string]: unknown;
 }
 
 interface Props {
-  modelValue: Record<string, McpServerConfig>;
+  modelValue: JsonRecord;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -190,7 +191,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, McpServerConfig>];
+  'update:modelValue': [value: JsonRecord];
 }>();
 
 const TYPE_OPTIONS = [
@@ -271,8 +272,8 @@ function fieldCount(entry: ServerEntry): string {
   return `${headerCount} headers`;
 }
 
-function headerEntriesFrom(headers: any): HeaderEntry[] {
-  if (!headers || typeof headers !== 'object') return [];
+function headerEntriesFrom(headers: unknown): HeaderEntry[] {
+  if (!isJsonRecord(headers)) return [];
   return Object.entries(headers).map(([k, v]) => ({
     id: genId(),
     key: k,
@@ -292,16 +293,15 @@ function toggleReveal(entryId: string, hId: string) {
 }
 
 function syncFromModel() {
-  const obj =
-    props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {};
+  const obj = isJsonRecord(props.modelValue) ? props.modelValue : {};
   servers.value = Object.entries(obj).map(([k, v]) => {
     const exist = servers.value.find((s) => s.key === k);
-    const valueCopy: McpServerConfig = v && typeof v === 'object' ? { ...(v as object) } : {};
+    const valueCopy: McpServerConfig = isJsonRecord(v) ? ({ ...v } as McpServerConfig) : {};
     return {
       id: exist ? exist.id : genId(),
       key: k,
       value: valueCopy,
-      headerEntries: headerEntriesFrom((valueCopy as any).headers),
+      headerEntries: headerEntriesFrom(valueCopy.headers),
     };
   });
 }
@@ -343,7 +343,7 @@ function updateKey(id: string, key: string) {
   s.key = key;
   emitAll();
 }
-function updateProp(id: string, prop: string, value: any) {
+function updateProp(id: string, prop: string, value: unknown) {
   const s = servers.value.find((x) => x.id === id);
   if (!s) return;
   // type 切换时清理异类字段（remote/local 互斥）
@@ -357,7 +357,7 @@ function updateProp(id: string, prop: string, value: any) {
       s.headerEntries = [];
     }
   }
-  s.value[prop] = value;
+  (s.value as JsonRecord)[prop] = value;
   emitAll();
 }
 function updateHeaderKey(serverId: string, headerId: string, key: string) {
@@ -427,8 +427,8 @@ function addServer(type: 'remote' | 'local') {
 watch(
   () => props.modelValue,
   (next) => {
-    const obj = next && typeof next === 'object' ? next : {};
-    const cur: Record<string, any> = {};
+    const obj = isJsonRecord(next) ? next : {};
+    const cur: JsonRecord = {};
     for (const s of servers.value) if (s.key !== '') cur[s.key] = s.value;
     const nk = Object.keys(obj);
     const ck = Object.keys(cur);

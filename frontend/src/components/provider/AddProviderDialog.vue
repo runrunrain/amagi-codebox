@@ -118,8 +118,27 @@ import { config } from '../../../wailsjs/go/models';
 import { getProviderExportJSON, saveProviderFromJSON } from '../../api/provider';
 import { useProviderStore } from '../../stores/provider';
 import { useToast } from '../../composables/useToast';
+import { errorMessage } from '../../utils/format';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
+
+interface ExportFormatBlock {
+  enabled?: boolean;
+  base_url?: string;
+  organization?: string;
+  wire_api?: string;
+  headers?: Record<string, string>;
+  auth_header?: boolean;
+  auth_key?: string;
+}
+
+interface ProviderExportPayload {
+  anthropic?: ExportFormatBlock;
+  openai?: ExportFormatBlock;
+  default_model?: string;
+  presets?: Record<string, unknown>;
+  api_key?: string;
+}
 
 interface EditTarget {
   /** 当前 provider name（map key），即后端 UpdateProvider 的 oldName */
@@ -165,7 +184,7 @@ const form = reactive({
  * 用于提交时原样保留 presets（避免覆盖清空 legacy presets）+ organization 等非表单字段。
  * 新增模式下保持 null。
  */
-const editExportCache = ref<any>(null);
+const editExportCache = ref<ProviderExportPayload | null>(null);
 
 // ---- 模式与动态文案 ----
 
@@ -246,7 +265,7 @@ async function fillFromEditTarget() {
     return;
   }
   const { id, provider } = props.editTarget;
-  const p = provider as any;
+  const p = provider;
 
   // 同步初始回填（即时，无闪烁）
   form.name = id;
@@ -263,7 +282,7 @@ async function fillFromEditTarget() {
   // 异步拉取 ExportProvider JSON，用于提交时原样保留 presets + organization
   try {
     const json = await getProviderExportJSON(id);
-    editExportCache.value = JSON.parse(json);
+    editExportCache.value = JSON.parse(json) as ProviderExportPayload;
   } catch (err) {
     console.error('[AddProviderDialog] getProviderExportJSON 失败，使用 provider 对象兜底', err);
     editExportCache.value = {
@@ -310,8 +329,8 @@ function handleClose() {
  * - api_key：表单空 = 保持不变（后端走迁移旧密钥分支），非空 = 更新
  * - presets：原样保留（来自 editExportCache，已在 fillFromEditTarget 拉取）
  */
-function applyFormToExport(exportObj: any): any {
-  const next = { ...exportObj };
+function applyFormToExport(exportObj: ProviderExportPayload): ProviderExportPayload {
+  const next: ProviderExportPayload = { ...exportObj };
 
   next.default_model = form.defaultModel || '';
 
@@ -361,7 +380,7 @@ async function handleSave() {
 
     if (!props.editTarget) {
       // —— 新增模式：统一走 App 编排层，避免绕过 harness 同步 ——
-      const exportObj: any = {
+      const exportObj: ProviderExportPayload = {
         default_model: form.defaultModel || '',
         presets: {},
         api_key: form.apiKey.trim(),
@@ -397,9 +416,9 @@ async function handleSave() {
     // 刷新列表（编辑模式由 store.updateProvider 内部处理刷新 + activeProviderId 切换）
     emit('saved');
     handleClose();
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[AddProviderDialog] 保存失败:', err);
-    showError('保存失败: ' + (err?.message || err));
+    showError('保存失败: ' + errorMessage(err));
   } finally {
     loading.value = false;
   }

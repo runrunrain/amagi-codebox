@@ -106,7 +106,7 @@
               <div v-for="k in row.extraKeys" :key="k" class="ace-extra-item">
                 <div class="ace-extra-key">{{ k }}</div>
                 <VisualValueEditor
-                  :model-value="data[row.name]?.[k]"
+                  :model-value="entryField(row.name, k)"
                   @update:model-value="setEntryField(row.name, k, $event)"
                 />
               </div>
@@ -182,6 +182,7 @@ import VisualValueEditor from './VisualValueEditor.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
 import { pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const editorRoot = ref<HTMLElement | null>(null);
@@ -211,10 +212,15 @@ const mode = ref<'visual' | 'source'>('visual');
 const sourceContent = ref('');
 const parseError = ref('');
 const configPath = ref('');
-const data = ref<Record<string, any>>({});
+const data = ref<JsonRecord>({});
 const catalogProviders = ref<{ name: string; hasAuth?: boolean }[]>([]);
 const newName = ref('');
 const newKey = ref('');
+
+function entryField(name: string, key: string): unknown {
+  const e = data.value[name];
+  return isJsonRecord(e) ? e[key] : undefined;
+}
 
 interface AuthRow {
   uiId: string;
@@ -229,16 +235,17 @@ interface AuthRow {
 
 const entries = computed<AuthRow[]>(() =>
   Object.keys(data.value).map((name) => {
-    const entry = data.value[name];
-    const type = typeof entry?.type === 'string' ? entry.type : '';
+    const raw = data.value[name];
+    const entry = isJsonRecord(raw) ? raw : null;
+    const type = entry && typeof entry.type === 'string' ? entry.type : '';
     const kind: AuthRow['kind'] =
       type === 'api_key' ? 'api_key' : type === 'oauth' ? 'oauth' : 'other';
     const extraKeys =
-      kind === 'api_key' && entry && typeof entry === 'object'
+      kind === 'api_key' && entry
         ? Object.keys(entry).filter((k) => k !== 'type' && k !== 'key')
         : [];
     let expiresText = '';
-    if (kind === 'oauth' && typeof entry?.expires === 'number') {
+    if (kind === 'oauth' && entry && typeof entry.expires === 'number') {
       const d = new Date(entry.expires);
       expiresText = Number.isNaN(d.getTime()) ? String(entry.expires) : d.toLocaleString();
     }
@@ -247,9 +254,9 @@ const entries = computed<AuthRow[]>(() =>
       name,
       kind,
       typeLabel: type || '未知类型',
-      key: typeof entry?.key === 'string' ? entry.key : '',
+      key: entry && typeof entry.key === 'string' ? entry.key : '',
       extraKeys,
-      accountId: typeof entry?.accountId === 'string' ? entry.accountId : '',
+      accountId: entry && typeof entry.accountId === 'string' ? entry.accountId : '',
       expiresText,
     };
   })
@@ -314,8 +321,8 @@ function parseSource() {
     return;
   }
   try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isJsonRecord(parsed)) {
       throw new Error('root must be an object');
     }
     data.value = parsed;
@@ -345,15 +352,15 @@ function renameEntry(oldName: string, newNameValue: string) {
   serialize();
 }
 
-function setEntryField(name: string, key: string, value: any) {
+function setEntryField(name: string, key: string, value: unknown) {
   const entry = data.value[name];
-  if (!entry || typeof entry !== 'object') return;
+  if (!isJsonRecord(entry)) return;
   entry[key] = value;
   data.value = { ...data.value };
   serialize();
 }
 
-function setEntry(name: string, value: any) {
+function setEntry(name: string, value: unknown) {
   data.value[name] = value;
   data.value = { ...data.value };
   serialize();
@@ -361,7 +368,7 @@ function setEntry(name: string, value: any) {
 
 function updateApiKey(name: string, key: string) {
   const entry = data.value[name];
-  if (!entry || typeof entry !== 'object') return;
+  if (!isJsonRecord(entry)) return;
   if (key === '') {
     delete entry.key; // 留空 = 移除密钥字段
   } else {
