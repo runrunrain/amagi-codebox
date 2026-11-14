@@ -4,6 +4,25 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.135] - 2026-11-15
+
+### Added
+
+- **扩展中心五引擎插件面板 ZCode 式重绘（浅色 Apple 风格）**：Claude Code / OpenCode / Codex / Pi / OMP 五引擎插件管理页统一为「诊断横幅 → 资源计数标签（计数徽章 + 搜索）→ 分组工具栏（已安装 N + 刷新 / 浏览插件市场 / 添加）→ 行式列表」四段式布局。列表行 = 图标（名称确定性生成字母+色相）+ 名称/徽章 + 单行截断描述 + iOS 风格开关；详情视图含面包屑返回、子项列表（技能/Agent/命令/Hook/MCP 逐项开关）与元信息网格（市场/版本/作用域/安装时间/提交 SHA）；MCP 资源页按所属插件分组并如实映射启用状态（不虚构连接态）；市场视图为左市场源栏 + 右插件流（安装量/作者徽章），经「浏览插件市场」进入。Codex 重复项/警告与各引擎加载失败统一收敛为可折叠诊断横幅；空态卡片提供安装/添加入口。
+- **插件面板共享组件层**：新增 `frontend/src/components/extensions/ui/` 11 个纯展示组件（CountTabs / PluginIcon / PluginRow / GroupHeader / ListToolbar / EmptyStateCard / DiagnosticBanner / DetailHeader / MetaGrid / SubItemRow / ActionMenu），全部复用既有 ui/* 基础件与 tokens.css 变量；`ui/AppButton` 新增 `outline` variant（透明底 + separator 描边 + hover 浮 control 底），收敛面板内两处 scoped 描边实现。
+
+### Fixed
+
+- **Claude/Codex 引擎直切不载数据（沿袭缺陷）**：ExtensionsView 两分支渲染同一 PluginInstalledPanel 且无 :key，Vue 原地复用实例导致 onMounted 不再执行、直切后显示假空态须手动刷新；引擎切换改统一走 store 的 setPluginEngine（清空 activePluginId 并重置列表态）。
+- **市场安装失败静默**：PluginMarketPanel 安装失败 catch 仅 console.error 无 UI 反馈，补 showError 提示，与其余引擎写操作对齐。
+- **tag 徽章白字不可见**：Badge `type:'tag'` 为白字无底色，浅色背景上「N 个可安装」计数、OpenCode 资源汇总、Pi「pinned」徽章不可见；三处消费点改用 `type:'scope' + variant:'muted'`（control 底 + secondary 字）。
+- **硬编码颜色与示例清理**：诊断/重复卡 `#a02620/#9a6200` 改用 `--danger-strong`/`--warning-strong`，市场卡 hover 边框改 `--controlHover`；Pi 本地路径示例去除含个人用户名的 macOS 路径；删除 pluginTypeLabel 不可达 codex 分支。
+
+### Notes
+
+- 已验证：`npm run lint`（master 已升 `no-explicit-any` 为 error 的严格门禁下零告警）、`npm run test` 全绿（622 用例，含本版本新增 22 个插件面板/共享组件/集成接线测试文件）、`npm run build`（vue-tsc --noEmit && vite build）通过；合并 master 后复跑全绿。
+- 设计契约与交付报告归档于 `agent-outputs/plugin-ui-redesign/`；后端（Go / wails 绑定）零改动，移动端界面不在本次范围；浏览器端视觉 E2E 未执行（需 wails 运行时与真实插件数据）。
+
 ## [1.3.134] - 2026-11-14
 
 ### Fixed
