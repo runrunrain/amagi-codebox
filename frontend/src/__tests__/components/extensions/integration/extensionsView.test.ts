@@ -1,6 +1,7 @@
 /**
- * ExtensionsView 集成测试（契约 §7.2 / R7 ZCode 式两栏布局）：
- *  - 左子页导航分组渲染（公共/Agent 两组、七子页项）与 active 高亮；
+ * ExtensionsView 集成测试（契约 §7.2 / R7 顶部页签布局）：
+ *  - 顶部页签行渲染（七子页项：公共两页 + 五引擎，无分组/图标）与选中胶囊高亮；
+ *    左侧子页导航栏已移除（ex-subnav 类不回归）；
  *  - 子页切换走 setExtSubPage：引擎子页联动 pluginEngine 同步、pluginView
  *    重置回列表态、activePluginId 清空（契约 §2 引擎切换契约平移）；同值守卫；
  *  - shared-skills 子页挂载 SharedSkillsPanel 且不动引擎态；
@@ -193,17 +194,21 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('ExtensionsView 集成（契约 §7.2 / R7 两栏布局）', () => {
-  it('默认渲染：左导航公共/Agent 分组 + 七子页项 + Claude 子页面板 + WSL 占位', async () => {
+describe('ExtensionsView 集成（契约 §7.2 / R7 顶部页签布局）', () => {
+  it('默认渲染：顶部页签行七子页项 + Claude 子页面板 + WSL 占位', async () => {
     const { html } = await renderWithCapture(ExtensionsView);
-    // 左导航：两个分组与七个子页项（公共=共用技能+共用 MCP；Agent=五引擎）
-    expect(html).toContain('公共');
-    expect(html).toContain('Agent');
+    // 顶部页签行：七个子页项（公共=共用技能+共用 MCP；五引擎），纯文字无分组标签
     for (const label of ['共用技能', '共用 MCP', 'Claude Code', 'OpenCode', 'Codex', 'Pi', 'OMP']) {
       expect(html).toContain(label);
     }
-    // 默认 Claude 子页高亮（active 类随 extSubPage）
-    expect(html).toContain('ex-subnav-item active');
+    // 默认 Claude 子页选中胶囊高亮（active 类随 extSubPage）
+    expect(html).toContain('ex-tab active');
+    // 左侧子页导航栏已移除（ex-subnav 类不回归）
+    expect(html).not.toContain('ex-subnav');
+    // 页签行为纯文字（nav 区块内无图标）
+    const navMatch = html.match(/<nav class="ex-tabs"[^>]*>[\s\S]*?<\/nav>/);
+    expect(navMatch).not.toBeNull();
+    expect(navMatch?.[0]).not.toContain('<svg');
     // 主 tab Segmented 已移除（R5/R6：插件管理/环境变量/其他工具）
     expect(html).not.toContain('插件管理');
     expect(html).not.toContain('其他工具');

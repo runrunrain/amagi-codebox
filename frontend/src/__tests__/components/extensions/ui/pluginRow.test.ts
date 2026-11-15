@@ -3,8 +3,10 @@
  *  - switchVisible=false 时输出无 switch 标记；
  *  - badges 文本出现；
  *  - 描述行截断类名存在；
+ *  - trailing 插槽：无开关时渲染到行尾容器，开关与插槽并存时开关优先；
  *  - expose toggleWith(v) → onToggle 命中且参数透传。
  */
+import { h } from 'vue';
 import { describe, expect, it, vi } from 'vitest';
 import PluginRow from '../../../../components/extensions/ui/PluginRow.vue';
 import { instanceOf, renderWithCapture } from './testUtils';
@@ -48,6 +50,25 @@ describe('PluginRow 渲染', () => {
     });
     expect(html).toContain('plugin-row-switch');
     expect(html).toContain('role="switch"');
+  });
+
+  it('trailing 插槽：无开关时渲染到行尾容器（市场页安装按钮位）', async () => {
+    const { html } = await renderWithCapture(PluginRow, BASE_PROPS, {
+      trailing: () => [h('button', { class: 'btn-install', type: 'button' }, '安装')],
+    });
+    expect(html).toContain('plugin-row-switch');
+    expect(html).toContain('btn-install');
+    expect(html).not.toContain('role="switch"');
+  });
+
+  it('开关优先：switchVisible=true 且提供 trailing 时只渲染开关', async () => {
+    const { html } = await renderWithCapture(
+      PluginRow,
+      { ...BASE_PROPS, enabled: true, switchVisible: true },
+      { trailing: () => [h('span', { class: 'btn-install' }, '安装')] },
+    );
+    expect(html).toContain('role="switch"');
+    expect(html).not.toContain('btn-install');
   });
 
   it('active=true 时行带 active 类名', async () => {

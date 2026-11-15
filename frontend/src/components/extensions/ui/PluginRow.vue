@@ -1,5 +1,5 @@
-<!-- 契约 §4 #3：行式插件条目（左图标 → 名称+徽章+单行描述 → 行尾开关）。
-     整行可点击；switchVisible 才渲染 Switch（开关诚实原则）。
+<!-- 契约 §4 #3：行式插件条目（左图标 → 名称+徽章+单行描述 → 行尾开关/自定义尾区）。
+     整行可点击；switchVisible 才渲染 Switch（开关诚实原则）；无开关时可用 trailing 插槽放置行尾操作（如安装按钮）。
      可测试性契约：expose toggleWith(v)，内部即 Switch 的 update 处理器。 -->
 <template>
   <div
@@ -32,6 +32,9 @@
         :disabled="switchDisabled"
         @update:model-value="toggleWith"
       />
+    </div>
+    <div v-else-if="$slots.trailing" class="plugin-row-switch" @click.stop>
+      <slot name="trailing" />
     </div>
   </div>
 </template>

@@ -1,15 +1,19 @@
 /**
- * SharedMcpPanel 单测（共用 MCP 契约 §4.4）：
- *  - 四段式骨架：DiagnosticBanner（有 error 才渲染）→ CountTabs（全部/stdio/远程/
- *    已分发/未分发，计数来自 store 真实数据）→ ListToolbar（「共用 MCP」+ 新增服务器/
- *    打开登记目录/刷新）→ 内容区 ex-split（左列 PluginRow / 右列详情+分发矩阵）；
+ * SharedMcpPanel 单测（共用 MCP 契约 §4.4，列表/详情分页化）：
+ *  - 一级列表态四段式：DiagnosticBanner（有 error 才渲染）→ CountTabs（全部/stdio/
+ *    远程/已分发/未分发，计数来自 store 真实数据）→ ListToolbar（「共用 MCP」+
+ *    新增服务器/打开登记目录/刷新）→ 全宽列表（PluginRow：类型徽章+名称+完整描述，
+ *    行尾「已分发 N」轻量徽章；无行尾开关，分发在详情矩阵）；
+ *  - 二级详情态：selectEntry 进入（替换子页内容区）——「← 返回列表」+ 面包屑
+ *    「共用 MCP › <名>」+ DetailHeader（编辑/删除）+ 配置 MetaGrid + env/headers
+ *    值经 MaskedValue（渲染 HTML 不含明文值）+ 条目×引擎分发矩阵；
  *  - 首屏门控（store 派生）：Loading / ErrorState；空态两形态（登记文件不存在/暂无条目）；
- *  - 详情 MetaGrid + env/headers 值经 MaskedValue（渲染 HTML 不含明文值）；
  *  - 分发矩阵：omp excluded 只读行（无 Switch）、conflict/unsupported 未分发格禁用、
  *    unsupported 仍留旧副本的格可点、drift 徽章 + 行内「重新分发」；
  *  - 开关 off / 删除确认弹窗（含『将移除已写入各引擎配置的托管条目』警示，经 teleports）；
  *  - ErrForeignModified（错误信息含「已被外部修改」）→ danger 确认后 force=true 重试；
- *  - 表单：stdio/远程双形态校验与提交（args 逐行解析、env/headers 键值对组装）。
+ *  - 表单：stdio/远程双形态校验与提交（args 逐行解析、env/headers 键值对组装；
+ *    新增/编辑表单仍从工具栏进入，弹窗形态不变）。
  *
  * 范式：node 环境 renderToString + store 状态种子驱动门控分支（SSR 不执行 onMounted）；
  * 交互断言走 defineExpose 触发器；Dialog/ConfirmDialog 弹层内容查 __teleportBuffers
@@ -254,7 +258,7 @@ describe('SharedMcpPanel 四段式骨架', () => {
     expect(html).toMatch(/class="ct-label"[^>]*>未分发<\/span><span class="ct-count"[^>]*>0<\/span>/);
   });
 
-  it('工具栏标题/操作与行渲染（类型徽章+名称+描述单行+分发摘要；无行尾开关）', async () => {
+  it('工具栏标题/操作与行渲染（类型徽章+名称+完整描述+行尾「已分发 N」徽章；无行尾开关）', async () => {
     const store = useSharedMcpStore();
     seedStore(store, [STDIO_ITEM, HTTP_ITEM]);
     const { html } = await renderPanel();
@@ -262,12 +266,20 @@ describe('SharedMcpPanel 四段式骨架', () => {
     expect(html).toContain('新增服务器');
     expect(html).toContain('打开登记目录');
     expect(html).toContain('刷新');
-    // 行：名称与描述摘要
+    // 行：名称与完整描述（分发摘要不再拼进描述，改为行尾轻量徽章）
     expect(html).toContain('zhipu-vision');
-    expect(html).toContain('视觉理解工具 · 已分发到 2 个引擎');
-    expect(html).toContain('联网搜索 · 已分发到 1 个引擎');
-    // 分发在详情矩阵：左列行无开关（plugin-row-switch 不渲染）
+    expect(html).toContain('视觉理解工具');
+    expect(html).toContain('联网搜索');
+    expect(html).not.toContain('已分发到 2 个引擎');
+    expect(html).toContain('已分发 2');
+    expect(html).toContain('已分发 1');
+    // 分发在详情矩阵：行内无开关（plugin-row-switch 不渲染）
     expect(html).not.toContain('plugin-row-switch');
+    // 一级纯列表态：详情页元素不渲染（matrix-head 为详情矩阵标题类；
+    // 「引擎分发」四字会命中 panel-hint 的「按引擎分发」，故用类名断言）
+    expect(html).not.toContain('dh-breadcrumb');
+    expect(html).not.toContain('返回列表');
+    expect(html).not.toContain('matrix-head');
     // 状态文案禁用「已连接」（R5：分发≠连通）
     expect(html).not.toContain('已连接');
   });
@@ -335,22 +347,48 @@ describe('SharedMcpPanel 空态与过滤', () => {
 // ---- 详情态：MetaGrid + MaskedValue + 分发矩阵 ----
 
 describe('SharedMcpPanel 详情态', () => {
-  it('selectEntry → DetailHeader + MetaGrid（名称/类型/命令/参数/env 计数/已分发）', async () => {
+  it('selectEntry → 返回按钮 + 面包屑 + DetailHeader + MetaGrid（名称/类型/命令/参数/env 计数/已分发）', async () => {
     const store = useSharedMcpStore();
     seedStore(store, [STDIO_ITEM, HTTP_ITEM]);
     const result = await renderPanel();
     panelExposed(result).selectEntry(STDIO_ITEM);
     const html = await renderInstanceAgain(panelInstance(result));
+    // 「← 返回列表」+ 面包屑「共用 MCP › zhipu-vision」
+    expect(html).toContain('← 返回列表');
     expect(html).toContain('dh-breadcrumb');
     expect(html).toContain('共用 MCP</button>');
+    // 配置 MetaGrid
     expect(html).toContain('meta-grid');
     expect(html).toContain('stdio（本地命令）');
     expect(html).toContain('npx');
     expect(html).toContain('-y zhipu-mcp');
     expect(html).toContain('1 项（值已脱敏，见下方）');
     expect(html).toContain('Claude、Codex（2 个引擎）');
+    // DetailHeader 动作迁入详情页（编辑/删除）
     expect(html).toContain('编辑');
     expect(html).toContain('删除');
+    // 二级页面替换子页内容区：列表/计数标签/工具栏不再渲染
+    expect(html).not.toContain('web-search-prime');
+    expect(html).not.toContain('count-tabs');
+    expect(html).not.toContain('新增服务器');
+    expect(html).not.toContain('打开登记目录');
+  });
+
+  it('clearActive 返回列表态（行/工具栏恢复，详情元素消失）', async () => {
+    const store = useSharedMcpStore();
+    seedStore(store, [STDIO_ITEM, HTTP_ITEM]);
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+    panel.selectEntry(STDIO_ITEM);
+    panel.clearActive();
+    const html = await renderInstanceAgain(panelInstance(result));
+    expect(html).toContain('zhipu-vision');
+    expect(html).toContain('web-search-prime');
+    expect(html).toContain('已分发 2');
+    expect(html).toContain('新增服务器');
+    expect(html).not.toContain('dh-breadcrumb');
+    expect(html).not.toContain('返回列表');
+    expect(html).not.toContain('matrix-head');
   });
 
   it('env/headers 值经 MaskedValue：渲染 HTML 不含明文值', async () => {

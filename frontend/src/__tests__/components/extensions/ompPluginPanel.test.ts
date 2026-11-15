@@ -254,14 +254,15 @@ describe('OmpPluginPanel 列表态', () => {
 // ---- 渲染：详情态 ----
 
 describe('OmpPluginPanel 详情态', () => {
-  it('点行进入详情：面包屑、MetaGrid 字段、启用特性拼接', async () => {
+  it('点行进入详情：面包屑「OMP › 名称」+ 返回入口、MetaGrid 字段、启用特性拼接', async () => {
     const store = useOmpPluginStore();
     seedStore(store, [NPM_PLUGIN, MARKET_PLUGIN]);
     const result = await renderPanel();
     panelExposed(result).openDetail(NPM_PLUGIN);
     const html = await renderInstanceAgain(instanceOf(result, OmpPluginPanel));
     expect(html).toContain('dh-breadcrumb');
-    expect(html).toContain('插件');
+    expect(html).toContain('OMP</button>');
+    expect(html).toContain('← 返回列表');
     expect(html).toContain('omp.nvim');
     expect(html).toContain('meta-grid');
     expect(html).toContain('引用 ID');
@@ -299,6 +300,7 @@ describe('OmpPluginPanel 详情态', () => {
     const html = await renderInstanceAgain(instanceOf(result, OmpPluginPanel));
     expect(html).toContain('plugin-row');
     expect(html).not.toContain('meta-grid');
+    expect(html).not.toContain('← 返回列表');
   });
 });
 

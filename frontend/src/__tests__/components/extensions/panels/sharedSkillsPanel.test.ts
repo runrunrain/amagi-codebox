@@ -1,7 +1,10 @@
 /**
- * SharedSkillsPanel 单测（契约 §2.6/§7.2）：
- *  - 四段式骨架：DiagnosticBanner（有 error 才渲染）→ CountTabs（全部/已启用/已禁用，
- *    计数来自 store 真实数据）→ ListToolbar（「共用技能」+ 打开技能根目录/刷新）→ 内容区；
+ * SharedSkillsPanel 单测（契约 §2.6/§7.2，列表/详情分页化）：
+ *  - 一级列表态四段式：DiagnosticBanner（有 error 才渲染）→ CountTabs（全部/已启用/
+ *    已禁用，计数来自 store 真实数据）→ ListToolbar（「共用技能」+ 打开技能根目录/
+ *    刷新）→ 全宽列表（PluginRow + 行尾启停 Switch）；
+ *  - 二级详情态：selectSkill 进入（替换子页内容区）——「← 返回列表」+ 面包屑
+ *    「共用技能 › <名>」+ DetailHeader + 描述全文 + MetaGrid；clearActive 回列表态；
  *  - 首屏门控（store 派生）：Loading / ErrorState；
  *  - 空态卡：EmptyStateCard 文案；
  *  - 启停/删除走确认弹窗（目录移动/永久删除的警示文案断言，经 teleports）；
@@ -185,7 +188,7 @@ describe('SharedSkillsPanel 四段式骨架', () => {
     expect(html).toMatch(/class="ct-label"[^>]*>已禁用<\/span><span class="ct-count"[^>]*>1<\/span>/);
   });
 
-  it('工具栏标题/操作与行渲染（名称+描述+开关）', async () => {
+  it('工具栏标题/操作与行渲染（名称+完整描述+行尾开关）；列表态不渲染详情页', async () => {
     const store = useSharedSkillsStore();
     seedStore(store, [ENABLED_A, DISABLED_B]);
     const { html } = await renderPanel();
@@ -193,11 +196,15 @@ describe('SharedSkillsPanel 四段式骨架', () => {
     expect(html).toContain('共用技能');
     expect(html).toContain('打开技能根目录');
     expect(html).toContain('刷新');
-    // ④ 行：displayName 与描述
+    // ④ 行：displayName 与完整描述（无截断省略）
     expect(html).toContain('Skill A');
     expect(html).toContain('技能 B 的描述');
     // 行开关（PluginRow switchVisible）
     expect(html).toContain('plugin-row-switch');
+    // 一级纯列表态：无详情页元素（面包屑/返回按钮/MetaGrid）
+    expect(html).not.toContain('dh-breadcrumb');
+    expect(html).not.toContain('返回列表');
+    expect(html).not.toContain('meta-grid');
   });
 
   it('无 error 时诊断横幅不渲染；有 error 且无数据时首屏 ErrorState', async () => {
@@ -251,24 +258,36 @@ describe('SharedSkillsPanel 空态与过滤', () => {
   });
 });
 
-// ---- 详情态 ----
+// ---- 详情态（二级页面：替换子页内容区，居中窄单列） ----
 
 describe('SharedSkillsPanel 详情态', () => {
-  it('selectSkill → DetailHeader + MetaGrid（名称/目录名/路径/状态）', async () => {
+  it('selectSkill → 返回按钮 + 面包屑 + DetailHeader + MetaGrid（名称/目录名/路径/状态）', async () => {
     const store = useSharedSkillsStore();
     seedStore(store, [ENABLED_A, DISABLED_B]);
     const result = await renderPanel();
     panelExposed(result).selectSkill(DISABLED_B);
     const html = await renderInstanceAgain(panelInstance(result));
+    // 「← 返回列表」+ 面包屑「共用技能 › Skill B」
+    expect(html).toContain('← 返回列表');
     expect(html).toContain('dh-breadcrumb');
     expect(html).toContain('共用技能</button>');
+    // DetailHeader 动作迁入详情页（DISABLED_B 已禁用 → 主操作为「启用」/打开目录/删除）
+    expect(html).toContain('启用');
+    expect(html).toContain('打开目录');
+    expect(html).toContain('删除');
+    // MetaGrid：目录名/路径/状态
     expect(html).toContain('meta-grid');
     expect(html).toContain('skill-b');
     expect(html).toContain('/home/u/.agents/skills-disabled/skill-b');
     expect(html).toContain('已禁用');
+    // 二级页面替换子页内容区：列表/计数标签/工具栏不再渲染
+    expect(html).not.toContain('Skill A');
+    expect(html).not.toContain('ct-tabs');
+    expect(html).not.toContain('打开技能根目录');
+    expect(html).not.toContain('plugin-row-switch');
   });
 
-  it('clearActive 回到选择空位', async () => {
+  it('clearActive 返回列表态（行/工具栏恢复，详情元素消失）', async () => {
     const store = useSharedSkillsStore();
     seedStore(store, [ENABLED_A]);
     const result = await renderPanel();
@@ -276,7 +295,11 @@ describe('SharedSkillsPanel 详情态', () => {
     panel.selectSkill(ENABLED_A);
     panel.clearActive();
     const html = await renderInstanceAgain(panelInstance(result));
-    expect(html).toContain('选择技能');
+    expect(html).toContain('Skill A');
+    expect(html).toContain('打开技能根目录');
+    expect(html).toContain('plugin-row-switch');
+    expect(html).not.toContain('dh-breadcrumb');
+    expect(html).not.toContain('返回列表');
     expect(html).not.toContain('meta-grid');
   });
 });

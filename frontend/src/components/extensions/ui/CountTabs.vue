@@ -1,5 +1,6 @@
 <!-- 契约 §4 #1：资源计数标签行（胶囊标签 + 计数徽章，行尾搜索框）。
-     选中态胶囊=白底浮起（同 ui/Segmented pill 视觉）；hidden 标签不渲染。
+     选中态胶囊=白底浮起（同 ui/Segmented pill 视觉），点击后不残留 WebView
+     默认焦点描边（:focus 重置，键盘 :focus-visible 保留软强调环）；hidden 标签不渲染。
      可测试性契约：expose select(key) / search(v)，内部走与模板一致的 emit 路径。 -->
 <template>
   <div class="count-tabs">
@@ -96,6 +97,17 @@ defineExpose({ select, search });
 
 .ct-tab:hover {
   color: var(--label);
+}
+
+/* 焦点环修正：点击选中后不残留 WebView 默认深色描边圆角框；
+   键盘可达性保留 :focus-visible 软强调环 */
+.ct-tab:focus {
+  outline: none;
+}
+
+.ct-tab:focus-visible {
+  outline: 2px solid rgba(0, 122, 255, 0.35);
+  outline-offset: 1px;
 }
 
 .ct-tab.active {

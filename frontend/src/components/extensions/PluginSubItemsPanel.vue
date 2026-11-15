@@ -137,6 +137,7 @@ defineExpose({
 </script>
 
 <style scoped>
+/* 详情页内全宽使用（列表↔详情分页化）：列表区卡片化，与各面板行式列表一致 */
 .sub-items-panel {
   display: flex;
   flex-direction: column;
@@ -146,5 +147,13 @@ defineExpose({
 .sub-items-list {
   display: flex;
   flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card);
+  padding: 6px;
+}
+
+.sub-items-list :deep(.sub-item-row) + :deep(.sub-item-row) {
+  border-top: 1px solid var(--separator);
 }
 </style>

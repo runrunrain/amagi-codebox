@@ -60,47 +60,51 @@
         </EmptyStateCard>
       </template>
 
-      <!-- 详情态：OMP 无二级详情接口，点行即用列表数据渲染（契约 §6.5） -->
-      <div v-else-if="activePlugin" class="omp-detail">
-        <DetailHeader
-          :breadcrumb="[{ label: '插件', clickable: true }, { label: activePlugin.name }]"
-          :title="activePlugin.name"
-          :badges="detailBadges"
-          @back="closeDetail"
-        >
-          <template #actions>
-            <AppButton
-              v-if="!activePlugin.enabled"
-              variant="primary"
-              size="small"
-              :disabled="mutating"
-              @click="handleEnable(activePlugin)"
-            >
-              {{ mutating ? '处理中…' : '启用' }}
-            </AppButton>
-            <AppButton
-              v-else
-              variant="primary"
-              size="small"
-              :disabled="mutating"
-              @click="handleUpgrade(activePlugin)"
-            >
-              {{ mutating ? '处理中…' : '升级' }}
-            </AppButton>
-            <AppButton
-              variant="danger"
-              size="small"
-              :disabled="mutating"
-              @click="openUninstallDialog(activePlugin)"
-            >
-              卸载
-            </AppButton>
-          </template>
-        </DetailHeader>
-        <p v-if="activePlugin.description" class="omp-detail-desc">
-          {{ activePlugin.description }}
-        </p>
-        <MetaGrid :items="metaItems" />
+      <!-- 详情态：居中窄单列二级详情页（← 返回列表 + 「OMP › 名称」面包屑）。
+           OMP 无二级详情接口，点行即用列表数据渲染（契约 §6.5） -->
+      <div v-else-if="activePlugin" class="detail-page">
+        <div class="detail-column">
+          <button type="button" class="detail-back" @click="closeDetail">← 返回列表</button>
+          <DetailHeader
+            :breadcrumb="[{ label: 'OMP', clickable: true }, { label: activePlugin.name }]"
+            :title="activePlugin.name"
+            :badges="detailBadges"
+            @back="closeDetail"
+          >
+            <template #actions>
+              <AppButton
+                v-if="!activePlugin.enabled"
+                variant="primary"
+                size="small"
+                :disabled="mutating"
+                @click="handleEnable(activePlugin)"
+              >
+                {{ mutating ? '处理中…' : '启用' }}
+              </AppButton>
+              <AppButton
+                v-else
+                variant="primary"
+                size="small"
+                :disabled="mutating"
+                @click="handleUpgrade(activePlugin)"
+              >
+                {{ mutating ? '处理中…' : '升级' }}
+              </AppButton>
+              <AppButton
+                variant="danger"
+                size="small"
+                :disabled="mutating"
+                @click="openUninstallDialog(activePlugin)"
+              >
+                卸载
+              </AppButton>
+            </template>
+          </DetailHeader>
+          <p v-if="activePlugin.description" class="omp-detail-desc">
+            {{ activePlugin.description }}
+          </p>
+          <MetaGrid :items="metaItems" />
+        </div>
       </div>
     </template>
 
@@ -399,15 +403,51 @@ defineExpose({
 }
 
 .omp-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card);
+  padding: 6px;
 }
 
-.omp-detail {
+/* 描述完整多行显示（不截断、不加省略号）：ui/PluginRow 不可改，面板 scoped :deep 覆盖 */
+.omp-rows :deep(.plugin-row) {
+  align-items: flex-start;
+}
+
+.omp-rows :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* 详情页：居中窄单列（约 720px，左右留白） */
+.detail-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.detail-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.detail-back:hover {
+  text-decoration: underline;
 }
 
 .omp-detail-desc {

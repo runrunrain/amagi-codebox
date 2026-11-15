@@ -1,6 +1,12 @@
-<!-- 契约 §6.6 市场视图（仅 Claude/Codex）：
-     面包屑（插件 › 插件市场，点击「插件」回列表态）+ 顶部搜索/排序/「添加市场」+
-     左窄栏市场源列表（名称+一行描述+「{n} 个可安装」+Codex 删除 ×）+ 右侧插件流行式条目。
+<!-- 契约 §6.6 市场视图（仅 Claude/Codex），两级分页（同技能页列表/详情范式）：
+     一级＝市场源列表：面包屑（插件 › 插件市场，点击「插件」回已安装列表态）+「添加市场」
+     主按钮 + ListToolbar（市场源 N + 刷新）+ 全宽市场源行（PluginRow：名称 + 类型徽章
+     内置/本地/远程 Git + 可安装计数徽章 + 净化路径/Description 完整多行；行尾 Codex 删除；
+     首行「全部市场」聚合入口）。
+     二级＝市场内插件列表：← 返回市场列表 + 面包屑（插件市场 › 市场名）+ DetailHeader
+     （N 个可安装 + 刷新）+ CountTabs（全部/未安装/已安装 + 行尾搜索）+ ListToolbar
+     （可安装插件 + 排序 Segmented）+ 全宽行式条目（PluginRow + trailing 安装按钮，
+     描述完整多行）。
      「添加市场」统一收敛为 emit('add_market', engine) 走 ExtensionsView 内联 Dialog（单一入口，
      面板内 AddMarketDialog 退役）；Codex 删除市场改走 store removeCxMarketplace（风险 10）。 -->
 <template>
@@ -11,110 +17,120 @@
     <ErrorState v-else-if="showError" :message="loadError" :on-retry="handleRetry" />
 
     <template v-else>
-      <!-- 面包屑 + 市场标题 + 添加市场入口 -->
-      <DetailHeader
-        :breadcrumb="[{ label: '插件', clickable: true }, { label: '插件市场' }]"
-        title="插件市场"
-        :badges="[{ text: `${totalAvailableCount} 个可安装`, type: 'scope', variant: 'muted' }]"
-        @back="goBack"
-      >
-        <template #actions>
-          <AppButton variant="ghost" size="small" @click="handleAddMarket">
-            添加市场
-          </AppButton>
-        </template>
-      </DetailHeader>
+      <!-- ═══ 一级子页：市场源列表（点击行进入二级插件列表） ═══ -->
+      <template v-if="view === 'sources'">
+        <!-- 面包屑（插件 → 回已安装列表态）+ 市场标题 + 添加市场入口（主按钮） -->
+        <DetailHeader
+          :breadcrumb="[{ label: '插件', clickable: true }, { label: '插件市场' }]"
+          title="插件市场"
+          :badges="[{ text: `${markets.length} 个市场源`, type: 'scope', variant: 'muted' }]"
+          @back="goBack"
+        >
+          <template #actions>
+            <AppButton variant="primary" size="small" @click="handleAddMarket">
+              <span class="add-market-plus" aria-hidden="true">＋</span>添加市场
+            </AppButton>
+          </template>
+        </DetailHeader>
 
-      <!-- 搜索与排序（本地过滤，不发后端请求） -->
-      <div class="market-toolbar">
-        <div class="market-search">
-          <TextInput
-            v-model="searchQuery"
-            placeholder="搜索名称、描述或开发者"
-          >
-            <template #prefix><span class="search-icon">⌕</span></template>
-          </TextInput>
-        </div>
-        <div class="sort-options">
-          <AppButton
-            v-if="engine === 'claude'"
-            variant="outline"
-            :class="['sort-btn', { active: sortBy === 'installs' }]"
-            size="small"
-            @click="setSortBy('installs')"
-          >
-            安装量
-          </AppButton>
-          <AppButton
-            variant="outline"
-            :class="['sort-btn', { active: sortBy === 'name' }]"
-            size="small"
-            @click="setSortBy('name')"
-          >
-            名称 A-Z
-          </AppButton>
-        </div>
-      </div>
+        <template v-if="markets.length > 0">
+          <ListToolbar title="市场源" :count="markets.length">
+            <template #actions>
+              <AppButton variant="ghost" size="small" :disabled="isLoading" @click="handleRetry">
+                {{ isLoading ? '刷新中…' : '刷新' }}
+              </AppButton>
+            </template>
+          </ListToolbar>
 
-      <!-- 市场源 + 插件列表 -->
-      <div v-if="markets.length > 0" class="market-layout">
-        <!-- 左窄栏：市场源列表 -->
-        <aside class="market-source-pane">
-          <div
-            v-for="market in markets"
-            :key="getSourceKey(market)"
-            :class="['market-card', { active: isSourceActive(market) }]"
-          >
-            <div class="mk-main" @click="selectMarket(market)">
-              <div class="mk-name">{{ getMarketName(market) }}</div>
-              <div class="mk-desc">{{ getMarketDesc(market) }}</div>
-              <span class="mk-meta">{{ getPluginCountForMarket(market) }} 个可安装</span>
-            </div>
-            <button
-              v-if="engine === 'codex'"
-              type="button"
-              class="mk-delete-btn"
-              title="删除市场"
-              @click.stop="handleRemoveMarket(market)"
+          <!-- 市场源行（与技能列表同构：名称+类型/计数徽章+描述完整多行；Codex 行尾删除） -->
+          <div class="market-source-list">
+            <PluginRow
+              name="全部市场"
+              description="汇总所有市场源的可安装插件，支持跨源搜索"
+              :badges="[{ text: `${totalAvailableCount} 个可安装`, type: 'scope', variant: 'muted' }]"
+              @click="openAllMarkets"
+            />
+            <PluginRow
+              v-for="market in markets"
+              :key="getMarketName(market)"
+              :name="getMarketName(market)"
+              :description="getMarketDesc(market)"
+              :badges="sourceRowBadges(market)"
+              @click="selectMarket(market)"
             >
-              ×
-            </button>
+              <template v-if="engine === 'codex'" #trailing>
+                <AppButton variant="danger" size="small" @click="handleRemoveMarket(market)">
+                  删除
+                </AppButton>
+              </template>
+            </PluginRow>
           </div>
-          <div v-if="activeMarketId === null" class="market-card active">
-            <div class="mk-name">全部市场</div>
-            <div class="mk-desc">显示所有市场的插件</div>
-            <span class="mk-meta">{{ totalAvailableCount }} 个可安装</span>
-          </div>
-        </aside>
+        </template>
 
-        <!-- 右侧：可安装插件行式条目 -->
-        <section class="market-plugin-pane">
-          <EmptyStateCard
-            v-if="filteredPlugins.length === 0"
-            title="未找到插件"
-            :description="searchQuery.trim() ? '尝试其他搜索词' : '该市场暂无可安装插件'"
-          />
-          <div v-else class="market-list">
-            <div v-for="plugin in filteredPlugins" :key="getPluginKey(plugin)" class="market-row">
-              <PluginIcon :name="getPluginName(plugin)" size="sm" />
-              <div class="mr-main">
-                <div class="mr-head">
-                  <span class="mr-name">{{ getPluginName(plugin) }}</span>
-                  <Badge
-                    v-if="engine === 'claude'"
-                    type="source"
-                    variant="muted"
-                    :text="`${formatInstallCount(plugin)} 次安装`"
-                  />
-                  <Badge
-                    v-else-if="getPluginAuthor(plugin)"
-                    type="source"
-                    variant="muted"
-                    :text="getPluginAuthor(plugin)"
-                  />
-                </div>
-                <p v-if="getPluginDesc(plugin)" class="mr-desc">{{ getPluginDesc(plugin) }}</p>
-              </div>
+        <!-- 无市场源空态 -->
+        <EmptyStateCard v-else title="暂无市场" description="添加市场源以浏览和安装插件">
+          <template #primary>
+            <AppButton variant="primary" size="small" @click="handleAddMarket">
+              添加市场
+            </AppButton>
+          </template>
+        </EmptyStateCard>
+      </template>
+
+      <!-- ═══ 二级子页：市场内插件列表（← 返回 + 面包屑 + 计数页签/搜索 + 工具栏 + 全宽行） ═══ -->
+      <div v-else class="market-plugin-page">
+        <button type="button" class="back-btn" @click="backToSources">← 返回市场列表</button>
+
+        <DetailHeader
+          :breadcrumb="[{ label: '插件市场', clickable: true }, { label: activeMarketLabel }]"
+          :title="activeMarketLabel"
+          :badges="[{ text: `${marketPluginCount} 个可安装`, type: 'scope', variant: 'muted' }]"
+          @back="backToSources"
+        >
+          <template #actions>
+            <AppButton variant="ghost" size="small" :disabled="isLoading" @click="handleRetry">
+              {{ isLoading ? '刷新中…' : '刷新' }}
+            </AppButton>
+          </template>
+        </DetailHeader>
+
+        <!-- 计数页签（全部/未安装/已安装，计数真实）+ 行尾搜索（与技能页 CountTabs 同构） -->
+        <CountTabs
+          :tabs="statusTabs"
+          :model-value="statusTab"
+          search-placeholder="搜索名称、描述或开发者"
+          :search-value="searchQuery"
+          @update:model-value="onTabChange"
+          @update:search-value="onSearch"
+        />
+
+        <ListToolbar title="可安装插件" :count="filteredPlugins.length">
+          <template #actions>
+            <Segmented
+              class="market-sort"
+              :model-value="sortBy"
+              :options="sortOptions"
+              @update:model-value="onSortChange"
+            />
+          </template>
+        </ListToolbar>
+
+        <!-- 全宽列表（与已安装/技能列表同构；本地过滤，不发后端请求） -->
+        <EmptyStateCard
+          v-if="filteredPlugins.length === 0"
+          title="未找到插件"
+          :description="emptyPluginsDescription"
+        />
+        <div v-else class="market-list">
+          <!-- 行式条目与已安装/技能列表同构（PluginRow + trailing 安装按钮），描述完整多行展示 -->
+          <PluginRow
+            v-for="plugin in filteredPlugins"
+            :key="getPluginKey(plugin)"
+            :name="getPluginName(plugin)"
+            :description="getPluginDesc(plugin)"
+            :badges="rowBadges(plugin)"
+          >
+            <template #trailing>
               <AppButton
                 variant="primary"
                 size="small"
@@ -123,23 +139,10 @@
               >
                 {{ isInstalled(plugin) ? '已安装' : '安装' }}
               </AppButton>
-            </div>
-          </div>
-        </section>
+            </template>
+          </PluginRow>
+        </div>
       </div>
-
-      <!-- 无市场源空态 -->
-      <EmptyStateCard
-        v-else
-        title="暂无市场"
-        description="添加市场源以浏览和安装插件"
-      >
-        <template #primary>
-          <AppButton variant="primary" size="small" @click="handleAddMarket">
-            添加市场
-          </AppButton>
-        </template>
-      </EmptyStateCard>
 
       <!-- 删除市场确认（仅 Codex） -->
       <ConfirmDialog
@@ -159,17 +162,20 @@ import { ref, computed, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { usePluginStore } from '../../stores/plugin';
 import AppButton from '../ui/AppButton.vue';
-import Badge from '../ui/Badge.vue';
-import TextInput from '../ui/TextInput.vue';
+import Segmented from '../ui/Segmented.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
+import CountTabs from './ui/CountTabs.vue';
 import DetailHeader from './ui/DetailHeader.vue';
 import EmptyStateCard from './ui/EmptyStateCard.vue';
-import PluginIcon from './ui/PluginIcon.vue';
+import ListToolbar from './ui/ListToolbar.vue';
+import PluginRow from './ui/PluginRow.vue';
 import type {
   AvailablePluginView,
+  CountTabItem,
   MarketplaceSourceView,
+  PluginBadgeDescriptor,
 } from './pluginViewTypes';
 import { useToast } from '../../composables/useToast';
 
@@ -266,11 +272,80 @@ const allPlugins = computed<AvailablePluginView[]>(() => {
 
 const totalAvailableCount = computed(() => allPlugins.value.length);
 
-const filteredPlugins = computed<AvailablePluginView[]>(() => {
-  let plugins = [...allPlugins.value];
+// --- 两级分页状态（契约同技能页列表/详情分页）：sources=一级市场源列表，plugins=二级插件列表 ---
+const view = ref<'sources' | 'plugins'>('sources');
 
-  if (activeMarketId.value) {
-    plugins = plugins.filter((p) => p.marketplaceName === activeMarketId.value);
+// 二级安装状态页签：全部/未安装/已安装（计数真实；与技能页 CountTabs 同构）
+type StatusTab = 'all' | 'uninstalled' | 'installed';
+const statusTab = ref<StatusTab>('all');
+
+// 二级标题：进入具体市场源显示市场名，「全部市场」聚合态显示全部市场
+const activeMarketLabel = computed(() => activeMarketId.value || '全部市场');
+
+// 当前市场内插件（仅按市场过滤；页签计数与列表共用，搜索/状态过滤不参与）
+const marketPlugins = computed<AvailablePluginView[]>(() =>
+  activeMarketId.value
+    ? allPlugins.value.filter((p) => p.marketplaceName === activeMarketId.value)
+    : [...allPlugins.value],
+);
+
+// 二级 DetailHeader 徽章计数：当前市场内可安装总数
+const marketPluginCount = computed(() => marketPlugins.value.length);
+
+const installedInMarketCount = computed(
+  () => marketPlugins.value.filter((p) => isInstalled(p)).length,
+);
+
+const statusTabs = computed<CountTabItem[]>(() => [
+  { key: 'all', label: '全部', count: marketPlugins.value.length },
+  {
+    key: 'uninstalled',
+    label: '未安装',
+    count: marketPlugins.value.length - installedInMarketCount.value,
+  },
+  { key: 'installed', label: '已安装', count: installedInMarketCount.value },
+]);
+
+// 状态页签切换（与技能页一致：切换时清空搜索，避免残留过滤词）
+function onTabChange(key: string) {
+  statusTab.value = key as StatusTab;
+  searchQuery.value = '';
+}
+
+function onSearch(value: string) {
+  searchQuery.value = value;
+}
+
+// 一级「全部市场」聚合行 → 二级（跨源浏览/搜索）
+function openAllMarkets() {
+  setActiveMarketId(null);
+  enterPluginsView();
+}
+
+// 一级市场源行 → 二级（行进入语义，取代原页签的同源点击切换）
+function selectMarket(market: MarketplaceSourceView) {
+  setActiveMarketId(getMarketName(market));
+  enterPluginsView();
+}
+
+function enterPluginsView() {
+  statusTab.value = 'all';
+  searchQuery.value = '';
+  view.value = 'plugins';
+}
+
+// 二级 → 一级（← 返回市场列表 / 面包屑「插件市场」）
+function backToSources() {
+  view.value = 'sources';
+}
+
+const filteredPlugins = computed<AvailablePluginView[]>(() => {
+  let plugins = [...marketPlugins.value];
+
+  if (statusTab.value === 'installed') {
+    plugins = plugins.filter((p) => isInstalled(p));
+  } else if (statusTab.value === 'uninstalled') {
+    plugins = plugins.filter((p) => !isInstalled(p));
   }
 
   if (searchQuery.value.trim()) {
@@ -293,11 +368,29 @@ const filteredPlugins = computed<AvailablePluginView[]>(() => {
   return plugins;
 });
 
-// --- 市场源 helpers ---
-function getSourceKey(market: MarketplaceSourceView): string {
-  return getMarketName(market);
-}
+// 二级空态文案：搜索词优先提示，其次按状态页签/聚合态区分
+const emptyPluginsDescription = computed(() => {
+  if (searchQuery.value.trim()) return '尝试其他搜索词';
+  if (statusTab.value === 'installed') return '该市场暂无已安装的插件';
+  return activeMarketId.value ? '该市场暂无可安装插件' : '暂无可安装插件';
+});
 
+// 刷新中态（两级「刷新」按钮共用）
+const isLoading = computed(() =>
+  props.engine === 'claude' ? loadingCC.value : loadingCX.value
+);
+
+// 排序分段选项（Segmented 弱化切换）：Claude 提供安装量/名称，Codex 仅名称
+const sortOptions = computed(() =>
+  props.engine === 'claude'
+    ? [
+        { value: 'installs', label: '安装量' },
+        { value: 'name', label: '名称 A-Z' },
+      ]
+    : [{ value: 'name', label: '名称 A-Z' }],
+);
+
+// --- 市场源 helpers ---
 function getMarketName(market: MarketplaceSourceView): string {
   if (props.engine === 'claude') {
     return market.Name || market.name || 'Unknown';
@@ -305,11 +398,34 @@ function getMarketName(market: MarketplaceSourceView): string {
   return market.name || 'Unknown';
 }
 
+// 原始来源串（Codex：repo/url/source，可能为 \\?\ 前缀的 Windows 扩展长度路径）
+function getMarketRawSource(market: MarketplaceSourceView): string {
+  return market.repo || market.url || market.source || '';
+}
+
+// 来源类型徽章：远程 Git（URL）/ 内置（bundled 路径）/ 本地（其余路径）；无法判定时不渲染
+function getMarketTypeLabel(market: MarketplaceSourceView): string {
+  const raw = getMarketRawSource(market);
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return '远程 Git';
+  if (/^(\\\\\?\\|\\\\\.\\|\\\\|[a-z]:[\\/])/i.test(raw)) {
+    return /(^|[\\/])bundled/i.test(raw) ? '内置' : '本地';
+  }
+  return '';
+}
+
+// 剥离 Windows 扩展长度前缀（\\?\ / \\.\），\\?\ 绝不作为主文案裸露
+function sanitizeSourcePath(raw: string): string {
+  return raw.replace(/^(\\\\\?\\|\\\\\.\\)/, '');
+}
+
+// 显示用来源描述：Claude=Description；Codex=净化后的 repo/URL/路径（缺失回落「本地市场」）
 function getMarketDesc(market: MarketplaceSourceView): string {
   if (props.engine === 'claude') {
     return market.Description || market.description || '';
   }
-  return market.repo || market.url || market.source || '本地市场';
+  const raw = getMarketRawSource(market);
+  return raw ? sanitizeSourcePath(raw) : '本地市场';
 }
 
 function getPluginCountForMarket(market: MarketplaceSourceView): number {
@@ -317,13 +433,19 @@ function getPluginCountForMarket(market: MarketplaceSourceView): number {
   return allPlugins.value.filter((p) => p.marketplaceName === marketName).length;
 }
 
-function isSourceActive(market: MarketplaceSourceView): boolean {
-  return activeMarketId.value === getMarketName(market);
-}
-
-function selectMarket(market: MarketplaceSourceView) {
-  const name = getMarketName(market);
-  setActiveMarketId(activeMarketId.value === name ? null : name);
+// 一级市场源行徽章：来源类型（内置/本地/远程 Git，可判定时）+ 可安装计数
+function sourceRowBadges(market: MarketplaceSourceView): PluginBadgeDescriptor[] {
+  const badges: PluginBadgeDescriptor[] = [];
+  const typeLabel = getMarketTypeLabel(market);
+  if (typeLabel) {
+    badges.push({ text: typeLabel, type: 'type', color: 'plugin' });
+  }
+  badges.push({
+    text: `${getPluginCountForMarket(market)} 个可安装`,
+    type: 'scope',
+    variant: 'muted',
+  });
+  return badges;
 }
 
 // --- 插件条目 helpers ---
@@ -342,8 +464,9 @@ function getPluginDesc(plugin: AvailablePluginView): string {
   return plugin.description || '';
 }
 
-function getPluginAuthor(plugin: AvailablePluginView): string {
-  return plugin.author || '';
+// 来源徽章降级规则：author 缺失时显示市场源名称，保证每行都有来源标识
+function getPluginSourceLabel(plugin: AvailablePluginView): string {
+  return plugin.author || plugin.marketplaceName || '';
 }
 
 function formatInstallCount(plugin: AvailablePluginView): string {
@@ -351,6 +474,15 @@ function formatInstallCount(plugin: AvailablePluginView): string {
   if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
   if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
   return count.toString();
+}
+
+// 行徽章：Claude=安装量；Codex=来源（走 getPluginSourceLabel 的降级规则）
+function rowBadges(plugin: AvailablePluginView): PluginBadgeDescriptor[] {
+  if (props.engine === 'claude') {
+    return [{ text: `${formatInstallCount(plugin)} 次安装`, type: 'source', variant: 'muted' }];
+  }
+  const source = getPluginSourceLabel(plugin);
+  return source ? [{ text: source, type: 'source', variant: 'muted' }] : [];
 }
 
 // 已安装判定（真实推导，无后端字段；契约 §6.6）
@@ -367,6 +499,11 @@ function isInstalling(key: string): boolean {
 
 function setSortBy(sort: 'installs' | 'name') {
   sortBy.value = sort;
+}
+
+// Segmented 的 update 以 string 事件到达，在此收窄回排序联合类型
+function onSortChange(value: string) {
+  setSortBy(value === 'name' ? 'name' : 'installs');
 }
 
 // --- 动作 ---
@@ -436,12 +573,16 @@ onMounted(async () => {
   }
 });
 
-// 测试契约（§8）：expose 触发器
+// 测试契约（§8）：expose 触发器（两级导航 + 行为）
 defineExpose({
   handleAddMarket,
   goBack,
   handleInstall,
   selectMarket,
+  openAllMarkets,
+  backToSources,
+  onTabChange,
+  onSearch,
   setSortBy,
 });
 </script>
@@ -453,210 +594,74 @@ defineExpose({
   gap: 14px;
 }
 
-.market-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.market-search {
-  flex: 1;
-  min-width: 220px;
-  max-width: 320px;
-}
-
-.market-search :deep(.text-input) {
-  width: 100%;
-}
-
-.search-icon {
-  color: var(--tertiary);
-  font-size: 13px;
-}
-
-.sort-options {
-  display: flex;
-  gap: 6px;
-}
-
-/* 排序按钮：非选中态走 AppButton 的 outline variant；仅 active 态在此覆盖为强调色 */
-.sort-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.market-layout {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
-.market-source-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: calc(100vh - 300px);
-  overflow-y: auto;
-}
-
-.market-card {
-  position: relative;
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 10px;
-  padding: 10px 12px;
-  transition: border-color 0.15s, background 0.12s;
-}
-
-.market-card:hover {
-  border-color: var(--controlHover);
-}
-
-.market-card.active {
-  border-color: var(--accent);
-  background: rgba(0, 122, 255, 0.04);
-}
-
-.mk-main {
-  cursor: pointer;
-}
-
-.mk-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--label);
-  margin-bottom: 3px;
-}
-
-.mk-desc {
-  font-size: 11px;
-  color: var(--secondary);
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.mk-meta {
-  display: inline-block;
-  margin-top: 5px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--secondary);
-  background: var(--control);
-  border-radius: 999px;
-  padding: 1px 6px;
-  line-height: 1.4;
-}
-
-.mk-delete-btn {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: var(--tertiary);
-  font-size: 16px;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.12s;
-}
-
-.mk-delete-btn:hover {
-  color: var(--danger);
-  background: rgba(255, 59, 48, 0.1);
-}
-
-.market-plugin-pane {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 6px;
-  max-height: calc(100vh - 300px);
-  overflow-y: auto;
-}
-
-.market-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.market-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: var(--radius-md);
-}
-
-.market-row:hover {
-  background: var(--control);
-}
-
-.mr-main {
-  flex: 1;
-  min-width: 0;
+/* 一级市场源行列表：与技能列表同构（2px 紧凑堆叠 + 描述完整多行） */
+.market-source-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.mr-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+.market-source-list :deep(.plugin-row) {
+  align-items: flex-start;
 }
 
-.mr-name {
+.market-source-list :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  word-break: break-word;
+}
+
+/* 二级插件列表页：与技能页二级同节奏（14px 分节） */
+.market-plugin-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.back-btn {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.back-btn:hover {
+  text-decoration: underline;
+}
+
+/* 排序分段：复用 ui/Segmented 胶囊，仅在工具栏内收窄为紧凑尺寸（选中=白底浮起，非实心主色块） */
+.market-sort :deep(.seg) {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+/* 添加市场主按钮的＋图标 */
+.add-market-plus {
   font-size: 13px;
   font-weight: 600;
-  color: var(--label);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1;
 }
 
-.mr-desc {
-  margin: 0;
-  font-size: 12px;
-  color: var(--secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 行距与技能页一致（2px 紧凑堆叠） */
+.market-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.market-row :deep(button.btn) {
-  flex-shrink: 0;
+/* 与 SharedSkillsPanel 同款深穿透：行首对齐 + 描述完整多行展示 */
+.market-list :deep(.plugin-row) {
+  align-items: flex-start;
 }
 
-/* Scrollbar styling */
-.market-source-pane::-webkit-scrollbar,
-.market-plugin-pane::-webkit-scrollbar {
-  width: 8px;
-}
-
-.market-source-pane::-webkit-scrollbar-track,
-.market-plugin-pane::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.market-source-pane::-webkit-scrollbar-thumb,
-.market-plugin-pane::-webkit-scrollbar-thumb {
-  background: var(--separator);
-  border-radius: 4px;
-}
-
-.market-source-pane::-webkit-scrollbar-thumb:hover,
-.market-plugin-pane::-webkit-scrollbar-thumb:hover {
-  background: var(--tertiary);
+.market-list :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  word-break: break-word;
 }
 </style>

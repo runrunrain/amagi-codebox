@@ -1,10 +1,13 @@
-<!-- 共用 MCP 面板（共用 MCP 契约 §4.2）：~/.agents/.mcp.json 登记 + 四引擎分发的
-     四段式管理面板，复用 ui/* 与 extensions/ui/* 共享件（SharedSkillsPanel 同范式）。
-     ① DiagnosticBanner（errors=store.error）→ ② CountTabs（全部/stdio/远程/已分发/未分发
-     + 搜索）→ ③ ListToolbar（「共用 MCP N」+ 新增服务器/打开登记目录/刷新）→
-     ④ 内容区 ex-split（左列 PluginRow：类型徽章+名称+描述单行+分发摘要；右列详情：
-     DetailHeader+MetaGrid+env/headers 脱敏值（MaskedValue）+ 条目×引擎分发矩阵；
+<!-- 共用 MCP 面板（共用 MCP 契约 §4.2，列表/详情分页化）：~/.agents/.mcp.json 登记 +
+     四引擎分发，复用 ui/* 与 extensions/ui/* 共享件（SharedSkillsPanel 同范式）。
+     一级列表态四段式：① DiagnosticBanner（errors=store.error）→ ② CountTabs（全部/stdio/
+     远程/已分发/未分发 + 搜索）→ ③ ListToolbar（「共用 MCP N」+ 新增服务器/打开登记目录/
+     刷新）→ ④ 全宽列表（PluginRow：类型徽章+名称+描述完整多行，行尾「已分发 N」轻量徽章；
      空态：EmptyStateCard 两形态）。
+     二级详情态（点击行进入，替换子页内容区）：「← 返回列表」+ 面包屑「共用 MCP › <名>」+
+     居中窄单列（max-width 720px）：DetailHeader（大图标/名称/主操作：编辑/删除）→ 描述全文
+     → 配置 MetaGrid + env/headers 脱敏值（MaskedValue）→ 条目×引擎分发矩阵（启停分发/
+     重新分发/接管 force 流程全部在此）。新增/编辑表单仍从工具栏进入（弹窗形态不变）。
      分发语义（契约 §1.5）：状态只用「已分发到 N 个引擎/未分发/有更新」，绝不用连接类措辞
      （分发≠连通，本功能不做握手探测）。开关 off（禁用分发）与删除均带确认弹窗，含
      『将移除已写入各引擎配置的托管条目』警示；任一路径收到 ErrForeignModified（错误
@@ -17,68 +20,82 @@
     <ErrorState v-else-if="showInitialError" :message="error" :on-retry="load" />
 
     <template v-else>
-      <!-- ① 诊断横幅：errors=store 加载错误（有数据后的降级形态） -->
-      <DiagnosticBanner :errors="error ? [error] : []" />
+      <!-- 一级页面：纯列表态（activeName 为空；四段式①-④） -->
+      <template v-if="!activeItem">
+        <!-- ① 诊断横幅：errors=store 加载错误（有数据后的降级形态） -->
+        <DiagnosticBanner :errors="error ? [error] : []" />
 
-      <!-- ② 计数标签（计数来自 store 真实数据）+ 搜索框 -->
-      <CountTabs
-        :tabs="countTabs"
-        :model-value="activeTab"
-        search-placeholder="搜索名称或描述…"
-        :search-value="searchText"
-        @update:model-value="selectTab"
-        @update:search-value="onSearch"
-      />
+        <!-- ② 计数标签（计数来自 store 真实数据）+ 搜索框 -->
+        <CountTabs
+          :tabs="countTabs"
+          :model-value="activeTab"
+          search-placeholder="搜索名称或描述…"
+          :search-value="searchText"
+          @update:model-value="selectTab"
+          @update:search-value="onSearch"
+        />
 
-      <!-- ③ 工具栏 -->
-      <ListToolbar title="共用 MCP" :count="visibleEntries.length" :loading="isLoading">
-        <template #actions>
-          <AppButton variant="primary" size="small" @click="openCreateForm">
-            新增服务器
-          </AppButton>
-          <AppButton
-            variant="ghost"
-            size="small"
-            :disabled="!registryPath"
-            title="在系统文件管理器中打开登记文件所在目录"
-            @click="handleOpenRegistryDir"
-          >
-            打开登记目录
-          </AppButton>
-          <AppButton variant="ghost" size="small" :disabled="isLoading" @click="handleRefresh">
-            {{ isLoading ? '刷新中…' : '刷新' }}
-          </AppButton>
-        </template>
-      </ListToolbar>
+        <!-- ③ 工具栏（新增/编辑表单从这里进入，弹窗形态不变） -->
+        <ListToolbar title="共用 MCP" :count="visibleEntries.length" :loading="isLoading">
+          <template #actions>
+            <AppButton variant="primary" size="small" @click="openCreateForm">
+              新增服务器
+            </AppButton>
+            <AppButton
+              variant="ghost"
+              size="small"
+              :disabled="!registryPath"
+              title="在系统文件管理器中打开登记文件所在目录"
+              @click="handleOpenRegistryDir"
+            >
+              打开登记目录
+            </AppButton>
+            <AppButton variant="ghost" size="small" :disabled="isLoading" @click="handleRefresh">
+              {{ isLoading ? '刷新中…' : '刷新' }}
+            </AppButton>
+          </template>
+        </ListToolbar>
 
-      <!-- 与各 Agent 子页插件自带 MCP（只读）的区分说明（跨面板一致性，一句话副标题） -->
-      <p class="panel-hint">
-        用户级登记（~/.agents/.mcp.json）并按引擎分发；各 Agent 子页展示的是其插件自带的 MCP 服务器（只读）。
-      </p>
+        <!-- 与各 Agent 子页插件自带 MCP（只读）的区分说明（跨面板一致性，一句话副标题） -->
+        <p class="panel-hint">
+          用户级登记（~/.agents/.mcp.json）并按引擎分发；各 Agent 子页展示的是其插件自带的 MCP 服务器（只读）。
+        </p>
 
-      <!-- ④ 内容区：空态两形态（登记文件不存在 / 暂无条目）/ 列表+详情两列 -->
-      <EmptyStateCard
-        v-if="entries.length === 0"
-        :title="registryExists ? '暂无共用 MCP 服务器' : '登记文件不存在'"
-        :description="
-          registryExists
-            ? '~/.agents/.mcp.json 中 mcpServers 下的服务器条目会出现在这里'
-            : `登记文件 ${registryPath || '~/.agents/.mcp.json'} 不存在——新增第一条服务器后会自动创建`
-        "
-      />
+        <!-- ④ 内容区：空态两形态（登记文件不存在 / 暂无条目）/ 全宽列表 -->
+        <EmptyStateCard
+          v-if="entries.length === 0"
+          :title="registryExists ? '暂无共用 MCP 服务器' : '登记文件不存在'"
+          :description="
+            registryExists
+              ? '~/.agents/.mcp.json 中 mcpServers 下的服务器条目会出现在这里'
+              : `登记文件 ${registryPath || '~/.agents/.mcp.json'} 不存在——新增第一条服务器后会自动创建`
+          "
+        />
 
-      <div v-else class="ex-split">
-        <!-- 左列：服务器行（类型徽章+名称+描述单行+分发摘要；无行尾开关，分发在详情矩阵） -->
-        <div class="mcp-list">
-          <PluginRow
+        <div v-else class="mcp-list">
+          <!-- 行：图标+类型徽章+名称+描述完整多行，行尾「已分发 N」轻量徽章；
+               分发开关在详情页矩阵，行内不放 Switch -->
+          <div
             v-for="item in visibleEntries"
             :key="item.entry.name"
-            :name="item.entry.name"
-            :description="rowSummary(item)"
-            :badges="rowBadges(item)"
-            :active="activeName === item.entry.name"
+            class="mcp-row"
             @click="selectEntry(item)"
-          />
+          >
+            <PluginRow
+              :name="item.entry.name"
+              :description="item.entry.description ?? ''"
+              :badges="rowBadges(item)"
+            />
+            <span class="mcp-row-dist">
+              <Badge
+                v-if="distributedCount(item) > 0"
+                type="type"
+                color="capability"
+                :text="`已分发 ${distributedCount(item)}`"
+              />
+              <Badge v-else type="type" color="capability" text="未分发" />
+            </span>
+          </div>
           <EmptyState
             v-if="visibleEntries.length === 0"
             icon="◇"
@@ -86,93 +103,77 @@
             description="换个关键词或切换计数标签试试"
           />
         </div>
+      </template>
 
-        <!-- 右列：详情 -->
-        <div v-if="activeItem" class="mcp-detail">
-          <DetailHeader
-            :breadcrumb="[{ label: '共用 MCP', clickable: true }, { label: activeItem.entry.name }]"
-            :title="activeItem.entry.name"
-            :badges="rowBadges(activeItem)"
-            @back="clearActive"
-          >
-            <template #actions>
-              <AppButton variant="primary" size="small" @click="openEditForm(activeItem)">
-                编辑
-              </AppButton>
-              <AppButton variant="danger" size="small" @click="requestDelete(activeItem)">
-                删除
-              </AppButton>
-            </template>
-          </DetailHeader>
+      <!-- 二级页面：详情态（点击列表行进入，替换子页内容区；居中窄单列） -->
+      <div v-else class="mcp-detail-page">
+        <button type="button" class="back-btn" @click="clearActive">← 返回列表</button>
 
-          <p v-if="activeItem.entry.description" class="detail-desc">
-            {{ activeItem.entry.description }}
-          </p>
-          <p v-else class="detail-desc">该服务器暂无描述。</p>
+        <DetailHeader
+          :breadcrumb="[{ label: '共用 MCP', clickable: true }, { label: activeItem.entry.name }]"
+          :title="activeItem.entry.name"
+          :badges="rowBadges(activeItem)"
+          @back="clearActive"
+        >
+          <template #actions>
+            <AppButton variant="primary" size="small" @click="openEditForm(activeItem)">
+              编辑
+            </AppButton>
+            <AppButton variant="danger" size="small" @click="requestDelete(activeItem)">
+              删除
+            </AppButton>
+          </template>
+        </DetailHeader>
 
-          <!-- 已分发引擎徽章（实测自各引擎目标文件） -->
-          <div class="dist-badges">
-            <span class="dist-label">已分发引擎</span>
-            <template v-if="distributedEngineNames(activeItem).length">
-              <Badge
-                v-for="name in distributedEngineNames(activeItem)"
-                :key="name"
-                type="ver"
-                :text="name"
-              />
-            </template>
-            <Badge v-else type="type" color="capability" text="未分发" />
-          </div>
+        <p v-if="activeItem.entry.description" class="detail-desc">
+          {{ activeItem.entry.description }}
+        </p>
+        <p v-else class="detail-desc">该服务器暂无描述。</p>
 
-          <MetaGrid :items="metaItems" class="detail-meta" />
+        <MetaGrid :items="metaItems" class="detail-meta" />
 
-          <!-- env/headers 敏感值：键明文 + 值经 MaskedValue（渲染 HTML 不含明文值） -->
-          <div v-if="secretGroups.length" class="secret-groups">
-            <div v-for="group in secretGroups" :key="group.label" class="secret-group">
-              <div class="secret-group-head">{{ group.label }}（{{ group.pairs.length }} 项，值已脱敏）</div>
-              <div v-for="pair in group.pairs" :key="pair.key" class="secret-row">
-                <code class="secret-key">{{ pair.key }}</code>
-                <MaskedValue :value="pair.value" />
-              </div>
-            </div>
-          </div>
-
-          <!-- 分发矩阵（条目 × 引擎，契约 §1.3/§1.5）：每格状态 = §1.5 算法结果 -->
-          <div class="matrix">
-            <div class="matrix-head">引擎分发</div>
-            <div v-for="row in matrixRows" :key="row.meta.id" class="matrix-row">
-              <div class="matrix-engine">
-                <span class="matrix-engine-name">{{ row.meta.name }}</span>
-                <span v-if="row.meta.targetPath" class="matrix-engine-path">{{ row.meta.targetPath }}</span>
-              </div>
-              <div class="matrix-cell">
-                <!-- omp（excluded）：只读行，无开关 -->
-                <Switch
-                  v-if="row.meta.support !== 'excluded'"
-                  :model-value="row.cell.selected"
-                  :disabled="switchDisabled(row.cell)"
-                  @update:model-value="(value: boolean) => activeItem && toggleEngine(activeItem, row.meta, value)"
-                />
-                <Badge
-                  :type="statusBadge(row.cell).type"
-                  :color="statusBadge(row.cell).color"
-                  :text="statusBadge(row.cell).text"
-                />
-                <button
-                  v-if="row.cell.status === 'drift'"
-                  class="link-btn"
-                  @click="resyncEngine(activeItem, row.meta)"
-                >
-                  重新分发
-                </button>
-              </div>
-              <p v-if="cellReason(row)" class="matrix-reason">{{ cellReason(row) }}</p>
+        <!-- env/headers 敏感值：键明文 + 值经 MaskedValue（渲染 HTML 不含明文值） -->
+        <div v-if="secretGroups.length" class="secret-groups">
+          <div v-for="group in secretGroups" :key="group.label" class="secret-group">
+            <div class="secret-group-head">{{ group.label }}（{{ group.pairs.length }} 项，值已脱敏）</div>
+            <div v-for="pair in group.pairs" :key="pair.key" class="secret-row">
+              <code class="secret-key">{{ pair.key }}</code>
+              <MaskedValue :value="pair.value" />
             </div>
           </div>
         </div>
 
-        <div v-else class="mcp-detail-empty">
-          <EmptyState icon="◇" title="选择服务器" description="点击左侧服务器查看详细信息与引擎分发" />
+        <!-- 分发矩阵（条目 × 引擎，契约 §1.3/§1.5）：每格状态 = §1.5 算法结果 -->
+        <div class="matrix">
+          <div class="matrix-head">引擎分发</div>
+          <div v-for="row in matrixRows" :key="row.meta.id" class="matrix-row">
+            <div class="matrix-engine">
+              <span class="matrix-engine-name">{{ row.meta.name }}</span>
+              <span v-if="row.meta.targetPath" class="matrix-engine-path">{{ row.meta.targetPath }}</span>
+            </div>
+            <div class="matrix-cell">
+              <!-- omp（excluded）：只读行，无开关 -->
+              <Switch
+                v-if="row.meta.support !== 'excluded'"
+                :model-value="row.cell.selected"
+                :disabled="switchDisabled(row.cell)"
+                @update:model-value="(value: boolean) => activeItem && toggleEngine(activeItem, row.meta, value)"
+              />
+              <Badge
+                :type="statusBadge(row.cell).type"
+                :color="statusBadge(row.cell).color"
+                :text="statusBadge(row.cell).text"
+              />
+              <button
+                v-if="row.cell.status === 'drift'"
+                class="link-btn"
+                @click="resyncEngine(activeItem, row.meta)"
+              >
+                重新分发
+              </button>
+            </div>
+            <p v-if="cellReason(row)" class="matrix-reason">{{ cellReason(row) }}</p>
+          </div>
         </div>
       </div>
     </template>
@@ -476,17 +477,6 @@ function rowBadges(item: SharedMcpEntryOverview): PluginBadgeDescriptor[] {
     badges.push({ text: '名字不兼容分发', type: 'warning' });
   }
   return badges;
-}
-
-// 行描述 = 条目描述 · 分发摘要（单行截断；不含连接类措辞，分发≠连通）
-function rowSummary(item: SharedMcpEntryOverview): string {
-  const summary = !item.nameDistributable
-    ? '名字不兼容分发'
-    : distributedCount(item) > 0
-      ? `已分发到 ${distributedCount(item)} 个引擎`
-      : '未分发';
-  const description = (item.entry.description ?? '').trim();
-  return description ? `${description} · ${summary}` : summary;
 }
 
 const metaItems = computed<MetaItemView[]>(() => {
@@ -901,41 +891,69 @@ defineExpose({
   line-height: 1.5;
 }
 
-.ex-split {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
+/* 一级列表态：全宽列表。描述完整多行显示（覆盖 PluginRow 单行省略号，
+   ui/ 共享件本期不可改，:deep 覆写在消费侧落地）；整行可点入详情 */
 .mcp-list {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
+  gap: 2px;
 }
 
-/* 详情列 */
-.mcp-detail {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 16px 18px;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
+.mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.mcp-row:hover {
+  background: var(--control);
+}
+
+.mcp-row :deep(.plugin-row) {
+  flex: 1;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.mcp-row :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  word-break: break-word;
+}
+
+/* 行尾「已分发 N」轻量徽章（灰底轻量，分发≠连通，绝不用连接类措辞） */
+.mcp-row-dist {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 二级详情态：居中窄单列（max-width 720px，左右留白），页面自然滚动 */
+.mcp-detail-page {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.mcp-detail-empty {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  min-height: 200px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.back-btn {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.back-btn:hover {
+  text-decoration: underline;
 }
 
 .detail-desc {
@@ -948,19 +966,6 @@ defineExpose({
 .detail-meta {
   padding-top: 12px;
   border-top: 1px solid var(--separator);
-}
-
-/* 已分发引擎徽章行 */
-.dist-badges {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.dist-label {
-  font-size: 11px;
-  color: var(--tertiary);
 }
 
 /* env/headers 脱敏值区 */
@@ -1192,27 +1197,5 @@ textarea.form-input {
   font-size: 12px;
   color: var(--danger, #ff3b30);
   line-height: 1.5;
-}
-
-/* Scrollbar styling */
-.mcp-list::-webkit-scrollbar,
-.mcp-detail::-webkit-scrollbar {
-  width: 8px;
-}
-
-.mcp-list::-webkit-scrollbar-track,
-.mcp-detail::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.mcp-list::-webkit-scrollbar-thumb,
-.mcp-detail::-webkit-scrollbar-thumb {
-  background: var(--separator);
-  border-radius: 4px;
-}
-
-.mcp-list::-webkit-scrollbar-thumb:hover,
-.mcp-detail::-webkit-scrollbar-thumb:hover {
-  background: var(--tertiary);
 }
 </style>

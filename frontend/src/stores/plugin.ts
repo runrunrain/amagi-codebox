@@ -216,7 +216,7 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   // 子页切换（契约 §1.3）：setExtSubPage 是 extSubPage 的唯一写入口。
-  // - 同值守卫：左导航重击当前子页不得清 activePluginId / 重置 pluginView（防详情态被踢回列表）；
+  // - 同值守卫：顶部页签重击当前子页不得清 activePluginId / 重置 pluginView（防详情态被踢回列表）；
   // - 引擎子页：联动既有引擎切换契约——setPluginEngine（清 activePluginId）+
   //   setPluginView('installed') 重置回列表态（原 ExtensionsView handleEngineChange 契约平移）；
   // - shared-skills / shared-mcp 公共子页：不动引擎态（pluginEngine/pluginView/activePluginId 均保持）。

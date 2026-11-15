@@ -158,7 +158,7 @@ describe('Codex 列表态渲染（§6.2 差异点）', () => {
     expect(html).toContain('加载诊断：0 个错误，3 个警告');
   });
 
-  it('详情子项区只读：仅行开关，子项行无 switch（§5.3 Codex no-op）', async () => {
+  it('详情页替换列表：面包屑「Codex › 名称」+ 返回入口；子项行无 switch（§5.3 Codex no-op）', async () => {
     const store = usePluginStore();
     store.cxInstalled = [cxFixture({ id: 'c1@mk1', name: 'CxOne', marketplace: 'mk1', enabled: true })];
     store.activePluginId = 'c1@mk1';
@@ -174,9 +174,14 @@ describe('Codex 列表态渲染（§6.2 差异点）', () => {
     const { html } = await renderWithCapture(PluginInstalledPanel, { engine: 'codex' });
 
     expect(html).toContain('skill-x');
-    // 唯一的 switch 是列表行开关；子项行（SubItemRow）toggleable=false 不渲染开关
+    // 详情页替换内容区：列表行（及其行尾开关）不在输出中；子项行 toggleable=false
+    // 也不渲染开关（§5.3 Codex 子项禁用为后端 no-op）→ 全页无 switch
+    expect(html).not.toContain('plugin-row');
     const switchCount = (html.match(/role="switch"/g) ?? []).length;
-    expect(switchCount).toBe(1);
+    expect(switchCount).toBe(0);
+    // 面包屑引擎前缀 + 返回列表入口
+    expect(html).toContain('Codex</button>');
+    expect(html).toContain('← 返回列表');
   });
 
   it('Codex 空态文案', async () => {
@@ -188,8 +193,8 @@ describe('Codex 列表态渲染（§6.2 差异点）', () => {
   });
 });
 
-describe('Claude 详情态（§5.2 字段映射）', () => {
-  it('面包屑 + MetaGrid 六项 + 子项行', async () => {
+describe('Claude 详情态（§5.2 字段映射，activePluginId = 详情页态）', () => {
+  it('面包屑「Claude Code › 名称」+ 返回入口 + MetaGrid 六项 + 子项行，列表被详情页替换', async () => {
     const store = usePluginStore();
     store.ccInstalled = [ccFixture({ id: 'p1', enabled: false })];
     store.activePluginId = 'p1';
@@ -208,9 +213,12 @@ describe('Claude 详情态（§5.2 字段映射）', () => {
     } as unknown as typeof store.ccActivePluginDetail;
     const { html } = await renderWithCapture(PluginInstalledPanel, { engine: 'claude' });
 
-    // 面包屑（DetailHeader）
-    expect(html).toContain('插件');
+    // 面包屑（DetailHeader）：引擎段可点 + 返回列表入口
+    expect(html).toContain('Claude Code</button>');
     expect(html).toContain('Plugin One');
+    expect(html).toContain('← 返回列表');
+    // 详情页替换内容区：列表行不再渲染
+    expect(html).not.toContain('plugin-row');
     // 禁用态主操作为「启用」（§5.4）
     expect(html).toContain('启用');
     // MetaGrid：来源市场/版本/作用域/安装时间/最后更新/提交（short 8 位 mono）
@@ -224,6 +232,25 @@ describe('Claude 详情态（§5.2 字段映射）', () => {
     expect(html).not.toContain('abcdef1234567890</dd>');
     // 子项（SubItemRow）
     expect(html).toContain('sub-skill');
+  });
+
+  it('selectPlugin 进入详情页、clearActive 返回列表（activePluginId 语义升级为详情页态）', async () => {
+    const store = usePluginStore();
+    store.ccInstalled = [ccFixture({ id: 'p1', name: 'Alpha' })];
+    const { instances } = await renderWithCapture(PluginInstalledPanel, { engine: 'claude' });
+    const panel = instanceOf(instances, PluginInstalledPanel);
+
+    await panel.exposed?.selectPlugin(ccFixture({ id: 'p1', name: 'Alpha' }));
+    let html = await renderInstanceAgain(panel);
+    expect(html).toContain('dh-breadcrumb');
+    expect(html).toContain('← 返回列表');
+    expect(html).not.toContain('plugin-row');
+
+    panel.exposed?.clearActive();
+    html = await renderInstanceAgain(panel);
+    expect(html).toContain('plugin-row');
+    expect(html).not.toContain('dh-breadcrumb');
+    expect(html).not.toContain('← 返回列表');
   });
 });
 
@@ -246,16 +273,36 @@ describe('Claude MCP 资源页（§6.1.1，面板本地标签页）', () => {
     // 所属插件 enabled → 绿点（class 断言；颜色由 token 保证）
     expect(html).toContain('mcp-dot on');
   });
+
+  it('MCP 标签与详情页互斥：activePluginId 置位时切到 MCP 仍只渲染资源页', async () => {
+    const store = usePluginStore();
+    store.ccInstalled = [ccFixture({ id: 'p1', enabled: true, pluginType: 'mcp' })];
+    store.activePluginId = 'p1';
+    store.ccActivePluginDetail = {
+      p1: { mcpServers: { 'server-a': {} } },
+    } as unknown as typeof store.ccActivePluginDetail;
+
+    const { instances } = await renderWithCapture(PluginInstalledPanel, { engine: 'claude' });
+    const panel = instanceOf(instances, PluginInstalledPanel);
+    panel.exposed?.selectTab('mcp');
+    const html = await renderInstanceAgain(panel);
+
+    expect(html).toContain('server-a');
+    expect(html).not.toContain('dh-breadcrumb');
+    expect(html).not.toContain('← 返回列表');
+  });
 });
 
 describe('市场态（§6.6）', () => {
-  it('pluginView=market 渲染 PluginMarketPanel（面包屑返回入口）', async () => {
+  it('pluginView=market 渲染 PluginMarketPanel（面包屑返回入口；计数标签行不渲染）', async () => {
     const store = usePluginStore();
     store.pluginView = 'market';
     const { html } = await renderWithCapture(PluginInstalledPanel, { engine: 'claude' });
 
     expect(html).toContain('插件市场');
     expect(html).toContain('插件');
+    // 走查修复：市场视图内计数标签行不渲染（与引擎页签/面包屑三层冗余收敛，面包屑为唯一层级指示）
+    expect(html).not.toContain('ct-tab');
   });
 
   it('市场视图「添加市场」经 @add_market 转发链到达外层（§9 显式变更 ②④）', async () => {

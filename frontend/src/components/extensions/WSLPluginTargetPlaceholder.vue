@@ -2,7 +2,7 @@
   <div class="wsl-target-placeholder">
     <span class="placeholder-icon">{{ excluded ? '⊗' : '◇' }}</span>
     <div>
-      <strong>{{ cliLabel }}：{{ excluded ? 'WSL 目标已排除' : 'WSL 目标状态占位（未开放操作）' }}</strong>
+      <strong>{{ cliLabel }}：{{ excluded ? 'WSL 目标已排除' : 'WSL 目标暂未开放插件市场操作' }}</strong>
       <p>{{ detail }}</p>
       <p v-if="!excluded" class="placeholder-sub">WSL 内手动安装的插件不受影响。</p>
     </div>
@@ -28,11 +28,11 @@ const cliLabel = computed(() => cliLabels[props.cli] ?? props.cli);
 // 与后端契约同义的本地声明（诚实占位，不放大故障）。
 const fallbackEntry = computed<WSLPluginTargetEntry>(() =>
   props.cli === 'omp'
-    ? { cli: 'omp', support: 'excluded', detail: 'omp 不纳入 WSL 供给（B7 裁定保持关闭）' }
+    ? { cli: 'omp', support: 'excluded', detail: 'OMP 不纳入 WSL 供给，保持关闭' }
     : {
         cli: props.cli,
         support: 'status-placeholder',
-        detail: '该 CLI 的 WSL 侧原生操作契约未验证，不开放 WSL 目标操作入口',
+        detail: '该 CLI 的 WSL 侧插件操作尚未开放，暂不支持在此管理 WSL 目标',
       },
 );
 

@@ -1,8 +1,10 @@
 <!-- 契约 §6.1（Claude）/§6.2（Codex）双引擎插件管理面板，四段式布局：
      ① DiagnosticBanner（有错误/警告才出现）→ ② CountTabs（资源计数标签 + 搜索）→
      ③ ListToolbar（「已安装 N」+ 刷新/浏览插件市场/添加▾）→ ④ 内容区
-     （列表态：按市场分组 PluginRow + 右侧详情列；MCP 态：Claude 独有资源页；
-      市场态：PluginMarketPanel；空态：EmptyStateCard）。
+     （列表态：全宽按市场分组 PluginRow，描述完整多行显示；详情态：activePluginId
+      语义升级为「详情页态」——点击行替换内容区为居中窄单列二级详情页，返回清空
+      active 回列表；MCP 态：Claude 独有资源页；市场态：PluginMarketPanel；
+      空态：EmptyStateCard）。
      事件契约（§9 显式变更 ①④）：emit 恒为 'add_market'（ExtensionsView 监听 @add_market
      编译为 prop onAdd_market，camelCase 不命中）；市场视图转发监听同为 @add_market。
      首屏 Loading/Error 门控为 store 派生（契约 §8：SSR 测试不执行 onMounted）。 -->
@@ -20,8 +22,10 @@
       <!-- ① 诊断横幅：errors=引擎加载错误（有数据后的降级形态）；warnings=Codex 诊断/Claude MCP 惰性加载失败 -->
       <DiagnosticBanner :errors="diagnosticErrors" :warnings="diagnosticWarnings" />
 
-      <!-- ② 资源计数标签（Claude：插件|MCP|市场；Codex：插件|市场）+ 当前标签搜索框 -->
+      <!-- ② 资源计数标签（Claude：插件|MCP|市场；Codex：插件|市场）+ 当前标签搜索框。
+           市场态不渲染：市场视图内与引擎页签、面包屑构成三层冗余导航，改以面包屑为唯一层级指示 -->
       <CountTabs
+        v-if="!isMarketView"
         :tabs="countTabs"
         :model-value="activeTabKey"
         :search-placeholder="searchPlaceholder"
@@ -96,7 +100,72 @@
           </template>
         </div>
 
-        <!-- ④ 列表态 -->
+        <!-- ④ 详情页态：activePluginId 语义升级为「详情页态」——替换内容区为居中窄单列
+             （挂在 MCP 视图的 v-else-if 链上：MCP 资源页与详情页互斥，与旧分栏语义一致） -->
+        <div v-else-if="currentActivePlugin" class="plg-detail-page">
+          <div class="plg-detail-column">
+            <button type="button" class="plg-back" @click="clearActive">← 返回列表</button>
+            <DetailHeader
+              :breadcrumb="[
+                { label: engineLabel, clickable: true },
+                { label: currentActivePlugin.name },
+              ]"
+              :title="detailTitle"
+              :badges="detailBadges"
+              @back="clearActive"
+            >
+              <template #actions>
+                <!-- 主操作语义按数据实情（§5.4）：禁用→「启用」；启用→「更新」 -->
+                <AppButton
+                  v-if="!currentActivePlugin.enabled"
+                  variant="primary"
+                  size="small"
+                  :disabled="updating"
+                  @click="handleToggle(currentActivePlugin, true)"
+                >
+                  启用
+                </AppButton>
+                <AppButton
+                  v-else
+                  variant="primary"
+                  size="small"
+                  :disabled="updating || updateDisabled"
+                  :title="updateDisabled ? '该插件缺少市场来源信息，无法更新' : undefined"
+                  @click="handleUpdate"
+                >
+                  {{ updating ? '更新中…' : '更新' }}
+                </AppButton>
+                <AppButton variant="danger" size="small" :disabled="updating" @click="handleUninstall">
+                  卸载
+                </AppButton>
+              </template>
+            </DetailHeader>
+
+            <p v-if="detailDescription" class="detail-desc">{{ detailDescription }}</p>
+
+            <!-- Codex 重复诊断详情（§6.2） -->
+            <div
+              v-if="engine === 'codex' && hasDuplicateWarning(currentActivePlugin)"
+              class="duplicate-diagnostic-card"
+            >
+              <strong>重复诊断</strong>
+              <p>{{ getDuplicateWarning(currentActivePlugin) }}</p>
+            </div>
+
+            <!-- 子项列表（全宽使用；Claude 可切换 / Codex 只读，§5.3） -->
+            <PluginSubItemsPanel
+              v-if="hasManageableSubItems"
+              :engine="engine"
+              :plugin-detail="subItemsDetail"
+              @toggle-sub-item="handleToggleSubItem"
+            />
+
+            <!-- 元信息（§5.2） -->
+            <MetaGrid v-if="metaItems.length > 0" :items="metaItems" />
+          </div>
+        </div>
+
+        <!-- ④ 列表态：全宽行式列表（描述完整多行显示，不截断） -->
         <template v-else>
           <EmptyStateCard v-if="listedPlugins.length === 0" :title="emptyTitle" :description="emptyDesc">
             <template #primary>
@@ -111,100 +180,33 @@
             </template>
           </EmptyStateCard>
 
-          <div v-else class="ex-split">
-            <!-- 左列：按市场分组的行式列表 -->
-            <div class="plugin-list">
-              <template v-for="group in groupedPlugins" :key="group.marketplace">
-                <GroupHeader :title="group.marketplace" :count="group.plugins.length">
-                  <template #actions>
-                    <AppButton
-                      v-if="group.marketplace !== 'Unknown'"
-                      variant="ghost"
-                      size="small"
-                      :disabled="isMarketUpdating(group.marketplace)"
-                      @click.stop="handleUpdateMarket(group.marketplace)"
-                    >
-                      {{ isMarketUpdating(group.marketplace) ? '更新中…' : '更新市场' }}
-                    </AppButton>
-                  </template>
-                </GroupHeader>
-                <PluginRow
-                  v-for="plugin in group.plugins"
-                  :key="plugin.id"
-                  :name="plugin.name"
-                  :description="plugin.description"
-                  :badges="rowBadges(plugin)"
-                  :enabled="plugin.enabled"
-                  switch-visible
-                  :active="activePluginId === plugin.id"
-                  @click="selectPlugin(plugin)"
-                  @toggle="(value) => handleToggle(plugin, value)"
-                />
-              </template>
-            </div>
-
-            <!-- 右列：详情 -->
-            <div v-if="currentActivePlugin" class="plg-detail">
-              <DetailHeader
-                :breadcrumb="[{ label: '插件', clickable: true }, { label: currentActivePlugin.name }]"
-                :title="detailTitle"
-                :badges="detailBadges"
-                @back="clearActive"
-              >
+          <div v-else class="plugin-list">
+            <template v-for="group in groupedPlugins" :key="group.marketplace">
+              <GroupHeader :title="group.marketplace" :count="group.plugins.length">
                 <template #actions>
-                  <!-- 主操作语义按数据实情（§5.4）：禁用→「启用」；启用→「更新」 -->
                   <AppButton
-                    v-if="!currentActivePlugin.enabled"
-                    variant="primary"
+                    v-if="group.marketplace !== 'Unknown'"
+                    variant="ghost"
                     size="small"
-                    :disabled="updating"
-                    @click="handleToggle(currentActivePlugin, true)"
+                    :disabled="isMarketUpdating(group.marketplace)"
+                    @click.stop="handleUpdateMarket(group.marketplace)"
                   >
-                    启用
-                  </AppButton>
-                  <AppButton
-                    v-else
-                    variant="primary"
-                    size="small"
-                    :disabled="updating || updateDisabled"
-                    :title="updateDisabled ? '该插件缺少市场来源信息，无法更新' : undefined"
-                    @click="handleUpdate"
-                  >
-                    {{ updating ? '更新中…' : '更新' }}
-                  </AppButton>
-                  <AppButton variant="danger" size="small" :disabled="updating" @click="handleUninstall">
-                    卸载
+                    {{ isMarketUpdating(group.marketplace) ? '更新中…' : '更新市场' }}
                   </AppButton>
                 </template>
-              </DetailHeader>
-
-              <p v-if="detailDescription" class="detail-desc">{{ detailDescription }}</p>
-
-              <!-- Codex 重复诊断详情（§6.2） -->
-              <div
-                v-if="engine === 'codex' && hasDuplicateWarning(currentActivePlugin)"
-                class="duplicate-diagnostic-card"
-              >
-                <strong>重复诊断</strong>
-                <p>{{ getDuplicateWarning(currentActivePlugin) }}</p>
-              </div>
-
-              <!-- 子项列表（Claude 可切换 / Codex 只读，§5.3） -->
-              <div v-if="hasManageableSubItems" class="detail-subitems">
-                <PluginSubItemsPanel
-                  :engine="engine"
-                  :plugin-detail="subItemsDetail"
-                  @toggle-sub-item="handleToggleSubItem"
-                />
-              </div>
-
-              <!-- 元信息（§5.2） -->
-              <MetaGrid v-if="metaItems.length > 0" :items="metaItems" class="detail-meta" />
-            </div>
-
-            <div v-else class="plg-detail-empty">
-              <EmptyState icon="◇" title="选择插件" description="点击左侧插件查看详细信息" />
-            </div>
+              </GroupHeader>
+              <PluginRow
+                v-for="plugin in group.plugins"
+                :key="plugin.id"
+                :name="plugin.name"
+                :description="plugin.description"
+                :badges="rowBadges(plugin)"
+                :enabled="plugin.enabled"
+                switch-visible
+                @click="selectPlugin(plugin)"
+                @toggle="(value) => handleToggle(plugin, value)"
+              />
+            </template>
           </div>
         </template>
       </template>
@@ -257,7 +259,6 @@ import { usePluginStore } from '../../stores/plugin';
 import AppButton from '../ui/AppButton.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import Dialog from '../ui/Dialog.vue';
-import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import TextInput from '../ui/TextInput.vue';
@@ -306,7 +307,6 @@ const {
   ccLoadError,
   loadingCC,
   ccActivePluginDetail,
-  activePluginId,
   activePlugin: storeActivePlugin,
   cxInstalled,
   cxMarkets,
@@ -341,6 +341,9 @@ const {
 } = pluginStore;
 
 const { showSuccess, showError, showInfo } = useToast();
+
+// 详情页面包屑引擎前缀（列表↔详情分页化：「Claude Code › github」/「Codex › name@mk」）
+const engineLabel = computed(() => (props.engine === 'claude' ? 'Claude Code' : 'Codex'));
 
 // --- 本地面板状态（视图机/对话框/mutating，契约 §6.1：门控类状态一律 store 派生） ---
 // MCP 资源页为面板本地态（契约 §2：pluginView 值域保持 'installed'|'market' 不变）
@@ -423,15 +426,13 @@ const countTabs = computed<CountTabItem[]>(() => {
 const isMarketView = computed(() => pluginView.value === 'market');
 const isMcpView = computed(() => props.engine === 'claude' && resourceTab.value === 'mcp');
 
-const activeTabKey = computed(() =>
-  isMarketView.value ? 'market' : isMcpView.value ? 'mcp' : 'plugins'
-);
+// CountTabs 市场态不渲染（见模板注释），modelValue 只会取 plugins/mcp
+const activeTabKey = computed(() => (isMcpView.value ? 'mcp' : 'plugins'));
 
-// 搜索框（市场态由 PluginMarketPanel 自带搜索，CountTabs 搜索框隐藏）
-const searchPlaceholder = computed(() => {
-  if (isMarketView.value) return '';
-  return isMcpView.value ? '搜索服务器或所属插件' : '搜索插件名称或描述';
-});
+// 搜索框（市场态由 PluginMarketPanel 自带搜索）
+const searchPlaceholder = computed(() =>
+  isMcpView.value ? '搜索服务器或所属插件' : '搜索插件名称或描述'
+);
 
 function selectTab(key: string) {
   if (key === 'market') {
@@ -772,6 +773,7 @@ function getDuplicateWarning(plugin: InstalledPluginView): string {
 }
 
 // --- 动作 ---
+// 点击列表行 → 进入二级详情页（activePluginId 语义升级为「详情页态」），并预取详情
 async function selectPlugin(plugin: InstalledPluginView) {
   const id = plugin.id || '';
   setActivePlugin(id);
@@ -784,6 +786,7 @@ async function selectPlugin(plugin: InstalledPluginView) {
   }
 }
 
+// 「← 返回列表」/ 面包屑引擎段点击：清空 active 插件回列表
 function clearActive() {
   setActivePlugin(null);
 }
@@ -990,41 +993,52 @@ defineExpose({
   gap: 14px;
 }
 
-.ex-split {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
+/* 列表态：全宽行式列表 */
 .plugin-list {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
 }
 
-/* 详情列 */
-.plg-detail {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 16px 18px;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
+/* 描述完整多行显示（不截断、不加省略号）。ui/PluginRow 不可改（并行白名单），
+   在面板 scoped 内 :deep 覆盖单行省略样式；图标与行尾开关随多行描述顶对齐 */
+.plugin-list :deep(.plugin-row) {
+  align-items: flex-start;
+}
+
+.plugin-list :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* 详情页态：居中窄单列（约 720px，左右留白） */
+.plg-detail-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.plg-detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.plg-detail-empty {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  min-height: 200px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.plg-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.plg-back:hover {
+  text-decoration: underline;
 }
 
 .detail-desc {
@@ -1032,16 +1046,6 @@ defineExpose({
   font-size: 13px;
   color: var(--secondary);
   line-height: 1.6;
-}
-
-.detail-subitems {
-  padding-top: 4px;
-  border-top: 1px solid var(--separator);
-}
-
-.detail-meta {
-  padding-top: 12px;
-  border-top: 1px solid var(--separator);
 }
 
 /* Codex 重复诊断详情卡 */
@@ -1158,27 +1162,5 @@ defineExpose({
   font-size: 13px;
   font-weight: 500;
   color: var(--label);
-}
-
-/* Scrollbar styling */
-.plugin-list::-webkit-scrollbar,
-.plg-detail::-webkit-scrollbar {
-  width: 8px;
-}
-
-.plugin-list::-webkit-scrollbar-track,
-.plg-detail::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.plugin-list::-webkit-scrollbar-thumb,
-.plg-detail::-webkit-scrollbar-thumb {
-  background: var(--separator);
-  border-radius: 4px;
-}
-
-.plugin-list::-webkit-scrollbar-thumb:hover,
-.plg-detail::-webkit-scrollbar-thumb:hover {
-  background: var(--tertiary);
 }
 </style>

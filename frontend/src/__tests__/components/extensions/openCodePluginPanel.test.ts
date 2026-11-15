@@ -249,9 +249,11 @@ describe('详情态（list ⇄ detail，面板本地 ref）', () => {
     const html = await renderInstanceAgain(panel);
 
     expect(api.getOpenCodePluginDetails).toHaveBeenCalledWith(base.spec);
-    // 面包屑「插件 › 名称」：插件段可点
+    // 面包屑「OpenCode › 名称」：引擎段可点 + 返回列表入口；列表被详情页替换
     expect(html).toContain('dh-crumb-link');
-    expect(html).toContain('插件</button>');
+    expect(html).toContain('OpenCode</button>');
+    expect(html).toContain('← 返回列表');
+    expect(html).not.toContain('plugin-row');
     expect(html).toContain('demo-plugin');
     // 主操作恒为「检查更新」（无启停概念）
     expect(html).toContain('检查更新');
@@ -298,7 +300,9 @@ describe('详情态（list ⇄ detail，面板本地 ref）', () => {
     panel.exposed?.backToList();
     const html = await renderInstanceAgain(panel);
     expect(html).toContain('已安装');
+    expect(html).toContain('plugin-row');
     expect(html).not.toContain('dh-crumb-link');
+    expect(html).not.toContain('← 返回列表');
   });
 });
 

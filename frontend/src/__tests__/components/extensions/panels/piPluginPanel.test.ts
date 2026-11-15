@@ -240,9 +240,11 @@ describe('PiPluginPanel 渲染（store 种子驱动分支）', () => {
     });
     seedStore({ installed: [d], activeSource: d.source, details: { [d.source]: d } });
     const { html } = await renderWithCapture(PiPluginPanel);
-    // 面包屑：插件（可点）› 名称
+    // 面包屑「Pi › 名称」（引擎段可点）+ 返回列表入口；列表被详情页替换
     expect(html).toContain('dh-crumb-link');
-    expect(html).toContain('插件');
+    expect(html).toContain('Pi</button>');
+    expect(html).toContain('← 返回列表');
+    expect(html).not.toContain('plugin-row');
     expect(html).toContain('demo-pkg');
     // MetaGrid 标签-值（契约 §5.2 Pi 列）
     expect(html).toContain('包源');

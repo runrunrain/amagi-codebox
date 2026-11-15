@@ -39,100 +39,104 @@
       </ListToolbar>
 
       <!-- ④ 内容区 -->
-      <!-- 包详情态：面包屑 + DetailHeader + 描述 + 只读资源列表 + MetaGrid + 切换源卡片 -->
-      <div v-if="resourceTab === 'packages' && activePackage" class="package-detail">
-        <DetailHeader
-          :breadcrumb="[{ label: '插件', clickable: true }, { label: activePackage.name }]"
-          :title="activePackage.name"
-          :badges="detailBadges"
-          @back="closeDetail"
-        >
-          <template #actions>
-            <AppButton
-              variant="primary"
-              size="small"
-              :disabled="mutating || activePackage.sourceType === 'local'"
-              @click="handleUpdate"
-            >
-              {{ activePackage.sourceType === 'local' ? '本地直载' : (mutating ? '处理中…' : '更新') }}
-            </AppButton>
-            <AppButton variant="danger" size="small" :disabled="mutating" @click="showRemoveDialog = true">
-              移除
-            </AppButton>
-          </template>
-        </DetailHeader>
+      <!-- 包详情态：居中窄单列二级详情页（← 返回列表 + 「Pi › 包名」面包屑 +
+           DetailHeader + 描述 + 只读资源列表 + MetaGrid + 切换源卡片），替换内容区 -->
+      <div v-if="resourceTab === 'packages' && activePackage" class="detail-page">
+        <div class="detail-column">
+          <button type="button" class="detail-back" @click="closeDetail">← 返回列表</button>
+          <DetailHeader
+            :breadcrumb="[{ label: 'Pi', clickable: true }, { label: activePackage.name }]"
+            :title="activePackage.name"
+            :badges="detailBadges"
+            @back="closeDetail"
+          >
+            <template #actions>
+              <AppButton
+                variant="primary"
+                size="small"
+                :disabled="mutating || activePackage.sourceType === 'local'"
+                @click="handleUpdate"
+              >
+                {{ activePackage.sourceType === 'local' ? '本地直载' : (mutating ? '处理中…' : '更新') }}
+              </AppButton>
+              <AppButton variant="danger" size="small" :disabled="mutating" @click="showRemoveDialog = true">
+                移除
+              </AppButton>
+            </template>
+          </DetailHeader>
 
-        <p v-if="activePackage.description" class="detail-description">
-          {{ activePackage.description }}
-        </p>
+          <p v-if="activePackage.description" class="detail-description">
+            {{ activePackage.description }}
+          </p>
 
-        <div v-if="loadingDetail" class="detail-loading">正在读取包资源…</div>
-        <div v-else-if="isDetail(activePackage)" class="detail-section">
-          <div class="detail-section-title">包含资源</div>
-          <div v-if="activePackage.resources.length" class="resource-rows">
-            <SubItemRow
-              v-for="(item, index) in activePackage.resources"
-              :key="`${item.type}:${item.name}:${index}`"
-              :name="item.name"
-              :type-badge="resourceTypeLabel(item.type)"
-            />
-          </div>
-          <p v-else class="detail-hint">该包没有可展示的资源。</p>
-        </div>
-
-        <MetaGrid :items="detailMetaItems" />
-
-        <!-- 源类型切换：git ⇄ npm ⇄ 本地（remove+install 原子事务，失败自动回滚）。
-             功能与交互保留，样式 token 化（契约 §5.4/§6.4）。 -->
-        <div class="switch-source-card">
-          <div class="switch-source-head">
-            <span>切换源类型</span>
-            <span class="switch-source-tip">git ⇄ npm ⇄ 本地互转；旧实体保留，可随时切回</span>
-          </div>
-          <div class="switch-type-row">
-            <AppButton
-              v-for="t in switchTypes"
-              :key="t.value"
-              :variant="switchTargetType === t.value ? 'primary' : 'ghost'"
-              size="small"
-              :disabled="mutating || t.value === activePackage.sourceType"
-              @click="pickSwitchType(t.value)"
-            >
-              {{ t.label }}{{ activePackage.sourceType === t.value ? '（当前）' : '' }}
-            </AppButton>
-          </div>
-          <div v-if="switchTargetType" class="switch-input-row">
-            <label :for="`switch-source-${activePackage.sourceType}`">新源地址</label>
-            <input
-              :id="`switch-source-${activePackage.sourceType}`"
-              v-model="switchTargetSource"
-              class="module-input"
-              :placeholder="switchPlaceholder"
-              @keydown.enter="handleSwitchSource"
-            />
-            <div v-if="switchHistory.length" class="switch-history">
-              <span>历史：</span>
-              <code
-                v-for="h in switchHistory"
-                :key="h"
-                class="switch-history-item"
-                :title="`使用 ${h}`"
-                @click="switchTargetSource = h"
-              >{{ shortenSource(h) }}</code>
+          <div v-if="loadingDetail" class="detail-loading">正在读取包资源…</div>
+          <div v-else-if="isDetail(activePackage)" class="detail-section">
+            <div class="detail-section-title">包含资源</div>
+            <div v-if="activePackage.resources.length" class="resource-rows">
+              <SubItemRow
+                v-for="(item, index) in activePackage.resources"
+                :key="`${item.type}:${item.name}:${index}`"
+                :name="item.name"
+                :type-badge="resourceTypeLabel(item.type)"
+              />
             </div>
+            <p v-else class="detail-hint">该包没有可展示的资源。</p>
           </div>
-          <div v-if="switchTargetType" class="switch-actions">
-            <AppButton variant="ghost" size="small" :disabled="mutating" @click="cancelSwitch">
-              取消
-            </AppButton>
-            <AppButton
-              variant="primary"
-              size="small"
-              :disabled="mutating || !switchTargetSource.trim()"
-              @click="handleSwitchSource"
-            >
-              {{ mutating ? '切换中…' : '切换' }}
-            </AppButton>
+
+          <MetaGrid :items="detailMetaItems" />
+
+          <!-- 源类型切换：git ⇄ npm ⇄ 本地（remove+install 原子事务，失败自动回滚）。
+               功能与交互保留，样式 token 化（契约 §5.4/§6.4）。 -->
+          <div class="switch-source-card">
+            <div class="switch-source-head">
+              <span>切换源类型</span>
+              <span class="switch-source-tip">git ⇄ npm ⇄ 本地互转；旧实体保留，可随时切回</span>
+            </div>
+            <div class="switch-type-row">
+              <AppButton
+                v-for="t in switchTypes"
+                :key="t.value"
+                :variant="switchTargetType === t.value ? 'primary' : 'ghost'"
+                size="small"
+                :disabled="mutating || t.value === activePackage.sourceType"
+                @click="pickSwitchType(t.value)"
+              >
+                {{ t.label }}{{ activePackage.sourceType === t.value ? '（当前）' : '' }}
+              </AppButton>
+            </div>
+            <div v-if="switchTargetType" class="switch-input-row">
+              <label :for="`switch-source-${activePackage.sourceType}`">新源地址</label>
+              <input
+                :id="`switch-source-${activePackage.sourceType}`"
+                v-model="switchTargetSource"
+                class="module-input"
+                :placeholder="switchPlaceholder"
+                @keydown.enter="handleSwitchSource"
+              />
+              <div v-if="switchHistory.length" class="switch-history">
+                <span>历史：</span>
+                <code
+                  v-for="h in switchHistory"
+                  :key="h"
+                  class="switch-history-item"
+                  :title="`使用 ${h}`"
+                  @click="switchTargetSource = h"
+                >{{ shortenSource(h) }}</code>
+              </div>
+            </div>
+            <div v-if="switchTargetType" class="switch-actions">
+              <AppButton variant="ghost" size="small" :disabled="mutating" @click="cancelSwitch">
+                取消
+              </AppButton>
+              <AppButton
+                variant="primary"
+                size="small"
+                :disabled="mutating || !switchTargetSource.trim()"
+                @click="handleSwitchSource"
+              >
+                {{ mutating ? '切换中…' : '切换' }}
+              </AppButton>
+            </div>
           </div>
         </div>
       </div>
@@ -723,14 +727,45 @@ onMounted(() => {
   padding: 6px;
 }
 
-.package-detail {
+/* 描述完整多行显示（不截断、不加省略号）：ui/PluginRow 不可改，面板 scoped :deep 覆盖 */
+.package-rows :deep(.plugin-row) {
+  align-items: flex-start;
+}
+
+.package-rows :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* 详情页：居中窄单列（约 720px，左右留白） */
+.detail-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: var(--radius-card);
-  padding: 18px;
+}
+
+.detail-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.detail-back:hover {
+  text-decoration: underline;
 }
 
 .detail-description {

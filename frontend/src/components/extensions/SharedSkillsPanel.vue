@@ -1,8 +1,11 @@
-<!-- 共用技能面板（契约 §2.6）：~/.agents/skills 的四段式管理面板，复用 ui/* 共享件。
-     ① DiagnosticBanner（errors=store.error）→ ② CountTabs（全部/已启用/已禁用 + 搜索）→
-     ③ ListToolbar（「共用技能 N」+ 打开技能根目录/刷新）→ ④ 内容区
-     （列表态：PluginRow + 启停 Switch + 版本/托管徽章；详情态：DetailHeader+MetaGrid+描述；
-      空态：EmptyStateCard）。
+<!-- 共用技能面板（契约 §2.6，列表/详情分页化）：~/.agents/skills 的管理面板，
+     复用 ui/* 共享件。一级列表态为四段式：① DiagnosticBanner（errors=store.error）→
+     ② CountTabs（全部/已启用/已禁用 + 搜索）→ ③ ListToolbar（「共用技能 N」+
+     打开技能根目录/刷新）→ ④ 全宽列表（PluginRow：图标/名称+徽章/描述完整多行/
+     行尾启停 Switch；空态：EmptyStateCard）。
+     二级详情态（点击行进入，替换子页内容区）：「← 返回列表」+ 面包屑
+     「共用技能 › <名>」+ 居中窄单列（max-width 720px）：DetailHeader（大图标/名称/
+     主操作：启停/打开目录/删除）→ 描述全文 → MetaGrid（版本/作者/路径/托管状态等）。
      启停/删除为目录移动/永久删除（对读取 ~/.agents/skills 的 CLI 立即生效），均带确认
      弹窗（文案契约 §2.6）；managed（amagi-codebox 自带）不弹窗不调 API，toast 引导到
      设置 → 命令行访问。首屏 Loading/Error 门控照抄 PluginInstalledPanel（store 派生，
@@ -18,41 +21,41 @@
     />
 
     <template v-else>
-      <!-- ① 诊断横幅：errors=store 加载错误（有数据后的降级形态） -->
-      <DiagnosticBanner :errors="error ? [error] : []" />
+      <!-- 一级页面：纯列表态（activeSkillName 为空；四段式①-④） -->
+      <template v-if="!activeSkill">
+        <!-- ① 诊断横幅：errors=store 加载错误（有数据后的降级形态） -->
+        <DiagnosticBanner :errors="error ? [error] : []" />
 
-      <!-- ② 计数标签（已禁用为 0 时仍显示，计数真实）+ 搜索框 -->
-      <CountTabs
-        :tabs="countTabs"
-        :model-value="activeTab"
-        search-placeholder="搜索技能名或描述…"
-        :search-value="searchText"
-        @update:model-value="selectTab"
-        @update:search-value="onSearch"
-      />
+        <!-- ② 计数标签（已禁用为 0 时仍显示，计数真实）+ 搜索框 -->
+        <CountTabs
+          :tabs="countTabs"
+          :model-value="activeTab"
+          search-placeholder="搜索技能名或描述…"
+          :search-value="searchText"
+          @update:model-value="selectTab"
+          @update:search-value="onSearch"
+        />
 
-      <!-- ③ 工具栏 -->
-      <ListToolbar title="共用技能" :count="visibleSkills.length" :loading="isLoading">
-        <template #actions>
-          <AppButton variant="ghost" size="small" @click="handleOpenRoot">
-            打开技能根目录
-          </AppButton>
-          <AppButton variant="ghost" size="small" :disabled="isLoading" @click="load">
-            {{ isLoading ? '刷新中…' : '刷新' }}
-          </AppButton>
-        </template>
-      </ListToolbar>
+        <!-- ③ 工具栏 -->
+        <ListToolbar title="共用技能" :count="visibleSkills.length" :loading="isLoading">
+          <template #actions>
+            <AppButton variant="ghost" size="small" @click="handleOpenRoot">
+              打开技能根目录
+            </AppButton>
+            <AppButton variant="ghost" size="small" :disabled="isLoading" @click="load">
+              {{ isLoading ? '刷新中…' : '刷新' }}
+            </AppButton>
+          </template>
+        </ListToolbar>
 
-      <!-- ④ 内容区：空态 / 列表+详情两列 -->
-      <EmptyStateCard
-        v-if="skills.length === 0"
-        title="暂无共用技能"
-        description="~/.agents/skills 下的技能目录会自动出现在这里"
-      />
+        <!-- ④ 内容区：空态 / 全宽列表 -->
+        <EmptyStateCard
+          v-if="skills.length === 0"
+          title="暂无共用技能"
+          description="~/.agents/skills 下的技能目录会自动出现在这里"
+        />
 
-      <div v-else class="ex-split">
-        <!-- 左列：技能行（图标/名称+徽章/描述/启停 Switch） -->
-        <div class="skill-list">
+        <div v-else class="skill-list">
           <PluginRow
             v-for="skill in visibleSkills"
             :key="skill.name"
@@ -61,7 +64,6 @@
             :badges="rowBadges(skill)"
             :enabled="skill.enabled"
             switch-visible
-            :active="activeSkillName === skill.name"
             @click="selectSkill(skill)"
             @toggle="(value) => handleToggle(skill, value)"
           />
@@ -72,41 +74,39 @@
             description="换个关键词或切换计数标签试试"
           />
         </div>
+      </template>
 
-        <!-- 右列：详情 -->
-        <div v-if="activeSkill" class="skill-detail">
-          <DetailHeader
-            :breadcrumb="[{ label: '共用技能', clickable: true }, { label: activeSkill.displayName }]"
-            :title="activeSkill.displayName"
-            :badges="rowBadges(activeSkill)"
-            @back="clearActive"
-          >
-            <template #actions>
-              <AppButton
-                variant="primary"
-                size="small"
-                @click="handleToggle(activeSkill, !activeSkill.enabled)"
-              >
-                {{ activeSkill.enabled ? '停用' : '启用' }}
-              </AppButton>
-              <AppButton variant="ghost" size="small" @click="handleOpenFolder(activeSkill)">
-                打开目录
-              </AppButton>
-              <AppButton variant="danger" size="small" @click="requestDelete(activeSkill)">
-                删除
-              </AppButton>
-            </template>
-          </DetailHeader>
+      <!-- 二级页面：详情态（点击列表行进入，替换子页内容区；居中窄单列） -->
+      <div v-else class="skill-detail-page">
+        <button type="button" class="back-btn" @click="clearActive">← 返回列表</button>
 
-          <p v-if="activeSkill.description" class="detail-desc">{{ activeSkill.description }}</p>
-          <p v-else class="detail-desc">该技能暂无描述。</p>
+        <DetailHeader
+          :breadcrumb="[{ label: '共用技能', clickable: true }, { label: activeSkill.displayName }]"
+          :title="activeSkill.displayName"
+          :badges="rowBadges(activeSkill)"
+          @back="clearActive"
+        >
+          <template #actions>
+            <AppButton
+              variant="primary"
+              size="small"
+              @click="handleToggle(activeSkill, !activeSkill.enabled)"
+            >
+              {{ activeSkill.enabled ? '停用' : '启用' }}
+            </AppButton>
+            <AppButton variant="ghost" size="small" @click="handleOpenFolder(activeSkill)">
+              打开目录
+            </AppButton>
+            <AppButton variant="danger" size="small" @click="requestDelete(activeSkill)">
+              删除
+            </AppButton>
+          </template>
+        </DetailHeader>
 
-          <MetaGrid v-if="metaItems.length > 0" :items="metaItems" class="detail-meta" />
-        </div>
+        <p v-if="activeSkill.description" class="detail-desc">{{ activeSkill.description }}</p>
+        <p v-else class="detail-desc">该技能暂无描述。</p>
 
-        <div v-else class="skill-detail-empty">
-          <EmptyState icon="◇" title="选择技能" description="点击左侧技能查看详细信息" />
-        </div>
+        <MetaGrid v-if="metaItems.length > 0" :items="metaItems" class="detail-meta" />
       </div>
     </template>
 
@@ -397,41 +397,47 @@ defineExpose({
   gap: 14px;
 }
 
-.ex-split {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
+/* 一级列表态：全宽列表行。描述完整多行显示（覆盖 PluginRow 单行省略号，
+   ui/ 共享件本期不可改，:deep 覆写在消费侧落地） */
 .skill-list {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
+  gap: 2px;
 }
 
-/* 详情列 */
-.skill-detail {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 16px 18px;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
+.skill-list :deep(.plugin-row) {
+  align-items: flex-start;
+}
+
+.skill-list :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  word-break: break-word;
+}
+
+/* 二级详情态：居中窄单列（max-width 720px，左右留白），页面自然滚动 */
+.skill-detail-page {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.skill-detail-empty {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  min-height: 200px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.back-btn {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.back-btn:hover {
+  text-decoration: underline;
 }
 
 .detail-desc {
@@ -444,27 +450,5 @@ defineExpose({
 .detail-meta {
   padding-top: 12px;
   border-top: 1px solid var(--separator);
-}
-
-/* Scrollbar styling */
-.skill-list::-webkit-scrollbar,
-.skill-detail::-webkit-scrollbar {
-  width: 8px;
-}
-
-.skill-list::-webkit-scrollbar-track,
-.skill-detail::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.skill-list::-webkit-scrollbar-thumb,
-.skill-detail::-webkit-scrollbar-thumb {
-  background: var(--separator);
-  border-radius: 4px;
-}
-
-.skill-list::-webkit-scrollbar-thumb:hover,
-.skill-detail::-webkit-scrollbar-thumb:hover {
-  background: var(--tertiary);
 }
 </style>

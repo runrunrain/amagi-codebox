@@ -1,8 +1,14 @@
 /**
- * PluginMarketPanel（市场视图，仅 Claude/Codex）单测（契约 §6.6/§8）：
+ * PluginMarketPanel（市场视图，仅 Claude/Codex，两级分页）单测（契约 §6.6/§8）：
+ *  - 一级＝市场源列表（PluginRow 行：名称/类型徽章/可安装计数/净化路径描述）；
+ *    二级＝市场内插件列表（← 返回 + 面包屑市场名 + 状态页签 + 全宽行）；
  *  - 已安装判定真实推导：Claude 按名称命中 → 按钮「已安装」禁用态，未命中 → 「安装」；
  *  - 排序：Claude 提供安装量/名称，Codex 仅名称（CodexAvailablePlugin 无 installCount）；
- *  - 安装量徽章 K/M 缩写；市场源列表「{n} 个可安装」计数；
+ *    排序控件为 ui/Segmented 弱化分段（选中=白底浮起 seg active，非实心主色块）；
+ *  - 安装量徽章 K/M 缩写；\\?\ 扩展长度前缀剥离为一级行描述、来源类型徽章
+ *    （内置/本地/远程 Git）；
+ *  - 两级联动：selectMarket 进入二级（标题/计数切换），backToSources 恢复一级；
+ *  - 来源徽章降级：author 缺失时回落市场源名称，每行都有来源标识；
  *  - expose：handleAddMarket → emit('add_market', engine)、goBack → emit('back')、
  *    handleInstall → installCcPlugin(name) / installCxPlugin(id, marketplace)。
  */
@@ -34,7 +40,7 @@ import PluginMarketPanel from '../../../../components/extensions/PluginMarketPan
 import { usePluginStore } from '../../../../stores/plugin';
 import { plugin, codexplugin } from '../../../../../wailsjs/go/models';
 import type { AvailablePluginView } from '../../../../components/extensions/pluginViewTypes';
-import { instanceOf, renderWithCapture } from '../ui/testUtils';
+import { instanceOf, renderInstanceAgain, renderWithCapture } from '../ui/testUtils';
 
 function ccInstalledFixture(overrides: Partial<plugin.InstalledPlugin> = {}): plugin.InstalledPlugin {
   return {
@@ -67,7 +73,7 @@ beforeEach(() => {
 });
 
 describe('市场视图渲染', () => {
-  it('Claude：已安装推导（名称命中 →「已安装」；未命中 →「安装」）+ 安装量 K 缩写', async () => {
+  it('Claude：一级市场源行 + 进入二级后已安装推导与安装量 K 缩写', async () => {
     const store = usePluginStore();
     store.ccMarkets = [{ Name: 'official', Description: '官方市场' }];
     store.ccInstalled = [ccInstalledFixture()];
@@ -76,33 +82,47 @@ describe('市场视图渲染', () => {
       { name: 'NewOne', pluginId: 'new', marketplaceName: 'official', installCount: 2, description: '新的那个' },
     ] as unknown as typeof store.ccAvailable;
 
-    const { html } = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
+    const { html, instances } = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
+    const panel = instanceOf(instances, PluginMarketPanel);
 
-    expect(html).toContain('已安装');
-    // 去掉「已安装」后仍应有可安装条目的「安装」按钮（两种状态并存）
-    expect(html.replaceAll('已安装', '')).toContain('安装');
-    expect(html).toContain('NewOne');
-    // 安装量徽章 K/M 缩写（1500 → 1.5K）
-    expect(html).toContain('1.5K 次安装');
-    // 市场源列表与「{n} 个可安装」计数
-    expect(html).toContain('official');
+    // 一级市场源行：名称 + Description 完整展示 + 可安装计数徽章
+    expect(html).toMatch(/plugin-row-name[^>]*>official</);
     expect(html).toContain('官方市场');
     expect(html).toContain('2 个可安装');
+
+    // 二级插件列表：已安装推导（名称命中 →「已安装」；未命中 →「安装」两种状态并存）
+    panel.exposed?.selectMarket({ Name: 'official' });
+    const listHtml = await renderInstanceAgain(panel);
+    expect(listHtml).toContain('已安装');
+    expect(listHtml.replaceAll('已安装', '')).toContain('安装');
+    expect(listHtml).toContain('NewOne');
+    // 安装量徽章 K/M 缩写（1500 → 1.5K）
+    expect(listHtml).toContain('1.5K 次安装');
   });
 
-  it('Claude 提供安装量排序，Codex 仅名称排序', async () => {
+  it('Claude 提供安装量排序，Codex 仅名称排序（ui/Segmented 弱化分段选中态）', async () => {
     const claudeStore = usePluginStore();
     claudeStore.ccMarkets = [{ Name: 'official' }];
     const claude = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
-    expect(claude.html).toContain('安装量');
-    expect(claude.html).toContain('名称 A-Z');
+    const claudePanel = instanceOf(claude.instances, PluginMarketPanel);
+    claudePanel.exposed?.selectMarket({ Name: 'official' });
+    const claudeHtml = await renderInstanceAgain(claudePanel);
+    expect(claudeHtml).toContain('安装量');
+    expect(claudeHtml).toContain('名称 A-Z');
+    // 分段切换选中态=白底浮起胶囊（seg active），不再是实心主色块（sort-btn 不回归）
+    expect(claudeHtml).toContain('seg active');
+    expect(claudeHtml).not.toContain('sort-btn');
 
     setActivePinia(createPinia());
     const codexStore = usePluginStore();
     codexStore.cxMarkets = [{ name: 'mk1' }] as codexplugin.CodexMarketplace[];
     const codex = await renderWithCapture(PluginMarketPanel, { engine: 'codex' });
-    expect(codex.html).not.toContain('安装量');
-    expect(codex.html).toContain('名称 A-Z');
+    const codexPanel = instanceOf(codex.instances, PluginMarketPanel);
+    codexPanel.exposed?.selectMarket({ name: 'mk1' });
+    const codexHtml = await renderInstanceAgain(codexPanel);
+    expect(codexHtml).not.toContain('安装量');
+    expect(codexHtml).toContain('名称 A-Z');
+    expect(codexHtml).toContain('seg active');
   });
 
   it('Codex：按 pluginId/name 命中已安装 → 「已安装」', async () => {
@@ -114,7 +134,10 @@ describe('市场视图渲染', () => {
       { pluginId: 'other@mk', name: 'Other', marketplaceName: 'mk' },
     ];
 
-    const { html } = await renderWithCapture(PluginMarketPanel, { engine: 'codex' });
+    const { instances } = await renderWithCapture(PluginMarketPanel, { engine: 'codex' });
+    const panel = instanceOf(instances, PluginMarketPanel);
+    panel.exposed?.selectMarket({ name: 'mk' });
+    const html = await renderInstanceAgain(panel);
     expect(html).toContain('已安装');
     expect(html.replaceAll('已安装', '')).toContain('安装');
     expect(html).toContain('Other');
@@ -127,6 +150,78 @@ describe('市场视图渲染', () => {
     const { html } = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
     expect(html).toContain('暂无市场');
     expect(html).toContain('添加市场源以浏览和安装插件');
+  });
+});
+
+describe('市场源呈现与右栏联动（UI 走查修复）', () => {
+  it('Codex 一级市场源行：\\\\?\\ 前缀剥离 + 来源类型徽章（内置/本地/远程 Git）', async () => {
+    const store = usePluginStore();
+    store.cxMarkets = [
+      { name: 'openai-curated', source: '\\\\?\\C:\\Users\\dev\\.codex\\.tmp\\bundled-openai' },
+      { name: 'community', repo: 'https://github.com/foo/market' },
+      { name: 'localmk', source: 'C:\\markets\\local' },
+    ] as unknown as codexplugin.CodexMarketplace[];
+
+    const { html } = await renderWithCapture(PluginMarketPanel, { engine: 'codex' });
+
+    // \\?\ 扩展长度前缀绝不作为主文案裸露，净化路径作为行描述完整展示
+    expect(html).not.toContain('\\\\?\\');
+    expect(html).toContain('C:\\Users\\dev\\.codex\\.tmp\\bundled-openai');
+    // 来源类型徽章：bundled 路径 → 内置；URL → 远程 Git；本地盘符路径 → 本地
+    expect(html).toContain('内置');
+    expect(html).toContain('远程 Git');
+    expect(html).toContain('本地');
+  });
+
+  it('两级联动：一级市场源列表 → 二级标题/计数切换，返回恢复一级', async () => {
+    const store = usePluginStore();
+    store.cxMarkets = [
+      { name: 'openai-curated', source: 'https://example.com/curated' },
+      { name: 'community', repo: 'https://github.com/foo/market' },
+    ] as unknown as codexplugin.CodexMarketplace[];
+    store.cxAvailable = [
+      { pluginId: 'a@openai-curated', name: 'A', marketplaceName: 'openai-curated' },
+      { pluginId: 'b@openai-curated', name: 'B', marketplaceName: 'openai-curated' },
+      { pluginId: 'c@community', name: 'C', marketplaceName: 'community' },
+    ];
+
+    const { instances } = await renderWithCapture(PluginMarketPanel, { engine: 'codex' });
+    const panel = instanceOf(instances, PluginMarketPanel);
+
+    // 一级：市场源工具栏（计数=市场源数，「全部市场」聚合行不计入）
+    let html = await renderInstanceAgain(panel);
+    expect(html).toMatch(/class="lt-title"[^>]*>市场源</);
+    expect(html).toMatch(/class="lt-count"[^>]*>2</);
+
+    panel.exposed?.selectMarket({ name: 'openai-curated' });
+    html = await renderInstanceAgain(panel);
+    // 二级：面包屑尾段与标题=市场名；可安装插件计数=该市场内条数
+    expect(html).toMatch(/dh-crumb-tail[^>]*>openai-curated</);
+    expect(html).toMatch(/class="dh-title"[^>]*>openai-curated</);
+    expect(html).toMatch(/class="lt-title"[^>]*>可安装插件</);
+    expect(html).toMatch(/class="lt-count"[^>]*>2</);
+
+    panel.exposed?.backToSources();
+    html = await renderInstanceAgain(panel);
+    expect(html).toMatch(/class="lt-title"[^>]*>市场源</);
+  });
+
+  it('来源徽章降级：author 缺失时回落市场源名称，保证每行都有来源标识', async () => {
+    const store = usePluginStore();
+    store.cxMarkets = [{ name: 'mk' }] as codexplugin.CodexMarketplace[];
+    store.cxAvailable = [
+      { pluginId: 'a@mk', name: 'WithAuthor', marketplaceName: 'mk', author: 'OpenAI' },
+      { pluginId: 'b@mk', name: 'NoAuthor', marketplaceName: 'mk' },
+    ];
+
+    const { instances } = await renderWithCapture(PluginMarketPanel, { engine: 'codex' });
+    const panel = instanceOf(instances, PluginMarketPanel);
+    panel.exposed?.selectMarket({ name: 'mk' });
+    const html = await renderInstanceAgain(panel);
+
+    expect(html).toContain('OpenAI');
+    // NoAuthor 行的来源徽章回落为市场源名称 mk（行结构与技能页同构：PluginRow）
+    expect(html).toMatch(/plugin-row-name[^>]*>NoAuthor<\/span>[\s\S]{0,400}?source-badge[^>]*>mk</);
   });
 });
 

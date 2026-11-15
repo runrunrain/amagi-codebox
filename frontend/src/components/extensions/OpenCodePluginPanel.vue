@@ -56,62 +56,66 @@
         </EmptyStateCard>
       </div>
 
-      <!-- 详情态：面包屑 + DetailHeader + 描述 + 资源汇总徽章行 + 只读子项 + MetaGrid -->
-      <div v-else-if="activePlugin" class="detail-pane">
-        <DetailHeader
-          :breadcrumb="detailBreadcrumb"
-          :title="activePlugin.name"
-          :badges="detailBadges"
-          @back="backToList"
-        >
-          <template #actions>
-            <AppButton
-              variant="primary"
-              size="small"
-              :disabled="mutating || activePlugin.source === 'file'"
-              @click="handleUpdate"
-            >
-              {{ activePlugin.source === 'file' ? '本地直载' : (mutating ? '处理中…' : '检查更新') }}
-            </AppButton>
-            <AppButton
-              variant="danger"
-              size="small"
-              :disabled="mutating"
-              @click="showUninstallDialog = true"
-            >
-              卸载
-            </AppButton>
+      <!-- 详情态：居中窄单列二级详情页（← 返回列表 + 引擎名面包屑 + DetailHeader +
+           描述 + 资源汇总徽章行 + 只读子项 + MetaGrid），替换内容区 -->
+      <div v-else-if="activePlugin" class="detail-page">
+        <div class="detail-column">
+          <button type="button" class="detail-back" @click="backToList">← 返回列表</button>
+          <DetailHeader
+            :breadcrumb="detailBreadcrumb"
+            :title="activePlugin.name"
+            :badges="detailBadges"
+            @back="backToList"
+          >
+            <template #actions>
+              <AppButton
+                variant="primary"
+                size="small"
+                :disabled="mutating || activePlugin.source === 'file'"
+                @click="handleUpdate"
+              >
+                {{ activePlugin.source === 'file' ? '本地直载' : (mutating ? '处理中…' : '检查更新') }}
+              </AppButton>
+              <AppButton
+                variant="danger"
+                size="small"
+                :disabled="mutating"
+                @click="showUninstallDialog = true"
+              >
+                卸载
+              </AppButton>
+            </template>
+          </DetailHeader>
+
+          <p v-if="activePlugin.description" class="detail-description">
+            {{ activePlugin.description }}
+          </p>
+
+          <div v-if="loadingDetail" class="detail-loading">正在读取插件资源…</div>
+          <template v-else-if="pluginDetail">
+            <div v-if="resourceSummaryBadges.length" class="resource-summary">
+              <!-- type='tag' 为白字无底色（浅色背景上不可见），计数汇总改用 scope（--control 底 + --secondary 字） -->
+              <Badge
+                v-for="item in resourceSummaryBadges"
+                :key="item"
+                type="scope"
+                :text="item"
+                variant="muted"
+              />
+            </div>
+
+            <div v-if="subItems.length" class="sub-item-list">
+              <SubItemRow
+                v-for="item in subItems"
+                :key="`${item.typeBadge}:${item.name}`"
+                :name="item.name"
+                :type-badge="item.typeBadge"
+              />
+            </div>
           </template>
-        </DetailHeader>
 
-        <p v-if="activePlugin.description" class="detail-description">
-          {{ activePlugin.description }}
-        </p>
-
-        <div v-if="loadingDetail" class="detail-loading">正在读取插件资源…</div>
-        <template v-else-if="pluginDetail">
-          <div v-if="resourceSummaryBadges.length" class="resource-summary">
-            <!-- type='tag' 为白字无底色（浅色背景上不可见），计数汇总改用 scope（--control 底 + --secondary 字） -->
-            <Badge
-              v-for="item in resourceSummaryBadges"
-              :key="item"
-              type="scope"
-              :text="item"
-              variant="muted"
-            />
-          </div>
-
-          <div v-if="subItems.length" class="sub-item-list">
-            <SubItemRow
-              v-for="item in subItems"
-              :key="`${item.typeBadge}:${item.name}`"
-              :name="item.name"
-              :type-badge="item.typeBadge"
-            />
-          </div>
-        </template>
-
-        <MetaGrid :items="metaItems" />
+          <MetaGrid :items="metaItems" />
+        </div>
       </div>
     </template>
 
@@ -277,7 +281,7 @@ const detailBadges = computed(() =>
   activePlugin.value ? buildBadges(activePlugin.value) : []);
 
 const detailBreadcrumb = computed<BreadcrumbSegment[]>(() => [
-  { label: '插件', clickable: true },
+  { label: 'OpenCode', clickable: true },
   { label: activePlugin.value?.name ?? '' },
 ]);
 
@@ -434,10 +438,45 @@ defineExpose({
   border-top: 1px solid var(--separator);
 }
 
-.detail-pane {
+/* 描述完整多行显示（不截断、不加省略号）：ui/PluginRow 不可改，面板 scoped :deep 覆盖 */
+.plugin-list :deep(.plugin-row) {
+  align-items: flex-start;
+}
+
+.plugin-list :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* 详情页：居中窄单列（约 720px，左右留白） */
+.detail-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+.detail-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.detail-back:hover {
+  text-decoration: underline;
 }
 
 .detail-description {
