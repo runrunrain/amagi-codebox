@@ -4,6 +4,24 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.136] - 2026-11-15
+
+### Added
+
+- **扩展中心 ZCode 式子页重构**：扩展管理页重构为左侧子页导航（分组「公共 / Agent」）+ 右侧内容区两栏布局——「公共」组含共用技能、共用 MCP 两个子页，「Agent」组含 Claude Code / OpenCode / Codex / Pi / OMP 五个子页（复用 1.3.135 的四段式面板，面板行为不变）；子页状态持久化，引擎切换重置列表态的语义保留。
+- **公共·共用技能管理**：新 `internal/sharedskills` 服务 + App 门面。枚举 `~/.agents/skills` 与 `~/.agents/skills-disabled`（SKILL.md frontmatter：名称/描述/版本/作者），启停 = 两目录间移动（对所有读 `~/.agents` 的 CLI 真实生效，操作带确认、失败回滚），删除带确认；amagi-codebox 自带技能标记托管状态并与既有安装五态联动。
+- **公共·共用 MCP 管理**：新 `internal/sharedmcp` 服务 + App 门面。以 `~/.agents/.mcp.json` 为登记源（stdio 与远程两形态：type/command/args/env/url/headers/description；CRUD 保真合并、原子写、0600，未知键与手写条目一律不动）；按引擎分发真实写入四处配置——Claude `~/.claude.json` 顶层 `mcpServers`（字段级 patch + 顶层键集写后校验）、Codex `config.toml` 的 `[mcp_servers.<名>]` 段（段级 Upsert/Remove）、OpenCode `opencode.json` 顶层 `mcp` 键（命名空间合并）、Pi `~/.pi/agent/mcp.json`（合并写，文件不存在则创建）；只动应用托管条目、禁用即还原，外部改动冲突提供 danger+force 接管路径；OMP 无 MCP 佐证按 excluded 如实标注。前端子页四段式：类型筛选、条目×引擎分发矩阵、敏感值脱敏展示（env/headers 值不回显明文）、新增/编辑双形态表单。
+- **设置页新增「环境变量」子页**（自扩展中心迁入，功能不变）。
+
+### Removed
+
+- **Headroom 功能彻底移除**：`internal/headroom` 包、App 门面与全部接线、`LaunchSession` 的 useHeadroom 参数（App/remote/agentcli 全链）、remote v1 契约 useHeadroom 字段（**破坏性变更：旧版移动端 App 需同步升级到本版**）、agentcli `--headroom` 旗标（命令参考 golden 已再生成）、envcheck 第 6 工具位、CI Windows 回归过滤串、前端「其他工具」页与全部 UI 引用、mobile「使用 Headroom」开关、17 个文档中的全部提及。已启用用户的 `~/.codex/config.toml` 遗留标记块在启动时幂等清除（不再残留指向已退役代理的地址）；settings.json 遗留字段随宽容反序列化自然清除。shared-service 协调机制保留并缩编为仅 Claude 凭据共用，外部恢复路径准入改走凭据指纹绑定（指纹失败降级 fail-closed）。
+
+### Notes
+
+- 已验证：八步门禁全绿（frontend lint / test / build、mobile test / build、`go vet ./...`、`go test ./... -run '^$'` 编译检查、`wails build` 整链）；sharedskills 19 用例、sharedmcp 全套 fixture 单测（保真/还原/顶层键集不变/原子性/脱敏）通过；Headroom 清除后定向测试与 HEAD 基线逐名 diff 一致（无新增失败）。设计契约与交付报告归档于 `agent-outputs/{extension-center-restructure,shared-mcp}/`。
+- 共用 MCP 的 WSL 目标化分发与 OMP 支持本期不做（后者仓库与本机均无佐证）；登记文件 `~/.agents/.mcp.json` 为跨工具共享约定，应用写入保持其余内容不动。
+
 ## [1.3.135] - 2026-11-15
 
 ### Added
