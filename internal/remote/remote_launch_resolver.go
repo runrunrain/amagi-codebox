@@ -33,7 +33,6 @@ type RemoteLaunchRecipe struct {
 	ModelRef    string
 	Mode        string
 	ShellPath   string
-	UseHeadroom bool
 }
 
 // RemoteLaunchResolution is the resolver output: the recipe + the ephemeral spec.

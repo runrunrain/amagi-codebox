@@ -15,7 +15,6 @@ import (
 
 	"amagi-codebox/internal/claudeaccounts"
 	"amagi-codebox/internal/config"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/remote"
 )
@@ -328,7 +327,7 @@ func TestLaunchSession_BlockedWhilePoolNeedsReconcile(t *testing.T) {
 	if err := app.Secrets.SetAPIKey("blocked-provider", "sk-test"); err != nil {
 		t.Fatalf("SetAPIKey: %v", err)
 	}
-	_, err := app.LaunchSession("blocked-provider", "", "terminal", t.TempDir(), false, "")
+	_, err := app.LaunchSession("blocked-provider", "", "terminal", t.TempDir(), "")
 	if err == nil || !strings.Contains(err.Error(), "NEEDS_RECONCILE") {
 		t.Fatalf("LaunchSession during needs-reconcile must fail closed, got %v", err)
 	}
@@ -356,9 +355,6 @@ func TestLaunchEntries_ReopenAfterRecovery(t *testing.T) {
 	claim.release(app)
 
 	// LaunchSession 继续越过门禁（后续失败必须是别的原因，不含账号池错误）。
-	// 非 headroom 分支会触碰共享 headroom 下线检查——注入假 runner。
-	app.Headroom = headroom.NewHeadroomService(&r5CountingHeadroomRunner{}, app.Log)
-	t.Cleanup(func() { _ = app.Headroom.Stop() })
 	if err := app.Config.SaveProvider("reopen-provider", config.Provider{
 		Type: "anthropic", BaseURL: "https://api.anthropic.com", AuthKey: "ANTHROPIC_API_KEY", DefaultModel: "claude-x",
 	}); err != nil {
@@ -367,7 +363,7 @@ func TestLaunchEntries_ReopenAfterRecovery(t *testing.T) {
 	if err := app.Secrets.SetAPIKey("reopen-provider", "sk-test"); err != nil {
 		t.Fatalf("SetAPIKey: %v", err)
 	}
-	_, launchErr := app.LaunchSession("reopen-provider", "", "terminal", t.TempDir(), false, "")
+	_, launchErr := app.LaunchSession("reopen-provider", "", "terminal", t.TempDir(), "")
 	if launchErr != nil && strings.Contains(launchErr.Error(), "NEEDS_RECONCILE") {
 		t.Fatalf("launch must not be blocked by account pool after recovery: %v", launchErr)
 	}

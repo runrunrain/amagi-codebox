@@ -494,7 +494,7 @@ async function main() {
   assert(!recoveryCardText.includes('SES-LEGACY'), 'S19 隐私：恢复卡不渲染 sessionId');
   assert(!recoveryCardText.includes('PID') && !recoveryCardText.includes('/Users/'), 'S19 隐私：恢复卡不渲染 PID/路径');
   assert(
-    await page.locator('.rec-card').textContent().then((t) => t.includes('Claude Headroom 进程') && t.includes('旧版本遗留进程')),
+    await page.locator('.rec-card').textContent().then((t) => t.includes('外部进程') && t.includes('旧版本遗留进程')),
     'S19 仅展示类型与原因文案（计数/类型语义）',
   );
   await shot('r3-recovery-running');
@@ -561,8 +561,8 @@ async function main() {
   await page.locator('.pg06-danger').click();
   await page.waitForSelector('.toast-item.toast-success', { timeout: 5000 });
   assert(
-    await page.locator('.toast-item.toast-success').first().textContent().then((t) => t.includes('Headroom 安全锁定已解除')),
-    'S21 成功提示如实呈现 fenceReleased（Headroom 锁定已解除）',
+    await page.locator('.toast-item.toast-success').first().textContent().then((t) => t.includes('外部进程安全锁定已解除')),
+    'S21 成功提示如实呈现 fenceReleased（外部进程安全锁定已解除）',
   );
   const confirmCalls = await page.evaluate(() =>
     window.__remoteHarness.calls.filter((c) => c.method === 'ConfirmExternalCleanupRecovery'),

@@ -134,7 +134,7 @@ JSON 含 key 字段时会被拒绝，改用 provider key-set。
 启动 AI-CLI 会话，返回 sessionId。
 
 ```
-codebox-agent session launch --app-type <appType> --provider <provider> [--model <model>] [--work-dir <workDir>] [--mode <mode>] [--headroom]
+codebox-agent session launch --app-type <appType> --provider <provider> [--model <model>] [--work-dir <workDir>] [--mode <mode>]
 ```
 
 | 参数 | 形态 | 类型 | 必填 | 说明 |
@@ -144,7 +144,6 @@ codebox-agent session launch --app-type <appType> --provider <provider> [--model
 | `--model` | 旗标 | `string` | 否 | 模型覆盖 |
 | `--work-dir` | 旗标 | `string` | 否 | 工作目录 |
 | `--mode` | 旗标 | `string` | 否 | 会话模式；默认 embedded |
-| `--headroom` | 旗标 | `bool` | 否 | 启用 Headroom；默认 false |
 
 风险：`exec`（启动进程/写入会话/安装软件）；确认值 `LAUNCH`——执行需 `--yes`。
 

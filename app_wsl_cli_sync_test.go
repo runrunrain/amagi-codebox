@@ -121,15 +121,12 @@ func TestSyncCLIToWSL_NoDistroReturnsNil(t *testing.T) {
 	}
 }
 
-// --- 门控：headroom 与非 install/update kind → nil ---
+// --- 门控：非 install/update kind → nil ---
 
-func TestSyncCLIToWSL_HeadroomAndOtherKindsReturnNil(t *testing.T) {
+func TestSyncCLIToWSL_OtherKindsReturnNil(t *testing.T) {
 	setup := newFakeSetup("claude")
 	app := newWSLCLISyncApp(t, setup, "Ubuntu", "wsl")
 
-	if res := app.syncCLIToWSL(envcheck.ToolHeadroom, envcheck.OperationKindInstall); res != nil {
-		t.Errorf("headroom must not sync to WSL, got %+v", res)
-	}
 	if res := app.syncCLIToWSL(envcheck.ToolPi, envcheck.OperationKindUninstall); res != nil {
 		t.Errorf("uninstall kind must not sync to WSL, got %+v", res)
 	}

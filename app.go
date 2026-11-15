@@ -29,7 +29,6 @@ import (
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/gitassist"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/logging"
@@ -49,6 +48,8 @@ import (
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
+	"amagi-codebox/internal/sharedmcp"
+	"amagi-codebox/internal/sharedskills"
 	"amagi-codebox/internal/skins"
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
@@ -93,10 +94,11 @@ type codexArgsExternalLauncherPort interface {
 }
 
 // externalCleanupClaim is the exact App-owned handoff after an OS process
-// starts but its durable PID upgrade or Headroom lease promotion cannot finish.
-// It retains a pre-start reservation or upgraded record, the startup admission
-// (when the coordinator is still open), and a retriable Launcher owner until a
-// true terminal observation. It is not a Control permit and grants no writes.
+// starts but its durable PID upgrade or shared-service lease promotion cannot
+// finish. It retains a pre-start reservation or upgraded record, the startup
+// admission (when the coordinator is still open), and a retriable Launcher
+// owner until a true terminal observation. It is not a Control permit and
+// grants no writes.
 type externalCleanupClaim struct {
 	sessionID        string
 	admission        *remote.SharedLaunchAdmission
@@ -145,14 +147,6 @@ const (
 	// handoff observation and StopAll. It bounds only external ownership cleanup;
 	// every unrecovered item is returned as a typed report.
 	defaultExternalShutdownCleanupBudget = 2 * time.Second
-	// CodexGlobalHeadroomDefaultPort is the dedicated port for the independent
-	// codex-global headroom instance (8788). It must differ from the claude
-	// session headroom DefaultPort (8787) so the two proxies never collide.
-	CodexGlobalHeadroomDefaultPort = 8788
-	// codexGlobalHeadroomDefaultTarget is the fallback OpenAI-compatible
-	// upstream used when the caller does not specify a target. headroom forwards
-	// compressed codex traffic here via OPENAI_TARGET_API_URL.
-	codexGlobalHeadroomDefaultTarget = "https://api.openai.com/v1"
 )
 
 type persistentLoadState struct {
@@ -177,17 +171,9 @@ type App struct {
 	// 同文件。小写不导出：不进 Wails 绑定。
 	agentCLIInstall *install.Manager
 
-	Config   *config.ConfigService
-	Secrets  *secrets.SecretsService
-	Launcher *launcher.LauncherService
-	Headroom *headroom.HeadroomService
-	// CodexHeadroom is a second, independent headroom instance that compresses
-	// Codex desktop traffic globally (port 8788, OpenAI target). It is fully
-	// separate from Headroom (claude-session, 8787, Anthropic target): each has
-	// its own port, lifecycle and target kind, so toggling one never touches the
-	// other. Only one Codex-global instance exists app-wide (it is not per
-	// session); Start/Stop are idempotent.
-	CodexHeadroom   *headroom.HeadroomService
+	Config          *config.ConfigService
+	Secrets         *secrets.SecretsService
+	Launcher        *launcher.LauncherService
 	Tray            *tray.Service
 	Sessions        *session.Manager
 	Paths           *paths.PathsService
@@ -208,6 +194,14 @@ type App struct {
 	AgentProfiles   *agentprofile.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
+	// SharedSkills 是共用技能管理服务（~/.agents/skills ⇄ skills-disabled 的
+	// 枚举/启停/删除，扩展中心重构 spec §2.1）。**非 Wails 绑定**——经 App
+	// 门面（app_sharedskills.go）暴露，managed 标记在门面层组装。
+	SharedSkills *sharedskills.Service
+	// SharedMcp 是共用 MCP 登记与分发服务（~/.agents/.mcp.json 条目 CRUD +
+	// Claude/Codex/OpenCode/Pi 四引擎写入，共用 MCP spec §2）。**非 Wails
+	// 绑定**——经 App 门面（app_sharedmcp.go）暴露。
+	SharedMcp *sharedmcp.Service
 	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
 	// 仅 embedded pi 会话注册；其他 CLI 不感知。
 	WebUI *webui.Service
@@ -252,7 +246,7 @@ type App struct {
 	rcTerminals *remoteclient.TerminalManager
 
 	// Control runtime (M3-A2): the gate authority for all session write side
-	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
+	// effects. Raw ports (e.g. Pty) sit BEHIND it and are never
 	// Wails-bound (design §4.1, §6.3 C-01).
 	control           *remote.ControlRuntime
 	sessionAdapter    *remote.RemoteSessionAdapter
@@ -279,10 +273,10 @@ type App struct {
 	externalRunPollInterval time.Duration
 
 	// externalCleanups owns post-start processes whose durable identity upgrade
-	// or Headroom lease promotion failed and whose first compensating Stop could
-	// not prove terminal. Each exact claim remains until explicit Stop/reaper
-	// terminal; pre-start reservations survive App exit and Shutdown reports every
-	// bounded abandonment rather than silently forgetting ownership.
+	// or shared-service lease promotion failed and whose first compensating Stop
+	// could not prove terminal. Each exact claim remains until explicit
+	// Stop/reaper terminal; pre-start reservations survive App exit and Shutdown
+	// reports every bounded abandonment rather than silently forgetting ownership.
 	externalOwnershipMu     sync.Mutex
 	externalShutdown        atomic.Bool
 	externalStartGeneration atomic.Uint64
@@ -375,17 +369,6 @@ type App struct {
 	providerSyncPiDir   string
 	providerSyncOmpDir  string
 
-	// codexGlobalMu serializes the codex-global headroom orchestration between
-	// the async startup restore goroutine (restoreCodexGlobalHeadroomOnStartup)
-	// and the synchronous UI toggle (SetCodexGlobalHeadroom). Without it, a user
-	// disabling the feature in the narrow startup window could race the restore
-	// goroutine and end with Enabled=false but the proxy running and config.toml
-	// still carrying the marker block. The lock is taken for the full
-	// Start/Stop + config-sync + persistence sequence; inner service locks
-	// (HeadroomService.mu / settings.Service.mu) are always acquired AFTER this
-	// one, so lock ordering stays codexGlobalMu -> inner.
-	codexGlobalMu sync.Mutex
-
 	// Claude 订阅账号轮换（design §2/§6.3/§7.2）：未导出领域服务 + 启动门禁
 	// 缓存。claudeAccountsPool 为池快照（nil = 无池，未启用）；loadErr 非空 =
 	// 池不可用（blocked）；recovered 在 Startup 恢复完成后置位（§4.5 时序）。
@@ -433,28 +416,7 @@ func NewApp(mobileAssets embed.FS) *App {
 	ompPluginsSvc := ompplugin.NewService(log)
 	processRunner := platform.NewProcessRunner()
 
-	// headroom-venv lives under the CodeBox config directory. It is shared by
-	// envcheck (install/detect/uninstall) and headroom (proxy launch) so both
-	// target the same venv. The bin subdir is platform-specific.
-	headroomVenvDir := filepath.Join(configDir, "headroom-venv")
-	headroomVenvBinDir := headroomVenvBinSubdir(headroomVenvDir)
-
-	headroomSvc := headroom.NewHeadroomService(processRunner, log)
-	headroomSvc.SetVenvBinDir(headroomVenvBinDir)
-
-	// Second, independent headroom instance for the Codex desktop global
-	// compression path. It reuses the SAME venv (headroom-venv) as the claude
-	// headroom but listens on a dedicated port (CodexGlobalHeadroomDefaultPort,
-	// 8788) and targets an OpenAI-compatible upstream. Port is set here once;
-	// the App-level SetCodexGlobalHeadroom toggle only starts/stops it.
-	codexHeadroomSvc := headroom.NewHeadroomService(processRunner, log)
-	codexHeadroomSvc.SetVenvBinDir(headroomVenvBinDir)
-	if err := codexHeadroomSvc.SetPort(CodexGlobalHeadroomDefaultPort); err != nil {
-		log.Warn("headroom", "设置 codex 全局 headroom 端口失败", err.Error())
-	}
-
 	envCheckSvc := envcheck.NewServiceWithRunner(processRunner)
-	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
 	settingsSvc := settings.NewService(configDir)
 
@@ -464,8 +426,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		Config:          config.NewConfigService(configDir),
 		Secrets:         secrets.NewSecretsService(configDir),
 		Launcher:        launcher.NewLauncherService(log, envVarsSvc),
-		Headroom:        headroomSvc,
-		CodexHeadroom:   codexHeadroomSvc,
 		Tray:            tray.NewService(),
 		Sessions:        session.NewManager(),
 		Paths:           paths.NewPathsService(configDir),
@@ -512,6 +472,12 @@ func NewApp(mobileAssets embed.FS) *App {
 	// agent-CLI 本机分发（DESIGN.md §5 C2）：shim 与技能安装管理器；Startup
 	// 默认安装见 app_agentcli_install.go。
 	app.constructAgentCLIInstall()
+	// 共用技能服务（扩展中心重构 spec §2.1）：~/.agents/skills ⇄
+	// skills-disabled 的枚举/启停/删除；前端门面在 app_sharedskills.go。
+	app.constructSharedSkills()
+	// 共用 MCP 服务（共用 MCP spec §2）：~/.agents/.mcp.json 登记 CRUD +
+	// 四引擎分发；前端门面在 app_sharedmcp.go。
+	app.constructSharedMcp()
 	// Claude 订阅账号轮换（design §6.3/§7.2）：装配 1a 领域服务（Keychain 池
 	// 后端、canonical 原生适配器、MutationGate/Quiescence 生产实现）。启动
 	// 恢复在 Startup（§4.5 时序：池加载 → RecoverAtStartup → 开放受影响启动）。
@@ -600,8 +566,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		return aiproxy.ProvidersFromConfig(app.Config.GetProviders())
 	})
 	app.Launcher.SetNetworkEnv(app.aiProxy.ApplyEnv)
-	app.Headroom.SetNetworkEnv(app.aiProxy.ApplyEnv)
-	app.CodexHeadroom.SetNetworkEnv(app.aiProxy.ApplyEnv)
 	app.GitAssist = gitassist.NewWithHTTPClient(app.Config, app.Settings, func(provider string) string {
 		key, err := app.Secrets.GetAPIKey(provider)
 		if err != nil || key == "" {
@@ -609,15 +573,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		}
 		return key
 	}, app.aiProxyHTTPClient())
-	// Inject the headroom stopper so CleanHeadroom terminates BOTH headroom
-	// proxy child processes (claude 8787 + codex-global 8788) before the shared
-	// venv directory is removed. Required on Windows where a running
-	// headroom.exe inside the venv is locked and os.RemoveAll fails. When the
-	// codex-global switch was on, the stopper also clears the openai_base_url
-	// marker block and persistence so no dead config points at the removed
-	// proxy. The callback is best-effort: CleanHeadroom ignores its error.
-	// Wired after `app` exists so the closure can reference both services.
-	envCheckSvc.SetHeadroomStopper(app.stopAllHeadroomForUninstall)
 
 	// fd/ripgrep 搜索工具安装回调（install_wsl_search_tools 修复动作）：把
 	// wslsetup.InstallSearchTools 的结果适配成 envcheck.InstallResult 形状。
@@ -717,8 +672,6 @@ func NewApp(mobileAssets embed.FS) *App {
 	if _, ok := app.remotePlanner.(*appLaunchPlanner); ok {
 		exec := newAppLaunchExecutor(launchExecutorDeps{
 			pty:            app.Pty,
-			headroom:       app.Headroom,
-			codexHeadroom:  app.CodexHeadroom,
 			sharedCoord:    app.sharedCoord,
 			debts:          app.compensationDebts,
 			configMu:       &app.providerSyncMu,
@@ -910,10 +863,11 @@ func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 
 	// Recover durable post-start cleanup ownership before any startup restore or
-	// user mutation can touch Headroom. A recovered admission fail-closes the
-	// fresh coordinator until the identity-verified process reaches terminal.
+	// user mutation can touch shared services. A recovered admission
+	// fail-closes the fresh coordinator until the identity-verified process
+	// reaches terminal.
 	if err := a.recoverExternalCleanups(); err != nil {
-		a.addStartupWarning("检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁 Headroom")
+		a.addStartupWarning("检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁外部进程安全锁定")
 		if a.Log != nil {
 			a.Log.Warn("session", "恢复外部进程清理登记失败", err.Error())
 		}
@@ -1072,10 +1026,10 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}()
 
-	// 异步恢复 codex 全局 headroom（独立第二实例，8788 + OpenAI 目标）。
-	// 仅当上次退出前开关为开启时才重建；失败仅 Warn 不阻断启动（主功能不依赖它）。
-	// 重建会同时校验/补写 config.toml 的 openai_base_url 标记块，保证 codex 路由一致。
-	go a.restoreCodexGlobalHeadroomOnStartup()
+	// 一次性善后：清除旧版本遗留在 ~/.codex/config.toml 的代理标记块，避免
+	// 死代理地址继续路由 codex 流量。幂等（无标记/文件不存在即 no-op）；失败仅
+	// Warn 不阻断启动。与历史上的启动恢复钩子同位置同时机。
+	go a.cleanupCodexLegacyHeadroomMarkerOnStartup()
 
 	// P2-B：WSL 统一配置管理启动对账（统一管理开启时点火后台扫描，随后推一轮
 	// 保存后补漏；未开启时与现状行为一致）。
@@ -1161,19 +1115,7 @@ func (a *App) Shutdown(ctx context.Context) {
 			a.Log.Error("usage", "关闭使用统计失败", err.Error())
 		}
 	}
-	if a.Headroom != nil && a.Headroom.IsRunning() {
-		if err := a.Headroom.Stop(); err != nil {
-			a.Log.Error("app", "关闭 Headroom 失败", err.Error())
-		}
-	}
-	// Stop the independent codex-global headroom (8788) too. Its enabled state is
-	// persisted, so Startup restores it on next launch; we only stop the live
-	// process here. This never touches the claude headroom above.
-	if a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning() {
-		if err := a.CodexHeadroom.Stop(); err != nil {
-			a.Log.Error("app", "关闭 codex 全局 Headroom 失败", err.Error())
-		}
-	}
+	// 后续收尾见 Shutdown 尾部。
 	// External Launcher processes were already handled by the bounded ownership
 	// phase immediately after the authority fence. Embedded PTYs close here.
 	a.Pty.CloseAll()
@@ -1530,14 +1472,4 @@ func defaultOmpAgentDir() string {
 		return filepath.Join(".omp", "agent")
 	}
 	return filepath.Join(home, ".omp", "agent")
-}
-
-// headroomVenvBinSubdir returns the platform-specific bin directory inside
-// the CodeBox-managed headroom venv. Used at wiring time to inject the same
-// directory into both envcheck.Service and headroom.HeadroomService.
-func headroomVenvBinSubdir(venvDir string) string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(venvDir, "Scripts")
-	}
-	return filepath.Join(venvDir, "bin")
 }

@@ -18,8 +18,8 @@ CLI（Claude Code、OpenCode、Codex、Pi、Oh My Pi）中的任意一个并成�
 ## 触发条件（缺一不可）
 
 1. **Windows 侧成功**：install/update 操作的 Windows 部分返回
-   `Success=true`。Windows 失败、uninstall、headroom（宿主侧 Python 代理，
-   无 WSL 语义）都不触发，`InstallResult.WSL` 保持 nil。
+   `Success=true`。Windows 失败、uninstall 都不触发，`InstallResult.WSL`
+   保持 nil。
 2. **回调已装配**：App 构造时把 `App.syncCLIToWSL` 经
    `envcheck.Service.SetWSLCLISync` 注入（`app.go` 装配段一行）。envcheck
    本身不 import wslsetup（回调注入模式，与 `SetWSLSearchToolsInstaller`
@@ -99,7 +99,7 @@ grep `StartInstall|InstallResult|OperationState` 无命中）——远程侧无�
 ## 测试锚点
 
 - `internal/envcheck/wsl_cli_sync_test.go`：异步/同步/指定通道/修复动作的
-  触发与门控（Windows 失败、uninstall、headroom、未注入回调均不触发），
+  触发与门控（Windows 失败、uninstall、未注入回调均不触发），
   wsl_sync 步骤可见性，部分失败语义。
 - 根目录 `app_wsl_cli_sync_test.go`：门控分派（skipped/Install/Update/
   已装走 Update）、claude_code→claude 与 omp 键映射、无发行版 nil、

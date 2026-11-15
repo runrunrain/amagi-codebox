@@ -10,7 +10,7 @@ export const useUIStore = defineStore('ui', () => {
   // Settings mode state
   const settingsMode = ref(false);
 
-  // Active setting page key (general/shell/terminal/remote/update/about)
+  // Active setting page key (general/env-vars/shell/terminal/appearance/remote/agent-cli/agent-profiles/update/about)
   const activeSettingKey = ref<string>('general');
 
   // Current view ID

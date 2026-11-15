@@ -1291,7 +1291,6 @@ export namespace contract {
 	    presetRef?: string;
 	    modelRef?: string;
 	    shellRef?: string;
-	    useHeadroom: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new LaunchDefaults(source);
@@ -1303,7 +1302,6 @@ export namespace contract {
 	        this.presetRef = source["presetRef"];
 	        this.modelRef = source["modelRef"];
 	        this.shellRef = source["shellRef"];
-	        this.useHeadroom = source["useHeadroom"];
 	    }
 	}
 	export class LaunchPresetOption {
@@ -2232,191 +2230,6 @@ export namespace gitassist {
 
 }
 
-export namespace headroom {
-	
-	export class ClientPerfStat {
-	    client: string;
-	    requests: number;
-	    avg_cache_hit_pct: number;
-	    tokens_saved: number;
-	    cache_read_tokens: number;
-	    tokens_before: number;
-	    savings_percent: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ClientPerfStat(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.client = source["client"];
-	        this.requests = source["requests"];
-	        this.avg_cache_hit_pct = source["avg_cache_hit_pct"];
-	        this.tokens_saved = source["tokens_saved"];
-	        this.cache_read_tokens = source["cache_read_tokens"];
-	        this.tokens_before = source["tokens_before"];
-	        this.savings_percent = source["savings_percent"];
-	    }
-	}
-	export class ClientSavings {
-	    client: string;
-	    tokens_saved: number;
-	    tokens_before: number;
-	    cost_usd: number;
-	    calls: number;
-	    savings_percent: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ClientSavings(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.client = source["client"];
-	        this.tokens_saved = source["tokens_saved"];
-	        this.tokens_before = source["tokens_before"];
-	        this.cost_usd = source["cost_usd"];
-	        this.calls = source["calls"];
-	        this.savings_percent = source["savings_percent"];
-	    }
-	}
-	export class HeadroomStatus {
-	    running: boolean;
-	    port: number;
-	    backendUrl: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new HeadroomStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.running = source["running"];
-	        this.port = source["port"];
-	        this.backendUrl = source["backendUrl"];
-	    }
-	}
-	export class ModelSavings {
-	    model: string;
-	    tokens_saved: number;
-	    tokens_before: number;
-	    cost_usd: number;
-	    calls: number;
-	    savings_percent: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ModelSavings(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.model = source["model"];
-	        this.tokens_saved = source["tokens_saved"];
-	        this.tokens_before = source["tokens_before"];
-	        this.cost_usd = source["cost_usd"];
-	        this.calls = source["calls"];
-	        this.savings_percent = source["savings_percent"];
-	    }
-	}
-	export class SavingsBucket {
-	    tokens_saved: number;
-	    tokens_before: number;
-	    cost_usd: number;
-	    calls: number;
-	    savings_percent: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new SavingsBucket(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.tokens_saved = source["tokens_saved"];
-	        this.tokens_before = source["tokens_before"];
-	        this.cost_usd = source["cost_usd"];
-	        this.calls = source["calls"];
-	        this.savings_percent = source["savings_percent"];
-	    }
-	}
-	export class SavingsWindows {
-	    today: SavingsBucket;
-	    last_7_days: SavingsBucket;
-	    all_time: SavingsBucket;
-	
-	    static createFrom(source: any = {}) {
-	        return new SavingsWindows(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.today = this.convertValues(source["today"], SavingsBucket);
-	        this.last_7_days = this.convertValues(source["last_7_days"], SavingsBucket);
-	        this.all_time = this.convertValues(source["all_time"], SavingsBucket);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class SavingsReport {
-	    schema_version: number;
-	    path: string;
-	    top_model: string;
-	    lifetime: SavingsBucket;
-	    windows: SavingsWindows;
-	    by_model: ModelSavings[];
-	    by_client: ClientSavings[];
-	
-	    static createFrom(source: any = {}) {
-	        return new SavingsReport(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.schema_version = source["schema_version"];
-	        this.path = source["path"];
-	        this.top_model = source["top_model"];
-	        this.lifetime = this.convertValues(source["lifetime"], SavingsBucket);
-	        this.windows = this.convertValues(source["windows"], SavingsWindows);
-	        this.by_model = this.convertValues(source["by_model"], ModelSavings);
-	        this.by_client = this.convertValues(source["by_client"], ClientSavings);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-
-}
-
 export namespace logging {
 	
 	export class Entry {
@@ -2772,24 +2585,6 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class CodexGlobalHeadroomStatus {
-	    enabled: boolean;
-	    target: string;
-	    port: number;
-	    running: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new CodexGlobalHeadroomStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.target = source["target"];
-	        this.port = source["port"];
-	        this.running = source["running"];
-	    }
-	}
 	export class ModalityProbeNowResult {
 	    conclusive: boolean;
 	    vision: boolean;
@@ -3016,6 +2811,72 @@ export namespace main {
 	        this.deviceID = source["deviceID"];
 	        this.deviceName = source["deviceName"];
 	        this.inGrace = source["inGrace"];
+	    }
+	}
+	export class SharedMcpOverview {
+	    entries: sharedmcp.EntryOverview[];
+	    registryExists: boolean;
+	    registryPath: string;
+	    enginesMeta: sharedmcp.EngineMeta[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedMcpOverview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entries = this.convertValues(source["entries"], sharedmcp.EntryOverview);
+	        this.registryExists = source["registryExists"];
+	        this.registryPath = source["registryPath"];
+	        this.enginesMeta = this.convertValues(source["enginesMeta"], sharedmcp.EngineMeta);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SharedSkillView {
+	    name: string;
+	    displayName: string;
+	    description: string;
+	    version: string;
+	    author: string;
+	    enabled: boolean;
+	    path: string;
+	    hasSkillMd: boolean;
+	    managed: boolean;
+	    managedStatus?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedSkillView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.displayName = source["displayName"];
+	        this.description = source["description"];
+	        this.version = source["version"];
+	        this.author = source["author"];
+	        this.enabled = source["enabled"];
+	        this.path = source["path"];
+	        this.hasSkillMd = source["hasSkillMd"];
+	        this.managed = source["managed"];
+	        this.managedStatus = source["managedStatus"];
 	    }
 	}
 	export class SystemProxyStatus {
@@ -5117,7 +4978,6 @@ export namespace settings {
 	    presetRef?: string;
 	    modelRef?: string;
 	    shellRef?: string;
-	    useHeadroom?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new RemoteLaunchDefaultV1(source);
@@ -5129,7 +4989,6 @@ export namespace settings {
 	        this.presetRef = source["presetRef"];
 	        this.modelRef = source["modelRef"];
 	        this.shellRef = source["shellRef"];
-	        this.useHeadroom = source["useHeadroom"];
 	    }
 	}
 	export class TerminalSettings {
@@ -5190,10 +5049,6 @@ export namespace settings {
 	    piShell: string;
 	    ompMode: string;
 	    ompShell: string;
-	    useHeadroom: boolean;
-	    codexGlobalHeadroom: boolean;
-	    codexGlobalHeadroomTarget: string;
-	    codexGlobalHeadroomPort: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new DashboardDefaults(source);
@@ -5218,10 +5073,6 @@ export namespace settings {
 	        this.piShell = source["piShell"];
 	        this.ompMode = source["ompMode"];
 	        this.ompShell = source["ompShell"];
-	        this.useHeadroom = source["useHeadroom"];
-	        this.codexGlobalHeadroom = source["codexGlobalHeadroom"];
-	        this.codexGlobalHeadroomTarget = source["codexGlobalHeadroomTarget"];
-	        this.codexGlobalHeadroomPort = source["codexGlobalHeadroomPort"];
 	    }
 	}
 	export class AppSettings {
@@ -5286,28 +5137,117 @@ export namespace settings {
 		    return a;
 		}
 	}
-	export class CodexGlobalHeadroomState {
-	    enabled: boolean;
-	    target: string;
-	    port: number;
+	
+	
+	
+	
+	
+	
+
+}
+
+export namespace sharedmcp {
+	
+	export class EngineCell {
+	    status: string;
+	    selected: boolean;
+	    reason?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new CodexGlobalHeadroomState(source);
+	        return new EngineCell(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.target = source["target"];
-	        this.port = source["port"];
+	        this.status = source["status"];
+	        this.selected = source["selected"];
+	        this.reason = source["reason"];
 	    }
 	}
+	export class EngineMeta {
+	    id: string;
+	    name: string;
+	    support: string;
+	    detail?: string;
+	    targetPath?: string;
+	    managedCount: number;
 	
+	    static createFrom(source: any = {}) {
+	        return new EngineMeta(source);
+	    }
 	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.support = source["support"];
+	        this.detail = source["detail"];
+	        this.targetPath = source["targetPath"];
+	        this.managedCount = source["managedCount"];
+	    }
+	}
+	export class SharedMcpEntry {
+	    name: string;
+	    type: string;
+	    command?: string;
+	    args?: string[];
+	    env?: Record<string, string>;
+	    url?: string;
+	    headers?: Record<string, string>;
+	    description?: string;
+	    unknownKeys?: string[];
 	
+	    static createFrom(source: any = {}) {
+	        return new SharedMcpEntry(source);
+	    }
 	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.command = source["command"];
+	        this.args = source["args"];
+	        this.env = source["env"];
+	        this.url = source["url"];
+	        this.headers = source["headers"];
+	        this.description = source["description"];
+	        this.unknownKeys = source["unknownKeys"];
+	    }
+	}
+	export class EntryOverview {
+	    entry: SharedMcpEntry;
+	    nameDistributable: boolean;
+	    engines: Record<string, EngineCell>;
 	
+	    static createFrom(source: any = {}) {
+	        return new EntryOverview(source);
+	    }
 	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entry = this.convertValues(source["entry"], SharedMcpEntry);
+	        this.nameDistributable = source["nameDistributable"];
+	        this.engines = this.convertValues(source["engines"], EngineCell, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

@@ -30,7 +30,6 @@ import (
 
 	"amagi-codebox/internal/appmeta/claude"
 	"amagi-codebox/internal/claudewebui"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
@@ -43,12 +42,10 @@ import (
 
 // launchExecutorDeps holds the App service adapters the executor needs.
 type launchExecutorDeps struct {
-	pty           ptyStartPort
-	headroom      headroomStartPort
-	codexHeadroom headroomStartPort
-	sharedCoord   *remote.SharedServiceCoordinator
-	debts         *launchplan.CompensationDebtRegistry
-	configMu      *sync.Mutex
+	pty         ptyStartPort
+	sharedCoord *remote.SharedServiceCoordinator
+	debts       *launchplan.CompensationDebtRegistry
+	configMu    *sync.Mutex
 	// webui 是 remote 创建/重启 embedded pi 会话的 Web 平面接线（remote-
 	// webui-plane：对齐桌面 LaunchPiSession T-1.5）。nil = 未接线（测试），
 	// pi 会话照常启动、只是不做 webui 注入与 tracker 注册。
@@ -106,15 +103,6 @@ type ptyStartPort interface {
 	WriteRawForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID, data []byte) error
 }
 
-type headroomStartPort interface {
-	IsRunning() bool
-	GetStatus() headroom.HeadroomStatus
-	SetPort(port int) error
-	Start(backendURL string) error
-	StartForOpenAI(backendURL string) error
-	Stop() error
-}
-
 // appLaunchExecutor implements launchplan.Executor.
 type appLaunchExecutor struct {
 	deps launchExecutorDeps
@@ -170,11 +158,6 @@ type preparedEffectBuilder struct {
 
 func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.PreparedEffect, error) {
 	switch spec.Kind {
-	case launchplan.EffectHeadroomStart:
-		if spec.Shared == nil {
-			return nil, errors.New("headroom effect missing shared spec")
-		}
-		return b.buildHeadroomStart(spec.Shared), nil
 	case launchplan.EffectConfigMutation:
 		if spec.Config == nil {
 			return nil, errors.New("config effect missing config spec")
@@ -204,13 +187,6 @@ func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.Pr
 		return &bootstrapWriteEffect{deps: b.deps, sessionID: b.sessionID, command: spec.Bootstrap.StartupCommand, process: b.ptyProcess}, nil
 	default:
 		return nil, fmt.Errorf("unsupported effect kind: %d", spec.Kind)
-	}
-}
-
-func (b *preparedEffectBuilder) buildHeadroomStart(shared *launchplan.SharedStartSpec) launchplan.PreparedEffect {
-	return &headroomStartEffect{
-		deps: b.deps, service: shared.Service, upstreamURL: shared.UpstreamURL, listenPort: shared.ListenPort,
-		admission: sharedAdmissionFromBinding(b.sharedAdmissions, shared.Service),
 	}
 }
 
@@ -359,96 +335,6 @@ func (b *preparedEffectBuilder) warnClaudePlane(msg, detail string) {
 	if b.deps.claudePlaneLog != nil {
 		b.deps.claudePlaneLog.Warn("claudewebui", msg, detail)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Headroom start effect (M-01: uses SharedStartSpec upstream/port)
-// ---------------------------------------------------------------------------
-
-type headroomStartEffect struct {
-	deps        launchExecutorDeps
-	service     launchplan.SharedServiceKind
-	upstreamURL string
-	listenPort  int
-	startedByMe bool
-	committed   bool
-	admission   *remote.SharedLaunchAdmission
-}
-
-func (e *headroomStartEffect) Kind() launchplan.EffectKind { return launchplan.EffectHeadroomStart }
-func (e *headroomStartEffect) ArmOwnership()               {}
-
-func (e *headroomStartEffect) Apply(_ context.Context) (launchplan.EffectEvidence, error) {
-	if e.listenPort <= 0 {
-		return launchplan.EffectEvidence{}, errors.New("headroom listen port is invalid")
-	}
-	if e.upstreamURL == "" {
-		return launchplan.EffectEvidence{}, errors.New("headroom upstream URL is empty")
-	}
-	var svc headroomStartPort
-	var start func() error
-	switch e.service {
-	case launchplan.SharedClaudeHeadroom:
-		svc = e.deps.headroom
-		start = func() error { return svc.Start(e.upstreamURL) }
-	case launchplan.SharedCodexHeadroom:
-		svc = e.deps.codexHeadroom
-		start = func() error { return svc.StartForOpenAI(e.upstreamURL) }
-	default:
-		return launchplan.EffectEvidence{}, fmt.Errorf("unknown headroom service: %d", e.service)
-	}
-	if svc == nil {
-		return launchplan.EffectEvidence{}, errors.New("headroom service unavailable")
-	}
-	if svc.IsRunning() {
-		status := svc.GetStatus()
-		if !status.Running || status.Port != e.listenPort || status.BackendURL != e.upstreamURL {
-			return launchplan.EffectEvidence{}, errors.New("running headroom configuration does not match launch plan")
-		}
-		return launchplan.EffectEvidence{}, nil
-	}
-	if err := svc.SetPort(e.listenPort); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("set headroom port: %w", err)
-	}
-	if err := start(); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("start headroom: %w", err)
-	}
-	e.startedByMe = true
-	if e.deps.sharedCoord == nil || e.admission == nil {
-		_ = svc.Stop()
-		e.startedByMe = false
-		return launchplan.EffectEvidence{}, errors.New("headroom start transaction is not coordinator-owned")
-	}
-	if err := e.deps.sharedCoord.MarkLaunchTransactionStarted(e.admission); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("record headroom start ownership: %w", err)
-	}
-	status := svc.GetStatus()
-	if !status.Running || status.Port != e.listenPort || status.BackendURL != e.upstreamURL {
-		if e.deps.sharedCoord.AuthorizeCompensatingStop(e.admission) {
-			_ = svc.Stop()
-		}
-		e.startedByMe = false
-		return launchplan.EffectEvidence{}, errors.New("started headroom configuration failed exact verification")
-	}
-	return launchplan.EffectEvidence{}, nil
-}
-
-func (e *headroomStartEffect) compensate(_ context.Context) bool {
-	if !e.startedByMe || e.committed || e.deps.sharedCoord == nil || !e.deps.sharedCoord.AuthorizeCompensatingStop(e.admission) {
-		return true
-	}
-	var err error
-	switch e.service {
-	case launchplan.SharedClaudeHeadroom:
-		if e.deps.headroom != nil {
-			err = e.deps.headroom.Stop()
-		}
-	case launchplan.SharedCodexHeadroom:
-		if e.deps.codexHeadroom != nil {
-			err = e.deps.codexHeadroom.Stop()
-		}
-	}
-	return err == nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,10 +987,6 @@ func (e *appPreparedExecution) Abort(ctx context.Context) launchplan.Compensatio
 		}
 		report.Attempted++
 		switch eff := e.effects[i].(type) {
-		case *headroomStartEffect:
-			if !eff.compensate(ctx) {
-				report.Failed++
-			}
 		case *configMutationEffect:
 			outcome := eff.compensate(ctx)
 			report.Outcomes = append(report.Outcomes, outcome)
@@ -1130,8 +1012,6 @@ func (e *appPreparedExecution) Abort(ctx context.Context) launchplan.Compensatio
 
 func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 	switch typed := effect.(type) {
-	case *headroomStartEffect:
-		return typed.startedByMe
 	case *configMutationEffect:
 		return typed.hasPartialOwnership()
 	case *ptyStartEffect:
@@ -1199,8 +1079,6 @@ func (e *appPreparedExecution) MarkCommitted() {
 	e.committed = true
 	for _, eff := range e.effects {
 		switch typed := eff.(type) {
-		case *headroomStartEffect:
-			typed.committed = true
 		case *configMutationEffect:
 			typed.markCommitted()
 		case *ptyStartEffect:

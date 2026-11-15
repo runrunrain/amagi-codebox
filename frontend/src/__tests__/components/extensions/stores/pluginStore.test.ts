@@ -3,7 +3,8 @@
  *  - ccMcpPluginCount / resourceFilters MCP 计数诚实化（pluginType==='mcp' 为主、hasMcp 兜底）；
  *  - ccLoadError：loadCcAllData 的 track() 在子任务失败时写入（外层 catch 不可达），成功清空；
  *  - cxLoadError：loadCxPlugins 既有 catch 写入（rethrow 语义保持），成功清空；
- *  - refreshCc：失效缓存后全量三 load。
+ *  - refreshCc：失效缓存后全量三 load；
+ *  - setExtSubPage：子页状态迁移契约（重构契约 §1.3）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
@@ -146,5 +147,75 @@ describe('cxDuplicates（重复诊断摘要数据源，§6.2）', () => {
     ];
     expect(store.cxDuplicates).toHaveLength(1);
     expect(store.cxDuplicates[0]).toHaveLength(2);
+  });
+});
+
+describe('setExtSubPage（子页状态迁移，重构契约 §1.3）', () => {
+  it('引擎子页：同步 pluginEngine、清 activePluginId、重置 pluginView 列表态', () => {
+    const store = usePluginStore();
+    store.activePluginId = 'p1';
+    store.pluginView = 'market';
+
+    store.setExtSubPage('codex');
+    expect(store.extSubPage).toBe('codex');
+    // setExtSubPage 是唯一写入口：引擎子页时 pluginEngine 恒同步
+    expect(store.pluginEngine).toBe('codex');
+    // setPluginEngine 清 activePluginId + setPluginView('installed') 重置列表态
+    expect(store.activePluginId).toBeNull();
+    expect(store.pluginView).toBe('installed');
+  });
+
+  it('同值守卫：重击当前子页不动 activePluginId / pluginView', () => {
+    const store = usePluginStore();
+    store.setExtSubPage('pi');
+    store.activePluginId = 'p2';
+    store.pluginView = 'market';
+
+    store.setExtSubPage('pi');
+    expect(store.extSubPage).toBe('pi');
+    expect(store.activePluginId).toBe('p2');
+    expect(store.pluginView).toBe('market');
+  });
+
+  it('shared-skills 子页：不动 pluginEngine / activePluginId / pluginView', () => {
+    const store = usePluginStore();
+    store.activePluginId = 'p3';
+    store.pluginView = 'market';
+
+    store.setExtSubPage('shared-skills');
+    expect(store.extSubPage).toBe('shared-skills');
+    expect(store.pluginEngine).toBe('claude');
+    expect(store.activePluginId).toBe('p3');
+    expect(store.pluginView).toBe('market');
+
+    // 从 shared-skills 切回引擎子页恢复引擎联动契约
+    store.setExtSubPage('omp');
+    expect(store.pluginEngine).toBe('omp');
+    expect(store.activePluginId).toBeNull();
+    expect(store.pluginView).toBe('installed');
+  });
+
+  it('shared-mcp 子页：不动 pluginEngine / activePluginId / pluginView（共用 MCP 契约 §4.1）', () => {
+    const store = usePluginStore();
+    store.activePluginId = 'p4';
+    store.pluginView = 'market';
+
+    store.setExtSubPage('shared-mcp');
+    expect(store.extSubPage).toBe('shared-mcp');
+    expect(store.pluginEngine).toBe('claude');
+    expect(store.activePluginId).toBe('p4');
+    expect(store.pluginView).toBe('market');
+
+    // 从 shared-mcp 切回引擎子页恢复引擎联动契约
+    store.setExtSubPage('opencode');
+    expect(store.pluginEngine).toBe('opencode');
+    expect(store.activePluginId).toBeNull();
+    expect(store.pluginView).toBe('installed');
+  });
+
+  it('extMainTab 已删除（R5：plugin store 无主 tab 状态）', () => {
+    const store = usePluginStore();
+    expect('extMainTab' in store).toBe(false);
+    expect('extSubPage' in store).toBe(true);
   });
 });

@@ -66,10 +66,6 @@ export function CleanClaudeInstall(arg1) {
   return window['go']['main']['App']['CleanClaudeInstall'](arg1);
 }
 
-export function CleanHeadroom() {
-  return window['go']['main']['App']['CleanHeadroom']();
-}
-
 export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
@@ -86,6 +82,10 @@ export function CreateRemotePairingWindow(arg1) {
   return window['go']['main']['App']['CreateRemotePairingWindow'](arg1);
 }
 
+export function CreateSharedMcpEntry(arg1) {
+  return window['go']['main']['App']['CreateSharedMcpEntry'](arg1);
+}
+
 export function DeleteAIProxySubscription(arg1) {
   return window['go']['main']['App']['DeleteAIProxySubscription'](arg1);
 }
@@ -96,6 +96,14 @@ export function DeleteEnvVar(arg1) {
 
 export function DeleteProvider(arg1) {
   return window['go']['main']['App']['DeleteProvider'](arg1);
+}
+
+export function DeleteSharedMcpEntry(arg1, arg2) {
+  return window['go']['main']['App']['DeleteSharedMcpEntry'](arg1, arg2);
+}
+
+export function DeleteSharedSkill(arg1) {
+  return window['go']['main']['App']['DeleteSharedSkill'](arg1);
 }
 
 export function DeleteTerminalPreset(arg1, arg2) {
@@ -174,10 +182,6 @@ export function GetClaudeAccounts() {
   return window['go']['main']['App']['GetClaudeAccounts']();
 }
 
-export function GetCodexGlobalHeadroom() {
-  return window['go']['main']['App']['GetCodexGlobalHeadroom']();
-}
-
 export function GetDockerWSLHealth() {
   return window['go']['main']['App']['GetDockerWSLHealth']();
 }
@@ -208,14 +212,6 @@ export function GetExternalCleanupRecoveryStatus() {
 
 export function GetGitHubToken() {
   return window['go']['main']['App']['GetGitHubToken']();
-}
-
-export function GetHeadroomPerfByClient() {
-  return window['go']['main']['App']['GetHeadroomPerfByClient']();
-}
-
-export function GetHeadroomSavings() {
-  return window['go']['main']['App']['GetHeadroomSavings']();
 }
 
 export function GetLogFileContent(arg1) {
@@ -398,26 +394,6 @@ export function HasProviderAPIKey(arg1) {
   return window['go']['main']['App']['HasProviderAPIKey'](arg1);
 }
 
-export function HeadroomGetPort() {
-  return window['go']['main']['App']['HeadroomGetPort']();
-}
-
-export function HeadroomGetStatus() {
-  return window['go']['main']['App']['HeadroomGetStatus']();
-}
-
-export function HeadroomIsRunning() {
-  return window['go']['main']['App']['HeadroomIsRunning']();
-}
-
-export function HeadroomStart(arg1) {
-  return window['go']['main']['App']['HeadroomStart'](arg1);
-}
-
-export function HeadroomStop() {
-  return window['go']['main']['App']['HeadroomStop']();
-}
-
 export function ImportAIProxySubscription(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportAIProxySubscription'](arg1, arg2, arg3);
 }
@@ -486,8 +462,8 @@ export function LaunchPiSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchPiSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
+export function LaunchSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function ListCodexAdvisorChats(arg1) {
@@ -506,6 +482,14 @@ export function ListRemoteSecurityEvents(arg1) {
   return window['go']['main']['App']['ListRemoteSecurityEvents'](arg1);
 }
 
+export function ListSharedMcp() {
+  return window['go']['main']['App']['ListSharedMcp']();
+}
+
+export function ListSharedSkills() {
+  return window['go']['main']['App']['ListSharedSkills']();
+}
+
 export function MigrateProviderPresetsToTerminal() {
   return window['go']['main']['App']['MigrateProviderPresetsToTerminal']();
 }
@@ -520,6 +504,14 @@ export function OpenFileInEditor(arg1, arg2) {
 
 export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
+}
+
+export function OpenSharedSkillFolder(arg1) {
+  return window['go']['main']['App']['OpenSharedSkillFolder'](arg1);
+}
+
+export function OpenSharedSkillsRoot() {
+  return window['go']['main']['App']['OpenSharedSkillsRoot']();
 }
 
 export function PreviewWSLCliConfigSupply(arg1) {
@@ -560,6 +552,14 @@ export function ReconcileClaudeAccounts(arg1, arg2) {
 
 export function RefreshAIProxySubscription(arg1) {
   return window['go']['main']['App']['RefreshAIProxySubscription'](arg1);
+}
+
+export function RefreshSharedMcp() {
+  return window['go']['main']['App']['RefreshSharedMcp']();
+}
+
+export function RefreshSharedSkills() {
+  return window['go']['main']['App']['RefreshSharedSkills']();
 }
 
 export function RegenerateRemoteToken() {
@@ -610,8 +610,8 @@ export function RemoteClientGetRemoteSettings(arg1) {
   return window['go']['main']['App']['RemoteClientGetRemoteSettings'](arg1);
 }
 
-export function RemoteClientLaunchRemoteSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['RemoteClientLaunchRemoteSession'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function RemoteClientLaunchRemoteSession(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['RemoteClientLaunchRemoteSession'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function RemoteClientListHosts() {
@@ -790,10 +790,6 @@ export function SetClaudeAccountRotation(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetClaudeAccountRotation'](arg1, arg2, arg3);
 }
 
-export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
-}
-
 export function SetEnvVar(arg1, arg2) {
   return window['go']['main']['App']['SetEnvVar'](arg1, arg2);
 }
@@ -824,6 +820,14 @@ export function SetRemoteHost(arg1) {
 
 export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
+}
+
+export function SetSharedMcpEngineSelection(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetSharedMcpEngineSelection'](arg1, arg2, arg3, arg4);
+}
+
+export function SetSharedSkillEnabled(arg1, arg2) {
+  return window['go']['main']['App']['SetSharedSkillEnabled'](arg1, arg2);
 }
 
 export function SetSystemProxyEnabled(arg1) {
@@ -892,6 +896,10 @@ export function UpdatePiPackageTargeted(arg1, arg2) {
 
 export function UpdateProvider(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateProvider'](arg1, arg2, arg3);
+}
+
+export function UpdateSharedMcpEntry(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSharedMcpEntry'](arg1, arg2);
 }
 
 export function UpdateTool(arg1) {

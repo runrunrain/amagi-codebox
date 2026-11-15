@@ -49,7 +49,6 @@ export interface LaunchDefaults {
   presetRef?: string;
   modelRef?: string;
   shellRef?: string;
-  useHeadroom: boolean;
 }
 
 export interface CLILaunchSettings {
@@ -113,7 +112,6 @@ export interface CreateSessionRequest {
   presetRef?: string;
   modelRef?: string;
   shellRef?: string;
-  useHeadroom?: boolean;
 }
 
 /**

@@ -25,8 +25,7 @@ import (
 //   - native/未知来源一律拒绝并给手动指引，不任意删目录。
 //   - 卸载后必须复检；复检仍能检测到时如实报告失败（可能存在另一份安装），
 //     不假报全部卸载成功。
-//   - Claude Code 走 CleanClaudeCode 按来源卸载，Headroom 走租约保护的
-//     CleanHeadroom，均不经本链路。
+//   - Claude Code 走 CleanClaudeCode 按来源卸载，不经本链路。
 
 // brewPrefixProbeTimeout bounds the `brew --prefix` metadata probe.
 const brewPrefixProbeTimeout = 15 * time.Second
@@ -47,8 +46,8 @@ func canUninstallTool(tool CLITool) bool {
 // non-Claude managed tool. Private on purpose: Service is Wails-bound, so an
 // exported method would leak a new binding (integration finding #1); the
 // frontend reaches this through RunFixAction("uninstall_tool") only. It
-// shares the serialized operation slot with install/update (and the
-// Claude/Headroom sync uninstalls), so concurrent management operations
+// shares the serialized operation slot with install/update (and the Claude
+// sync uninstall), so concurrent management operations
 // return ErrBusy. Terminal state is published on the operation snapshot
 // (kind=uninstall); a returned error only means the request was not accepted.
 func (s *Service) startUninstallTool(tool CLITool) (*OperationState, error) {
@@ -56,7 +55,7 @@ func (s *Service) startUninstallTool(tool CLITool) (*OperationState, error) {
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
 	if !canUninstallTool(tool) {
-		return nil, fmt.Errorf("%s 不走通用卸载：Claude Code 请用按来源卸载（CleanClaudeCode），Headroom 请用租约保护的 CleanHeadroom", tool)
+		return nil, fmt.Errorf("%s 不走通用卸载：Claude Code 请用按来源卸载（CleanClaudeCode）", tool)
 	}
 	return s.startOperation(tool, OperationKindUninstall, ClaudeInstallAuto)
 }

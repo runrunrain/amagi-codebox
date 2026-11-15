@@ -18,7 +18,6 @@ import {
   UninstallClaudeCode,
   CheckClaudeConfig,
   FixClaudeConfig,
-  CleanHeadroom,
 } from '../../wailsjs/go/main/App';
 
 import { envcheck } from '../../wailsjs/go/models';
@@ -121,32 +120,6 @@ export function uninstallClaudeCode(method: string): Promise<InstallResult> {
  */
 export function checkClaudeConfig(): Promise<envcheck.ClaudeConfigStatus> {
   return callApi('[api.envcheck.checkClaudeConfig]', () => CheckClaudeConfig());
-}
-
-/**
- * Clean (uninstall) Headroom via App.CleanHeadroom facade.
- * R3-002: when active sessions still hold a headroom lease, the backend returns
- * the Go sentinel `headroom is in use by active sessions` (envcheck.ErrHeadroomInUse)
- * as the error string and does NOT remove the venv. We surface this as a typed
- * rejection so the UI can show a distinct "in use" message instead of a generic
- * uninstall failure.
- */
-export function cleanHeadroom(): Promise<InstallResult> {
-  return callApi('[api.envcheck.cleanHeadroom]', () => CleanHeadroom());
-}
-
-/**
- * Returns true when a cleanHeadroom rejection is the typed "headroom in use by
- * active sessions" rejection (R3-002). The backend wraps envcheck.ErrHeadroomInUse;
- * Wails surfaces the error string, so we match the sentinel message substring.
- * Callers should present a distinct confirm/reject message rather than retrying.
- */
-export function isHeadroomInUseRejection(error: unknown): boolean {
-  if (!error) return false;
-  const msg = typeof error === 'string'
-    ? error
-    : ((error as { message?: unknown })?.message ?? String(error));
-  return String(msg).includes('headroom is in use by active sessions');
 }
 
 /**

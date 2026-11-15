@@ -9,7 +9,9 @@
       <!-- RC4-2：远程模式下读写宿主应用设置（legacy）；下方其余设置均为本机内容 -->
       <template v-if="rcStore.isRemoteMode">
         <RemoteHostSettingsCard @configure-token="tokenDialogOpen = true" />
-      </template>      <GeneralSettings v-if="activeKey === 'general'" />
+      </template>
+      <GeneralSettings v-if="activeKey === 'general'" />
+      <EnvVarsSettings v-else-if="activeKey === 'env-vars'" />
       <ShellSettings v-else-if="activeKey === 'shell'" />
       <TerminalSettings v-else-if="activeKey === 'terminal'" />
       <AppearanceSettings v-else-if="activeKey === 'appearance'" />
@@ -38,6 +40,7 @@ import PageHead from '../../components/ui/PageHead.vue'
 import RemoteHostSettingsCard from '../../components/remote/RemoteHostSettingsCard.vue'
 import LegacyTokenDialog from '../../components/remote/LegacyTokenDialog.vue'
 import GeneralSettings from './GeneralSettings.vue'
+import EnvVarsSettings from './EnvVarsSettings.vue'
 import ShellSettings from './ShellSettings.vue'
 import TerminalSettings from './TerminalSettings.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
@@ -60,6 +63,7 @@ function onTokenChanged() {
 
 const META: Record<string, { title: string; description: string }> = {
   general: { title: '常规设置', description: '配置应用启动默认项' },
+  'env-vars': { title: '环境变量', description: '管理会话环境变量与 Shell 启动脚本全局同步' },
   shell: { title: 'Shell', description: '自定义终端 Shell 路径' },
   terminal: { title: '终端设置', description: '终端渲染与滚动缓冲' },
   appearance: { title: '外观', description: '皮肤背景、调光与模糊' },

@@ -48,8 +48,7 @@ export interface PlanContext {
 
 /**
  * 四个 Agent CLI：卸载走 E1 契约 uninstall_tool。
- * Claude 沿用按来源卸载（UninstallClaudeCode/CleanClaudeInstall），
- * Headroom 沿用租约保护的 CleanHeadroom，均不经本列表。
+ * Claude 沿用按来源卸载（UninstallClaudeCode/CleanClaudeInstall），不经本列表。
  */
 const AGENT_CLI_TOOLS: readonly string[] = ['opencode', 'codex', 'pi', 'omp']
 

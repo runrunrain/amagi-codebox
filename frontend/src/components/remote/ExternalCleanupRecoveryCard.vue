@@ -8,7 +8,7 @@
   - awaiting_confirmation 态：PG-06 显式确认对话（后果/不可撤销/动词按钮/焦点默认取消/
     Esc 取消/提交中防连点）→ ConfirmExternalCleanupRecovery(sessionID, true)。
   - live 拒绝（still running）/ 持久化失败 / 项不存在：分类展示拒绝原因，状态不伪装成功。
-  - 成功：状态清除 + toast + Headroom 锁定解除结果如实呈现（fenceReleased）。
+  - 成功：状态清除 + toast + 外部进程安全锁定解除结果如实呈现（fenceReleased）。
   审计可见：每次确认结果写入本机 localStorage 记录（本卡「本机恢复确认记录」）；
   后端 typed audit（App 内存 registry + host 日志）当前无 Wails 读取口、不在统一
   安全事件流内，接入记录卡⑥为后续接线（如实标注，不用本地记录冒充后端审计）。
@@ -44,11 +44,11 @@
             <path d="M5.4 8.2 7.3 10.1 10.7 6.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </span>
-        未发现待恢复的外部进程清理项，Headroom 未被该安全锁定阻塞。
+        未发现待恢复的外部进程清理项，外部进程未被该安全锁定阻塞。
       </p>
 
       <template v-else>
-        <!-- 锁定提示：全局 Headroom/启动 fence 的用户可懂说明 -->
+        <!-- 锁定提示：全局外部进程/启动 fence 的用户可懂说明 -->
         <div class="rec-blocked" data-testid="recovery-blocked" role="status">
           <span class="rec-blocked-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -62,7 +62,7 @@
               检测到 {{ status.items.length }} 项未完成的外部进程清理
             </p>
             <p class="rec-blocked-desc">
-              在完成恢复前，Headroom 与新会话启动保持安全锁定。请关闭对应的旧外部终端，
+              在完成恢复前，外部进程与新会话启动保持安全锁定。请关闭对应的旧外部终端，
               然后逐项重新核验并确认恢复。
             </p>
           </div>
@@ -133,7 +133,7 @@
     <ConfirmDialog
       :open="confirmOpen"
       title="完成外部进程清理恢复"
-      consequence="确认后系统会把该项旧外部进程登记为已终止，并重新核算 Headroom 锁定；确认前系统会再次核验进程状态，仍在运行将被拒绝。"
+      consequence="确认后系统会把该项旧外部进程登记为已终止，并重新核算外部进程安全锁定；确认前系统会再次核验进程状态，仍在运行将被拒绝。"
       irreversible-note="该确认不可撤销：请仅在您已亲自关闭对应的旧外部终端后执行。系统不提供强制清除入口。"
       confirm-text="确认已完成清理"
       :busy="confirming"
@@ -218,8 +218,7 @@ function appendLocalLog(entry: LocalLogEntry) {
 
 const KIND_LABELS: Record<number, string> = {
   1: 'Claude 代理进程',
-  2: 'Claude Headroom 进程',
-  3: 'Codex Headroom 进程',
+  3: 'Claude 凭据共享服务',
 };
 
 function kindLabel(kind: number): string {
@@ -238,7 +237,7 @@ function reasonLabel(reason: string): string {
 function outcomeLabel(entry: LocalLogEntry): string {
   switch (entry.outcome) {
     case 'completed':
-      return entry.fenceReleased ? '已完成恢复 · Headroom 锁定已解除' : '已完成恢复';
+      return entry.fenceReleased ? '已完成恢复 · 安全锁定已解除' : '已完成恢复';
     case 'still_running':
       return '被拒绝：旧进程仍在运行';
     case 'persistence_failed':
@@ -317,7 +316,7 @@ function classifyConfirmFailure(raw: string): { message: string; outcome: LocalO
   }
   if (t.includes('recheck unavailable')) {
     return {
-      message: '无法核验进程状态：恢复未完成，Headroom 保持锁定。请稍后重试或重启应用。',
+      message: '无法核验进程状态：恢复未完成，安全锁定保持。请稍后重试或重启应用。',
       outcome: 'recheck_unavailable',
     };
   }
@@ -329,12 +328,12 @@ function classifyConfirmFailure(raw: string): { message: string; outcome: LocalO
   }
   if (t.includes('persistence') || t.includes('store')) {
     return {
-      message: '本地登记写入失败：恢复未完成，Headroom 保持锁定。请检查配置目录与磁盘权限后重试。',
+      message: '本地登记写入失败：恢复未完成，安全锁定保持。请检查配置目录与磁盘权限后重试。',
       outcome: 'persistence_failed',
     };
   }
   return {
-    message: '恢复未完成（原因见下）：Headroom 保持锁定，请按提示修正后重试。',
+    message: '恢复未完成（原因见下）：安全锁定保持，请按提示修正后重试。',
     outcome: 'persistence_failed',
   };
 }
@@ -354,9 +353,9 @@ async function doConfirm() {
       fenceReleased: result.fenceReleased,
     });
     if (result.fenceReleased) {
-      showSuccess('恢复完成：Headroom 安全锁定已解除。');
+      showSuccess('恢复完成：外部进程安全锁定已解除。');
     } else {
-      showSuccess('该项恢复完成；仍有其他待恢复项，Headroom 保持锁定。');
+      showSuccess('该项恢复完成；仍有其他待恢复项，安全锁定保持。');
     }
     confirmOpen.value = false;
     confirmTarget.value = null;

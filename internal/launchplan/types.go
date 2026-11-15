@@ -32,7 +32,6 @@ type StableLaunchRefs struct {
 	PresetRef   string `json:"presetRef,omitempty"`
 	ModelRef    string `json:"modelRef,omitempty"`
 	ShellRef    string `json:"shellRef,omitempty"`
-	UseHeadroom *bool  `json:"useHeadroom,omitempty"`
 }
 
 type StableRecipe struct {
@@ -42,7 +41,6 @@ type StableRecipe struct {
 	PresetRef   string           `json:"presetRef,omitempty"`
 	ModelRef    string           `json:"modelRef,omitempty"`
 	ShellRef    string           `json:"shellRef,omitempty"`
-	UseHeadroom bool             `json:"useHeadroom,omitempty"`
 }
 
 type BuildRequest struct {
@@ -56,11 +54,11 @@ type BuildRequest struct {
 type SharedServiceKind uint8
 
 const (
-	SharedClaudeHeadroom SharedServiceKind = iota + 1
-	SharedCodexHeadroom
 	// SharedClaudeCredentials 对应 remote.SharedServiceClaudeCredentials：
 	// canonical Claude/Pi 凭据槽位组合的共享 admission（design §6.3）。
-	SharedClaudeCredentials
+	// 数值显式固定为 3：kind 1/2 是已退役的共享压缩代理服务，历史持久化
+	// 记录（cleanupstore journal 等）中仍可能以数字形态出现，不得复用。
+	SharedClaudeCredentials SharedServiceKind = 3
 )
 
 type ConfigTarget uint8
@@ -75,8 +73,7 @@ const (
 type EffectKind uint8
 
 const (
-	EffectHeadroomStart EffectKind = iota + 1
-	EffectConfigMutation
+	EffectConfigMutation EffectKind = iota + 1
 	EffectPTYStart
 	EffectExternalProcessStart
 	EffectBootstrapWrite
@@ -94,7 +91,7 @@ type SharedStartSpec struct {
 	Service           SharedServiceKind
 	ConfigFingerprint [32]byte
 	UpstreamURL       string // non-secret real backend URL the shared service forwards to
-	ListenPort        int    // canonical Headroom listen port (8787 Claude / 8788 Codex)
+	ListenPort        int    // canonical listen port of the shared service
 }
 
 type ConfigMutationSpec struct {
@@ -277,8 +274,6 @@ func (p *Plan) Validate() error {
 
 func effectMatchesUnion(effect EffectSpec) bool {
 	switch effect.Kind {
-	case EffectHeadroomStart:
-		return effect.Shared != nil
 	case EffectConfigMutation:
 		return effect.Config != nil
 	case EffectPTYStart, EffectExternalProcessStart:
@@ -294,8 +289,6 @@ func effectMatchesUnion(effect EffectSpec) bool {
 
 func CanonicalEffectRank(effect EffectSpec) int {
 	switch effect.Kind {
-	case EffectHeadroomStart:
-		return 0
 	case EffectConfigMutation:
 		return 1 + int(effect.Config.Target)
 	case EffectWSLConfigSupply:

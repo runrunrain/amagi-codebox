@@ -44,9 +44,6 @@ func (r *appEnvCheckRunner) Run(_ context.Context, spec platform.CommandSpec) (*
 	if strings.Contains(path, "omp") {
 		return &platform.ProcessResult{Stdout: "omp/17.2.10"}, nil
 	}
-	if strings.Contains(path, "headroom") {
-		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
-	}
 
 	// npm commands (version check, package view)
 	if strings.Contains(path, "npm") {
@@ -89,9 +86,6 @@ func (r *appEnvCheckRunnerWithFailure) Run(_ context.Context, spec platform.Comm
 	if strings.Contains(path, "omp") {
 		return &platform.ProcessResult{Stdout: "omp/17.2.10"}, nil
 	}
-	if strings.Contains(path, "headroom") {
-		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
-	}
 	if strings.Contains(path, "npm") {
 		if len(spec.Args) > 0 && spec.Args[0] == "view" {
 			return &platform.ProcessResult{Stdout: "1.0.0"}, nil
@@ -114,7 +108,7 @@ func newTestAppWithEnvCheck(t *testing.T, runner platform.ProcessRunner) *App {
 
 	// Create temp executables so exec.LookPath finds them
 	tmpDir := t.TempDir()
-	for _, name := range []string{"claude", "opencode", "codex", "pi", "omp", "headroom"} {
+	for _, name := range []string{"claude", "opencode", "codex", "pi", "omp"} {
 		ext := ""
 		content := "#!/bin/sh\nexit 0\n"
 		if runtime.GOOS == "windows" {

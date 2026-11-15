@@ -35,7 +35,6 @@ export function launchClaudeSession(params: {
   presetName: string;
   mode: string;
   workDir: string;
-  useHeadroom: boolean;
   shellPath?: string;
 }): Promise<string> {
   return callApi('[api.session.launchClaudeSession]', () => LaunchSession(
@@ -43,7 +42,6 @@ export function launchClaudeSession(params: {
     params.presetName,
     params.mode,
     params.workDir,
-    params.useHeadroom,
     params.shellPath || ''
   ));
 }

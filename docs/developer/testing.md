@@ -62,7 +62,7 @@ PI_CONFIG_BROWSER_CHANNEL=chrome npx playwright test --config e2e/pi-amagi-confi
 
 仓库存在按里程碑/缺陷编号命名的回归测试系列，文件名即追溯锚点：
 
-- 根目录：`bind_failclosed_test.go`、`shared_coordinator_test.go`、`desktop_ledger_destroy_test.go`、`clear_stopped_failclosed_test.go` / `clear_stopped_manager_sync_test.go` / `clear_stopped_manager_failure_test.go`、`launch_admission_test.go`、`external_headroom_lease_test.go`、`shutdown_persistence_stop_gate_test.go`、`durable_ownership_r9_test.go` / `durable_ownership_r10_test.go`、`external_recovery_test.go`、`raw_port_gap_test.go`、`remote_security_migration_gate_test.go` 等（R 系列已语义化重命名，文件头注释保留原缺陷/设计编号锚点）。
+- 根目录：`bind_failclosed_test.go`、`shared_coordinator_test.go`、`desktop_ledger_destroy_test.go`、`clear_stopped_failclosed_test.go` / `clear_stopped_manager_sync_test.go` / `clear_stopped_manager_failure_test.go`、`external_recovery_test.go`、`raw_port_gap_test.go`、`remote_security_migration_gate_test.go` 等（R 系列已语义化重命名，文件头注释保留原缺陷/设计编号锚点；随功能下线的回归文件已一并移除）。
 - `internal/remote/`：`m001_allow_header_test.go` ~ `m011_realpath_test.go`、`m2a_*`（M2-A 适配器）、`b2a/b2b/b2c1/b2c2_*`（B2 阶段证据修正）、`c5b_checkpoint_desktop_take_test.go` 等。
 
 新增回归测试时：`internal/remote/` 既有系列沿用 `<系列>_<编号>_<主题>_test.go` 续写；其余一律语义化命名并在文件头注释标注设计/缺陷锚点（详见上文「测试文件位置与命名规范」）。
@@ -71,12 +71,12 @@ PI_CONFIG_BROWSER_CHANNEL=chrome npx playwright test --config e2e/pi-amagi-confi
 
 根目录 `bind_manifest_test.go` 用反射冻结 Wails 绑定表面，属于每次 `go test` 都会执行的硬断言：
 
-- **禁止原始服务入列**：Bind 列表中不得出现 `pty.Service` / `headroom.HeadroomService` / `secrets.SecretsService` / `envcheck.Service` / `logging.Service` / `updater.Service` / `ompconfig.Service` / `opencodeconfig.Service`（C-01 及 Phase 1–4 绑定收敛）。
+- **禁止原始服务入列**：Bind 列表中不得出现 `pty.Service` / `secrets.SecretsService` / `envcheck.Service` / `logging.Service` / `updater.Service` / `ompconfig.Service` / `opencodeconfig.Service`（C-01 及 Phase 1–4 绑定收敛）。
 - **禁止 App 旁路方法**：`StopAllSessions`、`GetOutputHistory`、`Register/Unregister{Output,Exit,Resize}Callback` 不得存在于 `App` 导出方法面。
-- **App 收口与窄门面冻结**：`HasProviderAPIKey`、`GetProviderAPIKey`、`CleanHeadroom` 窄门面必须存在；已迁至 `remoteAppAdapter` 或下线/内部化的 `QuickLaunch`、`GetEnvCheckOperationState`、`GetEnvCheckStatus`、`GetConfigService`、`GetPathsService`、`GetSettingsService`、`GetSessionWebUI`、`ProbeSessionWebUI`、`SaveAllConfig`、`GetKeyDiagnostics`、`ClearStoppedSessionsDetailed`、`GetLaunchCompensationDebts`、`RetryLaunchCompensationDebt` 不得再暴露于 `App`。
-- **门控门面必须可达**：`PtyWrite`、`PtyWriteLarge`、`PtyResize`、`StopSession`、`RemoveSession`、`ClearStoppedSessions`、`GetOutputHistorySnapshot`、`HeadroomStart/Stop/GetStatus` 必须存在。
+- **App 收口与窄门面冻结**：`HasProviderAPIKey`、`GetProviderAPIKey` 窄门面必须存在；已迁至 `remoteAppAdapter` 或下线/内部化的 `QuickLaunch`、`GetEnvCheckOperationState`、`GetEnvCheckStatus`、`GetConfigService`、`GetPathsService`、`GetSettingsService`、`GetSessionWebUI`、`ProbeSessionWebUI`、`SaveAllConfig`、`GetKeyDiagnostics`、`ClearStoppedSessionsDetailed`、`GetLaunchCompensationDebts`、`RetryLaunchCompensationDebt` 不得再暴露于 `App`。
+- **门控门面必须可达**：`PtyWrite`、`PtyWriteLarge`、`PtyResize`、`StopSession`、`RemoveSession`、`ClearStoppedSessions`、`GetOutputHistorySnapshot` 必须存在。
 - **原始变更名片段禁漏**：任何导出 App 方法名不得含 `WriteRaw`/`ResizeRaw`/`CloseSession`/`CloseAll`。
-- **已分类非会话变更登记**：`ConfirmExternalCleanupRecovery`、`SetCodexGlobalHeadroom` 等在 `appClassifiedNonSessionMutations` 表中显式登记门控语义，漂移可评审。
+- **已分类非会话变更登记**：`ConfirmExternalCleanupRecovery`、`SetSharedSkillEnabled` 等在 `appClassifiedNonSessionMutations` 表中显式登记门控语义，漂移可评审。
 - **Skins 禁止暴露 `SetContext`**：`skins.Service` 不得导出 `SetContext`（已改为构造时通过 `skins.NewServiceWithContext` 注入 context getter）。
 - **Secrets 死绑定方法冻结**：`GetZhipuAPIKey` 等已删除的 shim 不得复活；`GetAllProviders` 必须保留（`agentcli` 有真实调用：`agentcli_h_config.go`、`agentcli_h_usage.go`）。
 - **ConfigService 注入/回写面审查**：`Set*`/`Record*`/`Replace*` 方法集合必须与 `configServiceAcceptedMutationSurface` 登记清单一致。

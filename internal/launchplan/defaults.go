@@ -33,7 +33,6 @@ func (s *DefaultStore) RecordDesktopActivation(recipe StableRecipe) error {
 		PresetRef:   recipe.PresetRef,
 		ModelRef:    recipe.ModelRef,
 		ShellRef:    recipe.ShellRef,
-		UseHeadroom: recipe.UseHeadroom,
 	})
 }
 
@@ -51,6 +50,5 @@ func (s *DefaultStore) HostDefaultRefs(cli contract.CLIType) (StableRecipe, bool
 		PresetRef:   refs.PresetRef,
 		ModelRef:    refs.ModelRef,
 		ShellRef:    refs.ShellRef,
-		UseHeadroom: refs.UseHeadroom,
 	}, true
 }

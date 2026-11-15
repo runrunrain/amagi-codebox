@@ -64,7 +64,7 @@ jobs:
         env:
           AMAGI_WSL_E2E: ''
           AMAGI_CODEBOX_AI_PROXY: ''
-        run: go test . ./internal/platform ./internal/launcher -run 'Test(WSL|BuildPlanPreservesWSL|Desktop.*WSL|PlannerResolveLaunch|BuildClaudePlanHeadroom|BuildCodexPlanHeadroom|PiProviderWriteWSL|OmpProvider.*WSL|PiOmpWindowsPath|AppendWSL|StripWSL)' -count=1
+        run: go test . ./internal/platform ./internal/launcher -run 'Test(WSL|BuildPlanPreservesWSL|Desktop.*WSL|PlannerResolveLaunch|PiProviderWriteWSL|OmpProvider.*WSL|PiOmpWindowsPath|AppendWSL|StripWSL)' -count=1
 
   frontend-mobile:
     name: Frontend and mobile

@@ -15,11 +15,11 @@ import '/frontend/src/styles/tokens.css';
 
 const scenario = new URLSearchParams(location.search).get('scenario') || 'installed';
 const calls = [];
-const tools = ['claude_code', 'opencode', 'codex', 'pi', 'omp', 'headroom'];
+const tools = ['claude_code', 'opencode', 'codex', 'pi', 'omp'];
 const copy = value => JSON.parse(JSON.stringify(value));
 const now = () => new Date().toISOString();
 const items = Object.fromEntries(tools.map(tool => [tool, {
-  tool, installed: true, installMethod: tool === 'headroom' ? 'codebox-venv' : 'npm',
+  tool, installed: true, installMethod: 'npm',
   version: '1.0.0', latestVersion: '1.0.0', hasUpdate: false,
   pathOk: true, systemPathOk: true, pathState: 'system_path', pathSource: 'test-fixture',
   executablePath: `/test-only/node/bin/${tool}`, error: '', checkedAt: now(),
@@ -135,7 +135,7 @@ const app = Object.fromEntries(Object.entries(implementations).map(([name, impl]
   calls.push({ name, args, at: Date.now() });
   return impl(...args);
 }]));
-window.go = { main: { App: app }, envcheck: { Service: { CleanHeadroom: async () => ({ success: true, tool: 'headroom' }) } } };
+window.go = { main: { App: app } };
 window.__envCalls = calls;
 window.__envFixture = { scenario, status, advanceTime(ms) { clockOffset += ms; }, get operation() { return copy(operation); }, get dependencyInstalled() { return dependencyInstalled; }, set confirmAllowed(value) { confirmAllowed = value; } };
 const { toasts } = useToast();

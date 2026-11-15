@@ -13,7 +13,7 @@ describe('Remote Self-Check & Address Fallback Logic', () => {
   describe('Gate 禁启警告匹配与透出逻辑', () => {
     it('准确匹配后端 remote_security_migration_gate 透出的各类警告（固定前缀）', () => {
       const allStartupWarnings = [
-        '检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁 Headroom',
+        '检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁外部进程安全锁定',
         '远程安全设置迁移：检测阶段失败，远程功能本次未启动。',
         '远程安全设置迁移：检测到未完成的迁移痕迹，需要手动修复后才能启动远程功能。',
         '[环境检测] 系统代理端口不可用',

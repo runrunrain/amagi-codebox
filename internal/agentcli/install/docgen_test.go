@@ -72,7 +72,6 @@ func goldenTable() []spec.Command {
 				{Name: "model", Type: spec.TypeString, Desc: "模型覆盖"},
 				{Name: "workDir", Type: spec.TypeString, Desc: "工作目录"},
 				{Name: "mode", Type: spec.TypeString, Default: "embedded", Desc: "会话模式"},
-				{Name: "headroom", Type: spec.TypeBool, Default: false, Desc: "启用 Headroom"},
 			},
 			Timeout:  300,
 			Examples: []string{"codebox-agent session launch --app-type claudecode --provider myprov --yes"},

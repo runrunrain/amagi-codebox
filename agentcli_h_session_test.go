@@ -241,11 +241,6 @@ func TestNormalizeAgentLaunchParams(t *testing.T) {
 			wantErr: spec.ErrBadArgs,
 		},
 		{
-			name:    "codex headroom 不支持",
-			in:      agentLaunchParams{AppType: "codex", Model: "m", Headroom: true},
-			wantErr: spec.ErrBadArgs,
-		},
-		{
 			name: "pi 仅 preset 键可用",
 			in:   agentLaunchParams{AppType: "pi", Preset: "prov/key"},
 			check: func(t *testing.T, out agentLaunchParams) {
@@ -293,8 +288,8 @@ type recordingLauncher struct {
 	calls []string
 }
 
-func (r *recordingLauncher) LaunchSession(providerName, presetName, mode, workDir string, useHeadroom bool, shellPath string) (string, error) {
-	r.calls = append(r.calls, fmt.Sprintf("LaunchSession(%q,%q,%q,%q,%v,%q)", providerName, presetName, mode, workDir, useHeadroom, shellPath))
+func (r *recordingLauncher) LaunchSession(providerName, presetName, mode, workDir string, shellPath string) (string, error) {
+	r.calls = append(r.calls, fmt.Sprintf("LaunchSession(%q,%q,%q,%q,%q)", providerName, presetName, mode, workDir, shellPath))
 	return "id-claude", nil
 }
 
@@ -324,9 +319,9 @@ func TestDispatchAgentLaunch(t *testing.T) {
 		in   agentLaunchParams
 		want string
 	}{
-		{"claudecode 走 LaunchSession（含 headroom）",
-			agentLaunchParams{AppType: "claudecode", Provider: "pv", Preset: "ps", Mode: "embedded", WorkDir: "/w", Headroom: true},
-			`LaunchSession("pv","ps","embedded","/w",true,"")`},
+		{"claudecode 走 LaunchSession",
+			agentLaunchParams{AppType: "claudecode", Provider: "pv", Preset: "ps", Mode: "embedded", WorkDir: "/w"},
+			`LaunchSession("pv","ps","embedded","/w","")`},
 		{"opencode 走 LaunchOpenCode",
 			agentLaunchParams{AppType: "opencode", Provider: "pv", Preset: "ps", Mode: "embedded", WorkDir: "/w"},
 			`LaunchOpenCode("pv","ps","embedded","/w","")`},

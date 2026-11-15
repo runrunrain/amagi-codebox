@@ -27,7 +27,7 @@
 - **预设配置管理**：每个提供商支持多套预设，可配置模型、温度、思考模式等
 - **视觉/视频模型标记与导出**：终端预设可标记 vision / video 能力与优先级，并导出 `~/.agents/amagi-media-models.json` 供 `amagi-media-understanding` 等 Agent skill 消费（契约见 [docs/vision-export-contract.md](docs/vision-export-contract.md)）
 - **API 密钥安全存储**：Windows DPAPI / macOS Keychain 加密存储
-- **五引擎插件管理**：管理 Claude Code、OpenCode、Codex、Pi、Oh My Pi 插件，支持安装/卸载/更新
+- **五引擎插件管理**：管理 Claude Code、OpenCode、Codex、Pi、Oh My Pi 插件，支持安装/卸载/更新；扩展中心另含「共用技能」子页，管理 `~/.agents/skills` 下的共用技能
 - **内嵌终端**：xterm.js + ConPTY/macOS PTY，多 Tab 并发运行
 - **AI 辅助 Git（GitAssist）**：对会话工作区做状态查询、分支切换、AI 总结变更生成提交信息并提交/推送
 - **用量统计（Usage）**：本地 SQLite 记录各会话 token 用量与费用（`usage.db`），支持自定义定价
@@ -80,11 +80,11 @@ wails build   # 生产构建，产物在 build/bin/
 
 Amagi CodeBox 基于 **Wails v2**：Go 后端与 Vue 3 + TypeScript 前端编译为**单一二进制**，前端产物由 `//go:embed` 嵌入。
 
-**绑定主干**：`main.go` 通过 Wails `Bind` 把 `App` 枢纽与 14 个服务 struct（共 15 个绑定，清单见 `bind_list.go` 的 `buildWailsBindList`）暴露给前端：Config、Paths、Settings、Plugins、CodexPlugins、OpenCodePlugins、PiPlugins、OmpPlugins、PiConfig、AgentProfiles、Usage、WebUI、Skins、GitAssist。raw `pty.Service`、`headroom.HeadroomService` 以及收口后的 `secrets.SecretsService`、`envcheck.Service`、`logging.Service`、`updater.Service`、`ompconfig.Service`、`opencodeconfig.Service` 被有意排除在绑定之外，前端只能经 `App` 上的门控/窄门面方法（如 `PtyWrite`/`PtyResize`、`Headroom*`/`CleanHeadroom`、`HasProviderAPIKey`/`GetProviderAPIKey`、`GetLogs` 等、`CheckForUpdate`/`DownloadAndApplyUpdate`、`RunEnvCheck`/`GetEnvCheckSnapshot` 等、`GetOmp*`/`SaveOmp*`、`GetOpenCodeConfig*`/`SaveOpenCodeConfig`）触达。`app.go` 是中央枢纽，持有所有服务指针并负责会话编排、环境检测、远程控制等跨服务协调（远程层内部桥接经未导出的 `remoteAppAdapter` 提供 `remote.AppInterface`）。每个被绑定 struct 的导出方法会被 Wails 自动生成为 TypeScript 绑定（`frontend/wailsjs/go/`），前端经 `frontend/src/api/*.ts` 包装层与 Pinia store 调用。
+**绑定主干**：`main.go` 通过 Wails `Bind` 把 `App` 枢纽与 14 个服务 struct（共 15 个绑定，清单见 `bind_list.go` 的 `buildWailsBindList`）暴露给前端：Config、Paths、Settings、Plugins、CodexPlugins、OpenCodePlugins、PiPlugins、OmpPlugins、PiConfig、AgentProfiles、Usage、WebUI、Skins、GitAssist。raw `pty.Service` 以及收口后的 `secrets.SecretsService`、`envcheck.Service`、`logging.Service`、`updater.Service`、`ompconfig.Service`、`opencodeconfig.Service` 被有意排除在绑定之外，前端只能经 `App` 上的门控/窄门面方法（如 `PtyWrite`/`PtyResize`、`HasProviderAPIKey`/`GetProviderAPIKey`、`GetLogs` 等、`CheckForUpdate`/`DownloadAndApplyUpdate`、`RunEnvCheck`/`GetEnvCheckSnapshot` 等、`GetOmp*`/`SaveOmp*`、`GetOpenCodeConfig*`/`SaveOpenCodeConfig`）触达。`app.go` 是中央枢纽，持有所有服务指针并负责会话编排、环境检测、远程控制等跨服务协调（远程层内部桥接经未导出的 `remoteAppAdapter` 提供 `remote.AppInterface`）。每个被绑定 struct 的导出方法会被 Wails 自动生成为 TypeScript 绑定（`frontend/wailsjs/go/`），前端经 `frontend/src/api/*.ts` 包装层与 Pinia store 调用。
 
-**后端服务包**：`internal/` 下 42 个顶层包（含子包共 54 个 Go 包）遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`launcher`/`launchplan`（各 CLI 启动与配置写入）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`/`piplugin`/`ompplugin`（五引擎插件系统）、`headroom`（上下文压缩）、`remote` + `remote/contract`（远程控制与 v1 契约）、`remoteclient`（作为客户端连接其他实例）、`gitassist`（AI 辅助 Git）、`usage`（用量统计）、`agentprofile`（Agent 档案）、`skins`（皮肤）、`webui`（pi Web UI 壳集成）、`wslsetup`（WSL 安装辅助）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
+**后端服务包**：`internal/` 下 42 个顶层包（含子包共 55 个 Go 包）遵循「一个 `Service`/`ConfigService` struct + `New...()` 构造函数 + 导出方法」范式，包括 `config`（提供商/预设）、`secrets`（密钥存储）、`session`（会话管理）、`launcher`/`launchplan`（各 CLI 启动与配置写入）、`pty`（伪终端）、`plugin`/`opencodeplugin`/`codexplugin`/`piplugin`/`ompplugin`（五引擎插件系统）、`sharedskills`（`~/.agents` 共用技能）、`sharedmcp`（`~/.agents/.mcp.json` 共用 MCP 登记与四引擎分发）、`remote` + `remote/contract`（远程控制与 v1 契约）、`remoteclient`（作为客户端连接其他实例）、`gitassist`（AI 辅助 Git）、`usage`（用量统计）、`agentprofile`（Agent 档案）、`skins`（皮肤）、`webui`（pi Web UI 壳集成）、`wslsetup`（WSL 安装辅助）、`envcheck`（环境检测与修复）、`updater`（自动更新）等。
 
-**五种应用类型**：`claudecode` / `opencode` / `codex` / `pi` / `omp`（定义于 `internal/session/types.go`）。`app.go` 中 Claude Code 走 `LaunchSession`，Pi / omp 走 `LaunchPiSession` / `LaunchOmpSession`，由 `internal/launcher` 把提供商配置写入各 CLI 自己的 agent 根目录（如 `~/.pi/agent` / `~/.omp/agent`）。
+**五种应用类型**：`claudecode` / `opencode` / `codex` / `pi` / `omp`（定义于 `internal/session/types.go`）。Claude Code 走 `LaunchSession`，Pi / omp 走 `LaunchPiSession` / `LaunchOmpSession`（入口集中在 `app_session_pty.go`），由 `internal/launcher` 把提供商配置写入各 CLI 自己的 agent 根目录（如 `~/.pi/agent` / `~/.omp/agent`）。
 
 **跨平台**：平台差异通过 Go `//go:build` 约束在编译期分流（如 secrets 在 Windows 用 DPAPI、macOS 用 Keychain、Linux 为不支持），启动时由 `platform.CurrentCapabilities()` 一次性解析能力集合，运行期只读。
 

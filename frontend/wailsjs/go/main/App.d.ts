@@ -5,11 +5,11 @@ import {settings} from '../models';
 import {main} from '../models';
 import {envcheck} from '../models';
 import {updater} from '../models';
+import {sharedmcp} from '../models';
 import {aiproxy} from '../models';
 import {router} from '../models';
 import {dockerwsl} from '../models';
 import {envvars} from '../models';
-import {headroom} from '../models';
 import {logging} from '../models';
 import {config} from '../models';
 import {platform} from '../models';
@@ -50,8 +50,6 @@ export function CheckWSLCliResourcesSupply(arg1:string):Promise<main.WSLSkillsSu
 
 export function CleanClaudeInstall(arg1:string):Promise<envcheck.InstallResult>;
 
-export function CleanHeadroom():Promise<envcheck.InstallResult>;
-
 export function ClearLogs():Promise<void>;
 
 export function ClearStoppedSessions():Promise<number>;
@@ -60,11 +58,17 @@ export function ConfirmExternalCleanupRecovery(arg1:string,arg2:boolean):Promise
 
 export function CreateRemotePairingWindow(arg1:boolean):Promise<remote.PairingWindowInfo>;
 
+export function CreateSharedMcpEntry(arg1:sharedmcp.SharedMcpEntry):Promise<main.SharedMcpOverview>;
+
 export function DeleteAIProxySubscription(arg1:string):Promise<aiproxy.State>;
 
 export function DeleteEnvVar(arg1:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
+
+export function DeleteSharedMcpEntry(arg1:string,arg2:boolean):Promise<main.SharedMcpOverview>;
+
+export function DeleteSharedSkill(arg1:string):Promise<Array<main.SharedSkillView>>;
 
 export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
 
@@ -104,8 +108,6 @@ export function GetClaudeAccountOperation(arg1:string):Promise<main.ClaudeAccoun
 
 export function GetClaudeAccounts():Promise<main.ClaudeAccountsPoolDTO>;
 
-export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>;
-
 export function GetDockerWSLHealth():Promise<dockerwsl.HealthReport>;
 
 export function GetDrvFSAdvisories():Promise<string>;
@@ -121,10 +123,6 @@ export function GetEnvVarsJSON():Promise<string>;
 export function GetExternalCleanupRecoveryStatus():Promise<remote.ExternalCleanupRecoveryStatus>;
 
 export function GetGitHubToken():Promise<string>;
-
-export function GetHeadroomPerfByClient():Promise<Array<headroom.ClientPerfStat>>;
-
-export function GetHeadroomSavings():Promise<headroom.SavingsReport>;
 
 export function GetLogFileContent(arg1:string):Promise<string>;
 
@@ -216,16 +214,6 @@ export function GrantWSLVisionConsent():Promise<void>;
 
 export function HasProviderAPIKey(arg1:string):Promise<boolean>;
 
-export function HeadroomGetPort():Promise<number>;
-
-export function HeadroomGetStatus():Promise<headroom.HeadroomStatus>;
-
-export function HeadroomIsRunning():Promise<boolean>;
-
-export function HeadroomStart(arg1:string):Promise<void>;
-
-export function HeadroomStop():Promise<void>;
-
 export function ImportAIProxySubscription(arg1:string,arg2:string,arg3:string):Promise<aiproxy.State>;
 
 export function ImportConfigFromFile():Promise<string>;
@@ -260,7 +248,7 @@ export function LaunchOpenCode(arg1:string,arg2:string,arg3:string,arg4:string,a
 
 export function LaunchPiSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
-export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<string>;
+export function LaunchSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<string>;
 
 export function ListCodexAdvisorChats(arg1:string):Promise<string>;
 
@@ -270,6 +258,10 @@ export function ListRemoteDevices():Promise<Array<remote.DeviceInfo>>;
 
 export function ListRemoteSecurityEvents(arg1:number):Promise<Array<remote.SecurityEventRecord>>;
 
+export function ListSharedMcp():Promise<main.SharedMcpOverview>;
+
+export function ListSharedSkills():Promise<Array<main.SharedSkillView>>;
+
 export function MigrateProviderPresetsToTerminal():Promise<number>;
 
 export function OpenExternalURL(arg1:string):Promise<void>;
@@ -277,6 +269,10 @@ export function OpenExternalURL(arg1:string):Promise<void>;
 export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
+
+export function OpenSharedSkillFolder(arg1:string):Promise<void>;
+
+export function OpenSharedSkillsRoot():Promise<void>;
 
 export function PreviewWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitPreview>>;
 
@@ -297,6 +293,10 @@ export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 export function ReconcileClaudeAccounts(arg1:string,arg2:number):Promise<main.ClaudeAccountReconcileResultDTO>;
 
 export function RefreshAIProxySubscription(arg1:string):Promise<aiproxy.State>;
+
+export function RefreshSharedMcp():Promise<main.SharedMcpOverview>;
+
+export function RefreshSharedSkills():Promise<Array<main.SharedSkillView>>;
 
 export function RegenerateRemoteToken():Promise<string>;
 
@@ -322,7 +322,7 @@ export function RemoteClientGetRemoteSession(arg1:string):Promise<contract.Sessi
 
 export function RemoteClientGetRemoteSettings(arg1:string):Promise<string>;
 
-export function RemoteClientLaunchRemoteSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:boolean):Promise<contract.SessionDetail>;
+export function RemoteClientLaunchRemoteSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<contract.SessionDetail>;
 
 export function RemoteClientListHosts():Promise<Array<remoteclient.HostEntry>>;
 
@@ -412,8 +412,6 @@ export function SetAgentCLIEnabled(arg1:boolean):Promise<void>;
 
 export function SetClaudeAccountRotation(arg1:boolean,arg2:number,arg3:string):Promise<void>;
 
-export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<main.CodexGlobalHeadroomStatus>;
-
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
 
 export function SetEnvVarPathAllow(arg1:string,arg2:boolean):Promise<void>;
@@ -429,6 +427,10 @@ export function SetRemoteEndpoint(arg1:string,arg2:number):Promise<void>;
 export function SetRemoteHost(arg1:string):Promise<void>;
 
 export function SetRemotePort(arg1:number):Promise<void>;
+
+export function SetSharedMcpEngineSelection(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<main.SharedMcpOverview>;
+
+export function SetSharedSkillEnabled(arg1:string,arg2:boolean):Promise<Array<main.SharedSkillView>>;
 
 export function SetSystemProxyEnabled(arg1:boolean):Promise<main.SystemProxyStatus>;
 
@@ -463,5 +465,7 @@ export function UpdateCLIInWSL(arg1:string):Promise<wslsetup.InstallResult>;
 export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
 
 export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function UpdateSharedMcpEntry(arg1:string,arg2:sharedmcp.SharedMcpEntry):Promise<main.SharedMcpOverview>;
 
 export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;

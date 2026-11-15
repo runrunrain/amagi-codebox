@@ -529,7 +529,6 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 	if req.ShellRef != nil {
 		stableRefs.ShellRef = *req.ShellRef
 	}
-	stableRefs.UseHeadroom = req.UseHeadroom
 
 	// 1. BuildPlan (pure read, zero side effects).
 	plan, failure := planner.BuildPlan(ctx, launchplan.BuildRequest{
@@ -883,10 +882,6 @@ func (a *RemoteSessionAdapter) authorityCreateSession(ctx context.Context, reqID
 // SharedServiceKind. Returns false for unknown kinds.
 func sharedKindFromPlan(planKind launchplan.SharedServiceKind) (SharedServiceKind, bool) {
 	switch planKind {
-	case launchplan.SharedClaudeHeadroom:
-		return SharedServiceClaudeHeadroom, true
-	case launchplan.SharedCodexHeadroom:
-		return SharedServiceCodexHeadroom, true
 	case launchplan.SharedClaudeCredentials:
 		return SharedServiceClaudeCredentials, true
 	default:
@@ -897,8 +892,6 @@ func sharedKindFromPlan(planKind launchplan.SharedServiceKind) (SharedServiceKin
 // launchEffectKindForSpec maps an EffectSpec to the gate's LaunchEffectKind.
 func launchEffectKindForSpec(spec launchplan.EffectSpec) LaunchEffectKind {
 	switch spec.Kind {
-	case launchplan.EffectHeadroomStart:
-		return LaunchHeadroomStart
 	case launchplan.EffectConfigMutation:
 		return LaunchConfigMutation
 	case launchplan.EffectPTYStart:

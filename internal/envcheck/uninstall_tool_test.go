@@ -145,7 +145,7 @@ func TestRunFixActionUninstallToolRejectsUnsupportedTools(t *testing.T) {
 		return &platform.ProcessResult{}, os.ErrNotExist
 	}})
 
-	for _, tool := range []CLITool{ToolClaudeCode, ToolHeadroom, CLITool("bogus")} {
+	for _, tool := range []CLITool{ToolClaudeCode, CLITool("bogus")} {
 		result, err := svc.RunFixAction(FixActionRequest{Action: SolutionUninstallTool, Tool: tool})
 		if err == nil && result != nil && result.Success {
 			t.Fatalf("uninstall_tool for %s must be rejected (dedicated flows only), got %+v", tool, result)

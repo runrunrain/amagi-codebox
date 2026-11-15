@@ -100,10 +100,10 @@ func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, mo
 	return &created, reservation, nil
 }
 
-func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string, useHeadroom bool) launchplan.StableRecipe {
+func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string) launchplan.StableRecipe {
 	return launchplan.StableRecipe{
 		CLIType: contract.CLIType(appType), Workdir: workdir, ProviderRef: provider,
-		PresetRef: preset, ModelRef: model, ShellRef: shell, UseHeadroom: useHeadroom,
+		PresetRef: preset, ModelRef: model, ShellRef: shell,
 	}
 }
 
@@ -130,9 +130,9 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 	return a.launchEmbeddedPTYWithClaims(reservation, recipe, spec, claims, sharedKinds...)
 }
 
-// launchEmbeddedPTYWithClaims 按 kind 匹配多笔启动 admission（Headroom 与
-// 凭据可以同时持有，design §6.3）：匹配的 admission 原子提升为运行 lease，
-// 未匹配的 kind 走无 admission 获取（提升前无中间副作用时不适用此路径）。
+// launchEmbeddedPTYWithClaims 按 kind 匹配多笔启动 admission（design §6.3）：
+// 匹配的 admission 原子提升为运行 lease，未匹配的 kind 走无 admission 获取
+// （提升前无中间副作用时不适用此路径）。
 // 凭据 kind 的指纹在提升时重算（canonical 路径 + 当前池代际），代际变化
 // → 提升失败 → 启动以重新规划语义失败（不带旧代际放行）。
 func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, claims []*remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
@@ -423,13 +423,9 @@ func isControlUnknownSession(err error) bool {
 	return false
 }
 
-// sharedFingerprintForHeadroom computes SHA-256 over the exact service,
-// upstream, and listen-port tuple. The same tuple is used by planner, executor
+// sharedServiceFingerprint computes SHA-256 over the exact service, upstream,
+// and listen-port tuple. The same tuple is used by planner, executor
 // verification, mutation guards, and lease promotion.
-func sharedFingerprintForHeadroom(service, upstreamURL string, port int) [32]byte {
-	return sharedServiceFingerprint(service, upstreamURL, port)
-}
-
 func sharedServiceFingerprint(service, upstreamURL string, port int) [32]byte {
 	payload := make([]byte, 0, 16+len(service)+len(upstreamURL)+8)
 	var scalar [8]byte

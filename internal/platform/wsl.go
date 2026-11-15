@@ -212,7 +212,7 @@ func resetWSLDistroCacheForTest() {
 
 // --- WSL2 网络模式探测（.wslconfig，只读） ---
 //
-// AI 代理分流、Headroom、系统代理的统一入口都监听宿主回环（127.0.0.1）。WSL2
+// AI 代理分流、系统代理的统一入口都监听宿主回环（127.0.0.1）。WSL2
 // 默认 NAT 模式下 distro 内的 127.0.0.1 指向发行版自身，宿主回环不可达；
 // mirrored 模式（%USERPROFILE%\.wslconfig 的 [wsl2] 段 networkingMode=mirrored）
 // 下 localhost 双向互通，回环入口对 WSL 会话自然可用。本节只读配置文件，不

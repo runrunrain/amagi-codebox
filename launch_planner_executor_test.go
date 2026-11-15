@@ -8,17 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
-	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/settings"
@@ -334,94 +331,16 @@ func TestBuildPlanCodexUsesProviderAndPresetAsPerProcessOverrides(t *testing.T) 
 	}
 }
 
-// --- M-01: SharedStartSpec carries upstream/port ---
-
-func TestBuildPlanClaudeHeadroomUpstreamPort(t *testing.T) {
-	dir := isolatedHome(t)
-	cfgSvc := config.NewConfigService(dir)
-	cfgSvc.Load()
-	secSvc := secrets.NewSecretsService(dir)
-	settingsSvc := settings.NewService(dir)
-	settingsSvc.Load()
-	defaults, _ := launchplan.NewDefaultStore(settingsSvc)
-	cfgSvc.SaveProvider("claude-provider", config.Provider{
-		Anthropic:    &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com"},
-		DefaultModel: "claude-3",
-	})
-	secSvc.SetAPIKey("claude-provider", "sk-ant-test123456")
-	defaults.RecordDesktopActivation(launchplan.StableRecipe{
-		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
-		ProviderRef: "claude-provider", PresetRef: "p", ModelRef: "claude-3",
-		UseHeadroom: true,
-	})
-	p := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(),
-		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), dir)
-	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
-		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
-	})
-	if failure != nil {
-		t.Fatalf("BuildPlan failure: %v", failure)
-	}
-	defer plan.Secrets.Dispose()
-	// M-01: verify SharedStartSpec carries non-empty upstream + correct ports.
-	for _, eff := range plan.Effects {
-		if eff.Kind == launchplan.EffectHeadroomStart && eff.Shared != nil {
-			if eff.Shared.UpstreamURL != "https://api.anthropic.com" {
-				t.Fatalf("headroom upstream = %q, want https://api.anthropic.com", eff.Shared.UpstreamURL)
-			}
-			if eff.Shared.ListenPort != 8787 {
-				t.Fatalf("headroom port = %d, want 8787", eff.Shared.ListenPort)
-			}
-		}
-	}
-}
-
 // --- M-01: fake services verify Start parameters ---
-
-type fakeHeadroomService struct {
-	mu         sync.Mutex
-	running    bool
-	port       int
-	backendURL string
-	startCalls []string
-}
-
-func (f *fakeHeadroomService) IsRunning() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.running }
-func (f *fakeHeadroomService) GetStatus() headroom.HeadroomStatus {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return headroom.HeadroomStatus{Running: f.running, Port: f.port, BackendURL: f.backendURL}
-}
-func (f *fakeHeadroomService) SetPort(port int) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.port = port
-	return nil
-}
-func (f *fakeHeadroomService) Start(backendURL string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.startCalls = append(f.startCalls, backendURL)
-	f.backendURL = backendURL
-	f.running = true
-	return nil
-}
-func (f *fakeHeadroomService) StartForOpenAI(backendURL string) error { return f.Start(backendURL) }
-func (f *fakeHeadroomService) Stop() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.running = false
-	return nil
-}
 
 func TestSharedServiceFingerprintIsExactTupleHash(t *testing.T) {
 	longPrefix := "https://api.example.test/" + strings.Repeat("segment/", 12)
-	base := sharedServiceFingerprint("claude-headroom", longPrefix+"left", 8787)
+	base := sharedServiceFingerprint("svc-left", longPrefix+"left", 8787)
 	for name, candidate := range map[string][32]byte{
-		"url-suffix": sharedServiceFingerprint("claude-headroom", longPrefix+"right", 8787),
-		"port":       sharedServiceFingerprint("claude-headroom", longPrefix+"left", 8788),
-		"service":    sharedServiceFingerprint("codex-headroom", longPrefix+"left", 8787),
-		"boundary":   sharedServiceFingerprint("claude-headroom", longPrefix+"left8", 787),
+		"url-suffix": sharedServiceFingerprint("svc-left", longPrefix+"right", 8787),
+		"port":       sharedServiceFingerprint("svc-left", longPrefix+"left", 8788),
+		"service":    sharedServiceFingerprint("svc-right", longPrefix+"left", 8787),
+		"boundary":   sharedServiceFingerprint("svc-left", longPrefix+"left8", 787),
 	} {
 		if candidate == base {
 			t.Fatalf("%s change collided with exact tuple fingerprint", name)
@@ -430,109 +349,6 @@ func TestSharedServiceFingerprintIsExactTupleHash(t *testing.T) {
 	if sharedServiceFingerprint("svc", "https://x.test/x1", 23) == sharedServiceFingerprint("svc", "https://x.test/x12", 3) {
 		t.Fatal("length-boundary tuple ambiguity collided")
 	}
-}
-
-func TestExecutorRejectsRunningHeadroomConfigurationMismatch(t *testing.T) {
-	service := &fakeHeadroomService{running: true, port: 8787, backendURL: "https://wrong.example/v1"}
-	effect := &headroomStartEffect{
-		deps: launchExecutorDeps{headroom: service}, service: launchplan.SharedClaudeHeadroom,
-		upstreamURL: "https://expected.example/v1", listenPort: 8787,
-	}
-	if _, err := effect.Apply(context.Background()); err == nil {
-		t.Fatal("running headroom with wrong upstream was accepted")
-	}
-	service.mu.Lock()
-	service.backendURL = "https://expected.example/v1"
-	service.port = 9999
-	service.mu.Unlock()
-	if _, err := effect.Apply(context.Background()); err == nil {
-		t.Fatal("running headroom with wrong port was accepted")
-	}
-	service.mu.Lock()
-	service.port = 8787
-	service.mu.Unlock()
-	if _, err := effect.Apply(context.Background()); err != nil {
-		t.Fatalf("exact running headroom rejected: %v", err)
-	}
-}
-
-func TestExecutorHeadroomStartWithUpstreamPort(t *testing.T) {
-	dir := isolatedHome(t)
-	cfgSvc := config.NewConfigService(dir)
-	cfgSvc.Load()
-	secSvc := secrets.NewSecretsService(dir)
-	settingsSvc := settings.NewService(dir)
-	settingsSvc.Load()
-	defaults, _ := launchplan.NewDefaultStore(settingsSvc)
-	cfgSvc.SaveProvider("p", config.Provider{
-		Anthropic:    &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com"},
-		DefaultModel: "m",
-	})
-	secSvc.SetAPIKey("p", "key123456789")
-	defaults.RecordDesktopActivation(launchplan.StableRecipe{
-		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
-		ProviderRef: "p", PresetRef: "p", ModelRef: "m",
-		UseHeadroom: true,
-	})
-	p := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(),
-		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), dir)
-	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
-		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
-	})
-	if failure != nil {
-		t.Fatalf("BuildPlan: %v", failure)
-	}
-	// Fake services as spies.
-	headroomSpy := &fakeHeadroomService{}
-	coord := remote.NewSharedServiceCoordinator()
-	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
-	for _, spec := range plan.Admissions {
-		var kind remote.SharedServiceKind
-		switch spec.Service {
-		case launchplan.SharedClaudeHeadroom:
-			kind = remote.SharedServiceClaudeHeadroom
-		case launchplan.SharedCodexHeadroom:
-			kind = remote.SharedServiceCodexHeadroom
-		default:
-			t.Fatalf("unknown shared kind %d", spec.Service)
-		}
-		admission, err := coord.AcquireLaunchAdmission(kind)
-		if err != nil {
-			t.Fatalf("AcquireLaunchAdmission: %v", err)
-		}
-		sharedAdmissions[spec.Service] = admission
-		defer coord.ReleaseLaunchAdmission(admission)
-	}
-	exec := newAppLaunchExecutor(launchExecutorDeps{
-		headroom: headroomSpy, sharedCoord: coord,
-	})
-	prepared, err := exec.Prepare(context.Background(), plan, launchplan.ExecutionBinding{
-		SessionID: "s", RunEpoch: 1, RunHandle: "handle", SharedAdmissions: sharedAdmissions,
-	})
-	if err != nil {
-		plan.Secrets.Dispose()
-		t.Fatalf("Prepare: %v", err)
-	}
-	// Apply the Headroom effect (skip PTY + bootstrap).
-	for i := 0; i < prepared.Count(); i++ {
-		eff := prepared.Effect(i)
-		if eff.Kind() == launchplan.EffectPTYStart || eff.Kind() == launchplan.EffectBootstrapWrite {
-			continue
-		}
-		eff.ArmOwnership()
-		_, applyErr := eff.Apply(context.Background())
-		if applyErr != nil {
-			t.Fatalf("effect %d Apply: %v", i, applyErr)
-		}
-		prepared.RecordApplied(i, launchplan.EffectEvidence{})
-	}
-	prepared.DisposeSecrets()
-	// Assert headroom received real upstream.
-	headroomSpy.mu.Lock()
-	if len(headroomSpy.startCalls) != 1 || headroomSpy.startCalls[0] != "https://api.anthropic.com" {
-		t.Fatalf("headroom Start calls = %v, want [https://api.anthropic.com]", headroomSpy.startCalls)
-	}
-	headroomSpy.mu.Unlock()
 }
 
 // --- M-02: Pi/Omp provider ID = PiProviderID ---

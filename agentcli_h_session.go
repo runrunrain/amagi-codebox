@@ -264,13 +264,12 @@ type agentLaunchParams struct {
 	Preset   string
 	Mode     string
 	WorkDir  string
-	Headroom bool
 	Shell    string
 }
 
 // agentSessionLauncher 抽象 App 的五个启动入口，供参数映射层独立测试。
 type agentSessionLauncher interface {
-	LaunchSession(providerName, presetName, mode, workDir string, useHeadroom bool, shellPath string) (string, error)
+	LaunchSession(providerName, presetName, mode, workDir string, shellPath string) (string, error)
 	LaunchOpenCode(providerName, presetName, mode, workDir, shellPath string) (string, error)
 	LaunchCodexSession(modelName, providerID, mode, workDir, shellPath string) (string, error)
 	LaunchPiSession(modelName, providerID, mode, workDir, shellPath string) (string, error)
@@ -290,7 +289,6 @@ func (h *agentCLIHost) sessionLaunch(ctx context.Context, args spec.Args) (any, 
 		Preset:   strings.TrimSpace(args.String("preset")),
 		Mode:     strings.TrimSpace(args.String("mode")),
 		WorkDir:  args.String("workDir"),
-		Headroom: args.Bool("headroom"),
 		Shell:    strings.TrimSpace(args.String("shell")),
 	}
 	norm, normErr := normalizeAgentLaunchParams(p)
@@ -338,15 +336,9 @@ func normalizeAgentLaunchParams(p agentLaunchParams) (agentLaunchParams, *spec.E
 		if p.Preset == "" && p.Provider == "" {
 			return p, spec.Errorf(spec.ErrBadArgs, "opencode 启动需要 --preset（opencode 预设键）或 --provider 至少其一")
 		}
-		if p.Headroom {
-			return p, spec.Errorf(spec.ErrBadArgs, "headroom 仅 claudecode 支持")
-		}
 	case "codex", "pi", "omp":
 		if p.Model == "" && p.Preset == "" {
 			return p, spec.Errorf(spec.ErrBadArgs, "%s 启动需要 --model 或 --preset（terminal preset 键）至少其一", p.AppType)
-		}
-		if p.Headroom {
-			return p, spec.Errorf(spec.ErrBadArgs, "headroom 仅 claudecode 支持")
 		}
 	}
 	return p, nil
@@ -380,7 +372,7 @@ func normalizeAgentLaunchWorkDir(workDir string) (string, *spec.Error) {
 func dispatchAgentLaunch(l agentSessionLauncher, p agentLaunchParams) (string, error) {
 	switch p.AppType {
 	case "claudecode":
-		return l.LaunchSession(p.Provider, p.Preset, p.Mode, p.WorkDir, p.Headroom, p.Shell)
+		return l.LaunchSession(p.Provider, p.Preset, p.Mode, p.WorkDir, p.Shell)
 	case "opencode":
 		return l.LaunchOpenCode(p.Provider, p.Preset, p.Mode, p.WorkDir, p.Shell)
 	case "codex":

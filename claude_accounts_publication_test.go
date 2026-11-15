@@ -107,7 +107,7 @@ func TestAbsentDesktopLaunchReservationBlocksFirstCapture(t *testing.T) {
 	var launchErr error
 	workdir := t.TempDir()
 	go func() {
-		_, launchErr = app.LaunchSession("reservation-provider", "", "terminal", workdir, false, "")
+		_, launchErr = app.LaunchSession("reservation-provider", "", "terminal", workdir, "")
 		close(finished)
 	}()
 	awaitBarrier(t, entered)
