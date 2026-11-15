@@ -137,7 +137,7 @@ codebox-agent env check [--tool <tool>]
 
 | 参数 | 形态 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--tool` | 旗标 | `string` | 否 | 可选；只检测该工具（claude-code/opencode/codex/pi/omp/headroom），缺省检测全部；可选值：claude-code / opencode / codex / pi / omp / headroom |
+| `--tool` | 旗标 | `string` | 否 | 可选；只检测该工具（claude-code/opencode/codex/pi/omp），缺省检测全部；可选值：claude-code / opencode / codex / pi / omp |
 
 风险：`read`（只读）。
 
@@ -164,7 +164,7 @@ codebox-agent env install --tool <tool>
 
 | 参数 | 形态 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
-| `--tool` | 旗标 | `string` | 是 | 要安装的工具名（claude-code/opencode/codex/pi/omp/headroom）；可选值：claude-code / opencode / codex / pi / omp / headroom |
+| `--tool` | 旗标 | `string` | 是 | 要安装的工具名（claude-code/opencode/codex/pi/omp）；可选值：claude-code / opencode / codex / pi / omp |
 
 风险：`exec`（启动进程/写入会话/安装软件）；确认值 `INSTALL`——执行需 `--yes`。
 
@@ -688,7 +688,7 @@ codebox-agent session get abc123
 启动一个 CLI 会话（claudecode/opencode/codex/pi/omp）
 
 ```
-codebox-agent session launch <appType> [--provider <provider>] [--model <model>] [--preset <preset>] [--work-dir <workDir>] [--mode <mode>] [--headroom] [--shell <shell>]
+codebox-agent session launch <appType> [--provider <provider>] [--model <model>] [--preset <preset>] [--work-dir <workDir>] [--mode <mode>] [--shell <shell>]
 ```
 
 | 参数 | 形态 | 类型 | 必填 | 说明 |
@@ -699,12 +699,11 @@ codebox-agent session launch <appType> [--provider <provider>] [--model <model>]
 | `--preset` | 旗标 | `string` | 否 | 预设名（claudecode/opencode 用 preset 名；codex/pi/omp 未给 model 时作为 preset 键传入） |
 | `--work-dir` | 旗标 | `string` | 否 | 工作目录：必须是已存在的目录（校验时归一化为绝对路径）；省略则走应用默认目录 |
 | `--mode` | 旗标 | `string` | 否 | 启动模式，默认 embedded；可选值：embedded / terminal；默认 embedded |
-| `--headroom` | 旗标 | `bool` | 否 | 启用上下文压缩代理（仅 claudecode 支持）；默认 false |
 | `--shell` | 旗标 | `string` | 否 | 覆盖启动 shell 路径（可选） |
 
 风险：`exec`（启动进程/写入会话/安装软件）；确认值 `LAUNCH`——执行需 `--yes`。
 
-默认 embedded（内嵌终端，输出可用 session output 读取）。terminal 模式也允许，但输出进独立终端窗口，agent 无法读取其输出。headroom 仅 claudecode 支持（其他类型传 true 返回 bad_args）。启动入口不可中途取消：超时不等于未生效，先用 session list/get 查询是否已启动，再决定是否重试。启动前应向用户确认工作目录与提供商（传 --shell 或 --work-dir 时必须一并确认）。返回 sessionId 与会话摘要。
+默认 embedded（内嵌终端，输出可用 session output 读取）。terminal 模式也允许，但输出进独立终端窗口，agent 无法读取其输出。启动入口不可中途取消：超时不等于未生效，先用 session list/get 查询是否已启动，再决定是否重试。启动前应向用户确认工作目录与提供商（传 --shell 或 --work-dir 时必须一并确认）。返回 sessionId 与会话摘要。
 
 示例：
 

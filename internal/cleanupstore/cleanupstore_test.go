@@ -21,7 +21,7 @@ func TestExternalCleanupStoreFsyncReplayAndExactCompletion(t *testing.T) {
 	reservation := Reservation{
 		Version:    JournalVersion,
 		SessionID:  "durable-cleanup",
-		Kind:       remote.SharedServiceClaudeHeadroom,
+		Kind:       remote.SharedServiceClaudeCredentials,
 		ReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := store.Reserve(reservation); err != nil {
@@ -68,7 +68,7 @@ func TestExternalCleanupStoreReplaysLegacyRegisteredRecordWithoutReservation(t *
 		SessionID:       "legacy-active",
 		PID:             4244,
 		ProcessIdentity: "legacy-process-identity",
-		Kind:            remote.SharedServiceCodexHeadroom,
+		Kind:            remote.SharedServiceClaudeCredentials,
 		RegisteredAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	event := JournalEvent{
@@ -144,7 +144,7 @@ func TestExternalCleanupStoreCrashWindowArchiveRecoveryAndRenameFailure(t *testi
 		reservation := Reservation{
 			Version:    JournalVersion,
 			SessionID:  "archive-recovery",
-			Kind:       remote.SharedServiceClaudeHeadroom,
+			Kind:       remote.SharedServiceClaudeCredentials,
 			ReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		}
 		if err := store.Reserve(reservation); err != nil {
@@ -193,4 +193,61 @@ func TestExternalCleanupStoreCrashWindowArchiveRecoveryAndRenameFailure(t *testi
 			t.Fatalf("rename failure lost archive: %v", err)
 		}
 	})
+}
+
+// TestExternalCleanupStoreSkipsRetiredKindEvents freezes the retired-kind
+// replay semantics (R4): journals written by older versions only ever carried
+// shared-service kinds 1/2 (the retired compression-proxy services). Replay
+// must SKIP those historical lines (not apply, not abort), the store must be
+// ready, LoadActive/LoadPending must not error, and a kind=3 event in the
+// same journal must still apply normally.
+func TestExternalCleanupStoreSkipsRetiredKindEvents(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mkLine := func(action journalAction, sessionID string, kind remote.SharedServiceKind, pid int, identity string) []byte {
+		t.Helper()
+		event := JournalEvent{Version: JournalVersion, Action: action, OccurredAt: now}
+		switch action {
+		case ActionReserved, ActionReservationCompleted:
+			event.Reservation = Reservation{Version: JournalVersion, SessionID: sessionID, Kind: kind, ReservedAt: now}
+		default:
+			event.Record = Record{Version: JournalVersion, SessionID: sessionID, PID: pid, ProcessIdentity: identity, Kind: kind, RegisteredAt: now}
+		}
+		line, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("Marshal event: %v", err)
+		}
+		return append(line, '\n')
+	}
+	var journal []byte
+	journal = append(journal, mkLine(ActionRegistered, "retired-claude", remote.SharedServiceKind(1), 5101, "retired-claude-identity")...)
+	journal = append(journal, mkLine(ActionRegistered, "retired-codex", remote.SharedServiceKind(2), 5102, "retired-codex-identity")...)
+	journal = append(journal, mkLine(ActionReserved, "retired-reservation", remote.SharedServiceKind(1), 0, "")...)
+	activeRecord := Record{Version: JournalVersion, SessionID: "active-kind3", PID: 5103, ProcessIdentity: "active-kind3-identity", Kind: remote.SharedServiceClaudeCredentials, RegisteredAt: now}
+	journal = append(journal, mkLine(ActionRegistered, activeRecord.SessionID, activeRecord.Kind, activeRecord.PID, activeRecord.ProcessIdentity)...)
+
+	if err := os.WriteFile(filepath.Join(dir, JournalName), journal, JournalFilePerm); err != nil {
+		t.Fatalf("WriteFile journal: %v", err)
+	}
+	store := NewFileStore(dir)
+	if !store.IsReady() {
+		t.Fatal("store with retired-kind lines must stay ready (replay skips them)")
+	}
+	pending, err := store.LoadPending()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("retired reservation must be skipped: pending=%+v err=%v", pending, err)
+	}
+	active, err := store.LoadActive()
+	if err != nil || len(active) != 1 || !sameExternalCleanupProcess(active[0], activeRecord) {
+		t.Fatalf("only the kind=3 record must apply: active=%+v err=%v", active, err)
+	}
+
+	// A retired-kind reservation Reserve() must be rejected as retired for NEW
+	// writes (no new producers may resurrect the retired kinds).
+	if err := store.Reserve(Reservation{Version: JournalVersion, SessionID: "new-retired", Kind: remote.SharedServiceKind(1), ReservedAt: now}); !errors.Is(err, ErrRetiredKind) {
+		t.Fatalf("Reserve with retired kind = %v, want ErrRetiredKind", err)
+	}
+	if err := store.Register(Record{Version: JournalVersion, SessionID: "new-retired", PID: 5199, ProcessIdentity: "x", Kind: remote.SharedServiceKind(2), RegisteredAt: now}); !errors.Is(err, ErrRetiredKind) {
+		t.Fatalf("Register with retired kind = %v, want ErrRetiredKind", err)
+	}
 }

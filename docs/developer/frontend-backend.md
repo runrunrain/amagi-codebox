@@ -60,7 +60,7 @@ Go: RunEventProjector → EventsEmit("pty:data:<id>", {s: seq, d: base64})
 | `skins/` | `*skins.Service` |
 | `gitassist/` | `*gitassist.Service` |
 
-注意：**没有 `pty/`、`headroom/`、`secrets/`、`envcheck/`、`logging/`、`updater/`、`ompconfig/`、`opencodeconfig/` 目录**——这 8 个原始服务被有意排除在 Bind 列表外，前端只能经 `main/App.*` 上的门控/窄门面（如 `PtyWrite`/`PtyResize`、`HeadroomStart`/`CleanHeadroom`、`HasProviderAPIKey`/`GetProviderAPIKey`、`GetLogs`、`CheckForUpdate`、`RunEnvCheck`/`GetEnvCheckSnapshot`、`GetOmp*`/`GetOpenCodeConfig*` 等）访问（冻结边界 T-24，见 [./api-reference.md](./api-reference.md)）。
+注意：**没有 `pty/`、`secrets/`、`envcheck/`、`logging/`、`updater/`、`ompconfig/`、`opencodeconfig/` 目录**——这 7 个原始服务被有意排除在 Bind 列表外，前端只能经 `main/App.*` 上的门控/窄门面（如 `PtyWrite`/`PtyResize`、`HasProviderAPIKey`/`GetProviderAPIKey`、`GetLogs`、`CheckForUpdate`、`RunEnvCheck`/`GetEnvCheckSnapshot`、`GetOmp*`/`GetOpenCodeConfig*` 等）访问（冻结边界 T-24，见 [./api-reference.md](./api-reference.md)）。
 
 `frontend/wailsjs/go/models.ts` 集中放置 Go 端结构体对应的 TS 类（`config.Provider`、`session.SessionInfo` 等），按命名空间组织。
 
@@ -89,7 +89,7 @@ export function getProvider(name: string): Promise<Provider> {
 }
 ```
 
-## 第二层：`frontend/src/api/` 包装层（27 个文件）
+## 第二层：`frontend/src/api/` 包装层（33 个文件）
 
 按业务域组织，当前清单（`find frontend/src/api -type f`）：
 
@@ -103,7 +103,15 @@ export function getProvider(name: string): Promise<Provider> {
 | `agentProfile.ts` | Agent 档案 |
 | `envcheck.ts` | 环境检测与一键修复 |
 | `envvars.ts` | 自定义环境变量 |
-| `headroom.ts` / `headroomGlobal.ts` | 会话级 headroom / Codex 全局 headroom |
+| `sharedSkills.ts` | 共用技能（`~/.agents/skills` ⇄ `skills-disabled`） |
+| `sharedMcp.ts` | 共用 MCP（`~/.agents/.mcp.json` 登记 + 四引擎分发矩阵） |
+| `agentcli.ts` | 命令行访问（agent-CLI 状态/安装） |
+| `quota.ts` | provider 额度查询与探测 |
+| `claudeAccounts.ts` | Claude 订阅账号轮换 |
+| `aiProxy.ts` | AI 代理路由 |
+| `systemProxy.ts` | 系统显式代理（仅 Windows） |
+| `dockerwsl.ts` / `drvfsAdvisory.ts` / `wslSupply.ts` | Docker↔WSL 集成健康 / DrvFS 顾问 / WSL 配置供给 |
+| `piLogin.ts` | pi 登录 providers |
 | `gitassist.ts` | AI 辅助 git commit/push |
 | `usage.ts` | 用量统计 |
 | `webui.ts` | pi Web UI 壳 |
@@ -111,8 +119,7 @@ export function getProvider(name: string): Promise<Provider> {
 | `wslsetup.ts` | WSL 安装辅助 |
 | `remote.ts` | 本机远程服务器状态/开关 |
 | `remoteClient.ts` | 作为客户端连接其他 CodeBox 宿主 |
-| `updater.ts` / `paths.ts` / `logs.ts` | 更新 / 路径 / 日志 |
-| `index.ts` | 集中再导出，处理命名冲突 |
+| `updater.ts` / `paths.ts` | 更新 / 路径 |
 | `internal/call.ts` | 共享包装器 `callApi`（仅 api 内部使用，勿向 views/stores 暴露） |
 
 ### 包装范式与 `callApi`
@@ -184,7 +191,7 @@ composable 承担流程编排、副作用清理（`onUnmounted` 停轮询/dispos
 
 ### 5. Go 方法
 
-`App.LaunchSession`（`app.go:1891`）解析 provider/preset、编排 headroom、注入 `--session-id`、经 `pty.StartResolved` 拉起 PTY 进程。详见 [./architecture.md#五个启动入口appgo](./architecture.md#五个启动入口appgo)。
+`App.LaunchSession`（`app_session_pty.go:144`）解析 provider/preset（terminal_preset 桥接）、注入 `--session-id`、经 `pty.StartResolved` 拉起 PTY 进程。详见 [./architecture.md#五个启动入口app_session_ptygo](./architecture.md#五个启动入口app_session_ptygo)。
 
 ### 6. 输出回流
 

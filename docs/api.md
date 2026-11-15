@@ -3,7 +3,7 @@
 本文档列出前端可调用的全部 Wails 绑定方法。方法清单**以当前代码为准**，生成依据：
 
 - 绑定清单：`bind_list.go` 的 `buildWailsBindList`（共 15 个绑定 = `App` + 14 个服务）
-- 方法签名：`App` 导出方法（`app.go`、`headroom_facade.go`、`app_remoteclient.go`、`app_agentcli.go`、`app_agentcli_install.go` 等），以及 `internal/` 下各已绑定服务结构体的导出方法（以 `frontend/wailsjs/go/` 为生成物事实源）
+- 方法签名：`App` 导出方法（`app.go`、`app_remoteclient.go`、`app_agentcli.go`、`app_agentcli_install.go`、`app_sharedskills.go` 等），以及 `internal/` 下各已绑定服务结构体的导出方法（以 `frontend/wailsjs/go/` 为生成物事实源）
 
 ## 调用方式
 
@@ -27,13 +27,14 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 | Skins | `skins.Service` | `internal/skins` |
 | GitAssist | `gitassist.Service` | `internal/gitassist` |
 
-## 门控与收口说明：不进入 Bind 列表的 8 个原始服务
+## 门控与收口说明：不进入 Bind 列表的 7 个原始服务
 
-以下 8 个服务结构体**被有意排除在 `appBindTargets()`（`bind_list.go`）之外**（由 `bind_manifest_test.go` 的 T-24 断言守护）：
+以下 7 个服务结构体**被有意排除在 `buildWailsBindList()`（`bind_list.go`）之外**（由 `bind_manifest_test.go` 的 T-24 断言守护）：
 
 - `pty.Service`：终端写入/调整尺寸只能走 `App.PtyWrite` / `App.PtyWriteLarge` / `App.PtyResize` 门面；门面在 control-runtime 未就绪时 fail-closed（M-005）。
-- `headroom.HeadroomService`：生命周期只能走 `App.HeadroomStart` / `App.HeadroomStop` / `App.HeadroomIsRunning` / `App.HeadroomGetStatus` / `App.HeadroomGetPort`（`headroom_facade.go`，lease-guarded）以及 `App.GetHeadroomSavings` / `GetHeadroomPerfByClient` 只读查询。
 - `secrets.SecretsService` / `envcheck.Service` / `logging.Service` / `updater.Service` / `opencodeconfig.Service` / `ompconfig.Service`：已从 Bind 列表移除，仅保留为内部服务，前端通过 `App` 上的窄门面方法访问（`secrets.SecretsService.GetAllProviders` 仅保留给 `agentcli` 调用方内部使用）。
+
+另有 `sharedskills.Service`（公共技能，`internal/sharedskills`）与 `sharedmcp.Service`（共用 MCP，`internal/sharedmcp`）同样不进 Bind 列表，前端经 `App` 门面访问（见下文「公共技能」与「共用 MCP」节）。
 
 同样被排除的：
 
@@ -89,8 +90,8 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 
 ### 环境检测与安装（App 窄门面，委托 `envcheck.Service`）
 
-- `RunEnvCheck() (*envcheck.OverallStatus, error)` — 全量检测五种 CLI + headroom。
-- `CheckTool(tool string) (*envcheck.CheckStatus, error)` — 检测单个工具（`claude_code`/`opencode`/`codex`/`pi`/`omp`/`headroom`）。
+- `RunEnvCheck() (*envcheck.OverallStatus, error)` — 全量检测五种 CLI（`claude_code`/`opencode`/`codex`/`pi`/`omp`）。
+- `CheckTool(tool string) (*envcheck.CheckStatus, error)` — 检测单个工具（`claude_code`/`opencode`/`codex`/`pi`/`omp`）。
 - `InstallTool(tool string)` / `UpdateTool(tool string)` → `(*envcheck.InstallResult, error)` — 同步安装/更新。
 - `StartInstallToolAsync(tool string)` / `StartUpdateToolAsync(tool string)` → `(*envcheck.OperationState, error)` — 异步安装/更新，后台 goroutine 执行，立即返回操作状态。
 - `GetEnvCheckSnapshot() *envcheck.EnvCheckSnapshot` — 检测快照（含 `status` 与当前异步操作 `operation`，供远程 API 与前端轮询）。
@@ -98,7 +99,6 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `InstallClaudeWithMethod(method string)` / `StartInstallClaudeWithMethodAsync(method string)` — 按方式安装 Claude Code：`npm`（npm 全局）或 `native`（npm 全局后接 `claude install`）；后者为异步版本。
 - `CleanClaudeInstall(method string) (*envcheck.InstallResult, error)` — 清理指定安装方式（`npm`/`native`）的 Claude Code 残留。
 - `UninstallClaudeCode(method string) (*envcheck.InstallResult, error)` — 卸载已有安装；method 为空时从缓存状态自动识别安装方式。
-- `CleanHeadroom() (*envcheck.InstallResult, error)` — 清理 CodeBox 托管的 Headroom venv 目录（受 lease 守卫，存在活跃租约时拒绝并报错）。
 - `CheckClaudeConfig() (*envcheck.ClaudeConfigStatus, error)` — 扫描 Claude Code 配置文件，报告各配置项存在/缺失。
 - `FixClaudeConfig(key, value, filePath string) (*envcheck.ConfigFixResult, error)` — 修复指定 Claude 配置项。
 
@@ -108,15 +108,6 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `InstallCLIToWSL(tool string) (*wslsetup.InstallResult, error)` — 把指定 CLI（claude/opencode/codex）安装进 WSL 发行版：确保原生 Node 20 + 用户级 npm 前缀，再 `npm i -g` 并校验；幂等。
 - `GetDockerWSLHealth() dockerwsl.HealthReport` — Docker Desktop ↔ WSL 集成健康快照：共享挂载（docker-desktop-user-distro）字节数与状态、引擎就绪、docker-desktop 工具发行版、Desktop 进程计数、问题清单与自愈建议（2026-09-25 运维复盘 §1.2）。
 - `SelfHealDockerWSLIntegration() dockerwsl.SelfHealReport` — 一键自愈：全退 Docker Desktop → 仅 `wsl --terminate docker-desktop`（用户发行版零影响）→ 全新启动 → 等引擎就绪（300s 冷启动预算）→ 复核集成挂载；返回分步回执与前后健康对照。
-
-### Headroom（含 Codex 全局实例）
-
-- `HeadroomStart(realBackendURL string) error` / `HeadroomStop() error` — 启停 Claude 会话级 headroom（8787，Anthropic 目标，lease-guarded 门面）。
-- `HeadroomIsRunning() bool` / `HeadroomGetStatus() headroom.HeadroomStatus` / `HeadroomGetPort() int` — 状态查询。
-- `GetHeadroomSavings() (*headroom.SavingsReport, error)` — 查询节省报告（共享 ledger，带超时）。
-- `GetHeadroomPerfByClient() ([]headroom.ClientPerfStat, error)` — 按 client 聚合的 perf 统计（请求数、平均 cache 命中率、节省 token 等）；headroom 未安装或失败时返回 error，前端显示空态，绝不伪造数据。
-- `GetCodexGlobalHeadroom() CodexGlobalHeadroomStatus` — Codex 全局 headroom 开关快照（enabled/target/port + 实时 running）。
-- `SetCodexGlobalHeadroom(enabled bool, target string, port int) (CodexGlobalHeadroomStatus, error)` — 切换 Codex 全局 headroom（独立 8788 实例，OpenAI 目标）。开启时启动实例并把 `openai_base_url` 标记块写入 `~/.codex/config.toml`（带备份与幂等）；关闭时先移除标记块再停实例。与会话级 headroom 完全正交。
 
 ### 系统显式代理（System Proxy，仅 Windows）
 
@@ -131,6 +122,30 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `GetAgentCLIInstallStatus() AgentCLIInstallStatus` — 本机分发状态：shimPath/shimStatus、三个技能目标（agents/claude/codex）各自的 path/status、commandCount 与 shim 调用名 command。状态枚举 not-installed/up-to-date/outdated/modified-by-user/invalid（不含令牌）。
 - `InstallAgentCLIShim() (AgentCLIInstallStatus, error)` / `RemoveAgentCLIShim() (AgentCLIInstallStatus, error)` — 安装/清理 `~/.amagi-codebox/bin/codebox-agent`（Windows 为 `.cmd`）shim；清理会记录用户偏好，应用启动不再自动装回。均返回更新后的状态。
 - `InstallAgentCLISkill(target string) (AgentCLIInstallStatus, error)` / `RemoveAgentCLISkill(target string) (AgentCLIInstallStatus, error)` — 安装/清理 agent 技能（target ∈ agents|claude|codex），返回更新后的状态。被外部改动的托管文件一律保留并报冲突，不覆盖。
+
+### 公共技能（共用技能，`app_sharedskills.go`）
+
+管理 `~/.agents/skills`（启用态）与 `~/.agents/skills-disabled`（禁用态）下的共用技能目录（机制本体在 `internal/sharedskills`，不进 Bind 列表）。视图类型 `SharedSkillView` 在 `sharedskills.Skill`（name/displayName/description/version/author/enabled/path/hasSkillMd）之上附加 managed 标记：名为 `amagi-codebox` 的自带技能联动 `agentcli` install 的五态（not-installed/up-to-date/outdated/modified-by-user/invalid）。
+
+- `ListSharedSkills() ([]SharedSkillView, error)` — 枚举两个根目录下的全部共用技能（按名称排序；元数据取自 SKILL.md frontmatter，缺失时如实回退目录名并标记 `hasSkillMd=false`）。
+- `RefreshSharedSkills() ([]SharedSkillView, error)` — 显式刷新；服务层无缓存，语义等同 `ListSharedSkills`（为契约点名的 Refresh 显式提供）。
+- `SetSharedSkillEnabled(name string, enabled bool) ([]SharedSkillView, error)` — 启用/停用：目录在 `skills` ⇄ `skills-disabled` 间移动，对真实读取 `~/.agents/skills` 的 CLI 立即生效；返回最新列表（前端免二次请求）。managed 技能（`amagi-codebox`）拒绝启停（与 InstallDefaults 启动自动装回冲突）。
+- `DeleteSharedSkill(name string) ([]SharedSkillView, error)` — 永久删除技能目录（含禁用态；前端须弹 danger 确认弹窗），返回最新列表；managed 技能拒绝。
+- `OpenSharedSkillFolder(name string) error` — 用系统文件管理器打开指定技能的当前目录（先校验存在再打开）。
+- `OpenSharedSkillsRoot() error` — 打开 `~/.agents/skills` 根目录；根目录不存在时如实报错并提示先安装技能（不自动创建目录）。
+
+### 共用 MCP（`app_sharedmcp.go`）
+
+管理 `~/.agents/.mcp.json`（顶层 `mcpServers.<name>`）里的共用 MCP 服务器登记，并分发 / 还原到四个引擎的真实 MCP 配置——Claude `~/.claude.json` 顶层 `mcpServers`；Codex `~/.codex/config.toml`（`CODEX_HOME` 优先）的 `[mcp_servers.<name>]` 段；OpenCode `~/.config/opencode/opencode.json` 顶层 `mcp`（V2 `mcp.servers` 形态检测）；Pi `$PI_CODING_AGENT_DIR`（否则 `~/.pi/agent`）下 `mcp.json` 顶层 `mcpServers`。OMP 无 MCP 配置面，恒为 excluded 只读行。机制本体在 `internal/sharedmcp`，不进 Bind 列表；勾选与写入跟踪存应用配置目录 `shared-mcp-state.json`（选择状态不写 `~/.agents`）。视图类型 `SharedMcpOverview` 内嵌 `sharedmcp.Overview`：`entries[]`（entry + `nameDistributable` + 每引擎一格 status/selected/reason）、`registryExists` / `registryPath` 与 `enginesMeta[]`（id/name/support/targetPath/managedCount，含 omp excluded 行）。
+
+- `ListSharedMcp() (*SharedMcpOverview, error)` — 全量状态视图：登记条目 × 各引擎的分发矩阵（distributed / drift / not-distributed / conflict / unsupported / excluded，逐格实测目标文件）与引擎元数据；服务层无缓存，同时清理状态库中登记外的孤儿条目。
+- `RefreshSharedMcp() (*SharedMcpOverview, error)` — 显式刷新；服务层无缓存，语义等同 `ListSharedMcp`。
+- `CreateSharedMcpEntry(entry sharedmcp.SharedMcpEntry) (*SharedMcpOverview, error)` — 在登记文件新增条目（stdio → command 必填、http → 合法 URL 必填；名字限 `^[A-Za-z0-9_-]+$`；同名已存在拒绝；文件缺失自动以 0600 原子创建；条目未知键不参与）。新条目默认全部引擎未勾选。
+- `UpdateSharedMcpEntry(name string, entry sharedmcp.SharedMcpEntry) (*SharedMcpOverview, error)` — 更新登记条目内容（name 是标识不可改；条目不存在拒绝；未知键 raw 值原样合并保留）。只改登记文件，不自动重分发——已分发引擎如实转 drift，由用户逐引擎重新分发。
+- `DeleteSharedMcpEntry(name string, force bool) (*SharedMcpOverview, error)` — 删除登记条目并先逐引擎还原：Applied 非空时逐引擎 Undistribute（force 透传），任一失败整体失败返回（登记保留、已还原引擎保持已还原），全部成功才删登记 + 清该条目状态。
+- `SetSharedMcpEngineSelection(name, engine string, selected, force bool) (*SharedMcpOverview, error)` — 设置「条目 × 引擎」一格勾选：selected=true → Distribute（幂等 resync，drift 格的「重新分发」即本方法；目标被外部改过返回 ErrForeignModified，force 确认后才覆盖）；false → Undistribute（外改同样需 force）。逐引擎独立成败，互不牵连。
+
+所有方法返回最新 Overview（前端免二次请求）；错误文案与日志不含 env / headers 明文。「打开登记目录」复用通用门面 `OpenFileInEditor`。
 
 ### 远程服务器（Remote Server）
 
@@ -166,7 +181,7 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 远端会话域（v1 契约）：
 
 - `RemoteClientListRemoteSessions() (contract.SessionList, error)` / `RemoteClientGetRemoteSession(sessionID string) (contract.SessionDetail, error)` — 远端会话列表/详情。
-- `RemoteClientLaunchRemoteSession(cliType, workdir, providerRef, presetRef, modelRef, shellRef string, useHeadroom bool) (contract.SessionDetail, error)` — 在远端启动会话。
+- `RemoteClientLaunchRemoteSession(cliType, workdir, providerRef, presetRef, modelRef, shellRef string) (contract.SessionDetail, error)` — 在远端启动会话。
 - `RemoteClientStopRemoteSession(sessionID string)` / `RemoteClientRestartRemoteSession(sessionID string)` → `(contract.SessionDetail, error)` — 停止/重启远端会话。
 - `RemoteClientDeleteRemoteSession(sessionID string) error` — 删除远端会话记录。
 
@@ -187,7 +202,7 @@ legacy 配置面（过渡方案）：
 
 五种 AppType（`internal/session/types.go`）：`claudecode` / `opencode` / `codex` / `pi` / `omp`。启动模式 `terminal`（独立终端窗口）或 `embedded`（内嵌 ConPTY/PTY + xterm.js）。
 
-- `LaunchSession(providerName, presetName, mode, workDir string, useHeadroom bool, shellPath string) (string, error)` — 启动 Claude Code 会话：解析 provider/preset，可选启用 headroom，返回会话 ID。
+- `LaunchSession(providerName, presetName, mode, workDir, shellPath string) (string, error)` — 启动 Claude Code 会话：解析 provider/preset，返回会话 ID。
 - `LaunchCodexSession(modelName, providerID, mode, workDir, shellPath string) (string, error)` — 启动 Codex 会话。
 - `LaunchPiSession(modelName, providerID, mode, workDir, shellPath string) (string, error)` — 启动 Pi 会话（写配置到 `~/.pi/agent`）。
 - `LaunchOmpSession(modelName, providerID, mode, workDir, shellPath string) (string, error)` — 启动 omp（Oh My Pi）会话（写配置到 `~/.omp/agent`）。
@@ -301,8 +316,7 @@ legacy 配置面（过渡方案）：
 
 - `Load() error` / `Save() error` — 内部。
 - `GetSettings() *AppSettings` / `ReplaceSettings(next AppSettings) error` — 全量读/替换。
-- `GetDashboardDefaults() DashboardDefaults` / `SetDashboardDefaults(d DashboardDefaults) error` — 仪表盘默认启动项（各 CLI 的 provider/preset/mode/shell/useHeadroom/codexGlobalHeadroom 等）。
-- `GetCodexGlobalHeadroom() CodexGlobalHeadroomState` / `SetCodexGlobalHeadroom(enabled bool, target string, port int) error` — Codex 全局 headroom 持久化状态。
+- `GetDashboardDefaults() DashboardDefaults` / `SetDashboardDefaults(d DashboardDefaults) error` — 仪表盘默认启动项（各 CLI 的 provider/preset/mode/shell 等）。
 - `GetShellPaths() []ShellEntry` / `AddShellPath(entry ShellEntry) error` / `RemoveShellPath(path string) error` — 自定义 shell 路径。
 - `GetTerminalSettings() TerminalSettings` / `SetTerminalSettings(t TerminalSettings) error` — 终端设置。
 - `GetSkinSettings() SkinSettings` / `SetSkinSettings(sk SkinSettings) error` — 皮肤设置（enabled/imageId/dim/blur/opacity/textBoost；数值 clamp 在本层）。
@@ -313,7 +327,7 @@ legacy 配置面（过渡方案）：
 - `GetGitHubToken() string` / `SetGitHubToken(token string) error` — GitHub Token。
 - `GetCommitSummaryPreset() string` / `SetCommitSummaryPreset(v string) error` — GitAssist 提交总结模型引用（`provider/preset` 格式）。
 - `GetSavedWorkDirs() []WorkDirEntry` / `AddSavedWorkDir(path, label string) error` / `RemoveSavedWorkDir(path string) error` — 收藏工作目录。
-- `GetRemoteLaunchDefaultsV1() map[string]RemoteLaunchDefaultV1` / `RecordRemoteLaunchDefaultV1(cliType string, refs RemoteLaunchDefaultV1) error` — v1 远程启动默认引用（providerRef/presetRef/modelRef/shellRef/useHeadroom），按 CLI 类型记录一次成功激活的启动。
+- `GetRemoteLaunchDefaultsV1() map[string]RemoteLaunchDefaultV1` / `RecordRemoteLaunchDefaultV1(cliType string, refs RemoteLaunchDefaultV1) error` — v1 远程启动默认引用（providerRef/presetRef/modelRef/shellRef），按 CLI 类型记录一次成功激活的启动。
 
 
 ## Plugins（Claude Code 插件）
@@ -463,10 +477,10 @@ legacy 配置面（过渡方案）：
 
 ## 已从 Bind 列表移除的内部服务
 
-以下 6 个服务曾直接列入 Wails Bind 列表，现已统一从 `bind_list.go` 移出，仅作为 Go 后端内部服务运行（与 `pty.Service`、`headroom.HeadroomService` 共 8 个未绑定服务，见 `bind_manifest_test.go`）：
+以下 6 个服务曾直接列入 Wails Bind 列表，现已统一从 `bind_list.go` 移出，仅作为 Go 后端内部服务运行（与 `pty.Service` 共 7 个未绑定服务，见 `bind_manifest_test.go`）：
 
 - **Secrets**（`secrets.SecretsService`，`internal/secrets/service.go`，Windows DPAPI / macOS Keychain 加密存储）：前端统一经 `App.HasProviderAPIKey` / `App.GetProviderAPIKey` 查询；密钥诊断由内部 `remoteAppAdapter.GetKeyDiagnostics` 调用；`GetAllProviders()` 仅保留给 `agentcli` 调用方（`agentcli_h_config.go`、`agentcli_h_usage.go`）内部使用。
-- **EnvCheck**（`envcheck.Service`，`internal/envcheck/`）：前端统一经 `App` 窄门面访问（`RunEnvCheck`、`CheckTool`、`GetEnvCheckSnapshot`、`InstallTool`、`UpdateTool`、`StartInstallToolAsync`、`StartUpdateToolAsync`、`InstallClaudeWithMethod`、`StartInstallClaudeCodeWithMethodAsync`、`CleanClaudeInstall`、`UninstallClaudeCode`、`CleanHeadroom`、`CheckClaudeConfig`、`FixClaudeConfig`、`RunEnvFixAction`）。
+- **EnvCheck**（`envcheck.Service`，`internal/envcheck/`）：前端统一经 `App` 窄门面访问（`RunEnvCheck`、`CheckTool`、`GetEnvCheckSnapshot`、`InstallTool`、`UpdateTool`、`StartInstallToolAsync`、`StartUpdateToolAsync`、`InstallClaudeWithMethod`、`StartInstallClaudeCodeWithMethodAsync`、`CleanClaudeInstall`、`UninstallClaudeCode`、`CheckClaudeConfig`、`FixClaudeConfig`、`RunEnvFixAction`）。
 - **Log**（`logging.Service`，`internal/logging/service.go`）：前端统一经 `App` 窄门面访问（`GetLogs`、`GetLogSources`、`GetLogFiles`、`GetLogFileContent`、`ClearLogs`、`ExportLogs`）。
 - **Updater**（`updater.Service`，`internal/updater/service.go`）：前端统一经 `App` 窄门面访问（`CheckForUpdate`、`DownloadAndApplyUpdate`、`GetGitHubToken`、`SetGitHubToken`）。
 - **OpenCodeConfig**（`opencodeconfig.Service`，`internal/opencodeconfig/service.go`）：前端统一经 `App` 窄门面访问（`GetOpenCodeConfig`、`SaveOpenCodeConfig`、`GetOpenCodeConfigPath`）。

@@ -63,7 +63,6 @@ type LaunchDefaults struct {
 	PresetRef   string `json:"presetRef,omitempty"`
 	ModelRef    string `json:"modelRef,omitempty"`
 	ShellRef    string `json:"shellRef,omitempty"`
-	UseHeadroom bool   `json:"useHeadroom"`
 }
 
 // CLILaunchSettings groups the safe choices for one frozen CLI type.
@@ -143,7 +142,6 @@ type CreateSessionRequest struct {
 	PresetRef   *string `json:"presetRef,omitempty"`
 	ModelRef    *string `json:"modelRef,omitempty"`
 	ShellRef    *string `json:"shellRef,omitempty"`
-	UseHeadroom *bool   `json:"useHeadroom,omitempty"`
 }
 
 // ConfirmActionRequest is the body of stop/restart/delete. confirm MUST be
@@ -224,7 +222,7 @@ func DecodeCreateSessionRequest(raw []byte) (CreateSessionRequest, error) {
 	if err != nil {
 		return CreateSessionRequest{}, err
 	}
-	if err := rejectUnknown(f, "cliType", "workdir", "providerRef", "presetRef", "modelRef", "shellRef", "useHeadroom"); err != nil {
+	if err := rejectUnknown(f, "cliType", "workdir", "providerRef", "presetRef", "modelRef", "shellRef"); err != nil {
 		return CreateSessionRequest{}, err
 	}
 	cli, err := reqField[CLIType](f, "cliType")
@@ -260,11 +258,6 @@ func DecodeCreateSessionRequest(raw []byte) (CreateSessionRequest, error) {
 			value = strings.TrimSpace(value)
 			*target = &value
 		}
-	}
-	if value, ok, err := optFieldT[bool](f, "useHeadroom"); err != nil {
-		return req, err
-	} else if ok {
-		req.UseHeadroom = &value
 	}
 	return req, nil
 }

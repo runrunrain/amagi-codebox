@@ -12,7 +12,6 @@ import (
 
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/config"
-	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/session"
@@ -125,7 +124,7 @@ func (l *r11BlockedAfterAuthorizationLauncher) LaunchGuarded(
 	return l.r6ExternalLauncher.Launch(id, provider, presetName, apiKey, agentTeams, mode, workDir)
 }
 
-func TestR11_001_NoHeadroomExternalCommitIsShutdownVisibleAndCannotLateStart(t *testing.T) {
+func TestR11_001_NoSharedDependencyExternalCommitIsShutdownVisibleAndCannotLateStart(t *testing.T) {
 	for _, cli := range []string{"claude", "codex"} {
 		t.Run(cli, func(t *testing.T) {
 			app, fake, _ := newR6ExternalLeaseApp(t)
@@ -145,7 +144,7 @@ func TestR11_001_NoHeadroomExternalCommitIsShutdownVisibleAndCannotLateStart(t *
 			case "claude":
 				providerID := configureR6ClaudeProvider(t, app)
 				go func() {
-					_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, "")
+					_, err := app.LaunchSession(providerID, "", "terminal", workDir, "")
 					launchDone <- err
 				}()
 			case "codex":
@@ -171,10 +170,10 @@ func TestR11_001_NoHeadroomExternalCommitIsShutdownVisibleAndCannotLateStart(t *
 			}
 			defer fake.StopAll()
 			if !report.HandoffTimedOut || len(report.Unrecovered) != 1 || report.Unrecovered[0].DurableReservation {
-				t.Fatalf("no-Headroom in-flight start was absent from Shutdown report: %+v", report)
+				t.Fatalf("no-shared-dependency in-flight start was absent from Shutdown report: %+v", report)
 			}
 			if !errors.Is(launchErr, remote.ErrSharedCoordinatorClosed) {
-				t.Fatalf("post-fence no-Headroom launch error=%v want ErrSharedCoordinatorClosed", launchErr)
+				t.Fatalf("post-fence no-shared-dependency launch error=%v want ErrSharedCoordinatorClosed", launchErr)
 			}
 			if got := rawStarts.Load(); got != 0 {
 				t.Fatalf("post-fence %s raw start count=%d want 0", cli, got)
@@ -189,7 +188,7 @@ func TestR11_001_NoHeadroomExternalCommitIsShutdownVisibleAndCannotLateStart(t *
 	}
 }
 
-func TestR11_001_AuthorizedNoHeadroomLateStartTransfersToReaper(t *testing.T) {
+func TestR11_001_AuthorizedNoSharedDependencyLateStartTransfersToReaper(t *testing.T) {
 	app, fake, _ := newR6ExternalLeaseApp(t)
 	providerID := configureR6ClaudeProvider(t, app)
 	blocked := &r11BlockedAfterAuthorizationLauncher{
@@ -209,7 +208,7 @@ func TestR11_001_AuthorizedNoHeadroomLateStartTransfersToReaper(t *testing.T) {
 	launchDone := make(chan error, 1)
 	workDir := t.TempDir()
 	go func() {
-		_, err := app.LaunchSession(providerID, "", "terminal", workDir, false, "")
+		_, err := app.LaunchSession(providerID, "", "terminal", workDir, "")
 		launchDone <- err
 	}()
 	select {
@@ -244,7 +243,7 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 		SessionID:       "r11-legacy-recovery",
 		PID:             5252,
 		ProcessIdentity: "procfs:771122",
-		Kind:            remote.SharedServiceCodexHeadroom,
+		Kind:            remote.SharedServiceClaudeCredentials,
 		RegisteredAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	event := cleanupstore.JournalEvent{
@@ -315,7 +314,7 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 	if err != nil || len(active) != 0 || app.isExternalCleanupRecoveryBlocked() || r7ExternalCleanupCount(app) != 0 {
 		t.Fatalf("confirmed cleanup did not unlock same App: active=%+v blocked=%v claims=%d err=%v", active, app.isExternalCleanupRecoveryBlocked(), r7ExternalCleanupCount(app), err)
 	}
-	if got := app.sharedCoord.LaunchAdmissionCount(remote.SharedServiceCodexHeadroom); got != 0 {
+	if got := app.sharedCoord.LaunchAdmissionCount(remote.SharedServiceClaudeCredentials); got != 0 {
 		t.Fatalf("confirmed cleanup retained admission count=%d", got)
 	}
 	app.externalCleanupMu.Lock()
@@ -327,17 +326,15 @@ func TestR11_002_LegacyRecoveryConfirmAPIAuditsAndUnlocksSameAppLaunch(t *testin
 
 	fake.setStopError(nil)
 	providerID := configureR6ClaudeProvider(t, app)
-	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), true, "")
+	id, err := app.LaunchSession(providerID, "", "terminal", t.TempDir(), "")
 	if err != nil {
-		t.Fatalf("normal Headroom launch after same-App recovery: %v", err)
+		t.Fatalf("normal launch after same-App recovery: %v", err)
 	}
 	if !fake.IsRunning(id) {
 		t.Fatal("normal launch after recovery was not started")
 	}
 	fake.finish(id)
-	waitR6(t, func() bool {
-		return app.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom) == 0
-	}, "post-recovery normal launch terminal")
+	waitR6(t, func() bool { return !fake.IsRunning(id) }, "post-recovery normal launch terminal")
 }
 
 // TestExternalCleanupStoreCorruptFileFailsClosed moved with the store into
@@ -364,15 +361,6 @@ func TestExternalCleanupStoreCorruptFileFailsClosed(t *testing.T) {
 		t.Fatal("App recovery unexpectedly accepted corrupt cleanup journal")
 	}
 	if !app.isExternalCleanupRecoveryBlocked() {
-		t.Fatal("corrupt durable ownership did not set the Headroom recovery fence")
-	}
-	if _, err := app.acquireSharedMutation(remote.SharedServiceClaudeHeadroom, remote.MutationStop); !errors.Is(err, remote.ErrSharedServiceInUse) {
-		t.Fatalf("recovery fence mutation error=%v", err)
-	}
-	if err, release := app.stopAllHeadroomForUninstall(); !errors.Is(err, envcheck.ErrHeadroomInUse) {
-		if release != nil {
-			release()
-		}
-		t.Fatalf("recovery fence uninstall error=%v", err)
+		t.Fatal("corrupt durable ownership did not set the recovery fence")
 	}
 }

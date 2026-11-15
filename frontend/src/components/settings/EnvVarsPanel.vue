@@ -723,15 +723,17 @@ onMounted(async () => {
 .env-vars-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  /* 对齐 .settings-page 卡片间距节奏（18px） */
+  gap: 18px;
 }
 
-/* Global Sync Card */
+/* Global Sync Card（对齐设置页 .set-card 规格：radius 14 / padding 20 24 / shadow） */
 .env-sync {
   background: var(--card);
   border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 14px 18px;
+  border-radius: 14px;
+  padding: 20px 24px;
+  box-shadow: var(--shadow);
 }
 
 .env-sync-head {
@@ -840,11 +842,12 @@ onMounted(async () => {
   justify-content: flex-end;
 }
 
-/* Content */
+/* Content（表格卡：radius/shadow 对齐 .set-card；表格通栏不加 padding） */
 .env-content {
   background: var(--card);
   border: 1px solid var(--separator);
-  border-radius: 12px;
+  border-radius: 14px;
+  box-shadow: var(--shadow);
   overflow: hidden;
   min-height: 200px;
 }
@@ -987,12 +990,13 @@ onMounted(async () => {
   stroke: currentColor;
 }
 
-/* JSON Mode */
+/* JSON Mode（对齐设置页 .set-card 规格） */
 .json-mode-container {
   background: var(--card);
   border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 16px;
+  border-radius: 14px;
+  padding: 20px 24px;
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 12px;

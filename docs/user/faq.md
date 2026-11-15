@@ -17,7 +17,7 @@
 
 ### 应用如何检测本机的 CLI 工具状态？
 
-应用启动后异步扫描六种 CLI 工具（`internal/envcheck/types.go` 的 `CLITool` 枚举）：**Claude Code（`claude_code`）、OpenCode、Codex、Pi、OMP、Headroom**。每种工具的检测结果（`CheckStatus`）包含：
+应用启动后异步扫描五种 CLI 工具（`internal/envcheck/types.go` 的 `CLITool` 枚举）：**Claude Code（`claude_code`）、OpenCode、Codex、Pi、OMP**。每种工具的检测结果（`CheckStatus`）包含：
 
 | 字段 | 含义 |
 |------|------|
@@ -49,7 +49,7 @@
 
 页面会按动作选择调用入口：安装/更新使用异步接口，Claude Code 按所选安装方式调用专用接口，`fix_path`、`install_node` 等修复使用 `App.RunEnvFixAction(action, tool, extraPath)`。`restart_app` 只展示重启提示，`manual_command` 只展示待手动执行的命令，不将这些提示提交给后台执行。
 
-OpenCode、Codex、Pi、OMP 的卸载使用 `uninstall_tool` 动作。只自动处理能够核实归属的安装；无法确认来源、命中另一 Node 版本的安装或自定义路径时拒绝自动卸载并给出说明，不直接删除文件。Claude Code 与 Headroom 保留各自专用卸载入口。
+OpenCode、Codex、Pi、OMP 的卸载使用 `uninstall_tool` 动作。只自动处理能够核实归属的安装；无法确认来源、命中另一 Node 版本的安装或自定义路径时拒绝自动卸载并给出说明，不直接删除文件。Claude Code 保留专用卸载入口。
 
 修复结果（`FixActionResult`）会报告结果、是否发生变更（`Changed`）及是否需要重启。页面在变更后重新检测。`uninstall_tool` 的 `success=true` 仅表示已受理，必须等快照中的 `operation` 到达终态才显示卸载结果；快照暂时失败时继续跟踪，持续无法确认则显示「状态未知」，不冒充成功。
 

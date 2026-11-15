@@ -67,6 +67,10 @@
 
         <!-- ④ MCP 资源页（Claude 独有，§6.1.1） -->
         <div v-if="isMcpView" class="mcp-view">
+          <!-- 与「公共 → 共用 MCP」子页的区分说明（跨面板一致性）：本页只读展示插件自带 MCP，用户级登记/分发走共用 MCP -->
+          <p class="mcp-view-hint">
+            只读展示已启用 Claude 插件自带的 MCP 服务器；用户级登记与跨引擎分发请在「公共 → 共用 MCP」子页管理。
+          </p>
           <EmptyStateCard
             v-if="mcpGroups.length === 0"
             title="未发现 MCP 服务器"
@@ -1066,6 +1070,14 @@ defineExpose({
 .mcp-view {
   display: flex;
   flex-direction: column;
+}
+
+/* 与共用 MCP 子页的区分副标题（跨面板一致性） */
+.mcp-view-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--secondary);
+  line-height: 1.6;
 }
 
 .mcp-group + .mcp-group {

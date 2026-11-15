@@ -182,7 +182,6 @@ export function launchRemoteSession(params: {
   presetRef?: string;
   modelRef?: string;
   shellRef?: string;
-  useHeadroom?: boolean;
 }): Promise<RemoteSessionDetail> {
   return callApi('[api.remoteClient.launchRemoteSession]', () =>
     RemoteClientLaunchRemoteSession(
@@ -192,7 +191,6 @@ export function launchRemoteSession(params: {
       params.presetRef ?? '',
       params.modelRef ?? '',
       params.shellRef ?? '',
-      params.useHeadroom ?? false,
     ),
   );
 }

@@ -262,12 +262,12 @@ describe('createSession / 生命周期 / 控制权', () => {
 
     await createSession({
       cliType: 'codex', workdir: '/workspace/project', providerRef: 'openai-main',
-      presetRef: 'max', modelRef: 'gpt-5.6', shellRef: '/bin/zsh', useHeadroom: true,
+      presetRef: 'max', modelRef: 'gpt-5.6', shellRef: '/bin/zsh',
     });
     const body = JSON.parse(String(lastCall(fetchMock)[1].body));
     expect(body).toEqual({
       cliType: 'codex', workdir: '/workspace/project', providerRef: 'openai-main',
-      presetRef: 'max', modelRef: 'gpt-5.6', shellRef: '/bin/zsh', useHeadroom: true,
+      presetRef: 'max', modelRef: 'gpt-5.6', shellRef: '/bin/zsh',
     });
     expect(JSON.stringify(body)).not.toMatch(/apiKey|baseURL|token|environment/i);
   });

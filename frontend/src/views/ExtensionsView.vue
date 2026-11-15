@@ -1,100 +1,94 @@
 <template>
   <section class="view-extensions">
-    <PageHead title="扩展管理" description="管理 Claude、OpenCode、Codex、Pi 与 OMP 插件和环境变量"/>
+    <PageHead title="扩展管理" description="管理 Claude Code、OpenCode、Codex、Pi、OMP 的插件，以及 ~/.agents 下的共用技能与共用 MCP"/>
 
     <!-- RC1-6：远程模式提示条（扩展管理为本机功能） -->
     <RemoteScopeBanner subject="扩展管理" />
 
-    <!-- Main segmented control: Plugins | Environment | Other tools -->
-    <div class="ex-main-tabs">
-      <Segmented
-        v-model="extMainTab"
-        :options="mainTabOptions"
-        variant="pill"
-      />
-    </div>
+    <!-- ZCode 式两栏（契约 §1）：左=子页导航（公共/Agent 分组），右=子页内容区 -->
+    <div class="ex-layout">
+      <nav class="ex-subnav">
+        <div v-for="group in navGroups" :key="group.label" class="ex-subnav-group-wrap">
+          <div class="ex-subnav-group">{{ group.label }}</div>
+          <div
+            v-for="item in group.items"
+            :key="item.key"
+            :class="['ex-subnav-item', { active: extSubPage === item.key }]"
+            @click="handleSubPageChange(item.key)"
+          >
+            <!-- 图标复用 SidebarSettings 内联 SVG path 库风格（v-html 注入，无图片/图标库） -->
+            <svg
+              class="ic"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              v-html="item.icon"
+            />
+            <span class="ex-subnav-label">{{ item.label }}</span>
+          </div>
+        </div>
+      </nav>
 
-    <!-- Content based on main tab -->
-    <div class="ex-content">
-      <!-- Plugins tab -->
-      <div v-if="extMainTab === 'plugins'" class="tab-pane">
-        <!-- Engine segmented: ClaudeCode | OpenCode | Codex | Pi | OMP。
-             引擎切换经 setPluginEngine 走 store 动作（清 activePluginId），
-             并把共享 pluginView 拉回列表态（契约 §2：引擎切换重置到列表态），
-             不用 v-model 直写 ref 绕过该重置。 -->
-        <div class="ex-engine-tabs">
-          <Segmented
-            :model-value="pluginEngine"
-            :options="engineOptions"
-            variant="underline"
-            @update:model-value="handleEngineChange"
+      <div class="ex-subpage">
+        <!-- 公共：共用技能（~/.agents/skills） -->
+        <SharedSkillsPanel v-if="extSubPage === 'shared-skills'" />
+
+        <!-- 公共：共用 MCP（~/.agents/.mcp.json 登记 + 四引擎分发） -->
+        <SharedMcpPanel v-else-if="extSubPage === 'shared-mcp'" />
+
+        <!-- ClaudeCode 子页 -->
+        <!-- :key 区分 Claude/Codex 两分支：否则 v-if 切换时 Vue 原地 patch、
+             复用同一 PluginInstalledPanel 实例，onMounted 装载不再执行，
+             直切后目标引擎数据永不加载（走查 medium 修复） -->
+        <div v-else-if="extSubPage === 'claude'" class="engine-pane">
+          <PluginInstalledPanel
+            key="claude"
+            engine="claude"
+            @add_market="handleAddMarket"
           />
-        </div>
-
-        <!-- Engine content -->
-        <div class="engine-content">
-          <!-- ClaudeCode plugins -->
-          <div v-if="pluginEngine === 'claude'" class="engine-pane">
-            <!-- :key 区分 Claude/Codex 两分支：否则 v-if 切换时 Vue 原地 patch、
-                 复用同一 PluginInstalledPanel 实例，onMounted 装载不再执行，
-                 直切后目标引擎数据永不加载（走查 medium 修复） -->
-            <PluginInstalledPanel
-              key="claude"
-              engine="claude"
-              @add_market="handleAddMarket"
-            />
-            <div class="wsl-target-slot">
-              <WSLPluginTargetPlaceholder cli="claude" />
-            </div>
-          </div>
-
-          <!-- OpenCode plugins -->
-          <div v-else-if="pluginEngine === 'opencode'" class="engine-pane">
-            <OpenCodePluginPanel />
-            <div class="wsl-target-slot">
-              <WSLPluginTargetPlaceholder cli="opencode" />
-            </div>
-          </div>
-
-          <!-- Pi packages -->
-          <div v-else-if="pluginEngine === 'pi'" class="engine-pane">
-            <PiPluginPanel />
-          </div>
-
-          <!-- OMP plugins -->
-          <div v-else-if="pluginEngine === 'omp'" class="engine-pane">
-            <OmpPluginPanel />
-            <div class="wsl-target-slot">
-              <WSLPluginTargetPlaceholder cli="omp" />
-            </div>
-          </div>
-
-          <!-- Codex plugins -->
-          <div v-else class="engine-pane">
-            <PluginInstalledPanel
-              key="codex"
-              engine="codex"
-              @add_market="handleAddMarket"
-            />
-            <div class="wsl-target-slot">
-              <WSLPluginTargetPlaceholder cli="codex" />
-            </div>
+          <div class="wsl-target-slot">
+            <WSLPluginTargetPlaceholder cli="claude" />
           </div>
         </div>
-      </div>
 
-      <!-- Environment variables tab -->
-      <div v-else-if="extMainTab === 'env'" class="tab-pane">
-        <EnvVarsPanel />
-      </div>
+        <!-- OpenCode 子页 -->
+        <div v-else-if="extSubPage === 'opencode'" class="engine-pane">
+          <OpenCodePluginPanel />
+          <div class="wsl-target-slot">
+            <WSLPluginTargetPlaceholder cli="opencode" />
+          </div>
+        </div>
 
-      <!-- Other tools tab -->
-      <div v-else-if="extMainTab === 'tools'" class="tab-pane">
-        <OtherToolsPanel />
+        <!-- Pi 子页 -->
+        <div v-else-if="extSubPage === 'pi'" class="engine-pane">
+          <PiPluginPanel />
+        </div>
+
+        <!-- OMP 子页 -->
+        <div v-else-if="extSubPage === 'omp'" class="engine-pane">
+          <OmpPluginPanel />
+          <div class="wsl-target-slot">
+            <WSLPluginTargetPlaceholder cli="omp" />
+          </div>
+        </div>
+
+        <!-- Codex 子页 -->
+        <div v-else class="engine-pane">
+          <PluginInstalledPanel
+            key="codex"
+            engine="codex"
+            @add_market="handleAddMarket"
+          />
+          <div class="wsl-target-slot">
+            <WSLPluginTargetPlaceholder cli="codex" />
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- Add Marketplace Dialog -->
+    <!-- Add Marketplace Dialog（根级保留：Claude/Codex 子页面板 emit add_market 触发） -->
     <Dialog
       v-model:open="showAddMarketDialog"
       :title="`${activeEngine === 'claude' ? 'Claude' : 'Codex'} 市场`"
@@ -139,44 +133,67 @@ import { storeToRefs } from 'pinia';
 import PageHead from '../components/ui/PageHead.vue';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import AppButton from '../components/ui/AppButton.vue';
-import Segmented from '../components/ui/Segmented.vue';
 import PluginInstalledPanel from '../components/extensions/PluginInstalledPanel.vue';
 import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vue';
 import PiPluginPanel from '../components/extensions/PiPluginPanel.vue';
 import OmpPluginPanel from '../components/extensions/OmpPluginPanel.vue';
+import SharedSkillsPanel from '../components/extensions/SharedSkillsPanel.vue';
+import SharedMcpPanel from '../components/extensions/SharedMcpPanel.vue';
 import WSLPluginTargetPlaceholder from '../components/extensions/WSLPluginTargetPlaceholder.vue';
-import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
-import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import { usePluginStore } from '../stores/plugin';
+import type { ExtSubPage } from '../stores/plugin';
 import { useToast } from '../composables/useToast';
 
 const pluginStore = usePluginStore();
-const { extMainTab, pluginEngine } = storeToRefs(pluginStore);
+const { extSubPage } = storeToRefs(pluginStore);
+const { setExtSubPage, addCcMarketplace, addCxMarketplace } = pluginStore;
 const { showError, showSuccess } = useToast();
 
-const {
-  setPluginEngine,
-  setPluginView,
-  addCcMarketplace,
-  addCxMarketplace,
-} = pluginStore;
+// 子页导航（契约 §1.2）：静态数据不进 store（选中状态/动作在 stores/plugin.ts）
+interface SubNavItem {
+  key: ExtSubPage;
+  label: string;
+  icon: string;
+}
 
-// Main tab options
-const mainTabOptions = ref([
-  { value: 'plugins', label: '插件管理' },
-  { value: 'env', label: '环境变量' },
-  { value: 'tools', label: '其他工具' },
-]);
+// 图标：层叠方块=共用技能（同 SidebarSettings「Agent 配置档」）；插头+节点=共用 MCP
+// （服务器分发语义）；五 Agent 取终端/方框系几何 path 的近似语义者（opencode=终端、
+// codex=方框+光标、pi=圆点组合、omp=三栏；claude 星形 sparkle 为等价替换），不引图片/图标库
+const ICON_SHARED =
+  '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>';
+const ICON_MCP =
+  '<path d="M9 7V4"/><path d="M15 7V4"/><path d="M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v4"/>';
+const ICON_CLAUDE =
+  '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/>';
+const ICON_OPENCODE =
+  '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>';
+const ICON_CODEX =
+  '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><line x1="13" y1="15" x2="17" y2="15"/>';
+const ICON_PI =
+  '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>';
+const ICON_OMP =
+  '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>';
 
-// Engine options
-const engineOptions = ref([
-  { value: 'claude', label: 'ClaudeCode' },
-  { value: 'opencode', label: 'OpenCode' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'pi', label: 'Pi' },
-  { value: 'omp', label: 'OMP' },
-]);
+const navGroups: { label: string; items: SubNavItem[] }[] = [
+  {
+    label: '公共',
+    items: [
+      { key: 'shared-skills', label: '共用技能', icon: ICON_SHARED },
+      { key: 'shared-mcp', label: '共用 MCP', icon: ICON_MCP },
+    ],
+  },
+  {
+    label: 'Agent',
+    items: [
+      { key: 'claude', label: 'Claude Code', icon: ICON_CLAUDE },
+      { key: 'opencode', label: 'OpenCode', icon: ICON_OPENCODE },
+      { key: 'codex', label: 'Codex', icon: ICON_CODEX },
+      { key: 'pi', label: 'Pi', icon: ICON_PI },
+      { key: 'omp', label: 'OMP', icon: ICON_OMP },
+    ],
+  },
+];
 
 // Add marketplace dialog
 const showAddMarketDialog = ref(false);
@@ -184,12 +201,12 @@ const activeEngine = ref<'claude' | 'codex'>('claude');
 const marketSource = ref('');
 const addMarketSubmitting = ref(false);
 
-// 引擎切换（契约 §2）：走 setPluginEngine 动作（内部清 activePluginId），
-// 并把共享 pluginView 重置回列表态，避免上一个引擎的市场/详情态串到下一个引擎
-function handleEngineChange(engine: string) {
-  if (engine === pluginEngine.value) return;
-  setPluginEngine(engine as 'claude' | 'opencode' | 'codex' | 'pi' | 'omp');
-  setPluginView('installed');
+// 子页切换（契约 §1.3/§3）：唯一写入口为 store.setExtSubPage——
+// 同值守卫防重击清详情态；引擎子页联动 setPluginEngine（清 activePluginId）
+// + setPluginView('installed') 重置列表态（原引擎 Segmented 契约平移）；
+// shared-skills 子页不动引擎态
+function handleSubPageChange(page: ExtSubPage) {
+  setExtSubPage(page);
 }
 
 // Handle add market request from child component
@@ -227,8 +244,8 @@ async function submitAddMarket() {
 // 测试契约（契约 §8 R5b）：交互断言直调 expose 的 handler——
 // handleAddMarket(engine) 打开内联 Dialog（经 ctx.teleports.body 断言），
 // submitAddMarket 按引擎分派 addCcMarketplace / addCxMarketplace；
-// marketSource ref 与 handleEngineChange 供注入输入与引擎切换接线断言
-defineExpose({ handleAddMarket, submitAddMarket, marketSource, handleEngineChange });
+// marketSource ref 与 handleSubPageChange 供注入输入与子页切换接线断言
+defineExpose({ handleAddMarket, submitAddMarket, marketSource, handleSubPageChange });
 </script>
 
 <style scoped>
@@ -239,31 +256,82 @@ defineExpose({ handleAddMarket, submitAddMarket, marketSource, handleEngineChang
   gap: 22px;
 }
 
-.ex-main-tabs {
-  margin: 14px 14px 0;
-}
-
-.ex-engine-tabs {
+/* ZCode 式两栏（契约 §1.4） */
+.ex-layout {
   display: flex;
-  gap: 24px;
-  background: transparent;
-  border-radius: 0;
-  padding: 0;
-  border-bottom: 1px solid var(--separator);
-  margin-bottom: 18px;
+  gap: 22px;
+  align-items: flex-start;
 }
 
-.ex-content {
-  min-height: 400px;
-}
-
-.tab-pane {
+.ex-subnav {
+  width: 200px;
+  /* 容器 <720px 时左栏允许被压缩到 160px（label ellipsis），本期不做图标折叠 */
+  min-width: 160px;
+  flex-shrink: 1;
+  position: sticky;
+  top: 12px;
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
-.engine-content {
-  margin-top: 8px;
+.ex-subnav-group {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tertiary);
+  padding: 14px 9px 6px;
+  letter-spacing: 0.4px;
+}
+
+/* 首个分组去掉顶部 padding */
+.ex-subnav-group-wrap:first-child .ex-subnav-group {
+  padding-top: 0;
+}
+
+/* 复刻 SidebarSettings .sb-set-item 规格（契约 §1.4） */
+.ex-subnav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--secondary);
+  font-size: 14px;
+  transition: background 0.12s;
+}
+
+.ex-subnav-item:hover {
+  background: var(--control);
+}
+
+.ex-subnav-item.active {
+  background: var(--control);
+  color: var(--label);
+}
+
+.ex-subnav-item .ic {
+  width: 17px;
+  height: 17px;
+  stroke: var(--tertiary);
+  flex-shrink: 0;
+}
+
+.ex-subnav-item.active .ic {
+  stroke: var(--accent);
+}
+
+.ex-subnav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ex-subpage {
+  flex: 1;
+  min-width: 0;
+  min-height: 400px;
 }
 
 .engine-pane {

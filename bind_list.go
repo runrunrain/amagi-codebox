@@ -5,12 +5,11 @@ package main
 //
 // buildWailsBindList returns the EXACT slice passed to wails.Run Bind. It is a
 // separate function so that bind_manifest_test.go can reflect over it and
-// assert that the raw pty.Service / headroom.HeadroomService
-// objects and the exported App.StopAllSessions are NOT reachable (T-24).
+// assert that the raw pty.Service objects and the exported
+// App.StopAllSessions are NOT reachable (T-24).
 //
 // Excluded (raw, behind the gate or App facades):
 //   - app.Pty            → terminal writes go through App.PtyWrite/PtyResize (gated)
-//   - app.Headroom       → mutations go through App.Headroom* facade (lease-guarded)
 //   - app.Secrets        → key checks go through App.HasProviderAPIKey/GetProviderAPIKey
 //   - app.EnvCheck       → checks/fixes/cleanup go through App.* EnvCheck facades
 //   - app.Log            → log queries go through App.GetLogs / App.ClearLogs

@@ -317,8 +317,7 @@
           The returned FixActionResult.success only means ACCEPTED — the real
           outcome comes from snapshot.operation (kind=uninstall) terminal
           state, tracked by polling + watch; we never render "uninstalled"
-          on acceptance. Claude keeps its per-method uninstall; headroom
-          keeps the lease-guarded CleanHeadroom path below.
+          on acceptance. Claude keeps its per-method uninstall.
         -->
         <AppButton
           v-if="isAgentCLITool(activeCard.key) && activeCard.status?.installed"
@@ -328,21 +327,6 @@
           @click="handleUninstallAgentCLI(activeCard)"
         >
           {{ activeCard.isUninstalling ? '卸载中...' : '卸载' }}
-        </AppButton>
-        <!--
-          Headroom: installed into a CodeBox-managed venv; uninstall via
-          envcheck.Service.CleanHeadroom (no App-level wrapper), which removes
-          the venv directory. Gated to headroom only; other tools use the
-          uninstall_tool action above.
-        -->
-        <AppButton
-          v-if="activeCard.key === 'headroom' && activeCard.status?.installed"
-          variant="ghost"
-          size="small"
-          :disabled="activeCard.isOperating || checking || !!runningOperation || headroomUninstalling || writeBusy"
-          @click="onUninstallHeadroomClick"
-        >
-          {{ headroomUninstalling ? '卸载中...' : '卸载' }}
         </AppButton>
       </template>
 
@@ -411,8 +395,6 @@ import {
   startInstallClaudeWithMethodAsync,
   uninstallClaudeCode,
   cleanClaudeInstall,
-  cleanHeadroom,
-  isHeadroomInUseRejection,
   fixClaudeConfig,
   runEnvFixAction,
 } from '../../api/envcheck'
@@ -483,7 +465,6 @@ const TOOL_METAS: ToolMeta[] = [
   { key: 'codex', displayName: 'Codex', iconChar: 'X', bgColor: 'rgba(102,187,106,0.15)' },
   { key: 'pi', displayName: 'Pi', iconChar: 'P', bgColor: 'rgba(52,199,89,0.15)' },
   { key: 'omp', displayName: 'Oh My Pi', iconChar: 'O', bgColor: 'rgba(48,176,199,0.15)' },
-  { key: 'headroom', displayName: 'Headroom', iconChar: 'H', bgColor: 'rgba(149,117,205,0.15)' },
 ]
 
 const POLL_INTERVAL = 1500
@@ -1197,69 +1178,6 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
   }
 }
 
-// ---------- Headroom: remove CodeBox-managed venv via envcheck.Service.CleanHeadroom ----------
-
-const headroomUninstalling = ref(false)
-
-async function handleUninstallHeadroom(): Promise<void> {
-  const confirmed = await requestConfirm({
-    title: '卸载 Headroom',
-    message: '确定要卸载 Headroom 吗？将删除 CodeBox 管理的 headroom venv 目录（包含 headroom-ai 及其依赖），卸载后不会自动重新安装。',
-    confirmText: '卸载',
-    danger: true,
-  })
-  if (!confirmed) {
-    return
-  }
-  headroomUninstalling.value = true
-  try {
-    const result = await cleanHeadroom()
-    const ok = !!result?.success
-    const rawMsg = result?.message || ''
-    if (ok) {
-      showSuccess(rawMsg || 'Headroom 已卸载')
-      lastResult.value = {
-        title: 'Headroom 已卸载',
-        description: rawMsg || undefined,
-        type: 'success',
-      }
-    } else {
-      // venv 目录已删除但未确认成功：用 info 态提示重新检测
-      showInfo(rawMsg || result?.error || '卸载未确认')
-      lastResult.value = {
-        title: 'Headroom 卸载未确认',
-        description: rawMsg || result?.error || undefined,
-        type: 'info',
-      }
-    }
-    await runSingleCheck('headroom')
-  } catch (err: unknown) {
-    console.error('Headroom uninstall failed:', err)
-    // R3-002: surface the typed in-use rejection distinctly — the venv was NOT
-    // removed because active sessions still depend on it. The user should stop
-    // those sessions first rather than interpret this as a generic failure.
-    if (isHeadroomInUseRejection(err)) {
-      showWarn('Headroom 正被活跃会话占用，无法卸载：请先停止依赖 Headroom 的会话后再试')
-      lastResult.value = {
-        title: 'Headroom 卸载被拒绝',
-        description: '仍有活跃会话占用 Headroom，请先停止这些会话后再卸载。',
-        type: 'warning',
-      }
-    } else {
-      const msg = errorMessage(err)
-      showError('Headroom 卸载失败: ' + msg)
-      lastResult.value = {
-        title: 'Headroom 卸载失败',
-        description: msg,
-        type: 'error',
-      }
-    }
-  } finally {
-    headroomUninstalling.value = false
-    if (mounted.value) await fetchSnapshot()
-  }
-}
-
 // ---------- Claude Code: configuration items ----------
 
 function claudeConfigItems(status: envcheck.CheckStatus | null): envcheck.ClaudeConfigItem[] {
@@ -1319,10 +1237,6 @@ function onClaudeInstallClick(displayName: string, reinstall: boolean): void {
 
 function onUninstallClaudeClick(status: envcheck.CheckStatus): void {
   void withWriteGuard(() => handleUninstallClaude(status))
-}
-
-function onUninstallHeadroomClick(): void {
-  void withWriteGuard(() => handleUninstallHeadroom())
 }
 
 function onFixClaudeConfigClick(cardKey: string, item: envcheck.ClaudeConfigItem): void {

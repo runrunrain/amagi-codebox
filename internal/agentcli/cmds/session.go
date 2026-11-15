@@ -5,7 +5,7 @@ import "amagi-codebox/internal/agentcli/spec"
 // sessionCommands 会话域命令表（纯数据）。Handler 见 root agentcli_h_session.go。
 //
 // 参数映射依据 app.go 真实签名：
-//   - LaunchSession(provider, preset, mode, workDir, useHeadroom, shell)（claudecode）
+//   - LaunchSession(provider, preset, mode, workDir, shell)（claudecode）
 //   - LaunchOpenCode(provider, preset, mode, workDir, shell)
 //   - LaunchCodexSession / LaunchPiSession / LaunchOmpSession(model, provider, mode, workDir, shell)
 //
@@ -68,14 +68,13 @@ func sessionCommands() []spec.Command {
 				{Name: "preset", Type: spec.TypeString, Desc: "预设名（claudecode/opencode 用 preset 名；codex/pi/omp 未给 model 时作为 preset 键传入）"},
 				{Name: "workDir", Type: spec.TypeString, Desc: "工作目录：必须是已存在的目录（校验时归一化为绝对路径）；省略则走应用默认目录"},
 				{Name: "mode", Type: spec.TypeString, Enum: []string{"embedded", "terminal"}, Default: "embedded", Desc: "启动模式，默认 embedded"},
-				{Name: "headroom", Type: spec.TypeBool, Default: false, Desc: "启用上下文压缩代理（仅 claudecode 支持）"},
 				{Name: "shell", Type: spec.TypeString, Desc: "覆盖启动 shell 路径（可选）"},
 			},
 			Examples: []string{
 				`codebox-agent session launch claudecode --provider myprov --preset default --work-dir ~/proj --yes`,
 				`codebox-agent session launch codex --provider myprov --model gpt-5 --work-dir ~/proj --yes --json`,
 			},
-			Notes: "默认 embedded（内嵌终端，输出可用 session output 读取）。terminal 模式也允许，但输出进独立终端窗口，agent 无法读取其输出。headroom 仅 claudecode 支持（其他类型传 true 返回 bad_args）。启动入口不可中途取消：超时不等于未生效，先用 session list/get 查询是否已启动，再决定是否重试。启动前应向用户确认工作目录与提供商（传 --shell 或 --work-dir 时必须一并确认）。返回 sessionId 与会话摘要。",
+			Notes: "默认 embedded（内嵌终端，输出可用 session output 读取）。terminal 模式也允许，但输出进独立终端窗口，agent 无法读取其输出。启动入口不可中途取消：超时不等于未生效，先用 session list/get 查询是否已启动，再决定是否重试。启动前应向用户确认工作目录与提供商（传 --shell 或 --work-dir 时必须一并确认）。返回 sessionId 与会话摘要。",
 		},
 		{
 			Path:    []string{"session", "send"},

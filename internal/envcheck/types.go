@@ -23,7 +23,6 @@ const (
 	ToolCodex      CLITool = "codex"
 	ToolPi         CLITool = "pi"
 	ToolOmp        CLITool = "omp"
-	ToolHeadroom   CLITool = "headroom"
 )
 
 // InstallMethod describes how a CLI tool was installed on the host.
@@ -106,8 +105,7 @@ const (
 	// pi/omp) through the shared operation slot. Ownership-checked: only npm
 	// and Homebrew channels with a verifiable install prefix are uninstalled;
 	// unknown or foreign-prefix installs are refused with manual guidance.
-	// Claude Code keeps its dedicated per-source uninstall (CleanClaudeCode)
-	// and Headroom keeps its lease-guarded CleanHeadroom flow.
+	// Claude Code keeps its dedicated per-source uninstall (CleanClaudeCode).
 	SolutionUninstallTool SolutionType = "uninstall_tool"
 )
 
@@ -208,7 +206,7 @@ type OverallStatus struct {
 // InstallResult is returned by install and update operations.
 // Success 永远只表示 Windows 侧结论（direction §2.1）：双侧结论由消费者读取
 // WSL 字段得出，nil 表示本次不涉及 WSL（非 Windows、Windows 失败、非
-// install/update、headroom 或回调未注入）。
+// install/update 或回调未注入）。
 type InstallResult struct {
 	Success bool    `json:"success"`
 	Message string  `json:"message"`

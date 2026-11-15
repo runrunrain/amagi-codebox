@@ -584,7 +584,7 @@ func (a *App) buildRemoteLaunchSettings() *contract.LaunchSettings {
 		if refs, ok := defaults[string(cliType)]; ok {
 			entry.Defaults = &contract.LaunchDefaults{
 				ProviderRef: refs.ProviderRef, PresetRef: refs.PresetRef, ModelRef: refs.ModelRef,
-				ShellRef: refs.ShellRef, UseHeadroom: refs.UseHeadroom,
+				ShellRef: refs.ShellRef,
 			}
 		}
 		settingsSurface.CLIs = append(settingsSurface.CLIs, entry)

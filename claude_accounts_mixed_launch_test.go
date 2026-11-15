@@ -64,7 +64,7 @@ func TestAbsentDesktopLeaseAllowsRemoteCreateAndRestart(t *testing.T) {
 	for _, cli := range []contract.CLIType{contract.CLITypeClaudeCode, contract.CLITypePi} {
 		t.Run(string(cli), func(t *testing.T) {
 			app, h, provider := newAbsentMixedLaunchFixture(t)
-			desktopID, err := app.LaunchSession(provider, "", "terminal", t.TempDir(), false, "")
+			desktopID, err := app.LaunchSession(provider, "", "terminal", t.TempDir(), "")
 			if err != nil {
 				t.Fatalf("真实桌面启动: %v", err)
 			}
@@ -131,7 +131,7 @@ func TestAbsentRemotePrepareAllowsDesktopLaunch(t *testing.T) {
 			}()
 			awaitBarrier(t, e.entered)
 			assertMixedFirstCaptureBusy(t, app) // 尚无桌面 lease，只能由 remote reservation 阻止。
-			desktopID, err := app.LaunchSession(provider, "", "terminal", t.TempDir(), false, "")
+			desktopID, err := app.LaunchSession(provider, "", "terminal", t.TempDir(), "")
 			if err != nil {
 				t.Fatalf("remote Prepare 在途时真实桌面启动必须成功: %v", err)
 			}

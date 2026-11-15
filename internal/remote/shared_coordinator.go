@@ -1,7 +1,7 @@
 package remote
 
 // shared_coordinator.go — SharedServiceCoordinator: launch, mutation, and
-// active-run lease authority for Headroom shared singletons (design §6.7).
+// active-run lease authority for shared singletons (design §6.7).
 //
 // Policy (§3.4 S1 lease-strict, §6.7.2): manual Start/Stop/reconfigure is
 // STABLY REJECTED (raw call = 0) while any pending/active run lease exists for
@@ -33,17 +33,11 @@ var ErrSharedServiceInUse = errors.New("shared service is in use by active sessi
 // identity may repopulate leases after ClearAll has released them.
 var ErrSharedCoordinatorClosed = errors.New("shared service coordinator is closed")
 
-// isHeadroomKind reports whether the kind is a Headroom dependency.
-func isHeadroomKind(kind SharedServiceKind) bool {
-	return kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom
-}
-
 // isKnownSharedKind reports whether the kind belongs to the closed shared-kind
-// set. 卸载 drain（headroomDraining）仍只限定 Headroom：凭据 kind 不参与
-// Headroom 卸载闸门，反之凭据 mutation 也不阻塞 Headroom 卸载（design §6.3）。
+// set（现役仅凭据 kind；历史上另有两组已退役的共享代理 kind）。
 func isKnownSharedKind(kind SharedServiceKind) bool {
 	switch kind {
-	case SharedServiceClaudeHeadroom, SharedServiceCodexHeadroom, SharedServiceClaudeCredentials:
+	case SharedServiceClaudeCredentials:
 		return true
 	}
 	return false
@@ -91,16 +85,15 @@ type SharedLeaseTransfer struct {
 	consumed    bool
 }
 
-// SharedServiceCoordinator manages active-run leases for the Claude and Codex
-// Headroom singletons.
+// SharedServiceCoordinator manages active-run leases for shared singletons.
 type SharedServiceCoordinator struct {
 	mu       sync.Mutex
 	entries  map[SharedServiceKind]*SharedServiceEntry
 	genCount map[SharedServiceKind]uint64
 
 	// launchAdmissions are generation-bound pending launch claims acquired before
-	// any Headroom/PTY side effect. An uninstall drain linearized after a claim
-	// observes it as non-empty and aborts; a drain linearized first rejects it.
+	// any process side effect. A competing mutation linearized after a claim
+	// observes it as non-empty and aborts; one linearized first rejects it.
 	launchAdmissions   map[*SharedLaunchAdmission]struct{}
 	launchTransactions map[*SharedLaunchAdmission]*sharedLaunchTransaction
 	mutationAdmissions map[*SharedMutationAdmission]struct{}
@@ -108,13 +101,7 @@ type SharedServiceCoordinator struct {
 	admissionSeq       uint64
 	externalRunSeq     uint64
 
-	// headroomDraining (R4-002), when true, blocks new launch/run/mutation
-	// admissions for BOTH headroom kinds for the duration of an uninstall. It is the
-	// install-drain critical section that closes the TOCTOU window between the
-	// empty check and the venv deletion (a launch that sneaks in after the check
-	// would otherwise have its dependency deleted).
-	headroomDraining bool
-	closed           bool
+	closed bool
 }
 
 // NewSharedServiceCoordinator creates a coordinator with empty lease sets.
@@ -166,8 +153,8 @@ func (a *SharedLaunchAdmission) Kind() SharedServiceKind {
 	return a.kind
 }
 
-// AcquireLaunchAdmission enters the uninstall admission barrier before launch
-// side effects. Only Headroom dependencies need the install-drain barrier.
+// AcquireLaunchAdmission enters the admission barrier before launch side
+// effects.
 func (c *SharedServiceCoordinator) AcquireLaunchAdmission(kind SharedServiceKind) (*SharedLaunchAdmission, error) {
 	return c.acquireLaunchAdmission(kind, [32]byte{}, false)
 }
@@ -192,9 +179,6 @@ func (c *SharedServiceCoordinator) acquireLaunchAdmission(kind SharedServiceKind
 	defer c.mu.Unlock()
 	if c.closed {
 		return nil, ErrSharedCoordinatorClosed
-	}
-	if isHeadroomKind(kind) && c.headroomDraining {
-		return nil, ErrSharedServiceInUse
 	}
 	for mutation := range c.mutationAdmissions {
 		if mutation.kind == kind {
@@ -313,9 +297,6 @@ func (c *SharedServiceCoordinator) AcquireMutationAdmission(kind SharedServiceKi
 	if c.closed {
 		return nil, ErrSharedCoordinatorClosed
 	}
-	if c.headroomDraining && (kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom) {
-		return nil, ErrSharedServiceInUse
-	}
 	for launch := range c.launchAdmissions {
 		if launch.kind == kind {
 			return nil, ErrSharedServiceInUse
@@ -392,7 +373,7 @@ func (c *SharedServiceCoordinator) acquireForExternalRun(
 		return nil, errors.New("control: invalid external run identity")
 	}
 	if admission == nil {
-		return nil, errors.New("control: external headroom run requires launch admission")
+		return nil, errors.New("control: external shared run requires launch admission")
 	}
 	lease := &SharedDependencyLease{
 		sessionID: identity.sessionID, runEpoch: identity.generation,
@@ -401,10 +382,9 @@ func (c *SharedServiceCoordinator) acquireForExternalRun(
 	return c.acquireLease(kind, configFingerprint, admission, lease, true)
 }
 
-// AcquireForRun adds a run lease for the given service kind. A Headroom run
-// without a prior admission is rejected while uninstall drains. Launch paths
-// that admitted before the drain use AcquireForRunWithAdmission to atomically
-// promote that exact pending claim.
+// AcquireForRun adds a run lease for the given service kind. Launch paths that
+// admitted earlier use AcquireForRunWithAdmission to atomically promote that
+// exact pending claim.
 func (c *SharedServiceCoordinator) AcquireForRun(
 	ctx context.Context,
 	runPermit *RunPermit,
@@ -498,12 +478,6 @@ func (c *SharedServiceCoordinator) acquireLease(
 			(admission.configBound && admission.configFingerprint != configFingerprint) {
 			return nil, errors.New("control: stale or mismatched launch admission")
 		}
-	}
-	// A newly arriving Headroom run cannot cross an existing drain. An exact
-	// pending admission linearized first and is allowed to promote; the drain's
-	// empty check necessarily returned false and its caller aborts uninstall.
-	if !admitted && c.headroomDraining && (kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom) {
-		return nil, ErrSharedServiceInUse
 	}
 	for mutation := range c.mutationAdmissions {
 		if mutation.kind == kind {
@@ -745,9 +719,6 @@ func (c *SharedServiceCoordinator) CheckMutation(
 	if mutation == MutationExactNoOp {
 		return nil // idempotent: always allowed
 	}
-	if c.headroomDraining && (kind == SharedServiceClaudeHeadroom || kind == SharedServiceCodexHeadroom) {
-		return ErrSharedServiceInUse
-	}
 	for admission := range c.launchAdmissions {
 		if admission.kind == kind {
 			return ErrSharedServiceInUse
@@ -763,50 +734,6 @@ func (c *SharedServiceCoordinator) CheckMutation(
 	}
 	// Leases exist: reject all non-no-op mutations (design §6.7.2).
 	return ErrSharedServiceInUse
-}
-
-// BeginHeadroomUninstallDrain (R4-002) atomically enters the install-drain
-// critical section for a Headroom uninstall: it sets headroomDraining (so all
-// subsequent AcquireForRun for either headroom kind is rejected) AND reports
-// whether BOTH headroom kinds are free of leases and pending launch/mutation
-// admissions. The caller MUST call
-// EndHeadroomUninstallDrain exactly once when the uninstall completes or aborts
-// (the drain must span the stop + venv removal to close the TOCTOU window).
-//
-// Returns empty=true only when no prior lease/admission exists for either kind
-// at the moment the drain is entered; the drain is set regardless so the caller can
-// release it on the abort path.
-func (c *SharedServiceCoordinator) BeginHeadroomUninstallDrain() (empty bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.headroomDraining = true
-	claudeN, codexN, pendingN := 0, 0, 0
-	if e := c.entries[SharedServiceClaudeHeadroom]; e != nil {
-		claudeN = len(e.leases)
-	}
-	if e := c.entries[SharedServiceCodexHeadroom]; e != nil {
-		codexN = len(e.leases)
-	}
-	for admission := range c.launchAdmissions {
-		if admission.kind == SharedServiceClaudeHeadroom || admission.kind == SharedServiceCodexHeadroom {
-			pendingN++
-		}
-	}
-	for admission := range c.mutationAdmissions {
-		if admission.kind == SharedServiceClaudeHeadroom || admission.kind == SharedServiceCodexHeadroom {
-			pendingN++
-		}
-	}
-	return claudeN == 0 && codexN == 0 && pendingN == 0
-}
-
-// EndHeadroomUninstallDrain (R4-002) releases the install-drain critical
-// section, allowing new headroom run leases again. Idempotent (safe to call
-// when no drain is active).
-func (c *SharedServiceCoordinator) EndHeadroomUninstallDrain() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.headroomDraining = false
 }
 
 // LeaseCount returns the number of active leases for a kind (diagnostic only;
@@ -887,7 +814,6 @@ func (c *SharedServiceCoordinator) ClearAll() {
 		}
 	}
 	c.leaseTransfers = make(map[*SharedDependencyLease]*SharedLeaseTransfer)
-	c.headroomDraining = false
 }
 
 // entryIDFromRunPermit extracts the SessionID from a RunPermit's entry.

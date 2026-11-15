@@ -5,8 +5,8 @@ import (
 )
 
 // WSL 网络模式信息条目（P2-T1）：Windows 上内嵌会话默认落在 WSL（resolver 的
-// BootstrapWSL 分支），而 AI 代理分流、Headroom、系统代理的统一入口都监听宿主
-// 回环（127.0.0.1）。WSL2 NAT 模式（默认）下 distro 内的 127.0.0.1 指向发行版
+// BootstrapWSL 分支），而 AI 代理分流、系统代理的统一入口都监听宿主回环
+// （127.0.0.1）。WSL2 NAT 模式（默认）下 distro 内的 127.0.0.1 指向发行版
 // 自身，宿主回环不可达；mirrored 模式下 localhost 双向互通，上述功能对 WSL 会
 // 话自然可用。本文件在 envcheck 收尾时读取 %USERPROFILE%\.wslconfig 的
 // networkingMode（platform.WSLNetworkingMode，进程级缓存、无 wsl.exe fork），
@@ -35,7 +35,7 @@ func (s *Service) appendWSLNetworkingModeInfo(status *CheckStatus) {
 		return
 	}
 	if wslSessionCommandFor(status.Tool) == "" {
-		return // 该工具不会在 WSL 内启动（如 Headroom），不产出条目
+		return // 该工具不会在 WSL 内启动，不产出条目
 	}
 	if runtimeGOOS != "windows" {
 		return
@@ -47,13 +47,13 @@ func (s *Service) appendWSLNetworkingModeInfo(status *CheckStatus) {
 	switch mode := wslNetworkingMode(); mode {
 	case "mirrored":
 		message = "WSL 网络模式：mirrored"
-		detail = "localhost 与 Windows 宿主双向互通，AI 代理分流与 Headroom 对 WSL 会话可用。"
+		detail = "localhost 与 Windows 宿主双向互通，AI 代理分流对 WSL 会话可用。"
 	case "nat":
 		message = "WSL 网络模式：NAT"
-		detail = "发行版内访问不到宿主回环（127.0.0.1），AI 代理分流与 Headroom 对 WSL 会话不可用。" + wslNetworkingModeSwitchGuide + "。"
+		detail = "发行版内访问不到宿主回环（127.0.0.1），AI 代理分流对 WSL 会话不可用。" + wslNetworkingModeSwitchGuide + "。"
 	default:
 		message = "WSL 网络模式：未知（按 NAT 处理）"
-		detail = "未检测到 %USERPROFILE%\\.wslconfig 的 networkingMode 配置，按默认 NAT 对待：AI 代理分流与 Headroom 对 WSL 会话不可用。" + wslNetworkingModeSwitchGuide + "。"
+		detail = "未检测到 %USERPROFILE%\\.wslconfig 的 networkingMode 配置，按默认 NAT 对待：AI 代理分流对 WSL 会话不可用。" + wslNetworkingModeSwitchGuide + "。"
 	}
 	status.Issues = append(status.Issues, CheckIssue{
 		Severity: SeverityInfo,

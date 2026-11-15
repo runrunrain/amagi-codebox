@@ -1,7 +1,7 @@
 package main
 
 // bind_manifest_test.go — T-24 production Wails Bind surface test (design §4.1,
-// §6.3, §10.3 C-01). Asserts that raw PTY/Headroom services are NOT bound,
+// §6.3, §10.3 C-01). Asserts that raw PTY services are NOT bound,
 // and that the App exposes neither the cleanup bypass (StopAllSessions) nor the
 // raw callback/history exports (R3-Minor-01).
 
@@ -17,7 +17,6 @@ import (
 // in the production Bind list — the raw service objects themselves (design §6.3).
 var forbiddenTypePrefixes = []string{
 	"pty.Service",
-	"headroom.HeadroomService",
 	"secrets.SecretsService",
 	"envcheck.Service",
 	"logging.Service",
@@ -55,8 +54,8 @@ var appGatedMutationMethods = []string{
 
 // appRawMutationNameFragments are name fragments that must NOT appear in any
 // exported App method (they would indicate a raw service mutation leaked onto
-// the bound App surface). Legitimate facades use the Pty*/Proxy*/Headroom*
-// prefixes instead.
+// the bound App surface). Legitimate facades use the Pty*/Proxy* prefixes
+// instead.
 var appRawMutationNameFragments = []string{
 	"WriteRaw",
 	"ResizeRaw",
@@ -103,7 +102,7 @@ func TestBindManifest_GatedFacadesReachable(t *testing.T) {
 // the bind check from "raw service objects absent" into an exported-mutation
 // manifest assertion.
 // appClassifiedNonSessionMutations (R12 Minor): non-session/PTY mutations exported on
-// the bound App surface that were introduced by M2 recovery/headroom work. Each entry
+// the bound App surface that were introduced by M2 recovery work. Each entry
 // is explicitly classified with its gating semantics so future manifest drift is
 // reviewable: these are NOT raw session mutations (they do not touch PTY/session
 // state), they require explicit user confirmation or backend authority fencing.
@@ -111,9 +110,6 @@ var appClassifiedNonSessionMutations = map[string]string{
 	// Requires explicit PG-06-style user confirmation in the desktop UI; backend
 	// refuses while the process is live and writes a typed audit on completion.
 	"ConfirmExternalCleanupRecovery": "user-confirm + backend live-refuse + typed audit",
-	// Mutates global codex headroom; gated by coordinator admission (R4-002) and the
-	// corrupt-store recovery fence (R9-002).
-	"SetCodexGlobalHeadroom": "coordinator admission + recovery fence",
 	// Claude 订阅账号轮换 facade（design §7.2）：入口在 App，raw 服务不入
 	// Bind；所有 mutation 经 1a 领域服务的 MutationGate（SharedClaudeCredentials
 	// mutation admission）+ operation 注册表；事件只发 operationId/stage/
@@ -126,6 +122,18 @@ var appClassifiedNonSessionMutations = map[string]string{
 	"ReconcileClaudeAccounts":       "inspect 零写；其余走 mutation 门 + background operation",
 	"RemoveClaudeAccount":           "1a 移除限制（活动账号先切/停管）+ mutation admission",
 	"RenameClaudeAccount":           "别名长度 1..64 + revision 校验",
+	// 共用技能面板的非会话 mutation（扩展中心重构 spec §2.5/§2.8）：目录
+	// 移动与删除均需 UI 确认弹窗（删除为 danger）；managed 名
+	// （amagi-codebox）后端直接拒绝。
+	"SetSharedSkillEnabled": "目录移动（~/.agents/skills ⇄ skills-disabled）需 UI 确认弹窗；managed 名后端拒绝",
+	"DeleteSharedSkill":     "技能目录永久删除需 UI danger 确认弹窗；managed 名后端拒绝",
+	// 共用 MCP 面板的非会话 mutation（共用 MCP spec §3）：登记文件 CRUD 与
+	// 四引擎分发写入均需 UI 表单/明确开关动作；外部手改的目标条目后端
+	// 拒删待确认（ErrForeignModified → force 二次确认）。
+	"CreateSharedMcpEntry":        "写 ~/.agents/.mcp.json（0600 原子写）需 UI 表单提交；同名已存在后端拒绝",
+	"UpdateSharedMcpEntry":        "覆写登记条目需 UI 表单提交；name 不可改、条目不存在后端拒绝",
+	"DeleteSharedMcpEntry":        "登记删除 + 已分发引擎还原需 UI danger 确认弹窗；外部手改的目标条目需 force 二次确认",
+	"SetSharedMcpEngineSelection": "写各 Agent 真实 MCP 配置需 UI 明确开关/重新分发动作；目标手写同名条目后端拒绝（conflict）",
 }
 
 func TestBindManifest_ClassifiedNonSessionMutations(t *testing.T) {
@@ -171,17 +179,6 @@ func TestBindManifest_AppIsBound(t *testing.T) {
 	}
 	if !found {
 		t.Error("App object is not in the production Bind list")
-	}
-}
-
-func TestBindManifest_HeadroomFacadesReachable(t *testing.T) {
-	app := newTestApp(t)
-	appType := reflect.TypeOf(app)
-	// Lease-guarded facade methods that replace the raw Headroom binding.
-	for _, name := range []string{"HeadroomStart", "HeadroomStop", "HeadroomGetStatus"} {
-		if _, ok := appType.MethodByName(name); !ok {
-			t.Errorf("App facade %s is missing (replaces raw service binding)", name)
-		}
 	}
 }
 
@@ -262,12 +259,13 @@ func TestBindManifest_AppHardenedSurface(t *testing.T) {
 	app := newTestApp(t)
 	appType := reflect.TypeOf(app)
 
-	for _, name := range []string{"CleanHeadroom", "HasProviderAPIKey", "GetProviderAPIKey"} {
+	for _, name := range []string{"HasProviderAPIKey", "GetProviderAPIKey"} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App narrow facade %s is missing", name)
 		}
 	}
 	for _, removed := range []string{
+		"CleanHeadroom",
 		"QuickLaunch",
 		"GetEnvCheckOperationState",
 		"GetConfigService",

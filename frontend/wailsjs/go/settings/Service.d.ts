@@ -10,8 +10,6 @@ export function GetAgentCLIEnabled():Promise<boolean>;
 
 export function GetClaudeWebUIEnabled():Promise<boolean>;
 
-export function GetCodexGlobalHeadroom():Promise<settings.CodexGlobalHeadroomState>;
-
 export function GetCommitSummaryPreset():Promise<string>;
 
 export function GetDashboardDefaults():Promise<settings.DashboardDefaults>;
@@ -57,8 +55,6 @@ export function Save():Promise<void>;
 export function SetAgentCLIEnabled(arg1:boolean):Promise<void>;
 
 export function SetClaudeWebUIEnabled(arg1:boolean):Promise<void>;
-
-export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<void>;
 
 export function SetCommitSummaryPreset(arg1:string):Promise<void>;
 

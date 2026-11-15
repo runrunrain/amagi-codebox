@@ -210,7 +210,6 @@ const defaults = reactive({
   piShell: '',
   ompMode: 'embedded',
   ompShell: '',
-  useHeadroom: false,
 })
 
 function isAnthropicCompatible(p: Provider): boolean {
@@ -309,7 +308,6 @@ async function loadData() {
     defaults.piShell = d.piShell || d.shell || shellFallback
     defaults.ompMode = d.ompMode || 'embedded'
     defaults.ompShell = d.ompShell || d.shell || shellFallback
-    defaults.useHeadroom = d.useHeadroom || false
   } catch (err) {
     console.error('load defaults:', err)
   }
@@ -334,7 +332,6 @@ async function saveDefaults() {
       piShell: defaults.piShell,
       ompMode: defaults.ompMode,
       ompShell: defaults.ompShell,
-      useHeadroom: defaults.useHeadroom,
     }))
     showSuccess('默认值已保存')
   } catch (err: unknown) {

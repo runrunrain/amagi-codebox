@@ -3,13 +3,12 @@ package envcheck
 // wsl_cli_sync_test.go — 安装/升级双侧联动（P2-C，direction §2.2）的入口级
 // 回归：async StartInstallTool/StartUpdateTool、sync Install/Update/
 // InstallClaudeCodeWithMethod、fix install_claude_method 的 WSL 回调触发与
-// 门控（Windows 失败 / uninstall / headroom 不触发），以及异步操作内
+// 门控（Windows 失败 / uninstall 不触发），以及异步操作内
 // wsl_sync 步骤可见性与部分失败语义（OperationState.Status 仍只表示
 // Windows 侧，WSL 结论单独装在 Result.WSL）。
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -209,34 +208,6 @@ func TestAttachWSLSync_UninstallSuccess_NotCalled(t *testing.T) {
 	}
 	if op.Result.WSL != nil {
 		t.Errorf("uninstall Result.WSL must stay nil, got %+v", op.Result.WSL)
-	}
-}
-
-// --- headroom（sync Install 成功）：工具门控不触发 ---
-
-func TestAttachWSLSync_HeadroomInstallSuccess_NotCalled(t *testing.T) {
-	prevAttempts, prevDelay := installRecheckAttempts, installRecheckDelay
-	installRecheckAttempts, installRecheckDelay = 1, 0
-	t.Cleanup(func() { installRecheckAttempts, installRecheckDelay = prevAttempts, prevDelay })
-
-	pathDir := t.TempDir()
-	writeTestExecutable(t, pathDir, "python3")
-	t.Setenv("PATH", pathDir)
-	venvDir := filepath.Join(t.TempDir(), "headroom-venv")
-	svc := NewServiceWithRunner(&headroomVenvInstallRunner{venvDir: venvDir})
-	svc.SetHeadroomVenvDir(venvDir)
-	rec := &wslSyncRecorder{result: &WSLSyncResult{Status: WSLSyncSucceeded}}
-	rec.install(svc, rec.result)
-
-	result, err := svc.Install(ToolHeadroom)
-	if err != nil || result == nil || !result.Success {
-		t.Fatalf("Install(ToolHeadroom) should succeed, got result=%+v err=%v", result, err)
-	}
-	if rec.count() != 0 {
-		t.Errorf("WSL callback must not fire for headroom, got %d calls", rec.count())
-	}
-	if result.WSL != nil {
-		t.Errorf("headroom Result.WSL must stay nil, got %+v", result.WSL)
 	}
 }
 

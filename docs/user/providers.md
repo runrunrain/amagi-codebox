@@ -50,9 +50,9 @@ const (
 
 每种引擎的启动入口与配置落地方式不同：
 
-| 引擎 | 启动入口（`app.go`） | 配置落地 |
+| 引擎 | 启动入口（`app_session_pty.go`） | 配置落地 |
 |------|---------------------|----------|
-| ClaudeCode | `LaunchSession` | CodeBox `models.json` 为唯一来源；启动时通过环境变量注入（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` / 模型变量，见 `internal/launcher/service.go`），不改写 `~/.claude` 配置；开启 Headroom 时 BaseURL 指向本地代理 |
+| ClaudeCode | `LaunchSession` | CodeBox `models.json` 为唯一来源；启动时通过环境变量注入（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` / 模型变量，见 `internal/launcher/service.go`），不改写 `~/.claude` 配置 |
 | Codex | `LaunchCodexSession` | 启动时把模型与 provider BaseURL 同步进 `~/.codex/config.toml`（`syncCodexCustomProviderConfigFile`，`app.go`），密钥经环境/登录态处理 |
 | OpenCode | `LaunchOpenCode` | 使用 `opencode_presets`（完整 `opencode.json`）；provider 以 `amagi-*` 命名空间同步进 `~/.config/opencode/opencode.json` |
 | Pi | `LaunchPiSession` | provider 以 `amagi-*` 命名空间合并写入 `~/.pi/agent/models.json`（0600 权限，`internal/launcher/pi_config.go`） |

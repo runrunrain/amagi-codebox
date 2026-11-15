@@ -96,10 +96,10 @@ describe('planSolutionExecution：solution type → 前端执行策略', () => {
     expect(planSolutionExecution(sol({ type: 'brand_new_action' }), CTX)).toEqual({ kind: 'fix_action' });
   });
 
-  it('isAgentCLITool：仅四个 Agent CLI 走通用卸载；Claude/Headroom 排除', () => {
+  it('isAgentCLITool：仅四个 Agent CLI 走通用卸载；Claude 与未知工具排除', () => {
     expect(['opencode', 'codex', 'pi', 'omp'].every(isAgentCLITool)).toBe(true);
     expect(isAgentCLITool('claude_code')).toBe(false);
-    expect(isAgentCLITool('headroom')).toBe(false);
+    expect(isAgentCLITool('unknown_tool')).toBe(false);
     expect(isAgentCLITool('')).toBe(false);
   });
 });

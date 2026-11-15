@@ -33,15 +33,14 @@ CodeBox 左侧「AI 代理分流」是独立页面，路由为 `#/ai-proxy`。�
 | 桌面内嵌会话，含 Pi 登录预设 | `resolveEmbeddedLaunchSpec` 在合并认证环境后注入分流，再固定登录 Shell 的代理变量 |
 | 外部 CLI 进程 | `LauncherService.buildEnv`，覆盖五种 CLI 的最终环境 |
 | 远程创建、重启 | `appLaunchPlanner.resolveLaunch`，计划构建只读查询本机分流策略 |
-| Claude / Codex Headroom | 新的代理子进程继承相同环境；本地转发地址保持回环绕行 |
 | GitAssist 提交总结模型 | 单独的 HTTP Client，不改动全局 Transport |
 | 多模态、额度探测 | App 创建使用相同路由选择器的 HTTP Client |
 
 统一入口按目标域名分流，因此同一个 Pi / OMP 会话及其继承环境的子 Agent 可以同时调用多个服务。第三方 API 域名需加入对应规则；相同 HTTPS 域名下不同模型无法仅凭域名区分。专用入口可用于单独配置的外部客户端。
 
-启用时会覆盖进程原有的大小写 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`；绕行清单固定包含 localhost、127.0.0.1、::1，防止本地 Headroom/relay 被外部代理接管。功能停用时不修改现有启动策略，也不改变父进程环境或系统代理设置。内核意外退出时，新建会话明确失败，避免悄悄改走其他出口。
+启用时会覆盖进程原有的大小写 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`；绕行清单固定包含 localhost、127.0.0.1、::1，防止本地回环服务（relay 等）被外部代理接管。功能停用时不修改现有启动策略，也不改变父进程环境或系统代理设置。内核意外退出时，新建会话明确失败，避免悄悄改走其他出口。
 
-保存配置保留草稿，活跃会话继续使用已应用的端口。应用更改会重启本功能的内核，已有连接会断开；修改后需重启已有 CLI 或 Headroom 进程以接入新环境。停用会停止本功能内核；正常退出 CodeBox 时清理进程，但保留启用偏好供下次启动恢复。启动时先加载提供商，再恢复关联规则；代理偏好尚未读入时，应用内自动模型探测与新建会话返回初始化未完成错误，避免先走旧出口。
+保存配置保留草稿，活跃会话继续使用已应用的端口。应用更改会重启本功能的内核，已有连接会断开；修改后需重启已有 CLI 进程以接入新环境。停用会停止本功能内核；正常退出 CodeBox 时清理进程，但保留启用偏好供下次启动恢复。启动时先加载提供商，再恢复关联规则；代理偏好尚未读入时，应用内自动模型探测与新建会话返回初始化未完成错误，避免先走旧出口。
 
 ## 数据与边界
 
@@ -56,7 +55,7 @@ CodeBox 左侧「AI 代理分流」是独立页面，路由为 `#/ai-proxy`。�
 ## 验证
 
 ```sh
-SING_BOX_TEST_BINARY='/path/to/sing-box' go test -race ./internal/aiproxy/... ./internal/launcher ./internal/headroom ./internal/gitassist
+SING_BOX_TEST_BINARY='/path/to/sing-box' go test -race ./internal/aiproxy/... ./internal/launcher ./internal/gitassist
 V2RAYN_TEST_DATABASE='/path/to/guiNDB.db' SING_BOX_TEST_BINARY='/path/to/sing-box' go test ./internal/aiproxy/v2rayn -run TestLocalV2rayNCompatibility -v
 npm --prefix frontend run build
 npm --prefix frontend run test

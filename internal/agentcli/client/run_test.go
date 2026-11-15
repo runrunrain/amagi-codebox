@@ -30,7 +30,7 @@ func testTable() []spec.Command {
 		{Path: []string{"session", "launch"}, Summary: "启动会话", Risk: spec.RiskExec, Confirm: "LAUNCH", Params: []spec.Param{
 			{Name: "appType", Type: spec.TypeString, Required: true, Positional: true, Enum: []string{"claudecode", "pi"}},
 			{Name: "mode", Type: spec.TypeString, Default: "embedded"},
-			{Name: "headroom", Type: spec.TypeBool, Desc: "启用 headroom"},
+			{Name: "verbose", Type: spec.TypeBool, Desc: "输出详细日志"},
 		}, Examples: []string{"codebox-agent session launch claudecode"}, Notes: "返回 sessionId"},
 		{Path: []string{"session", "send"}, Summary: "发送输入", Risk: spec.RiskExec, Confirm: "SEND", Params: []spec.Param{
 			{Name: "id", Type: spec.TypeString, Required: true, Positional: true},

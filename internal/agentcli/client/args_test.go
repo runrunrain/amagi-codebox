@@ -50,9 +50,9 @@ func TestParseMatrix(t *testing.T) {
 		{"旗标等号", []string{"session", "list", "--status=stopped"}, "", map[string]any{"status": "stopped"}},
 		{"位置参数必填", []string{"--yes", "session", "launch", "claudecode"}, "", map[string]any{"appType": "claudecode"}},
 		{"最长匹配 config.get", []string{"config", "get", "remote"}, "", map[string]any{"key": "remote"}},
-		{"bool 三形态-裸旗标", []string{"--yes", "session", "launch", "claudecode", "--headroom"}, "", map[string]any{"appType": "claudecode", "headroom": true}},
-		{"bool 三形态-no", []string{"--yes", "session", "launch", "claudecode", "--no-headroom"}, "", map[string]any{"appType": "claudecode", "headroom": false}},
-		{"bool 三形态-等号", []string{"--yes", "session", "launch", "claudecode", "--headroom=false"}, "", map[string]any{"appType": "claudecode", "headroom": false}},
+		{"bool 三形态-裸旗标", []string{"--yes", "session", "launch", "claudecode", "--verbose"}, "", map[string]any{"appType": "claudecode", "verbose": true}},
+		{"bool 三形态-no", []string{"--yes", "session", "launch", "claudecode", "--no-verbose"}, "", map[string]any{"appType": "claudecode", "verbose": false}},
+		{"bool 三形态-等号", []string{"--yes", "session", "launch", "claudecode", "--verbose=false"}, "", map[string]any{"appType": "claudecode", "verbose": false}},
 		{"int", []string{"usage", "daily", "--days", "7"}, "", map[string]any{"days": float64(7)}},
 		{"int 负数", []string{"usage", "daily", "--days", "-3"}, "", map[string]any{"days": float64(-3)}},
 		{"string[] 位置全量", []string{"tags", "a", "b", "c"}, "", map[string]any{"items": []any{"a", "b", "c"}}},
@@ -118,10 +118,10 @@ func TestParseErrors(t *testing.T) {
 		{"未知旗标建议", []string{"session", "list", "--statuz"}, "你是不是想输入"},
 		{"位置与旗标冲突", []string{"session", "launch", "claudecode", "--app-type", "pi"}, "不能同时以位置参数和旗标"},
 		{"旗标缺值", []string{"session", "list", "--status"}, "缺少值"},
-		{"旗标缺值-后随旗标", []string{"session", "launch", "--mode", "--headroom"}, "缺少值"},
+		{"旗标缺值-后随旗标", []string{"session", "launch", "--mode", "--verbose"}, "缺少值"},
 		{"标量旗标重复", []string{"usage", "daily", "--days", "1", "--days", "2"}, "重复给出"},
 		{"int 非法", []string{"usage", "daily", "--days", "x"}, "整数"},
-		{"bool 非法", []string{"session", "launch", "claudecode", "--headroom=x"}, "布尔"},
+		{"bool 非法", []string{"session", "launch", "claudecode", "--verbose=x"}, "布尔"},
 		{"json 非法", []string{"provider", "save", "--data", "{bad"}, "JSON"},
 		{"json 文件缺失", []string{"provider", "save", "--data", "@/nonexistent.json"}, "读取文件"},
 		{"多余位置参数", []string{"status", "extra"}, "多余"},
@@ -154,9 +154,9 @@ func TestSecretStdinParamMustUseDash(t *testing.T) {
 	fs.useEndpoint(t)
 
 	for _, argv := range [][]string{
-		{"key", "set", "prov1", "SUPER-SECRET-LITERAL-9"}, // 位置参数明文
+		{"key", "set", "prov1", "SUPER-SECRET-LITERAL-9"},            // 位置参数明文
 		{"key", "set", "prov1", "--value", "SUPER-SECRET-LITERAL-9"}, // 旗标明文
-		{"key", "set", "--value=SUPER-SECRET-LITERAL-9", "prov1"}, // 等号形态
+		{"key", "set", "--value=SUPER-SECRET-LITERAL-9", "prov1"},    // 等号形态
 	} {
 		code, out, errStr := runTest(t, argv, "")
 		if code != spec.ExitUsage {

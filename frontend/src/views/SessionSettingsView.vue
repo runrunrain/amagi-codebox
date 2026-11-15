@@ -204,15 +204,6 @@
             </div>
           </div>
         </div>
-
-        <!-- 启用 Headroom 上下文压缩 -->
-        <div class="setting-row">
-          <label>启用 Headroom 上下文压缩</label>
-          <Switch
-            :model-value="dashState.useHeadroom"
-            @update:model-value="dashState.useHeadroom = $event"
-          />
-        </div>
       </div>
     </ConfigCard>
 
@@ -252,7 +243,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
-import Switch from '../components/ui/Switch.vue'
 import TextInput from '../components/ui/TextInput.vue'
 import Dialog from '../components/ui/Dialog.vue'
 import RemoteSessionsView from './RemoteSessionsView.vue'

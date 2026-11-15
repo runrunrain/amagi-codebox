@@ -1,11 +1,9 @@
 package main
 
 // app_codex_toml.go — Codex config.toml pure rendering/syncing, TOML line helpers,
-// global Headroom marker block management, atomic backup writes, and uninstall stopper.
+// legacy global-proxy marker block cleanup, and atomic backup writes.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -13,20 +11,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"amagi-codebox/internal/config"
-	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/fsutil"
 	"amagi-codebox/internal/platform"
-	"amagi-codebox/internal/remote"
 )
 
 const (
-	// codexGlobalHeadroomMarkerStart / End delimit the amagi-managed
-	// openai_base_url block in ~/.codex/config.toml. They are intentionally
-	// distinct from the amagi-codebox-inject markers so the provider-section
-	// cleanup (removeCodexManagedProviderSection / cleanupCodexManagedProviderConfig)
+	// codexGlobalHeadroomMarkerStart / End delimit a retired amagi-managed
+	// openai_base_url block that legacy versions wrote into ~/.codex/config.toml.
+	// They are kept only so startup cleanup can strip the leftover block from
+	// existing user files, and are intentionally distinct from the
+	// amagi-codebox-inject markers so the provider-section cleanup
+	// (removeCodexManagedProviderSection / cleanupCodexManagedProviderConfig)
 	// never touches this block.
 	codexGlobalHeadroomMarkerStart = "# === amagi-headroom-global-start ==="
 	codexGlobalHeadroomMarkerEnd   = "# === amagi-headroom-global-end ==="
@@ -330,67 +327,12 @@ func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL, wi
 	return lines
 }
 
-// --- Codex global headroom openai_base_url marker block ---
+// --- Legacy codex-global proxy marker block cleanup ---
 //
-// syncCodexGlobalHeadroomConfig writes or removes the top-level openai_base_url
-// assignment that routes codex desktop traffic through the independent
-// codex-global headroom proxy (port 8788). It is intentionally separate from
-// syncCodexConfigFile / syncCodexCustomProviderConfigFile:
-//
-//   - It uses a distinct marker pair (amagi-headroom-global-start/-end) so the
-//     provider-section cleanup (removeCodexManagedProviderSection /
-//     cleanupCodexManagedProviderConfig) never strips it, and so a model-only
-//     sync (syncCodexConfigModel) leaves the openai_base_url intact.
-//   - It edits the file surgically (line-based) to preserve every other config
-//     key (plugins / marketplaces / mcp_servers / profiles / ...).
-//   - It backs up the previous content to config.toml.bak.<ts> before writing.
-//
-// enabled=true inserts/refreshes the block; enabled=false removes it. Both paths
-// are idempotent: re-running with the same state is a no-op (apart from a fresh
-// backup when content actually changes).
-func syncCodexGlobalHeadroomConfig(enabled bool, port int) error {
-	codexHome, err := platform.CodexHomeDir(os.Environ())
-	if err != nil {
-		return fmt.Errorf("get Codex home: %w", err)
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-
-	previous, err := os.ReadFile(configPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("read codex config.toml: %w", err)
-		}
-		// No config yet. Only create one when enabling; disabling is a no-op.
-		if !enabled {
-			return nil
-		}
-		previous = nil
-	}
-
-	content := string(previous)
-	lines := splitTomlLinesSafe(content)
-	originalJoined := strings.Join(lines, "\n")
-
-	lines = removeCodexGlobalHeadroomBlock(lines)
-	if enabled {
-		if port <= 0 {
-			port = CodexGlobalHeadroomDefaultPort
-		}
-		lines = insertCodexGlobalHeadroomBlock(lines, port)
-	}
-
-	updatedJoined := strings.Join(lines, "\n")
-	if updatedJoined == originalJoined {
-		// Idempotent no-op: avoid touching mtimes / writing a backup when the
-		// desired state is already present.
-		return nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("create codex config dir: %w", err)
-	}
-	return writeCodexConfigWithBackup(configPath, []byte(updatedJoined), previous)
-}
+// Older versions routed codex desktop traffic through a local proxy by writing
+// a marker-delimited top-level openai_base_url block into ~/.codex/config.toml.
+// The proxy is gone; the only remaining responsibility is stripping the leftover
+// block from existing user files so no dead proxy address survives.
 
 // removeCodexGlobalHeadroomBlock strips the amagi-headroom-global marker block
 // (inclusive of both marker lines and any lines between them). It is a no-op
@@ -420,65 +362,6 @@ func removeCodexGlobalHeadroomBlock(lines []string) []string {
 	return trimTrailingEmptyLines(updated)
 }
 
-// insertCodexGlobalHeadroomBlock inserts a fresh marker block containing the
-// top-level openai_base_url assignment. The block is placed at the end of the
-// top-level region (immediately before the first [section] header) so the
-// assignment stays top-level in TOML terms; when the file has no section it is
-// appended at the end. An existing stray top-level openai_base_url outside any
-// marker block is removed first to avoid a duplicate key (TOML forbids
-// duplicate top-level keys).
-func insertCodexGlobalHeadroomBlock(lines []string, port int) []string {
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
-	block := []string{
-		codexGlobalHeadroomMarkerStart,
-		"openai_base_url = " + strconv.Quote(baseURL),
-		codexGlobalHeadroomMarkerEnd,
-	}
-
-	// Drop any pre-existing top-level openai_base_url so we never emit a
-	// duplicate top-level key (which would make the TOML invalid).
-	cleaned := make([]string, 0, len(lines))
-	inTopLevel := true
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if inTopLevel && isTomlTableHeader(trimmed) {
-			inTopLevel = false
-		}
-		if inTopLevel {
-			if key, ok := tomlAssignmentKey(trimmed); ok && key == "openai_base_url" {
-				continue
-			}
-		}
-		cleaned = append(cleaned, line)
-	}
-
-	// Find the index of the first section header and insert the block just
-	// before it; fall back to appending at the end when there is no section.
-	insertAt := len(cleaned)
-	inTopLevel = true
-	for i, line := range cleaned {
-		trimmed := strings.TrimSpace(line)
-		if inTopLevel && isTomlTableHeader(trimmed) {
-			insertAt = i
-			break
-		}
-		if isTomlTableHeader(trimmed) {
-			inTopLevel = false
-		}
-	}
-
-	out := make([]string, 0, len(cleaned)+len(block)+2)
-	out = append(out, cleaned[:insertAt]...)
-	// Separate the block from preceding top-level content with a blank line when
-	// there is content above and it is not already blank.
-	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
-		out = append(out, "")
-	}
-	out = append(out, block...)
-	out = append(out, cleaned[insertAt:]...)
-	return out
-}
-
 // splitTomlLinesSafe normalizes CR/CRLF to LF and splits into lines. Unlike the
 // codexplugin variant it never returns nil for empty input (returns an empty
 // slice) so downstream join logic is uniform.
@@ -488,149 +371,39 @@ func splitTomlLinesSafe(content string) []string {
 	return strings.Split(content, "\n")
 }
 
-// writeCodexConfigWithBackup writes next to path, backing up previous to
-// path.bak.<YYYYMMDDHHMMSS_msec>_<rand4> first (only when previous is non-empty).
-// The timestamp carries millisecond precision plus a short random suffix so two
-// writes within the same second (or even same millisecond) do not silently
-// overwrite each other's backup. It matches the codexplugin.writeConfigWithBackup
-// contract but lives in package main so the global-headroom config layer does
-// not depend on internal/codexplugin internals. Mode preserves the existing file
-// mode (default 0600).
-func writeCodexConfigWithBackup(path string, next []byte, previous []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create codex config dir: %w", err)
-	}
-	if len(previous) > 0 {
-		backupPath := fmt.Sprintf("%s.bak.%s.%s", path, time.Now().Format("20060102150405.000"), randHexSuffix(4))
-		if err := os.WriteFile(backupPath, previous, 0600); err != nil {
-			return fmt.Errorf("backup codex config.toml: %w", err)
-		}
-	}
-	mode := os.FileMode(0600)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config.toml.*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temporary codex config: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(next); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temporary codex config: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temporary codex config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temporary codex config: %w", err)
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		return fmt.Errorf("chmod temporary codex config: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace codex config.toml: %w", err)
-	}
-	cleanup = false
-	return nil
-}
-
-// randHexSuffix returns a short random hex string of byteLen*2 hex characters
-// (e.g. byteLen=4 -> 8 hex chars). It is used to disambiguate config backups
-// that land within the same clock millisecond. On any read error it falls back
-// to a fixed string so the caller never fails solely because the suffix could
-// not be generated.
-func randHexSuffix(byteLen int) string {
-	if byteLen <= 0 {
-		byteLen = 4
-	}
-	b := make([]byte, byteLen)
-	if _, err := rand.Read(b); err != nil {
-		return "00000000"[:byteLen*2]
-	}
-	return hex.EncodeToString(b)
-}
-
-// removeCodexGlobalHeadroomConfig is the package-level disable entry used by the
-// envcheck uninstall hook (stopAllHeadroomForUninstall) which does not have
-// access to the App-bound wrapper. It removes the marker block best-effort and
-// is idempotent.
-func removeCodexGlobalHeadroomConfig() error {
-	return syncCodexGlobalHeadroomConfig(false, 0)
-}
-
-// stopAllHeadroomForUninstall is the headroom stopper injected into envcheck so
-// CleanHeadroom terminates BOTH proxy child processes before the shared venv is
-// removed. On Windows a running headroom.exe inside the venv is locked by the OS
-// and os.RemoveAll would fail; stopping both instances first avoids that. When
-// the codex-global switch was persisted on, it also clears the openai_base_url
-// marker block and persistence so codex does not keep pointing at the removed
-// proxy (a dead openai_base_url would break codex until manually fixed).
-//
-// R3-002: when the coordinator rejects because active sessions hold headroom
-// leases, this returns envcheck.ErrHeadroomInUse (wrapping the coordinator
-// detail) so CleanHeadroom treats it as a FATAL rejection and aborts BEFORE the
-// venv is removed. Plain stop failures (process already dead, etc.) remain
-// best-effort and non-fatal. Individual failures are logged.
-func (a *App) stopAllHeadroomForUninstall() (error, func()) {
-	if a.isExternalCleanupRecoveryBlocked() {
-		return fmt.Errorf("%w: %w", envcheck.ErrHeadroomInUse, remote.ErrSharedServiceInUse), func() {}
-	}
-	// M-006 / R3-002: consult the coordinator BEFORE tearing down shared headroom.
-	// R4-002 (TOCTOU): instead of two instantaneous LeaseCount checks (which left a
-	// window for a concurrent launch to acquire a lease before RemoveAll), this
-	// enters a SINGLE install-drain critical section on the SharedServiceCoordinator
-	// that blocks new AcquireForRun for BOTH headroom kinds, confirms both are
-	// lease-free, and stays held until CleanHeadroom finishes the venv removal. It
-	// returns (stopErr, releaseDrain): releaseDrain releases the drain and is
-	// invoked by CleanHeadroom via defer after RemoveAll (or on abort). When
-	// existing leases are present, it returns ErrHeadroomInUse (fatal) plus the
-	// releaseDrain (still set so the caller releases the drain it entered).
-	release := func() {} // default no-op when coordinator is absent
-	if a.sharedCoord != nil {
-		empty := a.sharedCoord.BeginHeadroomUninstallDrain()
-		release = a.sharedCoord.EndHeadroomUninstallDrain
-		if !empty {
-			cn := a.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom)
-			xn := a.sharedCoord.LeaseCount(remote.SharedServiceCodexHeadroom)
-			if a.Log != nil {
-				a.Log.Warn("headroom", "卸载联动拒绝：仍有活跃会话占用 headroom", fmt.Sprintf("claude=%d codex=%d", cn, xn))
-			}
-			return fmt.Errorf("%w: %w", envcheck.ErrHeadroomInUse, remote.ErrSharedServiceInUse), release
-		}
-	}
-	var firstErr error
-	logErr := func(scope string, err error) {
-		if err == nil {
-			return
-		}
+// cleanupCodexLegacyHeadroomMarkerOnStartup strips the retired marker block
+// from ~/.codex/config.toml once on every startup (idempotent). No marker or
+// no file is a no-op; failures only log a warning and never block startup.
+func (a *App) cleanupCodexLegacyHeadroomMarkerOnStartup() {
+	if err := removeCodexLegacyHeadroomMarkerConfig(); err != nil {
 		if a.Log != nil {
-			a.Log.Warn("headroom", scope, err.Error())
-		}
-		if firstErr == nil {
-			firstErr = err
+			a.Log.Warn("codex", "清除遗留代理标记块失败", err.Error())
 		}
 	}
-	if a.Headroom != nil {
-		logErr("卸载联动：停止 claude 会话级 headroom 失败", a.Headroom.Stop())
+}
+
+// removeCodexLegacyHeadroomMarkerConfig reads ~/.codex/config.toml, strips the
+// legacy marker block when present, and writes the result back with the shared
+// atomic private-file writer.
+func removeCodexLegacyHeadroomMarkerConfig() error {
+	codexHome, err := platform.CodexHomeDir(os.Environ())
+	if err != nil {
+		return fmt.Errorf("get Codex home: %w", err)
 	}
-	if a.CodexHeadroom != nil {
-		logErr("卸载联动：停止 codex 全局 headroom 失败", a.CodexHeadroom.Stop())
+	configPath := filepath.Join(codexHome, "config.toml")
+	previous, err := os.ReadFile(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read codex config.toml: %w", err)
 	}
-	// Only tear down the codex-global config/persistence when the toggle was on;
-	// otherwise this is a plain uninstall of the claude-side headroom.
-	if a.Settings != nil && a.Settings.GetCodexGlobalHeadroom().Enabled {
-		logErr("卸载联动：清理 codex 全局 openai_base_url 失败", removeCodexGlobalHeadroomConfig())
-		logErr("卸载联动：清除 codex 全局 headroom 持久化失败", a.Settings.SetCodexGlobalHeadroom(false, "", 0))
+	lines := splitTomlLinesSafe(string(previous))
+	updated := removeCodexGlobalHeadroomBlock(lines)
+	if strings.Join(updated, "\n") == strings.Join(lines, "\n") {
+		return nil
 	}
-	return firstErr, release
+	return fsutil.WritePrivateFile(configPath, []byte(strings.Join(updated, "\n")))
 }
 
 func countTopLevelAssignment(lines []string, key string) int {

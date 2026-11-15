@@ -79,7 +79,7 @@
         </div>
         <p v-if="form.routing.rules.length" class="list-footnote">拖动左侧手柄调整优先级，点击服务展开编辑。重叠域名不可指定不同出口。</p>
         <p v-if="!canApply" class="notice warning"><AIProxyIcon name="alert" />完善标记的规则后，即可应用分流配置。</p>
-        <details class="help-disclosure"><summary><AIProxyIcon name="info" />会话如何接入分流？<AIProxyIcon name="chevron" /></summary><div class="help-body"><p>启用后，从 CodeBox 新建的 Pi、Claude Code 等本机会话自动接入。Pi / OMP 的多模型请求按各自域名分流；已有会话和 Headroom 需重启后接入。</p><p>启用期间，配置未应用、内核停止或入口不可达时会阻止新建会话。此保障面向遵守代理设置的客户端，不等同于对任意工具子进程进行网络隔离。</p><p>远程宿主使用宿主自己的配置。WSL 会话需要 WSL2 mirrored 网络模式；本地 API 与中继保持回环直连。</p></div></details>
+        <details class="help-disclosure"><summary><AIProxyIcon name="info" />会话如何接入分流？<AIProxyIcon name="chevron" /></summary><div class="help-body"><p>启用后，从 CodeBox 新建的 Pi、Claude Code 等本机会话自动接入。Pi / OMP 的多模型请求按各自域名分流；已有会话需重启后接入。</p><p>启用期间，配置未应用、内核停止或入口不可达时会阻止新建会话。此保障面向遵守代理设置的客户端，不等同于对任意工具子进程进行网络隔离。</p><p>远程宿主使用宿主自己的配置。WSL 会话需要 WSL2 mirrored 网络模式；本地 API 与中继保持回环直连。</p></div></details>
       </section>
       <section v-show="activeTab === 'traffic'" id="proxy-panel-traffic" class="tab-panel" role="tabpanel" aria-labelledby="proxy-tab-traffic" tabindex="0"><AIProxyTraffic v-if="trafficVisited" :active="activeTab === 'traffic'" /></section>
       <section v-show="activeTab === 'settings'" id="proxy-panel-settings" class="tab-panel settings-panel" role="tabpanel" aria-labelledby="proxy-tab-settings" tabindex="0">

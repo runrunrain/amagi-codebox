@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,16 +38,6 @@ const (
 	installOperationInstall installOperation = "install"
 	installOperationUpdate  installOperation = "update"
 
-	// headroomPipInstallTimeout bounds `venv/bin/python -m pip install
-	// headroom-ai[proxy]`. The [proxy] extra still pulls in transformers and
-	// onnxruntime (large wheels), so the generic 120s timeout is too tight on
-	// slow networks. Mirrors claudeNPMInstallTimeout rationale.
-	headroomPipInstallTimeout = 10 * time.Minute
-
-	// headroomVenvCreateTimeout bounds `python3 -m venv <dir>`. venv creation
-	// with ensurepip is usually fast but can download wheels on first run.
-	headroomVenvCreateTimeout = 120 * time.Second
-
 	// Progress percentages for each phase of an install/update operation.
 	progressPrecheck = 5
 	progressPrepare  = 15
@@ -76,10 +65,6 @@ const (
 	// ompNPMPackageName 是 Oh My Pi (omp) 的 npm 包名。
 	// omp 通过 npm 全局安装：npm install -g @oh-my-pi/pi-coding-agent
 	ompNPMPackageName = "@oh-my-pi/pi-coding-agent"
-
-	// headroomPackageName is the pip distribution name for Headroom. It is the
-	// PyPI package, not an npm package; the name reflects the install channel.
-	headroomPackageName = "headroom-ai"
 )
 
 var (
@@ -1302,18 +1287,6 @@ func (s *Service) installCommands(tool CLITool, operation installOperation, curr
 			return nil, err
 		}
 		return []installCommand{s.resolveCommandNPMPathForTool(npmOmpCommand(operation), current)}, nil
-	case ToolHeadroom:
-		// Headroom is installed into a CodeBox-managed venv to avoid PEP 668
-		// (externally-managed-environment) which blocks bare `pip install` on
-		// Homebrew/system Python. Require python3 (for venv creation), ensure
-		// the venv exists, then install headroom-ai[proxy] via the venv's pip.
-		if err := s.ensurePythonAvailable(); err != nil {
-			return nil, err
-		}
-		if err := s.ensureHeadroomVenv(); err != nil {
-			return nil, err
-		}
-		return []installCommand{s.headroomVenvInstallCommand(operation)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
@@ -2185,286 +2158,6 @@ func (s *Service) resolveNPMPath() string {
 	return "npm"
 }
 
-// headroomVenvInstallCommand returns the venv-pip command for Headroom. Uses
-// the venv's python -m pip so the install is immune to PEP 668. Installs
-// `headroom-ai[proxy]` (only the proxy extra CodeBox needs, not [all]);
-// updates use `-U` to force an upgrade.
-func (s *Service) headroomVenvInstallCommand(operation installOperation) installCommand {
-	pythonPath := headroomVenvPythonPath(s.getHeadroomVenvDir())
-	if operation == installOperationUpdate {
-		return installCommand{
-			description: "venv pip install --upgrade headroom-ai[proxy]",
-			path:        pythonPath,
-			args:        []string{"-m", "pip", "install", "-U", "headroom-ai[proxy]"},
-			timeout:     headroomPipInstallTimeout,
-		}
-	}
-	return installCommand{
-		description: "venv pip install headroom-ai[proxy]",
-		path:        pythonPath,
-		args:        []string{"-m", "pip", "install", "headroom-ai[proxy]"},
-		timeout:     headroomPipInstallTimeout,
-	}
-}
-
-// headroomVenvBinDir returns the platform-specific bin directory inside the
-// venv ("<dir>/bin" on POSIX, "<dir>/Scripts" on Windows). Returns "" when
-// venvDir is empty.
-func headroomVenvBinDir(venvDir string) string {
-	venvDir = strings.TrimSpace(venvDir)
-	if venvDir == "" {
-		return ""
-	}
-	if isWindows() {
-		return filepath.Join(venvDir, "Scripts")
-	}
-	return filepath.Join(venvDir, "bin")
-}
-
-// headroomVenvPythonPath returns the absolute path to the venv's python
-// executable.
-func headroomVenvPythonPath(venvDir string) string {
-	binDir := headroomVenvBinDir(venvDir)
-	if binDir == "" {
-		return ""
-	}
-	if isWindows() {
-		return filepath.Join(binDir, "python.exe")
-	}
-	return filepath.Join(binDir, "python")
-}
-
-// headroomVenvBinDir is the Service-level helper used by buildEnhancedEnv and
-// detection to derive the venv bin directory from the injected root.
-func (s *Service) headroomVenvBinDir() string {
-	return headroomVenvBinDir(s.getHeadroomVenvDir())
-}
-
-const (
-	headroomMinimumPythonMajor = 3
-	headroomMinimumPythonMinor = 10
-)
-
-var headroomPythonVersionPattern = regexp.MustCompile(`(?i)\bpython\s+(\d+)\.(\d+)(?:\.(\d+))?`)
-
-// headroomPythonCandidateNames is deliberately ordered by preferred supported
-// interpreter. macOS's /usr/bin/python3 is still Python 3.9 on many systems,
-// while Homebrew commonly exposes a compatible interpreter as python3.12 or
-// python3.13. Probing only the generic name made CodeBox select the unsupported
-// system runtime even when a supported one was already installed.
-var headroomPythonCandidateNames = []string{
-	"python3.14",
-	"python3.13",
-	"python3.12",
-	"python3.11",
-	"python3.10",
-	"python3",
-	"python",
-}
-
-type pythonRuntime struct {
-	Path    string
-	Version string
-	Major   int
-	Minor   int
-}
-
-func (runtime pythonRuntime) supportsHeadroom() bool {
-	return runtime.Major == headroomMinimumPythonMajor && runtime.Minor >= headroomMinimumPythonMinor
-}
-
-// resolvePythonPath returns the compatible interpreter selected by the cached
-// probe. The bare fallback is retained only for callers that request the path
-// before probing; installer paths always call ensurePythonAvailable first.
-func (s *Service) resolvePythonPath() string {
-	if path, available, _, _ := s.cachedPythonProbeState(); available && strings.TrimSpace(path) != "" {
-		return path
-	}
-	return "python3"
-}
-
-// ensurePythonAvailable probes a runnable Python 3.10+ interpreter once per
-// service lifetime. Headroom's published package requires Python 3.10 or
-// newer, so merely finding a `python3` executable is not sufficient.
-func (s *Service) ensurePythonAvailable() error {
-	if _, available, _, resolvedErr := s.cachedPythonProbeState(); available {
-		return nil
-	} else if resolvedErr != nil {
-		return resolvedErr
-	}
-	return fmt.Errorf("未找到 Headroom 所需的 Python 3.10+。请安装兼容的 Python 后重新检测。")
-}
-
-// probePythonAvailability discovers a runnable, Headroom-compatible Python
-// interpreter and stores it for both install eligibility and venv creation.
-func (s *Service) probePythonAvailability() {
-	s.pythonAvailable = false
-	s.pythonPath = ""
-	s.pythonVersion = ""
-	s.pythonVersionUnsupported = false
-	s.pythonResolvedErr = nil
-
-	runtime, foundUnsupported, err := s.findSupportedPythonRuntime()
-	if err != nil {
-		s.pythonVersionUnsupported = foundUnsupported
-		s.pythonResolvedErr = err
-		return
-	}
-	s.pythonAvailable = true
-	s.pythonPath = runtime.Path
-	s.pythonVersion = runtime.Version
-}
-
-// findSupportedPythonRuntime resolves the preferred Python candidates, verifies
-// that they run, and returns the first Python 3.10+ runtime. The bool result is
-// true when at least one runnable but unsupported Python was found, allowing the
-// UI to distinguish a version problem from a missing executable.
-func (s *Service) findSupportedPythonRuntime() (pythonRuntime, bool, error) {
-	env := s.buildEnhancedEnv()
-	resolver := platform.NewCLIResolver(platform.CurrentCapabilities())
-	seenPaths := map[string]struct{}{}
-	unsupported := make([]string, 0, 2)
-	unusable := make([]string, 0, 2)
-
-	for _, name := range headroomPythonCandidateNames {
-		resolved, _, resolveErr := resolver.ResolveExecutable(name, nil, env)
-		if resolveErr != nil || strings.TrimSpace(resolved.Path) == "" {
-			continue
-		}
-		path := filepath.Clean(strings.TrimSpace(resolved.Path))
-		pathKey := strings.ToLower(strings.ReplaceAll(path, `\\`, "/"))
-		if _, seen := seenPaths[pathKey]; seen {
-			continue
-		}
-		seenPaths[pathKey] = struct{}{}
-
-		runtime, probeErr := s.probePythonRuntime(path, env)
-		if probeErr != nil {
-			unusable = append(unusable, fmt.Sprintf("%s: %s", path, sanitizeInstallerOutput(probeErr.Error())))
-			continue
-		}
-		if runtime.supportsHeadroom() {
-			return runtime, false, nil
-		}
-		unsupported = append(unsupported, fmt.Sprintf("Python %s (%s)", runtime.Version, runtime.Path))
-	}
-
-	if len(unsupported) > 0 {
-		return pythonRuntime{}, true, fmt.Errorf(
-			"Headroom requires Python %d.%d+; found unsupported runtime(s): %s. 请安装 Python 3.10 或更高版本后重新检测。",
-			headroomMinimumPythonMajor,
-			headroomMinimumPythonMinor,
-			strings.Join(unsupported, "; "),
-		)
-	}
-	if len(unusable) > 0 {
-		return pythonRuntime{}, false, fmt.Errorf("找到 Python 但无法运行: %s", strings.Join(unusable, "; "))
-	}
-	return pythonRuntime{}, false, fmt.Errorf("python3/python 未在 PATH 中找到；Headroom requires Python %d.%d+", headroomMinimumPythonMajor, headroomMinimumPythonMinor)
-}
-
-// probePythonRuntime runs `<python> --version` and parses a concrete version.
-// Python writes this output to either stdout or stderr across distributions, so
-// resultText is intentionally used rather than checking one stream only.
-func (s *Service) probePythonRuntime(path string, env []string) (pythonRuntime, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, runErr := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   path,
-		Args:   []string{"--version"},
-		Env:    env,
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if runErr != nil {
-		detail := sanitizeInstallerOutput(resultText(result))
-		if detail == "" {
-			detail = sanitizeInstallerOutput(runErr.Error())
-		}
-		return pythonRuntime{}, fmt.Errorf("运行 Python 版本检测失败: %s", detail)
-	}
-
-	output := strings.TrimSpace(resultText(result))
-	matches := headroomPythonVersionPattern.FindStringSubmatch(output)
-	if len(matches) < 3 {
-		return pythonRuntime{}, fmt.Errorf("无法解析 Python 版本输出 %q", output)
-	}
-	major, majorErr := strconv.Atoi(matches[1])
-	minor, minorErr := strconv.Atoi(matches[2])
-	if majorErr != nil || minorErr != nil {
-		return pythonRuntime{}, fmt.Errorf("无法解析 Python 版本输出 %q", output)
-	}
-	version := matches[1] + "." + matches[2]
-	if len(matches) > 3 && matches[3] != "" {
-		version += "." + matches[3]
-	}
-	return pythonRuntime{Path: path, Version: version, Major: major, Minor: minor}, nil
-}
-
-// ensureHeadroomVenv creates the CodeBox-managed Headroom venv with the
-// selected supported interpreter. If an older CodeBox venv exists (for example
-// one created with macOS Python 3.9), rebuild it in place using --clear; the
-// directory is CodeBox-owned and cannot contain a user-managed environment.
-func (s *Service) ensureHeadroomVenv() error {
-	venvDir := strings.TrimSpace(s.getHeadroomVenvDir())
-	if venvDir == "" {
-		return fmt.Errorf("headroom venv 目录未配置")
-	}
-	if err := s.ensurePythonAvailable(); err != nil {
-		return err
-	}
-
-	env := s.buildEnhancedEnv()
-	venvPythonPath := headroomVenvPythonPath(venvDir)
-	rebuildVenv := false
-	if headroomVenvPythonExists(venvDir) {
-		existingRuntime, probeErr := s.probePythonRuntime(venvPythonPath, env)
-		if probeErr == nil && existingRuntime.supportsHeadroom() {
-			return nil
-		}
-		rebuildVenv = true
-	}
-
-	pythonPath := s.resolvePythonPath()
-	args := []string{"-m", "venv"}
-	if rebuildVenv {
-		args = append(args, "--clear")
-	}
-	args = append(args, venvDir)
-	ctx, cancel := context.WithTimeout(context.Background(), headroomVenvCreateTimeout)
-	defer cancel()
-	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   pythonPath,
-		Args:   args,
-		Env:    env,
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	if err != nil {
-		message := strings.TrimSpace(resultText(result))
-		if message == "" {
-			message = err.Error()
-		}
-		return fmt.Errorf("创建 Headroom venv 失败 (%s %s): %s", pythonPath, strings.Join(args, " "), sanitizeInstallerOutput(message))
-	}
-
-	createdRuntime, probeErr := s.probePythonRuntime(venvPythonPath, env)
-	if probeErr != nil {
-		return fmt.Errorf("Headroom venv 创建后无法运行 Python: %w", probeErr)
-	}
-	if !createdRuntime.supportsHeadroom() {
-		return fmt.Errorf("Headroom venv 使用了不受支持的 Python %s（%s）；需要 Python %d.%d+", createdRuntime.Version, createdRuntime.Path, headroomMinimumPythonMajor, headroomMinimumPythonMinor)
-	}
-	return nil
-}
-
-// headroomVenvPythonExists reports whether the venv directory contains a
-// Python executable. Compatibility is intentionally checked by
-// ensureHeadroomVenv rather than this filesystem-only helper.
-func headroomVenvPythonExists(venvDir string) bool {
-	pythonPath := headroomVenvPythonPath(venvDir)
-	return pythonPath != "" && fileExists(pythonPath)
-}
-
 func (s *Service) runInstallCommand(command installCommand) error {
 	_, err := s.runInstallCommandResult(command)
 	return err
@@ -2761,47 +2454,6 @@ func (s *Service) cleanClaudeCode(method InstallMethod) (*InstallResult, error) 
 	}
 }
 
-// cleanHeadroom removes the CodeBox-managed Headroom venv directory. Headroom
-// is installed entirely inside this venv, so deleting the directory fully
-// uninstalls it without touching the system Python. The public CleanHeadroom
-// entry (service.go) is responsible for stopping a running proxy first via the
-// injected headroomStopper callback before this method runs, so the venv
-// directory is safe to RemoveAll even on Windows where a running headroom.exe
-// would otherwise be locked.
-func (s *Service) cleanHeadroom() (*InstallResult, error) {
-	status, checkErr := s.CheckOne(ToolHeadroom)
-	if checkErr != nil && status == nil {
-		return installFailure(ToolHeadroom, "卸载前检测 Headroom 失败", checkErr), nil
-	}
-	if status == nil || !status.Installed {
-		return &InstallResult{Success: true, Message: "未检测到 Headroom，无需卸载", Tool: ToolHeadroom}, nil
-	}
-
-	venvDir := strings.TrimSpace(s.getHeadroomVenvDir())
-	if venvDir == "" {
-		err := fmt.Errorf("headroom venv 目录未配置，无法卸载")
-		return installFailure(ToolHeadroom, err.Error(), err), err
-	}
-	if err := os.RemoveAll(venvDir); err != nil {
-		return installFailure(ToolHeadroom, fmt.Sprintf("删除 Headroom venv 目录失败: %s", sanitizeInstallerOutput(err.Error())), err), err
-	}
-
-	after, _ := s.CheckOne(ToolHeadroom)
-	if after != nil && !after.Installed {
-		return &InstallResult{Success: true, Message: "Headroom 已通过删除 venv 目录成功卸载", Tool: ToolHeadroom}, nil
-	}
-	version := ""
-	if after != nil {
-		version = after.Version
-	}
-	return &InstallResult{
-		Success: true,
-		Message: fmt.Sprintf("已删除 Headroom venv 目录 %s；请重新检测确认卸载结果", venvDir),
-		Tool:    ToolHeadroom,
-		Version: version,
-	}, nil
-}
-
 func (s *Service) cleanClaudeCodeUnknown() (*InstallResult, error) {
 	status, checkErr := s.CheckOne(ToolClaudeCode)
 	if checkErr != nil && status == nil {
@@ -3053,8 +2705,6 @@ func displayToolName(tool CLITool) string {
 		return "Pi"
 	case ToolOmp:
 		return "Oh My Pi (omp)"
-	case ToolHeadroom:
-		return "Headroom"
 	default:
 		return string(tool)
 	}

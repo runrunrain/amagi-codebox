@@ -50,6 +50,12 @@ var (
 	// ErrInvalidRecord reports a record/event that violates the canonical
 	// journal schema or conflicts with replayed state.
 	ErrInvalidRecord = errors.New("external cleanup store: invalid record")
+	// ErrRetiredKind reports an event whose SharedServiceKind belongs to a
+	// retired service generation (kinds 1/2: the retired shared compression
+	// proxy services). Replay treats these historical journal lines as legacy
+	// leftovers: they are skipped without being applied and never abort the
+	// store, so journals written by older versions keep loading.
+	ErrRetiredKind = errors.New("external cleanup store: retired shared-service kind")
 	// ErrStoreFull reports the journal exceeding its 1 MiB bound even after
 	// compaction; the store latches not-ready.
 	ErrStoreFull = errors.New("external cleanup store: journal exceeds 1 MiB")
@@ -262,9 +268,16 @@ func (s *fileStore) replay(data []byte) error {
 				return fmt.Errorf("%w: decode event", ErrInvalidRecord)
 			}
 			if err := validateExternalCleanupEvent(event); err != nil {
-				return err
-			}
-			if err := s.applyEvent(event); err != nil {
+				if !errors.Is(err, ErrRetiredKind) {
+					return err
+				}
+				// Historical line written for a retired shared-service kind:
+				// treat as a legacy leftover — do not apply it, but keep
+				// replaying the following lines. The journal is append-only, so
+				// retired lines simply remain on disk forever, permanently
+				// skipped. (A `continue` here would skip the loop's line-advance
+				// below and spin forever; fall through instead.)
+			} else if err := s.applyEvent(event); err != nil {
 				return err
 			}
 		}
@@ -297,8 +310,8 @@ func validateExternalCleanupReservation(reservation Reservation) error {
 	if reservation.Version != JournalVersion || reservation.SessionID == "" || len(reservation.SessionID) > 128 || reservation.ReservedAt == "" {
 		return ErrInvalidRecord
 	}
-	if reservation.Kind != remote.SharedServiceClaudeHeadroom && reservation.Kind != remote.SharedServiceCodexHeadroom {
-		return ErrInvalidRecord
+	if err := validateExternalCleanupKind(reservation.Kind); err != nil {
+		return err
 	}
 	if _, err := time.Parse(time.RFC3339Nano, reservation.ReservedAt); err != nil {
 		return ErrInvalidRecord
@@ -311,13 +324,29 @@ func validateExternalCleanupRecord(record Record) error {
 		record.PID <= 0 || record.ProcessIdentity == "" || len(record.ProcessIdentity) > 256 || record.RegisteredAt == "" {
 		return ErrInvalidRecord
 	}
-	if record.Kind != remote.SharedServiceClaudeHeadroom && record.Kind != remote.SharedServiceCodexHeadroom {
-		return ErrInvalidRecord
+	if err := validateExternalCleanupKind(record.Kind); err != nil {
+		return err
 	}
 	if _, err := time.Parse(time.RFC3339Nano, record.RegisteredAt); err != nil {
 		return ErrInvalidRecord
 	}
 	return nil
+}
+
+// validateExternalCleanupKind accepts the single active shared-service kind
+// (ClaudeCredentials = 3). Kinds 1/2 are the retired shared compression proxy
+// services: historical journals may still carry such lines, so they map to the
+// ErrRetiredKind sentinel (replay skips them) rather than ErrInvalidRecord
+// (which would abort replay and latch the store not-ready).
+func validateExternalCleanupKind(kind remote.SharedServiceKind) error {
+	switch kind {
+	case remote.SharedServiceClaudeCredentials:
+		return nil
+	case 1, 2:
+		return ErrRetiredKind
+	default:
+		return ErrInvalidRecord
+	}
 }
 
 func (s *fileStore) applyEvent(event JournalEvent) error {

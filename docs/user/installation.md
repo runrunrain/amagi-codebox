@@ -126,7 +126,6 @@ Windows 上 CodeBox 默认把终端会话启动到 WSL（Linux）环境中。CLI
 | `usage.db` | `internal/usage` | 用量统计 SQLite 数据库（含 `-wal` / `-shm` 伴生文件） |
 | `usage-pricing.json` | `internal/usage` | 模型价格表（输入/输出/缓存单价） |
 | `plugin-subitems.json` | `internal/plugin` | Claude 插件子项禁用列表 |
-| `injection-rules.json` | 注入规则存储 | Headroom 相关注入规则 |
 | `skins/` | `internal/skins` | 外观皮肤资源 |
 | `logs/` | `internal/logging` | 应用运行日志（按日期切分） |
 

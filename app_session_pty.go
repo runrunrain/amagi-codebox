@@ -19,7 +19,6 @@ import (
 	"amagi-codebox/internal/aiproxy"
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/config"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/remote"
@@ -142,11 +141,11 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 // --- 多终端会话管理 ---
 
 // LaunchSession 启动一个新的终端会话
-func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useHeadroom bool, shellPath string) (string, error) {
+func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, shellPath string) (string, error) {
 	if err := a.Config.RejectPiLoginLaunchRefs(providerName, presetName); err != nil {
 		return "", err
 	}
-	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s headroom=%v shell=%s", providerName, presetName, mode, workDir, useHeadroom, shellPath))
+	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s shell=%s", providerName, presetName, mode, workDir, shellPath))
 
 	// ---- terminal_presets 桥接 ----
 	// 先尝试用 presetName 作为 terminal_preset 的 stable key 查找新体系
@@ -267,79 +266,6 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		}
 	}
 
-	// R5-002/R6-001: every Headroom-dependent launch crosses the uninstall
-	// admission barrier before Headroom.Start, session creation, resolution, or
-	// PTY/external startup. Embedded launches promote before PTY start; external
-	// launches keep the admission through Launcher startup and atomically promote
-	// it to an opaque external-run lifetime lease before reporting success.
-	var headroomAdmission *remote.SharedLaunchAdmission
-	if useHeadroom {
-		// D1（Headroom×WSL×NAT 启动闸门，桌面链）：launcher 会给 Headroom 会话
-		// 注入 ANTHROPIC_BASE_URL=http://localhost:8787，NAT 模式下 distro 内不可达，
-		// 会话必然静默失败——必须在 Headroom.Start、admission 获取、会话预留与
-		// PTY 启动等任何副作用之前拒绝。mirrored 遵循现有准入策略放行（与
-		// aiproxy.PinProxyEnvironment 同源判定，此处放行不构成连通声明）。
-		// remote/restart 链的对等闸门在 buildClaudePlan（planner 侧）；legacy
-		// remote（/api/sessions 直调本函数）由本闸门覆盖。
-		if err := headroomWSLNetworkAdmission(
-			platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "",
-			os.Environ(),
-		); err != nil {
-			a.Log.Warn("headroom", "已拒绝 Headroom WSL 会话启动（NAT 网络模式）", err.Error())
-			return "", err
-		}
-		if a.isExternalCleanupRecoveryBlocked() {
-			return "", remote.ErrSharedServiceInUse
-		}
-		if a.sharedCoord == nil {
-			return "", remote.ErrSharedServiceInUse
-		}
-		var admissionErr error
-		headroomAdmission, admissionErr = a.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceClaudeHeadroom)
-		if admissionErr != nil {
-			return "", fmt.Errorf("headroom launch admission: %w", admissionErr)
-		}
-		defer func() {
-			a.sharedCoord.ReleaseLaunchAdmission(headroomAdmission)
-		}()
-	}
-
-	// realBackend 是真实 upstream 的 base URL（如 api.anthropic.com）。
-	realBackend := provider.EffectiveBaseURL("anthropic")
-	if useHeadroom {
-		// CLI → headroom 压缩(:8787) → 真实 API
-		if !a.Headroom.IsRunning() {
-			if err := a.Headroom.Start(realBackend); err != nil {
-				a.Log.Error("headroom", "上下文压缩启动失败", err.Error())
-				return "", fmt.Errorf("start headroom: %w", err)
-			}
-			a.Log.Info("headroom", "上下文压缩已启用并生效",
-				fmt.Sprintf("CLI → headroom:127.0.0.1:8787 → %s", realBackend))
-		}
-		a.Launcher.SetHeadroomPort(headroom.DefaultPort)
-	} else {
-		// CLI → 真实 API.
-		//
-		// Single-tenant headroom semantics (documented decision, audit §4.2):
-		// the desktop app runs one shared headroom compression proxy (:8787).
-		// Launching a non-headroom ClaudeCode session intentionally tears the
-		// shared proxy down so the new session talks to the real upstream
-		// directly. This assumes a single active headroom consumer at a time; a
-		// concurrent headroom-dependent session would have its :8787 upstream
-		// cut. The Session/SessionInfo records do not carry a useHeadroom flag,
-		// so the session manager cannot identify headroom-dependent sessions and
-		// an active-session guard is not feasible without expanding the
-		// frontend-visible session contract. We therefore document the
-		// single-tenant assumption here and surface Stop failures instead of
-		// swallowing them (the previous `_ = a.Headroom.Stop()` hid errors).
-		if a.Headroom.IsRunning() {
-			if err := a.Headroom.Stop(); err != nil {
-				a.Log.Warn("headroom", "关闭共享上下文压缩代理失败", err.Error())
-			}
-		}
-		a.Launcher.SetHeadroomPort(0)
-	}
-
 	// Reserve embedded identity hidden; external keeps the legacy local timing but
 	// remains remoteEligible=false in the same Authority owner.
 	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir)
@@ -419,21 +345,15 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 			}
 		}
 
-		// M-006: acquire the shared Headroom lease so the
+		// M-006: acquire the shared ClaudeCredentials lease so the
 		// coordinator guard is non-empty while this run is active.
 		var sharedKinds []remote.SharedServiceKind
-		if useHeadroom {
-			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeHeadroom)
-		}
 		var launchClaims []*remote.SharedLaunchAdmission
-		if headroomAdmission != nil {
-			launchClaims = append(launchClaims, headroomAdmission)
-		}
 		if claudeCredentials != nil {
 			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeCredentials)
 			launchClaims = append(launchClaims, claudeCredentials.admission)
 		}
-		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
+		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath)
 		pid, err := a.launchEmbeddedPTYWithClaims(authorityReservation, recipe, spec, launchClaims, sharedKinds...)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -482,13 +402,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		return "", err
 	}
 	var externalRun *remote.ExternalRunIdentity
-	if headroomAdmission != nil || claudeCredentials != nil {
-		if headroomAdmission != nil {
-			if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
-				a.Sessions.MarkFailed(sess.ID, storeErr.Error())
-				return "", fmt.Errorf("prepare durable external Claude cleanup: %w", storeErr)
-			}
-		}
+	if claudeCredentials != nil {
 		externalRun, err = a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -514,24 +428,11 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		return "", err
 	}
 	defer a.externalOwnershipMu.Unlock()
-	ownershipKind := remote.SharedServiceKind(0) // no shared dependency
-	if headroomAdmission != nil {
-		ownershipKind = remote.SharedServiceClaudeHeadroom
-	}
+	ownershipKind := remote.SharedServiceKind(0) // no durable shared dependency
 	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
 	defer a.endExternalOwnershipAttempt(attempt)
-	var reservation cleanupstore.Reservation
-	if headroomAdmission != nil {
-		var reserveErr error
-		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceClaudeHeadroom)
-		if reserveErr != nil {
-			a.Sessions.MarkFailed(sess.ID, reserveErr.Error())
-			return "", fmt.Errorf("prepare durable external Claude ownership: %w", reserveErr)
-		}
-		a.markExternalOwnershipReservation(attempt)
-	}
 	if !a.commitExternalProcessStart(attempt, startGeneration) {
-		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, cleanupstore.Reservation{})
 		a.Sessions.MarkFailed(sess.ID, startErr.Error())
 		return "", startErr
 	}
@@ -550,16 +451,12 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	)
 	if err != nil {
 		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
-			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, cleanupstore.Reservation{})
 			a.Sessions.MarkFailed(sess.ID, startErr.Error())
 			return "", startErr
 		}
-		completionErr := a.completeExternalProcessReservation(reservation)
 		a.releaseSharedLeases(sess.ID)
 		launchErr := fmt.Errorf("launch claude: %w", err)
-		if completionErr != nil {
-			launchErr = errors.Join(launchErr, completionErr)
-		}
 		a.Sessions.MarkFailed(sess.ID, launchErr.Error())
 		a.Log.Error("session", "进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
 		return "", launchErr
@@ -584,50 +481,15 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 	a.markExternalOwnershipStarted(attempt)
 	a.Sessions.SetPID(sess.ID, result.PID)
 	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
-		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, reservation, headroomAdmission, external)
-		headroomAdmission = nil
+		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, cleanupstore.Reservation{}, nil, external)
 		a.Sessions.MarkFailed(sess.ID, cleanupErr.Error())
 		return "", cleanupErr
 	}
-	if headroomAdmission != nil {
-		durableRecord, ownershipErr := a.persistExternalProcessOwnership(
-			sess.ID, result.PID, remote.SharedServiceClaudeHeadroom, external,
-		)
-		if ownershipErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, reservation, false, headroomAdmission, external)
-			headroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			a.recordExternalCleanupAbandonment(remote.ExternalCleanupAbandonmentEvent{
-				SessionID:          sess.ID,
-				Kind:               remote.SharedServiceClaudeHeadroom,
-				Reason:             remote.ExternalCleanupAbandonmentDurabilityHandoff,
-				DurableReservation: true,
-			})
-			activationErr := fmt.Errorf("persist external Claude process ownership: %w", ownershipErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceClaudeHeadroom, headroomAdmission); leaseErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, cleanupstore.Reservation{}, true, headroomAdmission, external)
-			headroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			activationErr := fmt.Errorf("activate external Claude headroom lease: %w", leaseErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		a.rememberExternalDurableRun(durableRecord)
-	}
 
 	// Claude 订阅账号轮换（design §6.3）：外部会话成功启动后原子提升凭据
-	// admission 为运行 lease（与 headroom 同一记账惯例；凭据无 durable
-	// cleanup 需求——CodeBox 外存活进程的静止门禁由进程观察器兑底）。提升
-	// 失败 → 刚启动的进程持有 canonical 凭据但租约未成立：保守停止进程。
+	// admission 为运行 lease（凭据无 durable cleanup 需求——CodeBox 外存活
+	// 进程的静止门禁由进程观察器兑底）。提升失败 → 刚启动的进程持有 canonical
+	// 凭据但租约未成立：保守停止进程。
 	if claudeCredentials != nil {
 		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceClaudeCredentials, claudeCredentials.admission); leaseErr != nil {
 			stopErr := external.Stop(sess.ID)
@@ -642,7 +504,7 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		claudeCredentials.release(a)
 	}
 
-	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
+	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
@@ -1047,40 +909,6 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		Model: normalizeCodexModelName(modelName),
 	}
 
-	// R5-002: when Codex is configured to use global Headroom, acquire the
-	// uninstall admission before config sync, session creation, resolution, or
-	// PTY startup. Persisted Enabled remains true while uninstall has stopped the
-	// process but has not yet removed the marker, closing that drain window too.
-	var codexHeadroomAdmission *remote.SharedLaunchAdmission
-	codexUsesGlobalHeadroom := a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning()
-	if a.Settings != nil && a.Settings.GetCodexGlobalHeadroom().Enabled {
-		codexUsesGlobalHeadroom = true
-	}
-	if codexUsesGlobalHeadroom {
-		// D6（桌面链 advisory）：codex 全局压缩的路由载体是宿主侧
-		// ~/.codex/config.toml 的 openai_base_url 标记块，WSL codex 会话读取
-		// 发行版侧独立配置，压缩不会生效——会话照常直连，但必须让「压缩未
-		// 生效」可见，不默默让用户以为 8788 在压缩。不新增 Codex Headroom
-		// 路由体系；remote 链显式选择压缩的拒绝在 buildCodexPlan。
-		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
-			a.Log.Warn("codex", "codex 全局压缩对 WSL 会话不生效", codexHeadroomWSLIneffectiveMsg())
-		}
-		if a.isExternalCleanupRecoveryBlocked() {
-			return "", remote.ErrSharedServiceInUse
-		}
-		if a.sharedCoord == nil {
-			return "", remote.ErrSharedServiceInUse
-		}
-		var admissionErr error
-		codexHeadroomAdmission, admissionErr = a.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceCodexHeadroom)
-		if admissionErr != nil {
-			return "", fmt.Errorf("codex headroom launch admission: %w", admissionErr)
-		}
-		defer func() {
-			a.sharedCoord.ReleaseLaunchAdmission(codexHeadroomAdmission)
-		}()
-	}
-
 	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
 	envOverrides := map[string]string{}
 	codexProviderBaseURL := ""
@@ -1167,15 +995,8 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		}
 		workDir = spec.WorkDir
 
-		// M-006: a Codex session that routes through the global headroom (8788)
-		// depends on it; acquire a lease so the toggle/uninstall coordinator guard is
-		// non-empty for the run lifetime.
-		var sharedKinds []remote.SharedServiceKind
-		if codexHeadroomAdmission != nil {
-			sharedKinds = append(sharedKinds, remote.SharedServiceCodexHeadroom)
-		}
-		recipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, codexHeadroomAdmission != nil)
-		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, codexHeadroomAdmission, sharedKinds...)
+		recipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath)
+		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, nil)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
 			a.Log.Error("session", "Codex PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
@@ -1194,33 +1015,19 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 				}
 			}
 			a.Sessions.MarkExited(id)
-			a.releaseSharedLeases(id) // M-006: release Codex headroom lease on natural exit
+			a.releaseSharedLeases(id) // M-006: release shared leases on natural exit
 			a.Log.Info("session", "Codex PTY进程已退出", "id="+id)
 		}(sess.ID)
 
 		return sess.ID, nil
 	}
 
-	// 外部终端/VSCode/Zed 模式：使用 Launcher。Keep the Codex
-	// Headroom admission through startup, then promote before returning success.
+	// 外部终端/VSCode/Zed 模式：使用 Launcher。
 	external := a.externalSessionLauncher()
 	if external == nil {
 		err := errors.New("external launcher is not initialized")
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
-	}
-	var externalRun *remote.ExternalRunIdentity
-	if codexHeadroomAdmission != nil {
-		if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
-			a.Sessions.MarkFailed(sess.ID, storeErr.Error())
-			return "", fmt.Errorf("prepare durable external Codex cleanup: %w", storeErr)
-		}
-		identity, identityErr := a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
-		if identityErr != nil {
-			a.Sessions.MarkFailed(sess.ID, identityErr.Error())
-			return "", fmt.Errorf("prepare external Codex run: %w", identityErr)
-		}
-		externalRun = identity
 	}
 	startGeneration, startErr := a.captureExternalProcessStartGeneration()
 	if startErr != nil {
@@ -1235,24 +1042,11 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 		return "", err
 	}
 	defer a.externalOwnershipMu.Unlock()
-	ownershipKind := remote.SharedServiceKind(0) // no shared dependency
-	if codexHeadroomAdmission != nil {
-		ownershipKind = remote.SharedServiceCodexHeadroom
-	}
+	ownershipKind := remote.SharedServiceKind(0) // no durable shared dependency
 	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
 	defer a.endExternalOwnershipAttempt(attempt)
-	var reservation cleanupstore.Reservation
-	if codexHeadroomAdmission != nil {
-		var reserveErr error
-		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceCodexHeadroom)
-		if reserveErr != nil {
-			a.Sessions.MarkFailed(sess.ID, reserveErr.Error())
-			return "", fmt.Errorf("prepare durable external Codex ownership: %w", reserveErr)
-		}
-		a.markExternalOwnershipReservation(attempt)
-	}
 	if !a.commitExternalProcessStart(attempt, startGeneration) {
-		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, cleanupstore.Reservation{})
 		a.Sessions.MarkFailed(sess.ID, startErr.Error())
 		return "", startErr
 	}
@@ -1269,16 +1063,12 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	}
 	if err != nil {
 		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
-			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
+			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, cleanupstore.Reservation{})
 			a.Sessions.MarkFailed(sess.ID, startErr.Error())
 			return "", startErr
 		}
-		completionErr := a.completeExternalProcessReservation(reservation)
 		a.releaseSharedLeases(sess.ID)
 		launchErr := fmt.Errorf("launch codex: %w", err)
-		if completionErr != nil {
-			launchErr = errors.Join(launchErr, completionErr)
-		}
 		a.Sessions.MarkFailed(sess.ID, launchErr.Error())
 		a.Log.Error("session", "Codex 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
 		return "", launchErr
@@ -1298,47 +1088,12 @@ func (a *App) LaunchCodexSession(modelName string, providerID string, mode strin
 	a.markExternalOwnershipStarted(attempt)
 	a.Sessions.SetPID(sess.ID, result.PID)
 	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
-		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, reservation, codexHeadroomAdmission, external)
-		codexHeadroomAdmission = nil
+		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, cleanupstore.Reservation{}, nil, external)
 		a.Sessions.MarkFailed(sess.ID, cleanupErr.Error())
 		return "", cleanupErr
 	}
-	if codexHeadroomAdmission != nil {
-		durableRecord, ownershipErr := a.persistExternalProcessOwnership(
-			sess.ID, result.PID, remote.SharedServiceCodexHeadroom, external,
-		)
-		if ownershipErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, reservation, false, codexHeadroomAdmission, external)
-			codexHeadroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			a.recordExternalCleanupAbandonment(remote.ExternalCleanupAbandonmentEvent{
-				SessionID:          sess.ID,
-				Kind:               remote.SharedServiceCodexHeadroom,
-				Reason:             remote.ExternalCleanupAbandonmentDurabilityHandoff,
-				DurableReservation: true,
-			})
-			activationErr := fmt.Errorf("persist external Codex process ownership: %w", ownershipErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Codex process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceCodexHeadroom, codexHeadroomAdmission); leaseErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, cleanupstore.Reservation{}, true, codexHeadroomAdmission, external)
-			codexHeadroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			activationErr := fmt.Errorf("activate external Codex headroom lease: %w", leaseErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Codex process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		a.rememberExternalDurableRun(durableRecord)
-	}
 
-	externalRecipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, codexHeadroomAdmission != nil)
+	externalRecipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
@@ -1622,7 +1377,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 				spec = piLoginReAnchorSpec(spec, login.AgentDir, claudeLoginManagedExtraKeys(claudeCredentials)...)
 			}
 		}
-		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
+		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath)
 		var piClaims []*remote.SharedLaunchAdmission
 		var piSharedKinds []remote.SharedServiceKind
 		if claudeCredentials != nil {
@@ -1653,7 +1408,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 			}
 			a.Sessions.MarkExited(id)
 			a.WebUI.Invalidate(id)
-			a.releaseSharedLeases(id) // 凭据/headroom lease 随进程树结束释放
+			a.releaseSharedLeases(id) // 凭据 lease 随进程树结束释放
 			a.Log.Info("session", "Pi PTY进程已退出", "id="+id)
 		}(sess.ID)
 
@@ -1702,7 +1457,7 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		}
 		claudeCredentials.release(a)
 	}
-	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
+	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
 		a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -1886,7 +1641,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		}
 		workDir = spec.WorkDir
 
-		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
+		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -1925,7 +1680,7 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
 	}
-	externalRecipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
+	externalRecipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
 		a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -2185,7 +1940,7 @@ launchCommon:
 		}
 		workDir = spec.WorkDir
 
-		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
+		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath)
 		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
 		if err != nil {
 			a.Sessions.MarkFailed(sess.ID, err.Error())
@@ -2228,7 +1983,7 @@ launchCommon:
 		a.Sessions.MarkFailed(sess.ID, err.Error())
 		return "", err
 	}
-	externalRecipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
+	externalRecipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath)
 	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
 		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
 		a.Sessions.MarkFailed(sess.ID, err.Error())

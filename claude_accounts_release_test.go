@@ -26,7 +26,7 @@ func TestFailedMutationPublishesBlockedBeforeFacadeRefresh(t *testing.T) {
 	}
 	awaitBarrier(t, barrier.loaded) // 1=release 权威发布已完成；2=runner refresh 暂停。
 	// 测试中先记录结果再放开屏障，保证断言失败时也不遗留后台任务。
-	_, launchErr := app.LaunchSession("release-provider", "", "terminal", t.TempDir(), false, "")
+	_, launchErr := app.LaunchSession("release-provider", "", "terminal", t.TempDir(), "")
 	p, _ := store.Load(context.Background())
 	close(barrier.resume)
 	op := waitClaudeOpDone(t, app, opID, 5*time.Second)

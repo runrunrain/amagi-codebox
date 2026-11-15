@@ -39,10 +39,23 @@ interface ResourceFilter {
   count: number;
 }
 
+/**
+ * 扩展中心子页 key（契约 §1.2）：'shared-skills' = 公共「共用技能」子页、
+ * 'shared-mcp' = 公共「共用 MCP」子页；其余五个值与 pluginEngine 引擎名同字面（引擎子页）。
+ */
+export type ExtSubPage =
+  | 'shared-skills'
+  | 'shared-mcp'
+  | 'claude'
+  | 'opencode'
+  | 'codex'
+  | 'pi'
+  | 'omp';
+
 export const usePluginStore = defineStore('plugin', () => {
-  // Extension main tab state
-  // 'tools' = 其他工具（Headroom 全局压缩等），与 plugins/env 平级
-  const extMainTab = ref<'plugins' | 'env' | 'tools'>('plugins');
+  // 子页选中状态（契约 §1.3）：默认 'claude'（沿用原 pluginEngine 默认值）。
+  // 仅内存态不落盘（与原 extMainTab/pluginEngine 一致），刷新回默认。
+  const extSubPage = ref<ExtSubPage>('claude');
 
   // Plugin engine selection
   const pluginEngine = ref<'claude' | 'opencode' | 'codex' | 'pi' | 'omp'>('claude');
@@ -191,6 +204,29 @@ export const usePluginStore = defineStore('plugin', () => {
 
   function setPluginView(view: 'installed' | 'market') {
     pluginView.value = view;
+  }
+
+  // 引擎子页判定（共用 MCP 契约 §4.1）：ExtSubPage 中与 pluginEngine 同字面的
+  // 五个值；公共子页 'shared-skills' / 'shared-mcp' 不联动引擎态。类型收窄使
+  // setPluginEngine(page) 通过编译（'shared-mcp' 不在引擎联合内）。
+  function isEngineSubPage(
+    page: ExtSubPage,
+  ): page is 'claude' | 'opencode' | 'codex' | 'pi' | 'omp' {
+    return page !== 'shared-skills' && page !== 'shared-mcp';
+  }
+
+  // 子页切换（契约 §1.3）：setExtSubPage 是 extSubPage 的唯一写入口。
+  // - 同值守卫：左导航重击当前子页不得清 activePluginId / 重置 pluginView（防详情态被踢回列表）；
+  // - 引擎子页：联动既有引擎切换契约——setPluginEngine（清 activePluginId）+
+  //   setPluginView('installed') 重置回列表态（原 ExtensionsView handleEngineChange 契约平移）；
+  // - shared-skills / shared-mcp 公共子页：不动引擎态（pluginEngine/pluginView/activePluginId 均保持）。
+  function setExtSubPage(page: ExtSubPage) {
+    if (page === extSubPage.value) return;
+    extSubPage.value = page;
+    if (isEngineSubPage(page)) {
+      setPluginEngine(page);
+      setPluginView('installed');
+    }
   }
 
   function setCCInstalled(plugins: InstalledPlugin[]) {
@@ -614,7 +650,7 @@ export const usePluginStore = defineStore('plugin', () => {
 
   return {
     // State
-    extMainTab,
+    extSubPage,
     pluginEngine,
     pluginView,
     ccInstalled,
@@ -659,6 +695,7 @@ export const usePluginStore = defineStore('plugin', () => {
     // Actions
     setPluginEngine,
     setPluginView,
+    setExtSubPage,
     setCCInstalled,
     setCCMarkets,
     setCCAvailable,

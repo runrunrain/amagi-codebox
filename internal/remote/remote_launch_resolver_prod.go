@@ -47,7 +47,7 @@ type platformCLIResolveShim interface {
 // provider/model wiring).
 type remoteLaunchDefaultsReader interface {
 	// HostDefaultRefs returns the stable recipe refs (provider/preset/model/mode/
-	// shell/headroom) for a CLI type, or ok=false if no unique default exists
+	// shell) for a CLI type, or ok=false if no unique default exists
 	// (design §5.4: "0 个或多个 fail closed，绝不取 map 第一项").
 	HostDefaultRefs(cli contract.CLIType) (RemoteLaunchRecipe, bool)
 }
@@ -116,13 +116,12 @@ func (r *productionRemoteLaunchResolver) ResolveCreate(ctx context.Context, req 
 	}
 	if r.defaults != nil {
 		if dr, ok := r.defaults.HostDefaultRefs(cliType); ok {
-			// Merge host-default refs (provider/preset/model/mode/shell/headroom).
+			// Merge host-default refs (provider/preset/model/mode/shell).
 			recipe.ProviderRef = dr.ProviderRef
 			recipe.PresetRef = dr.PresetRef
 			recipe.ModelRef = dr.ModelRef
 			recipe.Mode = dr.Mode
 			recipe.ShellPath = dr.ShellPath
-			recipe.UseHeadroom = dr.UseHeadroom
 		}
 		// No host default: recipe refs stay empty. Resolution still succeeds — the
 		// binary is found via Resolve(AppType). Provider/model wiring is the launch
@@ -139,9 +138,6 @@ func (r *productionRemoteLaunchResolver) ResolveCreate(ctx context.Context, req 
 	}
 	if req.ShellRef != nil {
 		recipe.ShellPath = *req.ShellRef
-	}
-	if req.UseHeadroom != nil {
-		recipe.UseHeadroom = *req.UseHeadroom
 	}
 	// 4. Build ResolveRequest and call the real CLIResolver.
 	spec, ferr := r.resolveSpec(recipe)

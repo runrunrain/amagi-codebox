@@ -66,7 +66,7 @@ func (s *Service) proxyURLLocked(providers []Provider) (string, error) {
 
 // ApplyEnv runs after user/system environment merging. Enabled routing owns all
 // proxy keys so stale ALL_PROXY or NO_PROXY=* cannot defeat the chosen exits.
-// Requests to local relays and Headroom still bypass the forward proxy.
+// Requests to local relays still bypass the forward proxy.
 func (s *Service) ApplyEnv(base []string) ([]string, error) {
 	providers := s.providers()
 	s.mu.Lock()

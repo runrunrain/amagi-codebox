@@ -125,14 +125,14 @@ func TestAppendWSLHybridArchWarning_QuietForNativeResolution(t *testing.T) {
 }
 
 func TestAppendWSLHybridArchWarning_Gates(t *testing.T) {
-	// Headroom never runs inside WSL: no probe, no warning.
+	// Tools that never launch inside WSL (unknown tools): no probe, no warning.
 	withWSLHybridGates(t, "windows", "Ubuntu-Test")
-	runner := &wslHybridProbeRunner{stdout: "headroom\t/mnt/c/tools/headroom\n"}
+	runner := &wslHybridProbeRunner{stdout: "bogus\t/mnt/c/tools/bogus\n"}
 	svc := NewServiceWithRunner(runner)
-	status := &CheckStatus{Tool: ToolHeadroom}
+	status := &CheckStatus{Tool: CLITool("bogus")}
 	svc.appendWSLHybridArchWarning(status)
 	if findIssue(status, "wsl_windows_passthrough") != nil || runner.callCount() != 0 {
-		t.Errorf("headroom must be skipped entirely: issues=%#v probes=%d", status.Issues, runner.callCount())
+		t.Errorf("unknown tool must be skipped entirely: issues=%#v probes=%d", status.Issues, runner.callCount())
 	}
 
 	// Non-Windows host: WSL sessions are not the launch path.

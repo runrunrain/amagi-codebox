@@ -1,8 +1,10 @@
 /**
- * ExtensionsView 集成测试（契约 §8 R5b / §9 集成不变量）：
- *  - 渲染主/引擎两个 Segmented 与当前引擎 pane（五引擎 pane 挂载关系）；
- *  - 引擎切换接线：handleEngineChange 走 setPluginEngine（清 activePluginId）
- *    并把 pluginView 重置回列表态（契约 §2）；
+ * ExtensionsView 集成测试（契约 §7.2 / R7 ZCode 式两栏布局）：
+ *  - 左子页导航分组渲染（公共/Agent 两组、七子页项）与 active 高亮；
+ *  - 子页切换走 setExtSubPage：引擎子页联动 pluginEngine 同步、pluginView
+ *    重置回列表态、activePluginId 清空（契约 §2 引擎切换契约平移）；同值守卫；
+ *  - shared-skills 子页挂载 SharedSkillsPanel 且不动引擎态；
+ *  - 五引擎子页面板挂载不回归（engine prop / WSL 占位 / 空态文案）；
  *  - add_market 单一入口：expose 的 handleAddMarket(engine) 打开内联 Dialog
  *    （经 ctx.teleports.body 断言，标题按引擎）；
  *  - submitAddMarket 按引擎分派 addCcMarketplace / addCxMarketplace；
@@ -11,13 +13,15 @@
  *
  * 范式：node 环境 + renderToString（禁新增 DOM 测试库），store 状态种子驱动，
  * 交互断言直调 defineExpose 触发器（先例 ../ui/testUtils.ts）。
+ * 主 tab（extMainTab）/EnvVarsPanel/OtherToolsPanel 分支已随 R5/R6 移除，
+ * 已下线功能的相关 mock 行已删除（契约 §4.8）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { ssrContextKey } from 'vue';
 import type { ComponentInternalInstance, Ref } from 'vue';
 
-// 在 api / wails 边界打桩（ExtensionsView 依赖图覆盖五引擎面板与 WSL 占位组件）
+// 在 api / wails 边界打桩（ExtensionsView 依赖图覆盖五引擎面板、共用技能面板与 WSL 占位组件）
 const api = vi.hoisted(() => ({
   // stores/plugin（Claude / Codex）
   getInstalledPlugins: vi.fn(async () => []),
@@ -42,6 +46,29 @@ const api = vi.hoisted(() => ({
   // stores/opencodePlugin / stores/ompPlugin（模块装载用，SSR 不触发调用）
   refreshOpenCodePlugins: vi.fn(async () => ({ installed: [] })),
   refreshOmpPlugins: vi.fn(async () => ({ installed: [], warnings: [] })),
+  // stores/sharedSkills（SharedSkillsPanel，SSR 不执行 onMounted）
+  listSharedSkills: vi.fn(async () => []),
+  setSharedSkillEnabled: vi.fn(async () => []),
+  deleteSharedSkill: vi.fn(async () => []),
+  refreshSharedSkills: vi.fn(async () => []),
+  // stores/sharedMcp（SharedMcpPanel，SSR 不执行 onMounted）
+  listSharedMcp: vi.fn(async () => ({
+    entries: [],
+    registryExists: true,
+    registryPath: '/home/u/.agents/.mcp.json',
+    enginesMeta: [],
+  })),
+  refreshSharedMcp: vi.fn(async () => ({
+    entries: [],
+    registryExists: true,
+    registryPath: '/home/u/.agents/.mcp.json',
+    enginesMeta: [],
+  })),
+  createSharedMcpEntry: vi.fn(),
+  updateSharedMcpEntry: vi.fn(),
+  deleteSharedMcpEntry: vi.fn(),
+  setSharedMcpEngineSelection: vi.fn(),
+  openSharedMcpRegistryDir: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../../api/plugin', () => ({
@@ -92,10 +119,24 @@ vi.mock('../../../../api/ompPlugin', () => ({
   upgradeOmpPlugin: vi.fn(),
 }));
 
-// EnvVarsPanel / OtherToolsPanel 仅在其他主标签渲染，打桩模块装载所需的 api 面
-vi.mock('../../../../api/envvars', () => ({}));
-vi.mock('../../../../api/headroomGlobal', () => ({}));
-vi.mock('../../../../api/headroom', () => ({ getHeadroomPerfByClient: vi.fn() }));
+vi.mock('../../../../api/sharedSkills', () => ({
+  listSharedSkills: api.listSharedSkills,
+  setSharedSkillEnabled: api.setSharedSkillEnabled,
+  deleteSharedSkill: api.deleteSharedSkill,
+  openSharedSkillFolder: vi.fn(async () => undefined),
+  openSharedSkillsRoot: vi.fn(async () => undefined),
+  refreshSharedSkills: api.refreshSharedSkills,
+}));
+
+vi.mock('../../../../api/sharedMcp', () => ({
+  listSharedMcp: api.listSharedMcp,
+  refreshSharedMcp: api.refreshSharedMcp,
+  createSharedMcpEntry: api.createSharedMcpEntry,
+  updateSharedMcpEntry: api.updateSharedMcpEntry,
+  deleteSharedMcpEntry: api.deleteSharedMcpEntry,
+  setSharedMcpEngineSelection: api.setSharedMcpEngineSelection,
+  openSharedMcpRegistryDir: api.openSharedMcpRegistryDir,
+}));
 
 // stores/remoteClient（RemoteScopeBanner 依赖）装载期引用 wails runtime，打桩
 vi.mock('../../../../../wailsjs/runtime/runtime', () => ({
@@ -108,7 +149,10 @@ vi.mock('../../../../api/remoteClient', () => ({
 import ExtensionsView from '../../../../views/ExtensionsView.vue';
 import PluginInstalledPanel from '../../../../components/extensions/PluginInstalledPanel.vue';
 import PluginMarketPanel from '../../../../components/extensions/PluginMarketPanel.vue';
+import SharedSkillsPanel from '../../../../components/extensions/SharedSkillsPanel.vue';
+import SharedMcpPanel from '../../../../components/extensions/SharedMcpPanel.vue';
 import { usePluginStore } from '../../../../stores/plugin';
+import type { ExtSubPage } from '../../../../stores/plugin';
 import { instanceOf, renderInstanceAgain, renderWithCapture } from '../ui/testUtils';
 
 /** ssrRenderTeleport 的 push 收集项（与 piPluginPanel.test.ts 同型） */
@@ -149,26 +193,31 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('ExtensionsView 集成（契约 §8 R5b / §9）', () => {
-  it('默认渲染：两个 Segmented + Claude 引擎面板 + WSL 占位挂载', async () => {
+describe('ExtensionsView 集成（契约 §7.2 / R7 两栏布局）', () => {
+  it('默认渲染：左导航公共/Agent 分组 + 七子页项 + Claude 子页面板 + WSL 占位', async () => {
     const { html } = await renderWithCapture(ExtensionsView);
-    // 主 Segmented（插件管理 / 环境变量 / 其他工具）与引擎 Segmented（五引擎）
-    expect(html).toContain('插件管理');
-    expect(html).toContain('环境变量');
-    expect(html).toContain('其他工具');
-    for (const label of ['ClaudeCode', 'OpenCode', 'Codex', 'Pi', 'OMP']) {
+    // 左导航：两个分组与七个子页项（公共=共用技能+共用 MCP；Agent=五引擎）
+    expect(html).toContain('公共');
+    expect(html).toContain('Agent');
+    for (const label of ['共用技能', '共用 MCP', 'Claude Code', 'OpenCode', 'Codex', 'Pi', 'OMP']) {
       expect(html).toContain(label);
     }
+    // 默认 Claude 子页高亮（active 类随 extSubPage）
+    expect(html).toContain('ex-subnav-item active');
+    // 主 tab Segmented 已移除（R5/R6：插件管理/环境变量/其他工具）
+    expect(html).not.toContain('插件管理');
+    expect(html).not.toContain('其他工具');
     // 默认 Claude pane：PluginInstalledPanel 空态 + WSLPluginTargetPlaceholder(cli=claude)
     expect(html).toContain('暂无已安装插件');
     expect(html).toContain('Claude Code：');
-    // 其他引擎 pane 未挂载
+    // 其他引擎 pane / 共用技能 pane 未挂载
     expect(html).not.toContain('暂无 OpenCode 全局插件');
     expect(html).not.toContain('暂无 Pi 全局包');
     expect(html).not.toContain('暂无 OMP 插件');
+    expect(html).not.toContain('暂无共用技能');
   });
 
-  it('引擎切换：store 种子驱动各引擎 pane 挂载', async () => {
+  it('子页切换：setExtSubPage 驱动各引擎 pane 挂载且 pluginEngine 同步', async () => {
     const store = usePluginStore();
     const markers: Record<string, string> = {
       codex: '暂无已安装 Codex 插件',
@@ -176,28 +225,66 @@ describe('ExtensionsView 集成（契约 §8 R5b / §9）', () => {
       pi: '暂无 Pi 全局包',
       omp: '暂无 OMP 插件',
     };
-    for (const [engine, marker] of Object.entries(markers)) {
-      store.pluginEngine = engine as typeof store.pluginEngine;
+    for (const [subPage, marker] of Object.entries(markers)) {
+      store.setExtSubPage(subPage as ExtSubPage);
+      // 引擎子页：pluginEngine 恒同步（setExtSubPage 是唯一写入口，契约 §1.3）
+      expect(store.pluginEngine).toBe(subPage);
       const { html } = await renderWithCapture(ExtensionsView);
       expect(html).toContain(marker);
       expect(html).not.toContain('暂无已安装插件');
     }
   });
 
-  it('handleEngineChange：走 setPluginEngine 并重置到列表态（契约 §2）', async () => {
+  it('shared-skills 子页：挂载 SharedSkillsPanel，且不动引擎态', async () => {
     const store = usePluginStore();
-    store.pluginEngine = 'claude';
-    store.pluginView = 'market';
+    store.setExtSubPage('codex');
+    store.setExtSubPage('shared-skills');
+    // shared-skills 不联动引擎状态（契约 §1.3）
+    expect(store.pluginEngine).toBe('codex');
+
+    const { html, instances } = await renderWithCapture(ExtensionsView);
+    expect(html).toContain('暂无共用技能');
+    expect(html).not.toContain('暂无已安装 Codex 插件');
+    expect(() => instanceOf(instances, SharedSkillsPanel)).not.toThrow();
+  });
+
+  it('shared-mcp 子页：挂载 SharedMcpPanel，且不动引擎态（共用 MCP 契约 §4.1）', async () => {
+    const store = usePluginStore();
+    store.setExtSubPage('codex');
+    store.setExtSubPage('shared-mcp');
+    // shared-mcp 不联动引擎状态（共用 MCP 契约 §4.1：与 shared-skills 同语义）
+    expect(store.pluginEngine).toBe('codex');
+
+    const { html, instances } = await renderWithCapture(ExtensionsView);
+    // 空态面板挂载（store 未加载，entries=[]）
+    expect(html).toContain('暂无共用 MCP 服务器');
+    expect(html).not.toContain('暂无已安装 Codex 插件');
+    expect(html).not.toContain('暂无共用技能');
+    expect(() => instanceOf(instances, SharedMcpPanel)).not.toThrow();
+  });
+
+  it('handleSubPageChange：走 setExtSubPage 并重置到列表态（契约 §2 平移）；同值守卫', async () => {
+    const store = usePluginStore();
+    store.setPluginView('market');
     store.activePluginId = 'p1';
 
     const { instances } = await renderWithCapture(ExtensionsView);
     const view = instanceOf(instances, ExtensionsView);
-    view.exposed?.handleEngineChange('codex');
+    view.exposed?.handleSubPageChange('codex');
 
+    expect(store.extSubPage).toBe('codex');
+    // setPluginEngine 清 activePluginId；setPluginView 拉回列表态
     expect(store.pluginEngine).toBe('codex');
-    // setPluginEngine 清 activePluginId；视图层把 pluginView 拉回列表态
     expect(store.activePluginId).toBeNull();
     expect(store.pluginView).toBe('installed');
+
+    // 同值守卫：重击当前子页不清详情态/不重置视图态
+    store.activePluginId = 'p2';
+    store.setPluginView('market');
+    view.exposed?.handleSubPageChange('codex');
+    expect(store.extSubPage).toBe('codex');
+    expect(store.activePluginId).toBe('p2');
+    expect(store.pluginView).toBe('market');
   });
 
   it('handleAddMarket(engine)：内联 Dialog 经 teleports 打开，标题按引擎', async () => {
@@ -239,8 +326,7 @@ describe('ExtensionsView 集成（契约 §8 R5b / §9）', () => {
 
   it('面板链路回归：市场视图「添加市场」→ @add_market 转发 → 内联 Dialog 打开（§9 变更 ②④）', async () => {
     const store = usePluginStore();
-    store.pluginEngine = 'claude';
-    store.pluginView = 'market';
+    store.setPluginView('market');
     store.ccMarkets = [{ Name: 'official', Description: '官方市场' }];
 
     const { html, instances } = await renderWithCapture(ExtensionsView);
@@ -258,9 +344,9 @@ describe('ExtensionsView 集成（契约 §8 R5b / §9）', () => {
     expect(newTeleports).toContain('Claude 市场');
   });
 
-  it('PluginInstalledPanel 双引擎挂载：engine prop 传递（claude/codex pane 各一挂载点）', async () => {
+  it('PluginInstalledPanel 双引擎挂载：engine prop 传递（claude/codex 子页各一挂载点）', async () => {
     const store = usePluginStore();
-    store.pluginEngine = 'codex';
+    store.setExtSubPage('codex');
     const { instances } = await renderWithCapture(ExtensionsView);
     const panel = instanceOf(instances, PluginInstalledPanel);
     // 挂载的是 codex 分支的 PluginInstalledPanel（engine prop 生效）

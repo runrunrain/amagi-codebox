@@ -2,12 +2,11 @@ package remote
 
 // shared_coordinator_credentials_test.go — SharedServiceClaudeCredentials kind
 // 的 admission/lease/closed 行为测试（design §6.3 第一行 + §10.1 lease 行）：
-//   - launch admission 白名单扩展（凭据 + Headroom），旧枚举值不动；
+//   - launch admission 白名单（现役仅凭据 kind，数值固定为 3）；
 //   - 凭据 admission 必须 config-bound（canonical 路径 + activeGeneration 指纹）；
 //   - mutation admission 与 pending/run lease / launch admission 互斥
 //     （admission→spawn 间插 swap、swap→read 间插 launch）；
 //   - 不同代际指纹的并发 launch admission 拒绝（不带旧计划放行）；
-//   - Headroom uninstall drain 不误伤凭据 kind；凭据 mutation 不阻塞 Headroom；
 //   - ClearAll 关闭后凭据 kind 一律拒绝（closed 行为）。
 
 import (
@@ -162,34 +161,6 @@ func TestCredentialsKind_MutationBlockedByLeasesAndAdmissions(t *testing.T) {
 	if _, err := c.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, fingerprintForGeneration(2)); err != nil {
 		t.Fatalf("launch admission after mutation release: %v", err)
 	}
-}
-
-// TestCredentialsKind_HeadroomDrainDoesNotBlockCredentials：Headroom 卸载
-// drain 不误伤凭据 kind（drain 限定 Headroom）；反之凭据 mutation 不影响
-// Headroom 卸载 drain 的 empty 判定。
-func TestCredentialsKind_HeadroomDrainDoesNotBlockCredentials(t *testing.T) {
-	c := newTestCoordinator()
-	gate := newCredentialsGate(t)
-
-	// 凭据 lease 存在时进入 Headroom drain：drain 仍可进入（凭据不算
-	// Headroom 依赖），且不阻塞凭据的后续 admission。
-	fp := fingerprintForGeneration(3)
-	adm, err := c.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, fp)
-	if err != nil {
-		t.Fatalf("credential admission: %v", err)
-	}
-	rp := newCredentialsRunPermit(t, gate, "cred-drain")
-	if _, err := c.AcquireForRunWithAdmission(context.Background(), rp, SharedServiceClaudeCredentials, fp, adm); err != nil {
-		t.Fatalf("promote credential lease: %v", err)
-	}
-	empty := c.BeginHeadroomUninstallDrain()
-	if !empty {
-		t.Fatal("headroom drain empty check must ignore credential leases")
-	}
-	if _, err := c.AcquireLaunchAdmissionForConfig(SharedServiceClaudeCredentials, fingerprintForGeneration(3)); err != nil {
-		t.Fatalf("credential admission during headroom drain should pass, got %v", err)
-	}
-	c.EndHeadroomUninstallDrain()
 }
 
 // TestCredentialsKind_ExternalRunLeaseAndClosed：外部运行身份可提升凭据

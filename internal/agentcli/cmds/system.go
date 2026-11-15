@@ -3,7 +3,7 @@ package cmds
 import "amagi-codebox/internal/agentcli/spec"
 
 // agentCLIToolEnum 是 env 域工具名的合法拼写（与服务端 parseCLITool 接受集一致）。
-var agentCLIToolEnum = []string{"claude-code", "opencode", "codex", "pi", "omp", "headroom"}
+var agentCLIToolEnum = []string{"claude-code", "opencode", "codex", "pi", "omp"}
 
 // systemCommands 覆盖 status / cli info / env / remote status（设计 §4 system 域）。
 func systemCommands() []spec.Command {
@@ -44,7 +44,7 @@ func systemCommands() []spec.Command {
 				{
 					Name: "tool", Type: spec.TypeString,
 					Enum: agentCLIToolEnum,
-					Desc: "可选；只检测该工具（claude-code/opencode/codex/pi/omp/headroom），缺省检测全部",
+					Desc: "可选；只检测该工具（claude-code/opencode/codex/pi/omp），缺省检测全部",
 				},
 			},
 			Examples: []string{
@@ -61,7 +61,7 @@ func systemCommands() []spec.Command {
 				{
 					Name: "tool", Type: spec.TypeString, Required: true,
 					Enum: agentCLIToolEnum,
-					Desc: "要安装的工具名（claude-code/opencode/codex/pi/omp/headroom）",
+					Desc: "要安装的工具名（claude-code/opencode/codex/pi/omp）",
 				},
 			},
 			Examples: []string{
