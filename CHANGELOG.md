@@ -4,6 +4,23 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.137] - 2026-11-16
+
+### Changed
+
+- **扩展中心顶部分页页签**：左侧子页导航（公共/Agent 分组两栏）改为顶部页签行（共用技能 | 共用 MCP | Claude Code | OpenCode | Codex | Pi | OMP），选中态为白底浮起胶囊，与内容区列表语言一致；子页切换语义、状态持久化与引擎切换重置行为不变。
+- **一级列表页不显示详情、点击行进二级详情页（ZCode 式两级分页）**：各面板一级页去掉详情侧栏，改为全宽行式列表——每行完整多行展示 skill/MCP/插件描述（不截断、2px 紧凑堆叠）；点击行进入二级详情页：「← 返回列表」+ 面包屑 + 居中窄单列（max-width 720px）DetailHeader（大图标/名称/主操作）+ 描述全文 + MetaGrid。共用技能、共用 MCP、五引擎插件面板全部同构。
+- **插件市场两级子页**：市场视图由「左市场源栏 + 右插件流」重构为两级——一级为市场源列表（PluginRow 行：市场名 + 来源类型徽章 内置/本地/远程 Git +「N 个可安装」计数 + 净化路径/Description；首行「全部市场」聚合入口；Codex 行尾红色删除），二级为市场内插件列表（面包屑「插件市场 › 市场名」+ 全部/未安装/已安装 状态页签（计数真实）+ 行尾搜索 + 安装量/名称排序 + 行尾安装按钮）；Codex `\\?\` 扩展长度前缀剥离、绝不裸露，重复市场源名/警告收敛不变。
+- **PluginRow 新增 `trailing` 插槽**：行尾区域支持自定义尾区（`switchVisible` 开关优先、插槽兜底），市场安装按钮与启停开关行同构接入；共享组件对既有消费方完全向后兼容。
+
+### Fixed
+
+- **CountTabs 焦点环**：页签点击选中后不再残留 WebView 默认深色焦点描边（`:focus` 重置，键盘 `:focus-visible` 保留软强调环）。
+
+### Notes
+
+- 已验证：前端 lint 0 告警、全量 675 用例通过、vue-tsc + vite build 通过；`go vet ./...`、`go test ./... -run '^$'` 编译检查、`wails build -trimpath` 整链通过。extensions 套件（21 文件 / 191 用例）随两级导航语义重写。
+
 ## [1.3.136] - 2026-11-15
 
 ### Added
