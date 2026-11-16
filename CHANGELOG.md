@@ -4,6 +4,26 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.140] - 2026-11-17
+
+### Fixed
+
+- **Go 侧安全漏洞清偿（govulncheck 33 项归零）**：工具链 go1.26.0 → go1.26.11 一次清偿 31 项调用路径可达的标准库漏洞（net/http×13、crypto/tls×3、crypto/x509×3、net/url、encoding/asn1、net/textproto、os 等，修复分布在 go1.26.1~1.26.11）；`golang.org/x/net` v0.60.0 → v0.62.0 清偿 GO-2026-6866/GO-2026-6860（导入未达调用路径，预防性升级），连带 x/crypto v0.58.0、x/sys v0.49.0、x/text v0.43.0 一致性升级并同步 vendor；CI 与 release workflow 的 go-version pin 同步升至 1.26.11。npm 侧 frontend/mobile/webui-claude `npm audit` 复核均 0 漏洞。
+
+### Removed
+
+- **全仓死代码清扫（code-sweep skill 首跑）**：
+  - Go：golangci-lint 11 项清零——删除 9 个无引用死函数（`App` 门面层 4 个方法、Round8 测试缝 `stopExternalProcessesForShutdown`、`sharedAdmissionFromBinding`、测试辅助 3 个），S1021 两处变量声明与赋值合并；gofmt 全量规范化 55 个文件（中文注释全角括号前空格等纯格式微调）。复扫 `golangci-lint run ./...` 0 issues。
+  - frontend：净删约 730 行——knip 摘除 142 个无引用导出；`vue-tsc --noUnusedLocals` 裁决级联删除约 117 段死声明与 73 个死 import specifier（迭代至 TS6133/6192/6196 清零）；修复 2 处 Vue 模板未用 v-for 项变量；移除无引用 devDeps（`@babel/types`、`@emnapi/core`、`@emnapi/runtime`、`@types/js-yaml`）。
+  - mobile：删除 11 段死声明 + 4 个 .vue 类型导出去 export；移除 `@emnapi/*` devDeps；显式声明 audit 脚本实际依赖的 `@vue/compiler-sfc`、`@vue/compiler-dom`（修复依赖漂移）。
+  - webui-claude：5 个导出 + 4 个类型导出清偿（均有文件内使用，仅去 export）。
+  - 新增 knip 项目配置：`wailsjs/`（Wails 生成代码）、e2e/harness 测试基建计入口或排除，`@capacitor/android`（平台工作流依赖）忽略——后续 knip 复扫可判定干净。
+  - 新增 `.agents/skills/code-sweep` 项目清扫 skill，固化「golangci-lint / govulncheck / knip 三线扫描 → P0-P3 分级 → 修复 → 回归」流程。
+
+### Notes
+
+- 已验证：`go build` / `go vet` / `golangci-lint`（0 issues）/ `govulncheck`（No vulnerabilities found）/ `gofmt -l` 全空，`go mod tidy` 无漂移；frontend 683 + mobile 423 + webui-claude 69 例 vitest 全过，三子项目 vue-tsc 构建绿，eslint 0 错误，knip 复扫 0 命中；Windows 全量 `go test` 失败集与清扫前基线一致（均为 TempDir 文件锁等平台性预存失败，与 1.3.138 Notes 记录的既有环境问题同类，CI 在 macOS 跑全量兜底）。
+
 ## [1.3.139] - 2026-11-17
 
 ### Added
