@@ -1225,12 +1225,6 @@ func (a *App) shutdownExternalOwnershipBounded() remote.ExternalCleanupShutdownR
 	return report
 }
 
-// stopExternalProcessesForShutdown preserves the Round8 test seam while routing
-// through the bounded Round9 protocol.
-func (a *App) stopExternalProcessesForShutdown() remote.ExternalCleanupShutdownReport {
-	return a.shutdownExternalOwnershipBounded()
-}
-
 // markWSLSupplyDirty 在 providerSync/配置保存事件后向 WSL 供给状态发布来源
 // revision（P3-S0 空实现位：只落 desired revision，不探测不调度；S1 接真实
 // 分发）。失败仅告警，绝不阻塞宿主保存——「宿主保存成功」与「WSL 已同步」

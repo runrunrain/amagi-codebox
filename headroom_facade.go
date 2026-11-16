@@ -29,19 +29,6 @@ var (
 	ErrExternalCleanupRecheckUnavailable   = errors.New("external cleanup recovery: process recheck unavailable")
 )
 
-// acquireSharedMutation owns the check→raw-I/O window for a singleton mutation.
-// Unlike a one-shot check, the exact token remains visible to launch admissions
-// and uninstall drains until the caller releases it.
-func (a *App) acquireSharedMutation(kind remote.SharedServiceKind, mutation remote.SharedServiceMutationKind) (*remote.SharedMutationAdmission, error) {
-	// Historical note: an extra recovery-blocked fence used to apply here, but
-	// it only ever guarded two retired shared-service kinds and never the sole
-	// remaining kind (ClaudeCredentials), so removing it is behavior-neutral.
-	if a.sharedCoord == nil {
-		return nil, remote.ErrSharedServiceInUse
-	}
-	return a.sharedCoord.AcquireMutationAdmission(kind, mutation)
-}
-
 // sharedFingerprint computes a non-secret config fingerprint for a shared
 // singleton from its current running state (M-006). It is only used to detect
 // incompatible-config launches while a lease exists.
@@ -311,14 +298,6 @@ func (a *App) rejectExternalProcessStartAfterFence(
 		return errors.Join(remote.ErrSharedCoordinatorClosed, completionErr)
 	}
 	return remote.ErrSharedCoordinatorClosed
-}
-
-func (a *App) markExternalOwnershipReservation(attempt *externalOwnershipAttempt) {
-	a.externalCleanupMu.Lock()
-	if a.externalOwnershipAttempt == attempt {
-		attempt.durableReservation = true
-	}
-	a.externalCleanupMu.Unlock()
 }
 
 func (a *App) endExternalOwnershipAttempt(attempt *externalOwnershipAttempt) {
@@ -634,13 +613,6 @@ func (a *App) snapshotExternalCleanupAbandonments(reason remote.ExternalCleanupA
 	return out
 }
 
-func (a *App) requireExternalCleanupStore() error {
-	if a.isExternalCleanupRecoveryBlocked() || a.externalCleanupStore == nil || !a.externalCleanupStore.IsReady() {
-		return cleanupstore.ErrStoreNotReady
-	}
-	return nil
-}
-
 func (a *App) completeExternalProcessReservation(reservation cleanupstore.Reservation) error {
 	if reservation.SessionID == "" || a.externalCleanupStore == nil {
 		return nil
@@ -650,15 +622,6 @@ func (a *App) completeExternalProcessReservation(reservation cleanupstore.Reserv
 		return fmt.Errorf("complete external process reservation: %w", err)
 	}
 	return nil
-}
-
-func (a *App) rememberExternalDurableRun(record cleanupstore.Record) {
-	a.externalCleanupMu.Lock()
-	if a.externalDurableRuns == nil {
-		a.externalDurableRuns = make(map[string]cleanupstore.Record)
-	}
-	a.externalDurableRuns[record.SessionID] = record
-	a.externalCleanupMu.Unlock()
 }
 
 // registerExternalCleanup transfers an already-started process (durable record,

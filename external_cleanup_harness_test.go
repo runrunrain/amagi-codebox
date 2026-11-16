@@ -175,12 +175,6 @@ func (l *r6ExternalLauncher) setAsyncStop(enabled bool) {
 	l.mu.Unlock()
 }
 
-func (l *r6ExternalLauncher) setRecoverRunning(running bool) {
-	l.mu.Lock()
-	l.recoverRunning = running
-	l.mu.Unlock()
-}
-
 func (l *r6ExternalLauncher) StopAll() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -194,12 +188,6 @@ func (l *r6ExternalLauncher) finish(id string) {
 	l.mu.Lock()
 	delete(l.running, id)
 	l.mu.Unlock()
-}
-
-func (l *r6ExternalLauncher) callsToStop() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.stopCalls
 }
 
 func newR6ExternalLeaseApp(t *testing.T) (*App, *r6ExternalLauncher, string) {

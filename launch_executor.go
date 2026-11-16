@@ -190,14 +190,6 @@ func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.Pr
 	}
 }
 
-func sharedAdmissionFromBinding(admissions map[launchplan.SharedServiceKind]any, kind launchplan.SharedServiceKind) *remote.SharedLaunchAdmission {
-	if admissions == nil {
-		return nil
-	}
-	admission, _ := admissions[kind].(*remote.SharedLaunchAdmission)
-	return admission
-}
-
 func (b *preparedEffectBuilder) buildConfigMutation(cfg *launchplan.ConfigMutationSpec) (launchplan.PreparedEffect, error) {
 	content, ok := b.plan.Secrets.Buffer(cfg.Candidate)
 	if !ok {

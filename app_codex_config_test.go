@@ -412,24 +412,6 @@ func setTestUserHome(t *testing.T, home string) {
 
 // --- Codex global headroom openai_base_url marker block tests ---
 
-// newCodexTestConfig writes the given content to <tmpHome>/.codex/config.toml
-// and points HOME at tmpHome. Returns the config path.
-func newCodexTestConfig(t *testing.T, content string) (configPath string) {
-	t.Helper()
-	codexDir := filepath.Join(t.TempDir(), ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	configPath = filepath.Join(codexDir, "config.toml")
-	if content != "" {
-		if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	setTestUserHome(t, filepath.Dir(codexDir))
-	return configPath
-}
-
 // readCodexTestConfig reads the config file back; fails the test on error.
 func readCodexTestConfig(t *testing.T, configPath string) string {
 	t.Helper()
