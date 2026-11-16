@@ -83,7 +83,7 @@ func (m *Manager) skillPathBoundary(t SkillTarget) (segs []string, withRefs []st
 // SkillStatus 查询目标技能状态（SKILL.md 与 references/commands.md 合并
 // 判定：任一外部改动 → modified-by-user；任一旧版或缺席而另一份在 →
 // outdated；全部在且一致 → up-to-date；全部缺席 → not-installed；路径
-//（含 references 目录）含符号链接/非目录项 → invalid（评审 D-12））。
+// （含 references 目录）含符号链接/非目录项 → invalid（评审 D-12））。
 func (m *Manager) SkillStatus(t SkillTarget) Status {
 	dir, err := m.SkillDir(t)
 	if err != nil {

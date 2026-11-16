@@ -65,7 +65,7 @@ import (
 //   - POST /api/input          —— canonical 输入注入；
 //   - POST /api/agent-interact —— resume/background 派生新任务，效果等同输入注入；
 //   - POST /api/interrupt      —— 中断注入（Esc），效果等同输入注入——宁紧勿松，
-//                                 遗漏即免控制中断（t6/R5：随 claudewebui 平面补入）；
+//     遗漏即免控制中断（t6/R5：随 claudewebui 平面补入）；
 //   - PUT  /api/draft          —— 平面草稿覆写（低危写面，同样收敛）。
 //
 // GET /api/fs/dirs（宿主机目录名枚举，读面、暴露度低）经 diting 裁定维持

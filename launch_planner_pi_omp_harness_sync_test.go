@@ -48,7 +48,7 @@ func TestBuildPlanPiOmpResolvesMarkedAnthropicPreset(t *testing.T) {
 			}
 			if err := cfgSvc.SaveTerminalPreset("claude_code", "marked-provider/marked", config.TerminalPreset{
 				Name: "Marked", Provider: "marked-provider", Model: "marked-model",
-				Parameters:   config.Parameters{ReasoningEffort: "max"},
+				Parameters:  config.Parameters{ReasoningEffort: "max"},
 				HarnessSync: true,
 			}); err != nil {
 				t.Fatal(err)
@@ -67,7 +67,7 @@ func TestBuildPlanPiOmpResolvesMarkedAnthropicPreset(t *testing.T) {
 			}
 			defer plan.Secrets.Dispose()
 			// Recipe 保留原始 stable refs（解析发生在 effects，不在 recipe）；
-		// 解析结果验证 argv 与托管配置。
+			// 解析结果验证 argv 与托管配置。
 			// argv 走 amagi-<provider> 托管条目 + preset 模型。
 			var sawProcess bool
 			for _, eff := range plan.Effects {

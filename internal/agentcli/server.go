@@ -106,11 +106,11 @@ type Server struct {
 // 由 root 包测试锚定；此处不做复制，调用方保证构造后不再修改。
 func NewServer(configDir, appVersion string, table []spec.Command, handlers map[string]spec.Handler, log Logger) *Server {
 	return &Server{
-		configDir:  configDir,
-		appVersion: appVersion,
-		table:      table,
-		tableHash:  hashTable(table),
-		handlers:   handlers,
+		configDir:    configDir,
+		appVersion:   appVersion,
+		table:        table,
+		tableHash:    hashTable(table),
+		handlers:     handlers,
 		audit:        newAuditLog(configDir, log),
 		log:          log,
 		processAlive: platform.ProcessAlive,
@@ -128,7 +128,7 @@ func (s *Server) alivePID(pid int) bool {
 
 // Start 启动服务：跨进程所有权检测（评审 D-04：端点被另一存活实例占用则
 // 拒绝发布，不覆盖、不影响应用其余功能）→ 清理陈旧端点文件 → 生成新令牌
-//（每次启动重新生成，DESIGN §3.1）→ 回环随机端口监听 → 发布端点文件。
+// （每次启动重新生成，DESIGN §3.1）→ 回环随机端口监听 → 发布端点文件。
 // 幂等：已在运行且启用时直接返回；已在监听但被禁用时恢复放行并轮换令牌
 // 重发布端点。端点文件发布失败则回滚监听，保持"运行 = 端点已发布"不变量。
 // 生命周期由 Stop 显式控制（不接管调用方 ctx：Shutdown 已在保存配置前
@@ -279,7 +279,7 @@ func (s *Server) stopLocked() {
 // 作废 + 撤销端点文件，listener 保留存活并对所有请求返回 503 cli_disabled
 // （CLI 客户端据此区分"应用未运行"与"命令行访问被关闭"）。持久化由调用方
 // （App 门面 → settings.Service）负责。开关与轮换/启停在 lifeMu 下串行
-//（评审 D-03）。
+// （评审 D-03）。
 func (s *Server) SetEnabled(enabled bool) error {
 	s.lifeMu.Lock()
 	defer s.lifeMu.Unlock()
@@ -300,7 +300,7 @@ func (s *Server) SetEnabled(enabled bool) error {
 
 // RotateToken 轮换令牌：生成新令牌重写端点文件，旧令牌立即失效（DESIGN
 // §3.1）。仅在运行且启用时有意义。与其它生命周期操作在 lifeMu 下串行
-//（评审 D-03：并发轮换不会共用临时文件或回滚别次操作已替换的令牌）。
+// （评审 D-03：并发轮换不会共用临时文件或回滚别次操作已替换的令牌）。
 func (s *Server) RotateToken() error {
 	s.lifeMu.Lock()
 	defer s.lifeMu.Unlock()
@@ -694,7 +694,7 @@ func containsStr(list []string, v string) bool {
 }
 
 // jsonNumbersToFloat 把 UseNumber 解码出的 json.Number 递归还原为 float64
-//（仅用于非 int 参数的透传值；int 参数在 coerceParam 里已严格解析为 int64）。
+// （仅用于非 int 参数的透传值；int 参数在 coerceParam 里已严格解析为 int64）。
 // 无法解析为 float64 的极端字面量原样保留，后续序列化自行暴露。
 func jsonNumbersToFloat(v any) any {
 	switch t := v.(type) {

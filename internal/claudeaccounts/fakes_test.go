@@ -111,12 +111,12 @@ type fakeKCItem struct {
 }
 
 type fakeKeychain struct {
-	mu           sync.Mutex
-	items        []fakeKCItem
-	locateErr    error
-	readErr      error
-	updateErrAt  int // 第 N 次 UpdateItem 失败；0=不失败
-	updateCalls  int
+	mu          sync.Mutex
+	items       []fakeKCItem
+	locateErr   error
+	readErr     error
+	updateErrAt int // 第 N 次 UpdateItem 失败；0=不失败
+	updateCalls int
 	// onRead 在每次 ReadItem 读取前回调（锁外；F03 测试：在指定读取处模拟
 	// 外部写入者刷新，覆盖「source 读后→提交前」窗口）。
 	onRead func()
@@ -347,25 +347,25 @@ func httpResponse(status int, body string) *http.Response {
 // ---- 测试环境 ----
 
 type testEnv struct {
-	t          *testing.T
-	dir        string
-	home       string
-	pool       *fakePoolStore
-	keychain   *fakeKeychain
-	files      *FileCredentialStore
-	filesOps   writeFileOps
-	gate       *fakeGate
-	quiescence *fakeQuiescence
-	identity   IdentityProvider
-	identityFake *fakeIdentity
-	clock      *fakeClock
-	transport  *fakeTransport
-	svc        *Service
-	native     NativeCredentialStore
+	t              *testing.T
+	dir            string
+	home           string
+	pool           *fakePoolStore
+	keychain       *fakeKeychain
+	files          *FileCredentialStore
+	filesOps       writeFileOps
+	gate           *fakeGate
+	quiescence     *fakeQuiescence
+	identity       IdentityProvider
+	identityFake   *fakeIdentity
+	clock          *fakeClock
+	transport      *fakeTransport
+	svc            *Service
+	native         NativeCredentialStore
 	nativeOverride NativeCredentialStore
-	logs       []string
-	events     []Event
-	logMu      sync.Mutex
+	logs           []string
+	events         []Event
+	logMu          sync.Mutex
 }
 
 // newTestEnv 建立账号 A 的合成双端登录环境并构造 Service。
@@ -373,16 +373,16 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	dir := t.TempDir()
 	env := &testEnv{
-		t:          t,
-		dir:        dir,
-		home:       filepath.Join(dir, "home"),
-		pool:       &fakePoolStore{},
-		keychain:   &fakeKeychain{},
-		gate:       &fakeGate{},
-		quiescence: &fakeQuiescence{},
+		t:            t,
+		dir:          dir,
+		home:         filepath.Join(dir, "home"),
+		pool:         &fakePoolStore{},
+		keychain:     &fakeKeychain{},
+		gate:         &fakeGate{},
+		quiescence:   &fakeQuiescence{},
 		identityFake: &fakeIdentity{responses: map[string]ProfileIdentity{}},
-		clock:      &fakeClock{now: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)},
-		transport:  &fakeTransport{},
+		clock:        &fakeClock{now: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)},
+		transport:    &fakeTransport{},
 	}
 	env.identity = env.identityFake
 	env.filesOps = osWriteFileOps{}
@@ -452,7 +452,7 @@ func (e *testEnv) enrollAccountB() (idA, idB string) {
 }
 
 func (e *testEnv) claudeJSONPath() string { return filepath.Join(e.home, ".claude.json") }
-func (e *testEnv) piAuthPath() string    { return filepath.Join(e.home, ".pi", "agent", "auth.json") }
+func (e *testEnv) piAuthPath() string     { return filepath.Join(e.home, ".pi", "agent", "auth.json") }
 
 // rebuildService 按当前注入重建 Service（文件 ops/native 变更后调用）。
 func (e *testEnv) rebuildService() {

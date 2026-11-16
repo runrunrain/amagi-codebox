@@ -19,16 +19,16 @@ type ClaudeAccountRotationConfig struct {
 
 // 轮换策略白名单（design §6.2：v1 只做 best；未知 strategy 拒绝，不默默回退）。
 const (
-	StrategyBest            = "best"
-	rotationSchemaVersion   = 1
-	rotationMinThreshold    = 80
-	rotationMaxThreshold    = 99
-	rotationMinHysteresis   = 5
-	rotationMaxHysteresis   = 30
-	rotationMinCooldown     = 300
-	rotationMaxCooldown     = 3600
-	rotationMinRespect      = 0
-	rotationMaxRespect      = 86400
+	StrategyBest          = "best"
+	rotationSchemaVersion = 1
+	rotationMinThreshold  = 80
+	rotationMaxThreshold  = 99
+	rotationMinHysteresis = 5
+	rotationMaxHysteresis = 30
+	rotationMinCooldown   = 300
+	rotationMaxCooldown   = 3600
+	rotationMinRespect    = 0
+	rotationMaxRespect    = 86400
 )
 
 // DefaultRotationConfig 返回设计 §3.2 的默认值（threshold 90 / cooldown 300 /

@@ -14,7 +14,7 @@ import (
 // sensitive 记录本次写入的敏感度，撤销恢复前像时沿用同一清理策略（M2）。
 // 目录提交扩展（S3/S4 共用）：isDir=true 时 writtenTreeHash 是写入树 hash、
 // prevTreeHash 是提交时验证过的基准树 hash；撤销恢复只走持久 prev 树
-//（R1-F04：内存前像快照字段已随 P3-S3 退役删除）。
+// （R1-F04：内存前像快照字段已随 P3-S3 退役删除）。
 type CompensationHandle struct {
 	unit        UnitID
 	target      TargetRef
@@ -33,10 +33,10 @@ type CompensationHandle struct {
 
 	// 持久操作事实（攻坚契约）：OpID 关联 intent/settled；backup/staging/
 	// displaced 是目标根下相对路径（恢复材料持久位置）。内存正文仅缓存。
-	opID        string
-	targetKey   string
-	backupRel   string
-	stagingRel  string
+	opID         string
+	targetKey    string
+	backupRel    string
+	stagingRel   string
 	displacedRel string
 }
 

@@ -60,27 +60,27 @@ type Deps struct {
 	PiRefresh  *PiRefreshAdapter
 	CCRefresh  *CCRefreshAdapter
 
-	Clock       func() time.Time
-	Logf        func(format string, args ...any)
-	EmitEvent   func(Event)
+	Clock     func() time.Time
+	Logf      func(format string, args ...any)
+	EmitEvent func(Event)
 }
 
 // Service 是 Claude 订阅账号轮换的事务服务（design §4）。进程内串行 + 跨
 // 进程锁保护 read-modify-write；所有公共方法遵循同一事务原语与门禁
 // （design §1.3-7）。
 type Service struct {
-	pool      PoolStore
-	native    NativeCredentialStore
-	lockPath  string
+	pool       PoolStore
+	native     NativeCredentialStore
+	lockPath   string
 	piAuthPath string
-	gate      MutationGate
+	gate       MutationGate
 	quiescence QuiescenceChecker
-	identity  IdentityProvider
-	piRefresh *PiRefreshAdapter
-	ccRefresh *CCRefreshAdapter
-	clock     func() time.Time
-	logf      func(format string, args ...any)
-	emit      func(Event)
+	identity   IdentityProvider
+	piRefresh  *PiRefreshAdapter
+	ccRefresh  *CCRefreshAdapter
+	clock      func() time.Time
+	logf       func(format string, args ...any)
+	emit       func(Event)
 
 	mu sync.Mutex
 }
@@ -569,11 +569,11 @@ func (s *Service) captureLocked(ctx context.Context, pool *AccountPool, alias, e
 			SeatTier:         ccID.SeatTier,
 		},
 		Claude: ClaudeGrantState{
-			OauthProjection: append(json.RawMessage(nil), native.ClaudeOAuth...),
-			RawCredentialItem: append(json.RawMessage(nil), native.ClaudeOAuthRaw...),
-			StoreLocator:      native.Locator,
-			AdapterVersion:    ClaudeKeychainAdapterVersion,
-			ObservedAt:        nowT,
+			OauthProjection:     append(json.RawMessage(nil), native.ClaudeOAuth...),
+			RawCredentialItem:   append(json.RawMessage(nil), native.ClaudeOAuthRaw...),
+			StoreLocator:        native.Locator,
+			AdapterVersion:      ClaudeKeychainAdapterVersion,
+			ObservedAt:          nowT,
 			RevisionFingerprint: native.Revisions.ClaudeKeychain,
 		},
 		ClaudeIdentity: ClaudeIdentityFields{
@@ -581,10 +581,10 @@ func (s *Service) captureLocked(ctx context.Context, pool *AccountPool, alias, e
 			UserID:       native.ClaudeIdentity.UserID,
 		},
 		Pi: PiGrantState{
-			Anthropic:          append(json.RawMessage(nil), native.PiAnthropic...),
-			AdapterVersion:     PiRefreshAdapterVersion,
-			ObservedAt:         nowT,
-			SourceMtimeNS:      native.Revisions.PiAuth.MtimeNS,
+			Anthropic:           append(json.RawMessage(nil), native.PiAnthropic...),
+			AdapterVersion:      PiRefreshAdapterVersion,
+			ObservedAt:          nowT,
+			SourceMtimeNS:       native.Revisions.PiAuth.MtimeNS,
 			RevisionFingerprint: native.Revisions.PiAuth,
 		},
 		IdentityEvidence: &IdentityEvidence{

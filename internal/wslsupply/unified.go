@@ -226,10 +226,10 @@ func (c *Coordinator) consentPolicyFor(unit UnitID) (Policy, bool) {
 }
 
 // grantEntryIn 在一次 mutate 内为一个单元写入 per-target 同意登记
-//（GrantUnitConsent 与 AutoConsentIfUnified 共用）。仅同代保留 hash 基线/
+// （GrantUnitConsent 与 AutoConsentIfUnified 共用）。仅同代保留 hash 基线/
 // 键级基准/选择集（F3：跨代不继承——继承会让新 distro 首发布被误判
 // local-deletion-frozen）；同代已有登记时 Detached 由调用方先行跳过
-//（I2：本函数按「显式同意」语义不携带 Detached）。
+// （I2：本函数按「显式同意」语义不携带 Detached）。
 func grantEntryIn(st *StateFile, target TargetRef, unit UnitID, policy Policy) {
 	prev := st.entryFor(unit, target.Generation)
 	entry := StateEntry{

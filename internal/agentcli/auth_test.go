@@ -86,16 +86,16 @@ func TestHostExactAllowSetAndPortMustMatchListener(t *testing.T) {
 	port := u.Port()
 
 	forbidden := map[string]string{
-		"127/8 其它地址":  "127.0.0.2:" + port,
-		"127.1 短形态":   "127.1:" + port,
-		"前缀伪装":       "localhost.evil.com:" + port,
-		"IPv6 其它回环段": "[::2]:" + port,
+		"127/8 其它地址":    "127.0.0.2:" + port,
+		"127.1 短形态":     "127.1:" + port,
+		"前缀伪装":          "localhost.evil.com:" + port,
+		"IPv6 其它回环段":    "[::2]:" + port,
 		"localhost 无端口": "localhost",
 		"127.0.0.1 无端口": "127.0.0.1",
-		"[::1] 无端口":   "[::1]",
-		"端口不符":       "localhost:1",
-		"端口前缀拼接":     "127.0.0.1:" + port + "1",
-		"外部主机名":      "evil.example.com:" + port,
+		"[::1] 无端口":     "[::1]",
+		"端口不符":          "localhost:1",
+		"端口前缀拼接":        "127.0.0.1:" + port + "1",
+		"外部主机名":         "evil.example.com:" + port,
 	}
 	for name, host := range forbidden {
 		t.Run("拒绝 "+name, func(t *testing.T) {
@@ -111,10 +111,10 @@ func TestHostExactAllowSetAndPortMustMatchListener(t *testing.T) {
 		})
 	}
 	allowed := map[string]string{
-		"IPv4 带端口":    "127.0.0.1:" + port,
+		"IPv4 带端口":      "127.0.0.1:" + port,
 		"localhost 带端口": "localhost:" + port,
-		"大小写不敏感":     "LOCALHOST:" + port,
-		"IPv6 带端口":    "[::1]:" + port,
+		"大小写不敏感":        "LOCALHOST:" + port,
+		"IPv6 带端口":      "[::1]:" + port,
 	}
 	for name, host := range allowed {
 		t.Run("放行 "+name, func(t *testing.T) {

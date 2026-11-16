@@ -57,12 +57,12 @@ func unixShimBody(home, exePath string) string {
 // CP936/GBK，无控制台时按 ACP）逐行按字节偏移解析 .cmd。若把 UTF-8 编码的
 // C:\Users\毛润\... 直接写进脚本字面量，CP936 下会被解码为 C:\Users\姣涙鼎\...，
 // 导致 CLI 找不到 endpoint.json（exit 3）。因此：
-//   1. AMAGI_CODEBOX_HOME 恒由 "%~dp0.." 在 cmd 内部按 UTF-16 WCHAR 解析，脚本零非 ASCII；
-//   2. exePath 为纯 ASCII，或虽含非 ASCII 但与 home 同盘且相对路径为纯 ASCII（覆盖
-//      %USERPROFILE%\.amagi-codebox 与 %LOCALAPPDATA%\Programs 等全部每用户安装形态）时，
-//      改写为 "%AMAGI_CODEBOX_HOME%\<rel>"，保持整份 .cmd 100% 7-bit ASCII；
-//   3. 仅当 exePath 位于跨盘/非 ASCII 子目录（如 D:\工具\amagi-codebox.exe）时，
-//      在纯 ASCII 前导行保存原代码页并切到 65001，执行后恢复原代码页与退出码。
+//  1. AMAGI_CODEBOX_HOME 恒由 "%~dp0.." 在 cmd 内部按 UTF-16 WCHAR 解析，脚本零非 ASCII；
+//  2. exePath 为纯 ASCII，或虽含非 ASCII 但与 home 同盘且相对路径为纯 ASCII（覆盖
+//     %USERPROFILE%\.amagi-codebox 与 %LOCALAPPDATA%\Programs 等全部每用户安装形态）时，
+//     改写为 "%AMAGI_CODEBOX_HOME%\<rel>"，保持整份 .cmd 100% 7-bit ASCII；
+//  3. 仅当 exePath 位于跨盘/非 ASCII 子目录（如 D:\工具\amagi-codebox.exe）时，
+//     在纯 ASCII 前导行保存原代码页并切到 65001，执行后恢复原代码页与退出码。
 //
 // % 转义为 %%（批处理文件内双引号中 % 仍会展开）；setlocal DisableDelayedExpansion 防 ! 意外展开。
 func windowsShimBody(home, exePath string) string {

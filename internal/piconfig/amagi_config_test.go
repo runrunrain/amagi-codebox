@@ -65,9 +65,9 @@ func TestAmagiConfigRoundTrip(t *testing.T) {
 	}
 
 	var root struct {
-		Profile     string                       `json:"profile"`
-		Agents      map[string]map[string]string `json:"agents"`
-		MCP         struct {
+		Profile string                       `json:"profile"`
+		Agents  map[string]map[string]string `json:"agents"`
+		MCP     struct {
 			Default []string `json:"default"`
 		} `json:"mcp"`
 		Concurrency struct {

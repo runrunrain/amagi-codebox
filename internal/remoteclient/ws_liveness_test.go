@@ -1,10 +1,11 @@
 // ws_liveness_test.go — RC3 修复锚点测试：
-//   · F-2 收口：attach(control=none) 只读 → control.state(you) 事件开输入门
-//     → input.ack 全链 → control.state(none) 关门（服务端事件为写权威）；
-//   · F-4：读超时+pong 检测——无响应宿主（SIGSTOP 半开注入）在 PongWait 内
-//     浮出为读超时并触发重连；正常回 pong 的宿主跨多个窗口不误判；
-//   · F-3：可注入净化日志——正向断言（诊断确实落日志）+ 负向断言（日志不含
-//     设备 secret、不含终端字节，蓝图 §9）。
+//
+//	· F-2 收口：attach(control=none) 只读 → control.state(you) 事件开输入门
+//	  → input.ack 全链 → control.state(none) 关门（服务端事件为写权威）；
+//	· F-4：读超时+pong 检测——无响应宿主（SIGSTOP 半开注入）在 PongWait 内
+//	  浮出为读超时并触发重连；正常回 pong 的宿主跨多个窗口不误判；
+//	· F-3：可注入净化日志——正向断言（诊断确实落日志）+ 负向断言（日志不含
+//	  设备 secret、不含终端字节，蓝图 §9）。
 package remoteclient
 
 import (

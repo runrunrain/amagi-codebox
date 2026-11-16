@@ -21,12 +21,12 @@ import (
 // standalone tests. It mints tickets with monotonic ordinals and records
 // reservations for parity assertions (record↔ticket 1:1).
 type fakeCausalPort struct {
-	mu             sync.Mutex
-	nextOrdinal    SessionEventOrdinal
-	reservations   []*CausalEventReservation
-	sealCalls      []sealedSegment
-	rollbackCalls  []CausalSealReceipt
-	reserveErr     error
+	mu            sync.Mutex
+	nextOrdinal   SessionEventOrdinal
+	reservations  []*CausalEventReservation
+	sealCalls     []sealedSegment
+	rollbackCalls []CausalSealReceipt
+	reserveErr    error
 }
 
 type sealedSegment struct {

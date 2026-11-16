@@ -81,10 +81,14 @@ func TestPiRefreshUncertainClasses(t *testing.T) {
 	}{
 		{"响应丢失", func(*http.Request) (*http.Response, error) { return nil, context.DeadlineExceeded }},
 		{"500", func(*http.Request) (*http.Response, error) { return httpResponse(500, `{}`), nil }},
-		{"400 其他错误", func(*http.Request) (*http.Response, error) { return httpResponse(400, `{"error":"invalid_request"}`), nil }},
+		{"400 其他错误", func(*http.Request) (*http.Response, error) {
+			return httpResponse(400, `{"error":"invalid_request"}`), nil
+		}},
 		{"200 缺字段", func(*http.Request) (*http.Response, error) { return httpResponse(200, `{"access_token":"x"}`), nil }},
 		{"200 坏 JSON", func(*http.Request) (*http.Response, error) { return httpResponse(200, `not-json`), nil }},
-		{"expires_in 非有限", func(*http.Request) (*http.Response, error) { return httpResponse(200, `{"access_token":"a","refresh_token":"r","expires_in":1e18}`), nil }},
+		{"expires_in 非有限", func(*http.Request) (*http.Response, error) {
+			return httpResponse(200, `{"access_token":"a","refresh_token":"r","expires_in":1e18}`), nil
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

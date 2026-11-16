@@ -83,21 +83,21 @@ type SubHash struct {
 // distro/uid/home/最近接触时间）。GetStatus 据此把清单中的分区归属到请求的
 // distro（不探测；同一 distro 多代共存时取最近接触的一代展示）。
 type TargetRecord struct {
-	Distro      string            `json:"distro"`
-	UID         string            `json:"uid,omitempty"`
-	Home        string            `json:"home,omitempty"`
+	Distro string `json:"distro"`
+	UID    string `json:"uid,omitempty"`
+	Home   string `json:"home,omitempty"`
 	// LegacyGeneration 是该目标同一次解析导出的旧公式指纹（v1 逐目标核验
 	// 用；resolve 时记录，不重新探测）。
 	LegacyGeneration string            `json:"legacyGeneration,omitempty"`
-	LastSeen    time.Time         `json:"lastSeen"`
-	InspectedAt map[CLI]time.Time `json:"inspectedAt,omitempty"`
+	LastSeen         time.Time         `json:"lastSeen"`
+	InspectedAt      map[CLI]time.Time `json:"inspectedAt,omitempty"`
 	// Unified（P2-B 统一管理）：该目标代的一次性「统一配置管理」授权标记。
 	// 打开后协调器在会话启动/保存推送/启动对账时自动授权新出现的可导入单元
 	// 并物化显式选择键（永不持久化通配键——旧版本二进制按普通键名消费选择
 	// 集，显式键保证降级安全）；换代（重装/换默认用户）后自动失效，需重新
 	// 启用。关闭（Disable）只停止自动纳入新项，不动已授权单元。
-	Unified    bool      `json:"unified,omitempty"`
-	UnifiedAt  time.Time `json:"unifiedAt,omitempty"`
+	Unified   bool      `json:"unified,omitempty"`
+	UnifiedAt time.Time `json:"unifiedAt,omitempty"`
 }
 
 // StateFile 是清单整体。PendingSources 记录保存事件发布的待同步来源与
@@ -203,22 +203,22 @@ func (p PluginStateEntry) SameIdentity(identity string) bool { return p.Identity
 // schema 的 entry（generation/hash/outcome/consented/detached）与顶层线索
 // （distro/generation/home）逐字保留；Source 标注来源（v1 = 原始清单、
 // v2-derived = v2 迁移派生字段，低可信）。Fingerprint 是旧公式指纹
-//（sha256(machine-id|uid|home)，无 distro）——逐目标核验时与
+// （sha256(machine-id|uid|home)，无 distro）——逐目标核验时与
 // TargetRef.LegacyGeneration 匹配的候选才是风险归属候选；不匹配的目标
 // 不继承风险也不继承授权。ResolvedTarget 非空表示该完整身份已核验处置
-//（用户确认 absent 等），不再产生新风险。
+// （用户确认 absent 等），不再产生新风险。
 type LegacyEvidenceEntry struct {
-	ID            string    `json:"id"`
-	Source        string    `json:"source"` // "v1" | "v2-derived"
-	Unit          UnitID    `json:"unit"`
-	SchemaVersion int       `json:"schemaVersion"`
+	ID            string `json:"id"`
+	Source        string `json:"source"` // "v1" | "v2-derived"
+	Unit          UnitID `json:"unit"`
+	SchemaVersion int    `json:"schemaVersion"`
 	// 原 entry 线索（保真）。
-	EntryGeneration  string `json:"entryGeneration,omitempty"`
-	EntryLastHash    string `json:"entryLastWrittenHash,omitempty"`
-	EntryOutcome     string `json:"entryOutcome,omitempty"`
-	EntryConsented   bool   `json:"entryConsented,omitempty"`
-	EntryDetached    bool   `json:"entryDetached,omitempty"`
-	Fingerprint      string `json:"fingerprint,omitempty"` // 旧公式指纹（来自 entry generation 原文）
+	EntryGeneration string `json:"entryGeneration,omitempty"`
+	EntryLastHash   string `json:"entryLastWrittenHash,omitempty"`
+	EntryOutcome    string `json:"entryOutcome,omitempty"`
+	EntryConsented  bool   `json:"entryConsented,omitempty"`
+	EntryDetached   bool   `json:"entryDetached,omitempty"`
+	Fingerprint     string `json:"fingerprint,omitempty"` // 旧公式指纹（来自 entry generation 原文）
 	// 原顶层线索（保真；只算「最近检查」，不算 owner）。
 	TopDistro     string `json:"topDistro,omitempty"`
 	TopGeneration string `json:"topGeneration,omitempty"`
@@ -248,31 +248,31 @@ func (e LegacyEvidenceEntry) TerminalRiskCleared() bool {
 type StoreHealthKind string
 
 const (
-	StoreFresh           StoreHealthKind = "fresh"           // main 不存在（首次安装）
-	StoreOK              StoreHealthKind = "ok"              // 正常读写
+	StoreFresh           StoreHealthKind = "fresh"             // main 不存在（首次安装）
+	StoreOK              StoreHealthKind = "ok"                // 正常读写
 	StoreMissingAfterUse StoreHealthKind = "missing-after-use" // 曾加载后消失（外部删除）
-	StoreUnreadable      StoreHealthKind = "unreadable"      // 读错误（权限/I-O）
-	StoreCorrupt         StoreHealthKind = "corrupt"         // 解析失败
-	StoreUnsupported     StoreHealthKind = "unsupported"     // 更高 schema（禁止降级读取）
+	StoreUnreadable      StoreHealthKind = "unreadable"        // 读错误（权限/I-O）
+	StoreCorrupt         StoreHealthKind = "corrupt"           // 解析失败
+	StoreUnsupported     StoreHealthKind = "unsupported"       // 更高 schema（禁止降级读取）
 )
 
 // StoreHealth 是 main/pending 存储面的显式健康状态（load 显式返回；GetStatus
 // 展示，不触发 WSL 探测）。
 type StoreHealth struct {
-	Main    StoreHealthKind `json:"main"`
-	MainErr string          `json:"mainErr,omitempty"`
-	Pending StoreHealthKind `json:"pending"` // pending 目录（无 intent 且可读 = ok）
-	PendingErr string      `json:"pendingErr,omitempty"`
+	Main       StoreHealthKind `json:"main"`
+	MainErr    string          `json:"mainErr,omitempty"`
+	Pending    StoreHealthKind `json:"pending"` // pending 目录（无 intent 且可读 = ok）
+	PendingErr string          `json:"pendingErr,omitempty"`
 }
 
 // stateStore 持有清单的内存副本与落盘路径，串行化所有读改写。
 type stateStore struct {
-	mu      sync.Mutex
-	path    string
+	mu        sync.Mutex
+	path      string
 	configDir string
-	current StateFile
-	loaded  bool
-	health  StoreHealth
+	current   StateFile
+	loaded    bool
+	health    StoreHealth
 }
 
 func newStateStore(configDir string) *stateStore {
@@ -415,10 +415,10 @@ func migrateLegacyState(f *StateFile) {
 		}
 		f.LegacyEvidence = appendLegacyEvidence(f.LegacyEvidence, LegacyEvidenceEntry{
 			ID: legacyEvidenceID("v1", u, e.Generation), Source: "v1", Unit: u,
-			SchemaVersion: f.SchemaVersion,
+			SchemaVersion:   f.SchemaVersion,
 			EntryGeneration: e.Generation, EntryLastHash: e.LastWrittenHash,
 			EntryOutcome: e.LastOutcome, EntryConsented: e.Consented, EntryDetached: e.Detached,
-			Fingerprint:  strings.TrimPrefix(e.Generation, legacyGenerationPrefix),
+			Fingerprint:   strings.TrimPrefix(e.Generation, legacyGenerationPrefix),
 			TopDistro:     strings.TrimSpace(f.Distro),
 			TopGeneration: strings.TrimPrefix(f.Generation, legacyGenerationPrefix),
 			TopHome:       f.Home,
@@ -459,10 +459,10 @@ func migrateV2ToV3(f *StateFile) {
 		}
 		f.LegacyEvidence = appendLegacyEvidence(f.LegacyEvidence, LegacyEvidenceEntry{
 			ID: legacyEvidenceID("v1", u, e.Generation), Source: "v1", Unit: u,
-			SchemaVersion: 1,
+			SchemaVersion:   1,
 			EntryGeneration: e.Generation, EntryLastHash: e.LastWrittenHash,
 			EntryOutcome: e.LastOutcome, EntryConsented: e.Consented, EntryDetached: e.Detached,
-			Fingerprint:  strings.TrimPrefix(e.Generation, legacyGenerationPrefix),
+			Fingerprint:   strings.TrimPrefix(e.Generation, legacyGenerationPrefix),
 			TopDistro:     strings.TrimSpace(f.Distro),
 			TopGeneration: strings.TrimPrefix(f.Generation, legacyGenerationPrefix),
 			TopHome:       f.Home,
@@ -479,6 +479,7 @@ func migrateV2ToV3(f *StateFile) {
 	}
 	f.SchemaVersion = stateSchemaVersion
 }
+
 // appendLegacyEvidence 幂等追加（同 ID 不重复）。
 func appendLegacyEvidence(list []LegacyEvidenceEntry, e LegacyEvidenceEntry) []LegacyEvidenceEntry {
 	for i := range list {

@@ -8,10 +8,10 @@ import "testing"
 
 func TestDecideAttachAction(t *testing.T) {
 	cases := []struct {
-		name     string
-		preValid bool
+		name      string
+		preValid  bool
 		postValid bool
-		want     attachAction
+		want      attachAction
 	}{
 		// 附着前已有效 = 父进程显式重定向（管道/文件）或继承控制台：
 		// Go os.File 已可用，重建会覆盖有效重定向句柄 → 保留。

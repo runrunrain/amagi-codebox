@@ -11,12 +11,12 @@ import (
 // ClaudeOAuthRaw 是 Claude Code Keychain 项的完整字节镜像（仅审计/恢复用，
 // 不出包边界，design §3.1）。
 type NativeProjections struct {
-	ClaudeOAuth     json.RawMessage
-	ClaudeOAuthRaw  json.RawMessage
-	Locator         *KeychainLocator
-	ClaudeIdentity  *ClaudeIdentityFields
-	PiAnthropic     json.RawMessage
-	Revisions       ExpectedRevisions
+	ClaudeOAuth    json.RawMessage
+	ClaudeOAuthRaw json.RawMessage
+	Locator        *KeychainLocator
+	ClaudeIdentity *ClaudeIdentityFields
+	PiAnthropic    json.RawMessage
+	Revisions      ExpectedRevisions
 	// PiOtherProviders 报告 auth.json 中除 anthropic 外的其他顶层键名
 	// （仅键名，不含值）：patch 前后必须保持一致（design §1.3-4）。
 	PiOtherProviders []string

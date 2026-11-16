@@ -14,8 +14,8 @@ import (
 // Pi OAuth 刷新协议常量（design §5.1 已核实；与 pi-ai 安装源码
 // dist/auth/oauth/anthropic.js 的 CLIENT_ID/TOKEN_URL/refresh 常量一致）。
 const (
-	PiTokenURL            = "https://platform.claude.com/v1/oauth/token"
-	PiOAuthClientID        = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	PiTokenURL              = "https://platform.claude.com/v1/oauth/token"
+	PiOAuthClientID         = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	PiRefreshAdapterVersion = "pi-oauth-refresh-v1"
 	// piRefreshExpirySafety 与 Pi 一致：expires = now + expires_in×1000 − 5min。
 	piRefreshExpirySafety = 5 * time.Minute

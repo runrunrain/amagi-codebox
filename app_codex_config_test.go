@@ -487,7 +487,7 @@ func TestRemoveCodexLegacyHeadroomMarkerConfig(t *testing.T) {
 }
 
 // TestRemoveCodexGlobalHeadroomBlockPureFunction 冻结纯函数语义：标记块
-//（含首尾标记行与块内全部行）被剥离，无标记时原样返回。
+// （含首尾标记行与块内全部行）被剥离，无标记时原样返回。
 func TestRemoveCodexGlobalHeadroomBlockPureFunction(t *testing.T) {
 	lines := []string{"a = 1", "# === amagi-headroom-global-start ===", "openai_base_url = \"http://127.0.0.1:8788/v1\"", "# === amagi-headroom-global-end ===", "b = 2"}
 	got := removeCodexGlobalHeadroomBlock(lines)

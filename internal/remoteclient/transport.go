@@ -221,7 +221,7 @@ var (
 	epSessionStop     = contract.V1RestEndpoints[5]
 	epSessionRestart  = contract.V1RestEndpoints[6]
 	epSessionRemove   = contract.V1RestEndpoints[7]
-	epControlAcquire = contract.V1RestEndpoints[8]
+	epControlAcquire  = contract.V1RestEndpoints[8]
 	epControlRelease  = contract.V1RestEndpoints[9]
 )
 

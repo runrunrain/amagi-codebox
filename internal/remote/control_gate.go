@@ -433,7 +433,7 @@ func (g *controlGate) DoDevicePTY(ctx context.Context, lease *ControlConnectionL
 //     control.forbidden from the second input on, and the device's /ws/v1 input
 //     lane would be silently revoked.
 //   - DoDevicePTY needs the exact LIVE connection lease (deviceID + connectionID
-//     + attachmentGeneration, connected-only). A plane write is one HTTP request
+//   - attachmentGeneration, connected-only). A plane write is one HTTP request
 //     that the proxy authenticates by plane token; it holds no connection lease.
 //
 // Structure mirrors DoDevicePTY: checkReady → public entry → lane (or

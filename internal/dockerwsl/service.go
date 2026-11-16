@@ -82,8 +82,8 @@ type HealthReport struct {
 	// DefaultDistro：WSL 默认用户发行版名（探测失败为空）。
 	DefaultDistro string `json:"defaultDistro"`
 	// ToolDistroPresent / ToolDistroRunning：docker-desktop 工具发行版注册/运行状态。
-	ToolDistroPresent  bool `json:"toolDistroPresent"`
-	ToolDistroRunning  bool `json:"toolDistroRunning"`
+	ToolDistroPresent bool `json:"toolDistroPresent"`
+	ToolDistroRunning bool `json:"toolDistroRunning"`
 	// DesktopProcessesRunning：三个 Desktop 相关进程的存活计数（0 = 全退）。
 	DesktopProcessesRunning int `json:"desktopProcessesRunning"`
 	// IntegrationMountBytes：docker-desktop-user-distro 字节数（-1 = 不可见/未知）。
@@ -106,35 +106,35 @@ type HealthReport struct {
 
 // SelfHealStep 是自愈序列中的一步（名称固定，Ok/Detail 供前端渲染）。
 type SelfHealStep struct {
-	Name      string `json:"name"`
-	Ok        bool   `json:"ok"`
-	Detail    string `json:"detail"`
-	DurationMs int64 `json:"durationMs"`
+	Name       string `json:"name"`
+	Ok         bool   `json:"ok"`
+	Detail     string `json:"detail"`
+	DurationMs int64  `json:"durationMs"`
 }
 
 // SelfHealReport 是一次自愈执行的完整回执（步骤表 + 前后健康对照）。
 type SelfHealReport struct {
-	Success      bool         `json:"success"`
-	Summary      string       `json:"summary"`
+	Success      bool           `json:"success"`
+	Summary      string         `json:"summary"`
 	Steps        []SelfHealStep `json:"steps"`
-	HealthBefore HealthReport `json:"healthBefore"`
-	HealthAfter  HealthReport `json:"healthAfter"`
-	StartedAt    time.Time    `json:"startedAt"`
-	FinishedAt   time.Time    `json:"finishedAt"`
+	HealthBefore HealthReport   `json:"healthBefore"`
+	HealthAfter  HealthReport   `json:"healthAfter"`
+	StartedAt    time.Time      `json:"startedAt"`
+	FinishedAt   time.Time      `json:"finishedAt"`
 }
 
 // runner 收集全部平台相关系统调用（Windows 真实现 / 测试假件注入）。
 type runner struct {
-	desktopExePath func() string                              // Docker Desktop.exe 安装路径；"" = 未安装
-	engineExePath  func() string                              // docker.exe 路径；"" = 未找到
-	defaultDistro  func() string                              // WSL 默认用户发行版；"" = 未知
-	wslStates      func() map[string]string                   // 发行版名 → Running/Stopped（含 docker-desktop）
-	wsl            func(args ...string) (string, error)       // wsl.exe 合并输出（UTF-16 已解码）
-	tasklistCount  func(image string) (int, error)            // 指定镜像名存活进程数
-	taskkillTree   func(image string) error                   // taskkill /IM <image> /T /F（容忍 ENOENT）
-	startDesktop   func(path string) error                    // 分离启动 Docker Desktop.exe
+	desktopExePath func() string                                // Docker Desktop.exe 安装路径；"" = 未安装
+	engineExePath  func() string                                // docker.exe 路径；"" = 未找到
+	defaultDistro  func() string                                // WSL 默认用户发行版；"" = 未知
+	wslStates      func() map[string]string                     // 发行版名 → Running/Stopped（含 docker-desktop）
+	wsl            func(args ...string) (string, error)         // wsl.exe 合并输出（UTF-16 已解码）
+	tasklistCount  func(image string) (int, error)              // 指定镜像名存活进程数
+	taskkillTree   func(image string) error                     // taskkill /IM <image> /T /F（容忍 ENOENT）
+	startDesktop   func(path string) error                      // 分离启动 Docker Desktop.exe
 	engineReady    func(engineExe string) (bool, string, error) // (就绪, ServerVersion, 错误)
-	sleep          func(d time.Duration)                      // 轮询间隔（测试 no-op）
+	sleep          func(d time.Duration)                        // 轮询间隔（测试 no-op）
 	now            func() time.Time
 }
 

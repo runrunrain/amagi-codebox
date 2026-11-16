@@ -15,9 +15,9 @@ import (
 // 【待实测】该兼容实现与 Pi 安装版本的竞争测试属于 §10.2 真机验证项；
 // v1 不自动清理未知/过期原生锁（design §4.3）：发现锁目录一律 busy。
 type ProperLock struct {
-	dir      string
+	dir       string
 	mtimePath string
-	token    string
+	token     string
 }
 
 // AcquireProperLock 尝试获取 targetFilePath 的兼容锁。

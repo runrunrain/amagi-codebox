@@ -44,9 +44,9 @@ func TestFrontlineContractMerge(t *testing.T) {
 			Name   string `json:"name"`
 			Source string `json:"source"`
 			Models []struct {
-				ID             string `json:"id"`
-				Reasoning      bool   `json:"reasoning"`
-				ContextWindow  int    `json:"contextWindow"`
+				ID             string   `json:"id"`
+				Reasoning      bool     `json:"reasoning"`
+				ContextWindow  int      `json:"contextWindow"`
 				ThinkingLevels []string `json:"thinkingLevels"`
 			} `json:"models"`
 		} `json:"providers"`
@@ -59,9 +59,9 @@ func TestFrontlineContractMerge(t *testing.T) {
 		Name   string `json:"name"`
 		Source string `json:"source"`
 		Models []struct {
-			ID             string `json:"id"`
-			Reasoning      bool   `json:"reasoning"`
-			ContextWindow  int    `json:"contextWindow"`
+			ID             string   `json:"id"`
+			Reasoning      bool     `json:"reasoning"`
+			ContextWindow  int      `json:"contextWindow"`
 			ThinkingLevels []string `json:"thinkingLevels"`
 		} `json:"models"`
 	}

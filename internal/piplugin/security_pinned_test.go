@@ -12,15 +12,15 @@ import (
 // three legal source grammars (npm/git/local) legitimately contain these chars.
 func TestValidateSourceRejectsCmdMetachars(t *testing.T) {
 	cases := []string{
-		"npm:foo&calc",   // & command separator
-		"npm:foo|calc",   // | pipe
-		"npm:foo<calc",   // < redirect
-		"npm:foo>calc",   // > redirect
-		"npm:foo^calc",   // ^ escape (enables %VAR% expansion tricks)
-		"npm:foo%PATH%",  // % env var expansion
-		"npm:foo(calc)",  // ( ) command grouping
-		"git:github.com/a/b&rm",  // injection in a git url
-		"/abs/path&(x)",  // injection in a local path
+		"npm:foo&calc",          // & command separator
+		"npm:foo|calc",          // | pipe
+		"npm:foo<calc",          // < redirect
+		"npm:foo>calc",          // > redirect
+		"npm:foo^calc",          // ^ escape (enables %VAR% expansion tricks)
+		"npm:foo%PATH%",         // % env var expansion
+		"npm:foo(calc)",         // ( ) command grouping
+		"git:github.com/a/b&rm", // injection in a git url
+		"/abs/path&(x)",         // injection in a local path
 	}
 	for _, src := range cases {
 		if _, err := validateSource(src); err == nil {
@@ -65,9 +65,9 @@ func TestIsExactSemver(t *testing.T) {
 		"1.2.3+", "1.2.3+..", "1.2.3+a_b", // build 空标识符 / 非法字符
 		"1.2.3.4", "v", "1.2.3-alpha..1",
 		// npm semver 附加限制（R3 复审 Minor-3）
-		strings.Repeat("1", 257),            // 超 256 字符上限
-		"9007199254740992.0.0",             // 超 MAX_SAFE_INTEGER
-		"1.0.0-9007199254740992",          // prerelease 数字超 MAX_SAFE_INTEGER
+		strings.Repeat("1", 257), // 超 256 字符上限
+		"9007199254740992.0.0",   // 超 MAX_SAFE_INTEGER
+		"1.0.0-9007199254740992", // prerelease 数字超 MAX_SAFE_INTEGER
 	}
 	for _, v := range notPinned {
 		if isExactSemver(v) {
@@ -80,8 +80,8 @@ func TestIsExactSemver(t *testing.T) {
 // Package returned by ListInstalledPackages: only npm exact versions are pinned.
 func TestNpmPinnedOnlyForExactSemver(t *testing.T) {
 	cases := []struct {
-		source   string
-		wantPin  bool
+		source  string
+		wantPin bool
 	}{
 		{"npm:pkg@1.2.3", true},
 		{"npm:pkg@^1.2.0", false},

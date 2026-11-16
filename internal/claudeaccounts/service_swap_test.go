@@ -370,9 +370,9 @@ func TestContextCancelPreservesWrittenFacts(t *testing.T) {
 }
 
 type hookNative struct {
-	inner        NativeCredentialStore
+	inner         NativeCredentialStore
 	onBeforePatch func(key ProjectionKey)
-	patchCount   int
+	patchCount    int
 }
 
 func (h *hookNative) ReadStable(ctx context.Context) (*NativeProjections, error) {

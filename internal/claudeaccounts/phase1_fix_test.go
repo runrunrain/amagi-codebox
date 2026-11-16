@@ -16,7 +16,7 @@ import (
 )
 
 // countKeychainReads 返回一个在 fakeKeychain 第 N 次 ReadItem 前执行一次的 hook
-//（一次性触发，避免后续读继续变异）。
+// （一次性触发，避免后续读继续变异）。
 func countKeychainReads(env *testEnv, nth int, mutate func()) {
 	env.t.Helper()
 	counts := 0

@@ -13,10 +13,10 @@ import (
 // internal nested node_modules directories (outermost prefix must win).
 func TestNPMPrefixFromInstalledPath(t *testing.T) {
 	cases := []struct {
-		name    string
-		path    string
-		prefix  string
-		wantOK  bool
+		name   string
+		path   string
+		prefix string
+		wantOK bool
 	}{
 		{
 			name:   "fnm unix lib layout",

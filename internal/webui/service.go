@@ -136,7 +136,7 @@ func (s *Service) RegisterSession(sessionID string, pid, injectedPort int, token
 // 默认）。WSL 目标会话应传 DefaultWSLProbingWindow：WSL+DrvFS 下 pi 扩展
 // 的 webui server 就绪送慢于 Windows 原生（jiti 模块加载落在 /mnt 慢路径），
 // 默认 45s 窗口会在服务就绪前耗尽 → unavailable → 前端隐藏 web 视图入口
-//（实测 2026-11-16：74s 就绪 vs 45s 窗口）。
+// （实测 2026-11-16：74s 就绪 vs 45s 窗口）。
 func (s *Service) RegisterSessionWithWindow(sessionID string, pid, injectedPort int, token string, window time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

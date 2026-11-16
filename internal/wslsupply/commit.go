@@ -196,7 +196,7 @@ func (c *Coordinator) commitFile(ctx context.Context, req CommitRequest) *Commit
 		OpID: opID, Kind: req.Kind, TargetKey: targetKey,
 		TargetDistro: req.Target.Distro, TargetHome: req.Target.Home,
 		TargetCLI: string(req.Target.CLI),
-		Unit: req.Unit, RelPath: req.RelPath, Sensitive: req.Sensitive,
+		Unit:      req.Unit, RelPath: req.RelPath, Sensitive: req.Sensitive,
 		BeforeExists: rc.BeforeExists, BeforeHash: rc.BeforeHash, AfterHash: hexHash(req.Candidate),
 		BackupRel: rc.BackupRel, StagingRel: rc.StagingRel, DisplacedRel: displacedRel,
 		PluginMeta: req.PluginMeta,

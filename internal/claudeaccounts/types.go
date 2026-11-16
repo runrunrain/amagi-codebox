@@ -67,9 +67,9 @@ type ClaudeIdentityFields struct {
 // OwnedProjections 是事务拥有的受管投影值。只保存本事务拥有的投影，不把
 // 完整 `.claude.json` 历史和其他 Pi token 拷贝进 journal（design §3.3）。
 type OwnedProjections struct {
-	ClaudeOAuth     json.RawMessage       `json:"claudeOauth,omitempty"`
-	ClaudeIdentity  *ClaudeIdentityFields `json:"claudeIdentity,omitempty"`
-	PiAnthropic     json.RawMessage       `json:"piAnthropic,omitempty"`
+	ClaudeOAuth    json.RawMessage       `json:"claudeOauth,omitempty"`
+	ClaudeIdentity *ClaudeIdentityFields `json:"claudeIdentity,omitempty"`
+	PiAnthropic    json.RawMessage       `json:"piAnthropic,omitempty"`
 }
 
 // Projection 按 key 取受管投影；未拥有返回 nil。
@@ -104,26 +104,26 @@ type ExpectedRevisions struct {
 type SwapPhase string
 
 const (
-	SwapPrepared    SwapPhase = "prepared"
-	SwapPatchingCC  SwapPhase = "patching-cc-keychain"
-	SwapPatchingCJ  SwapPhase = "patching-claude-json"
-	SwapPatchingPA  SwapPhase = "patching-pi-auth"
-	SwapVerifying   SwapPhase = "verifying"
-	SwapCommitting  SwapPhase = "committing"
+	SwapPrepared   SwapPhase = "prepared"
+	SwapPatchingCC SwapPhase = "patching-cc-keychain"
+	SwapPatchingCJ SwapPhase = "patching-claude-json"
+	SwapPatchingPA SwapPhase = "patching-pi-auth"
+	SwapVerifying  SwapPhase = "verifying"
+	SwapCommitting SwapPhase = "committing"
 )
 
 // SwapJournal 是一笔切换事务的持久化 journal（design §3.3）。
 type SwapJournal struct {
-	TxnID            string            `json:"txnId"`
-	SourceID         string            `json:"sourceId"`
-	TargetID         string            `json:"targetId"`
-	FromGeneration   uint64            `json:"fromGeneration"`
-	Phase            SwapPhase         `json:"phase"`
-	Before           OwnedProjections  `json:"beforeOwnedProjections"`
-	After            OwnedProjections  `json:"afterOwnedProjections"`
-	Applied          []ProjectionKey   `json:"appliedMask,omitempty"`
+	TxnID             string            `json:"txnId"`
+	SourceID          string            `json:"sourceId"`
+	TargetID          string            `json:"targetId"`
+	FromGeneration    uint64            `json:"fromGeneration"`
+	Phase             SwapPhase         `json:"phase"`
+	Before            OwnedProjections  `json:"beforeOwnedProjections"`
+	After             OwnedProjections  `json:"afterOwnedProjections"`
+	Applied           []ProjectionKey   `json:"appliedMask,omitempty"`
 	ExpectedRevisions ExpectedRevisions `json:"expectedRevisions"`
-	StartedAt        time.Time         `json:"startedAt"`
+	StartedAt         time.Time         `json:"startedAt"`
 }
 
 // HasApplied 报告指定投影是否已按 journal 记录写入过（提示性，实际位置以
@@ -220,13 +220,13 @@ type AccountHealth struct {
 // 只用于审计/恢复所需的安全镜像；实际应用通过 oauthProjection 修改
 // （design §3.1）。
 type ClaudeGrantState struct {
-	RawCredentialItem   json.RawMessage `json:"rawCredentialItem,omitempty"`
-	OauthProjection     json.RawMessage `json:"oauthProjection,omitempty"`
+	RawCredentialItem   json.RawMessage  `json:"rawCredentialItem,omitempty"`
+	OauthProjection     json.RawMessage  `json:"oauthProjection,omitempty"`
 	StoreLocator        *KeychainLocator `json:"storeLocator,omitempty"`
-	ExpiresAt           *time.Time      `json:"expiresAt,omitempty"`
-	AdapterVersion      string          `json:"adapterVersion,omitempty"`
-	ObservedAt          time.Time       `json:"observedAt"`
-	RevisionFingerprint *FileRevision   `json:"revisionFingerprint,omitempty"`
+	ExpiresAt           *time.Time       `json:"expiresAt,omitempty"`
+	AdapterVersion      string           `json:"adapterVersion,omitempty"`
+	ObservedAt          time.Time        `json:"observedAt"`
+	RevisionFingerprint *FileRevision    `json:"revisionFingerprint,omitempty"`
 }
 
 // PiGrantState 是 Pi 侧 anthropic grant 的池内状态（仅 anthropic 键，
@@ -249,16 +249,16 @@ type IdentityEvidence struct {
 
 // AccountSnapshot 是一个本机账号的完整快照（design §3.1）。
 type AccountSnapshot struct {
-	ID              string               `json:"id"`
-	Alias           string               `json:"alias"`
-	CreatedAt       time.Time            `json:"createdAt"`
-	UpdatedAt       time.Time            `json:"updatedAt"`
-	Identity        AccountIdentity      `json:"identity"`
-	Claude          ClaudeGrantState     `json:"claude"`
-	ClaudeIdentity  ClaudeIdentityFields `json:"claudeIdentity"`
-	Pi              PiGrantState         `json:"pi"`
-	IdentityEvidence *IdentityEvidence   `json:"identityEvidence,omitempty"`
-	Health          AccountHealth        `json:"health"`
+	ID               string               `json:"id"`
+	Alias            string               `json:"alias"`
+	CreatedAt        time.Time            `json:"createdAt"`
+	UpdatedAt        time.Time            `json:"updatedAt"`
+	Identity         AccountIdentity      `json:"identity"`
+	Claude           ClaudeGrantState     `json:"claude"`
+	ClaudeIdentity   ClaudeIdentityFields `json:"claudeIdentity"`
+	Pi               PiGrantState         `json:"pi"`
+	IdentityEvidence *IdentityEvidence    `json:"identityEvidence,omitempty"`
+	Health           AccountHealth        `json:"health"`
 }
 
 // OwnedProjectionsOf 从快照导出三处受管投影值（用于 harvest 前值与 swap
@@ -278,15 +278,15 @@ func (s *AccountSnapshot) OwnedProjectionsOf() OwnedProjections {
 // AccountPool 是 Keychain envelope 的顶层结构（design §3.1）。
 // 时间统一 RFC3339Nano（time.Time 默认编码）；ActiveAccountID 空串表示 null。
 type AccountPool struct {
-	SchemaVersion      int               `json:"schemaVersion"`
-	Revision           uint64            `json:"revision"`
-	ActiveAccountID    string            `json:"activeAccountId,omitempty"`
-	ActiveGeneration   uint64            `json:"activeGeneration"`
+	SchemaVersion      int                         `json:"schemaVersion"`
+	Revision           uint64                      `json:"revision"`
+	ActiveAccountID    string                      `json:"activeAccountId,omitempty"`
+	ActiveGeneration   uint64                      `json:"activeGeneration"`
 	Accounts           map[string]*AccountSnapshot `json:"accounts"`
-	Transaction        *PoolTransaction  `json:"transaction,omitempty"`
-	RefreshIntent      *RefreshIntent    `json:"refreshIntent,omitempty"`
-	LastSwitch         *LastSwitch       `json:"lastSwitch,omitempty"`
-	ManualRespectUntil *time.Time        `json:"manualRespectUntil,omitempty"`
+	Transaction        *PoolTransaction            `json:"transaction,omitempty"`
+	RefreshIntent      *RefreshIntent              `json:"refreshIntent,omitempty"`
+	LastSwitch         *LastSwitch                 `json:"lastSwitch,omitempty"`
+	ManualRespectUntil *time.Time                  `json:"manualRespectUntil,omitempty"`
 }
 
 // NewAccountPool 创建一个从未启用过的空池（revision 0、无账号）。

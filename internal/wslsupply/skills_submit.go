@@ -165,10 +165,10 @@ func (c *Coordinator) submitDirUnit(ctx context.Context, req CommitRequest) *Com
 		OpID: opID, Kind: OpKindDirSwap, TargetKey: targetKey,
 		TargetDistro: req.Target.Distro, TargetHome: req.Target.Home,
 		TargetCLI: string(req.Target.CLI),
-		Unit: req.Unit, RelPath: relDir, BeforeExists: rc.BeforeExists,
+		Unit:      req.Unit, RelPath: relDir, BeforeExists: rc.BeforeExists,
 		StagingRel: rc.StagingRel, DisplacedRel: rc.DisplacedRel,
 		PrevTreeHash: beforeTreeHash,
-		AfterHash: req.DirTreeHash, CreatedAt: time.Now(),
+		AfterHash:    req.DirTreeHash, CreatedAt: time.Now(),
 	}
 	if err := c.state.saveIntent(intent); err != nil {
 		_ = os.RemoveAll(staging)
@@ -334,11 +334,11 @@ func (c *Coordinator) recoverPublishFailure(req CommitRequest, rc *CommitReceipt
 func (c *Coordinator) newDirUndoLease(req CommitRequest, rc *CommitReceipt, beforeTreeHash string) *CompensationHandle {
 	h := &CompensationHandle{
 		target: req.Target, relPath: req.RelPath,
-		uncPath: filepath.Join(req.Target.UNCRoot, filepath.FromSlash(req.RelPath)),
-		linuxPath: req.Target.LinuxRoot + "/" + req.RelPath,
+		uncPath:     filepath.Join(req.Target.UNCRoot, filepath.FromSlash(req.RelPath)),
+		linuxPath:   req.Target.LinuxRoot + "/" + req.RelPath,
 		writtenHash: req.DirTreeHash, opID: rc.OpID, targetKey: rc.TargetKey,
 		backupRel: rc.BackupRel, stagingRel: rc.StagingRel, displacedRel: rc.DisplacedRel,
-		unit: req.Unit,
+		unit:  req.Unit,
 		isDir: true, writtenTreeHash: req.DirTreeHash,
 		prevExisted: rc.BeforeExists, prevTreeHash: beforeTreeHash,
 	}
@@ -411,10 +411,10 @@ func (c *Coordinator) compensateSkillDir(h *CompensationHandle) CompensationOutc
 			OpID: compOpID, Kind: OpKindCompensate, TargetKey: h.targetKey,
 			TargetDistro: h.target.Distro, TargetHome: h.target.Home,
 			TargetCLI: string(h.target.CLI),
-			Unit: h.unit, RelPath: h.relPath,
+			Unit:      h.unit, RelPath: h.relPath,
 			BeforeExists: h.prevExisted, AfterHash: h.writtenTreeHash,
 			PrevTreeHash: h.prevTreeHash,
-			ParentOpID: h.opID, CreatedAt: time.Now(),
+			ParentOpID:   h.opID, CreatedAt: time.Now(),
 		}); err != nil {
 			// 补偿 intent 保存失败：不开始恢复写，如实报 pending。
 			out.Disposition = CompensationUnavailable
@@ -529,4 +529,3 @@ func (c *Coordinator) restoreDirFromPersistedPrev(h *CompensationHandle) (bool, 
 	_ = os.RemoveAll(displaced)
 	return true, ""
 }
-

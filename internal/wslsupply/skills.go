@@ -127,7 +127,7 @@ func scanTargetSkillDir(uncSkillDir string, limits SkillsScanLimits) SkillTarget
 type targetStateFn func(uncPath string, limits SkillsScanLimits) SkillTargetState
 
 // planTreeUnitCore 是树单元（S4 用户资源目录/文件）的共享纯判定核心
-//（consent 门由协调器 Plan 统一前置）。
+// （consent 门由协调器 Plan 统一前置）。
 func planTreeUnitCore(target TargetRef, unit PlannedUnit, m *SkillManifest, limits SkillsScanLimits, entry *StateEntry, targetRel string, probe targetStateFn) PlannedUnit {
 	unit.TransformVersion = skillsTransformVersion
 	if m.Incomplete {

@@ -64,8 +64,8 @@ func (s *FileCredentialStore) Paths() FileCredentialPaths { return s.paths }
 
 // ClaudeJSONState 是 `.claude.json` 的受管投影读取结果。
 type ClaudeJSONState struct {
-	Fields     ClaudeIdentityFields
-	Revision   FileRevision
+	Fields       ClaudeIdentityFields
+	Revision     FileRevision
 	OtherTopKeys []string
 }
 
@@ -145,8 +145,8 @@ func (s *FileCredentialStore) verifyClaudeJSON(ctx context.Context, want ClaudeI
 
 // PiAuthState 是 auth.json 的受管投影读取结果。
 type PiAuthState struct {
-	Anthropic  json.RawMessage
-	Revision   FileRevision
+	Anthropic    json.RawMessage
+	Revision     FileRevision
 	OtherTopKeys []string
 }
 
@@ -276,12 +276,12 @@ func (c *CombinedNativeStore) ReadStable(ctx context.Context) (*NativeProjection
 		return nil, err
 	}
 	return &NativeProjections{
-		ClaudeOAuth:     oauth,
-		ClaudeOAuthRaw:  json.RawMessage(item),
-		Locator:         loc,
-		ClaudeIdentity:  &cj.Fields,
-		PiAnthropic:     pa.Anthropic,
-		PiOtherProviders: pa.OtherTopKeys,
+		ClaudeOAuth:            oauth,
+		ClaudeOAuthRaw:         json.RawMessage(item),
+		Locator:                loc,
+		ClaudeIdentity:         &cj.Fields,
+		PiAnthropic:            pa.Anthropic,
+		PiOtherProviders:       pa.OtherTopKeys,
 		ClaudeJSONOtherTopKeys: cj.OtherTopKeys,
 		Revisions: ExpectedRevisions{
 			ClaudeKeychain: &FileRevision{SHA256Hex: HashRevision(item), ManagedHash: HashRevision(oauth)},

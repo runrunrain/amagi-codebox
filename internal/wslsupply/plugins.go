@@ -852,7 +852,7 @@ func (p *PluginScope) savePluginPending(target TargetRef, opID string, op Plugin
 	return p.state.saveIntent(OperationIntent{
 		OpID: opID, Kind: OpKindPluginOp, TargetKey: targetKeyOf(target),
 		TargetDistro: target.Distro, TargetHome: target.Home,
-		TargetCLI: string(target.CLI),
+		TargetCLI:  string(target.CLI),
 		PluginMeta: pluginPendingMeta(op, spec), CreatedAt: time.Now(),
 	})
 }

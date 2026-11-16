@@ -125,11 +125,11 @@ type osWriteFileOps struct{}
 func (osWriteFileOps) CreateTemp(dir, pattern string) (*os.File, error) {
 	return os.CreateTemp(dir, pattern)
 }
-func (osWriteFileOps) Sync(f *os.File) error { return f.Sync() }
-func (osWriteFileOps) Close(f *os.File) error { return f.Close() }
-func (osWriteFileOps) Rename(oldPath, newPath string) error { return os.Rename(oldPath, newPath) }
-func (osWriteFileOps) Remove(path string) error { return os.Remove(path) }
-func (osWriteFileOps) SyncDir(dir string) error { return platform.SyncConfigDirectory(dir) }
+func (osWriteFileOps) Sync(f *os.File) error                     { return f.Sync() }
+func (osWriteFileOps) Close(f *os.File) error                    { return f.Close() }
+func (osWriteFileOps) Rename(oldPath, newPath string) error      { return os.Rename(oldPath, newPath) }
+func (osWriteFileOps) Remove(path string) error                  { return os.Remove(path) }
+func (osWriteFileOps) SyncDir(dir string) error                  { return platform.SyncConfigDirectory(dir) }
 func (osWriteFileOps) Chmod(path string, mode os.FileMode) error { return os.Chmod(path, mode) }
 
 // writeAtomicFile 同目录临时文件 0600→write→fsync→close→rename→父目录

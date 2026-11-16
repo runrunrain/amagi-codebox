@@ -324,7 +324,7 @@ func generateDedupKey(evt UsageEvent) string {
 	}
 }
 
-	// hash16 计算输入字段拼接后的 SHA1，返回前 16 个 hex 字符（64 bit 哈希）。
+// hash16 计算输入字段拼接后的 SHA1，返回前 16 个 hex 字符（64 bit 哈希）。
 func hash16(parts ...any) string {
 	h := sha1.New()
 	_, _ = fmt.Fprint(h, parts...)

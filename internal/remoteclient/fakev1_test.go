@@ -38,15 +38,15 @@ type capturedRequest struct {
 
 // fakeHost 是 v1 REST 假宿主。零值不可用，经 newFakeHost 构建。
 type fakeHost struct {
-	t    *testing.T
-	srv  *httptest.Server
-	mu   sync.Mutex
-	dev  *fakeDevice     // 最近一次配对签发的设备
-	rev  map[string]bool // 已撤销 deviceID
-	sess map[string]*contract.SessionDetail
-	ctl  map[string]string // 会话 → 控制权持有 deviceID（""=none）——控制域镜像
+	t     *testing.T
+	srv   *httptest.Server
+	mu    sync.Mutex
+	dev   *fakeDevice     // 最近一次配对签发的设备
+	rev   map[string]bool // 已撤销 deviceID
+	sess  map[string]*contract.SessionDetail
+	ctl   map[string]string // 会话 → 控制权持有 deviceID（""=none）——控制域镜像
 	lease map[string]string // 会话 → 持有 live WS lease 的 deviceID（""=未 attach，镜像服务端 lease 语义）
-	seq  int
+	seq   int
 	// 配对行为注入
 	pairingCode    string // 合法码
 	windowActive   bool   // 窗口开关（false → 410 auth.window_expired）
@@ -57,7 +57,7 @@ type fakeHost struct {
 	ovStatus       int    // 全局覆写状态码（0=关闭；M-3 代理注入）
 	ovBody         string // 全局覆写响应体
 	captured       []capturedRequest
-	hang           bool // 挂起处理（超时测试）
+	hang           bool   // 挂起处理（超时测试）
 	ctlAcquireBody string // 覆写 acquire 200 响应体（契约异常注入；空=正常 {"state":"you"}）
 }
 

@@ -42,11 +42,11 @@ const (
 
 // WSLSharedSkillsLinkResult 是一次供给/核验的结果（展示面与日志共用）。
 type WSLSharedSkillsLinkResult struct {
-	State   WSLSharedSkillsLinkState
-	Target  string // 目标侧 Linux 路径（host-missing/failed 可能为空）
-	Link    string // ~/.agents/skills（distro 内落点）
-	Backup  string // backed-up 时的备份路径
-	Detail  string // 失败原因/备注
+	State  WSLSharedSkillsLinkState
+	Target string // 目标侧 Linux 路径（host-missing/failed 可能为空）
+	Link   string // ~/.agents/skills（distro 内落点）
+	Backup string // backed-up 时的备份路径
+	Detail string // 失败原因/备注
 }
 
 // wslSharedSkillsScript 在 distro 内核验/修复受管符号链接（事务化：不跟随
@@ -103,7 +103,7 @@ func wslSharedSkillsScript(linuxTarget string) string {
 	}, "\n")
 }
 
-// wslShQuote POSIX 单引号包裹（值内单引号转义为 '\'' 形态）。
+// wslShQuote POSIX 单引号包裹（值内单引号转义为 '\” 形态）。
 func wslShQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }

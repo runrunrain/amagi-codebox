@@ -150,7 +150,7 @@ func TestControlDevicePlanePTY_GraceHolderAllowed(t *testing.T) {
 }
 
 // TestControlDevicePlanePTY_NonHolderDenials：非持控一律 DenyNotController
-//（none 持有 / 他设备持有），未知会话 DenySessionNotFound；所有拒绝路径
+// （none 持有 / 他设备持有），未知会话 DenySessionNotFound；所有拒绝路径
 // raw effect 零执行。（桌面持有与空 deviceID 见下方独立用例。）
 func TestControlDevicePlanePTY_NonHolderDenials(t *testing.T) {
 	arb, gate, _, dir, _ := newTestArbiter(t)

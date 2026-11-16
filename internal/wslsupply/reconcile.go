@@ -18,31 +18,31 @@ import (
 type ReconcileDisposition string
 
 const (
-	ReconcileNotApplied    ReconcileDisposition = "not-applied"    // T==before：核实后终结
-	ReconcileCommitted     ReconcileDisposition = "committed"      // T==after：核实后补登记（基准字段）
+	ReconcileNotApplied    ReconcileDisposition = "not-applied"        // T==before：核实后终结
+	ReconcileCommitted     ReconcileDisposition = "committed"          // T==after：核实后补登记（基准字段）
 	ReconcileUnconfirmed   ReconcileDisposition = "commit-unconfirmed" // T 不可判：留 pending
 	ReconcileCleanupResent ReconcileDisposition = "cleanup-residual"   // settled 在 intent 仍在：清材料
-	ReconcileRemoveDone    ReconcileDisposition = "removed"        // remove intent 且 T 已 absent
+	ReconcileRemoveDone    ReconcileDisposition = "removed"            // remove intent 且 T 已 absent
 	ReconcileRemovePending ReconcileDisposition = "withdrawal-unconfirmed"
 	ReconcileConflicted    ReconcileDisposition = "freeze-conflict" // T 后改：不赋覆盖权
-	ReconcileLeased        ReconcileDisposition = "leased"         // 本进程活跃租用：跳过清理
+	ReconcileLeased        ReconcileDisposition = "leased"          // 本进程活跃租用：跳过清理
 	ReconcileSaveFailed    ReconcileDisposition = "settle-save-failed"
-	ReconcileSkipped       ReconcileDisposition = "skipped"        // 无法处置（保留全部材料）
+	ReconcileSkipped       ReconcileDisposition = "skipped" // 无法处置（保留全部材料）
 	// R1-F03：退役单元的未决 intent 收口——终结 intent（保全墓碑证据）但不
 	// 重建在役登记、不触碰 WSL 侧旧副本（副本已不受管，由受管符号链接机制
 	// 接管同一棵树的后续生命周期）。
-	ReconcileRetired       ReconcileDisposition = "retired-closed"
+	ReconcileRetired ReconcileDisposition = "retired-closed"
 )
 
 // ReconcileReport 是一次 reconcile 的结论摘要。
 type ReconcileReport struct {
-	TargetKey   string
+	TargetKey    string
 	Dispositions []struct {
-		OpID       string
-		Kind       OpKind
-		Unit       UnitID
+		OpID        string
+		Kind        OpKind
+		Unit        UnitID
 		Disposition ReconcileDisposition
-		Detail     string
+		Detail      string
 	}
 	// Blocked 表示存在未决操作：该目标的新写/敏感消费需要先解决。
 	Blocked bool

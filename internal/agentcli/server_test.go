@@ -434,16 +434,16 @@ func TestServerBodyLimit(t *testing.T) {
 }
 
 // TestServerBodyMustBeExactlyOneJSONValue — 请求体必须恰好一个 JSON 值
-//（评审 D-11）：尾随第二 JSON 值/垃圾内容 → 400 bad_args；尾随纯空白正常。
+// （评审 D-11）：尾随第二 JSON 值/垃圾内容 → 400 bad_args；尾随纯空白正常。
 func TestServerBodyMustBeExactlyOneJSONValue(t *testing.T) {
 	_, ep := startTestServer(t)
 	const path = spec.PathCommand + "demo.echo"
 
 	for name, body := range map[string]string{
-		"尾随第二 JSON 值":  `{"args":{"name":"x"}} {"args":{"name":"y"}}`,
-		"尾随垃圾文本":     `{"args":{"name":"x"}} garbage`,
-		"尾随数字":       `{"args":{"name":"x"}} 42`,
-		"首值之前有内容":  `junk {"args":{"name":"x"}}`,
+		"尾随第二 JSON 值": `{"args":{"name":"x"}} {"args":{"name":"y"}}`,
+		"尾随垃圾文本":      `{"args":{"name":"x"}} garbage`,
+		"尾随数字":        `{"args":{"name":"x"}} 42`,
+		"首值之前有内容":     `junk {"args":{"name":"x"}}`,
 	} {
 		status, env := postRaw(t, ep.URL, ep.CLIToken, path, body)
 		if status != http.StatusBadRequest || env.Error == nil || env.Error.Code != spec.ErrBadArgs {
@@ -464,7 +464,7 @@ func TestServerIntArgRejectsNonIntegerAndOutOfRange(t *testing.T) {
 	_, ep := startTestServer(t)
 	const path = spec.PathCommand + "demo.echo"
 	for name, body := range map[string]string{
-		"指数形式越界":  `{"args":{"name":"x","count":1e100}}`,
+		"指数形式越界":   `{"args":{"name":"x","count":1e100}}`,
 		"小数":       `{"args":{"name":"x","count":1.5}}`,
 		"布尔":       `{"args":{"name":"x","count":true}}`,
 		"字符串数字":    `{"args":{"name":"x","count":"3"}}`,

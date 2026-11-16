@@ -99,6 +99,7 @@ type hookIdentity struct {
 	onFirst  func()
 	doneOnce bool
 }
+
 func (h *hookIdentity) FetchProfile(ctx context.Context, token string) (ProfileIdentity, error) {
 	if !h.doneOnce {
 		h.doneOnce = true
