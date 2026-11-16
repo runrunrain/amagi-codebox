@@ -42,7 +42,7 @@
 - 依赖：`github.com/UserExistsError/conpty`（见 `internal/pty/service.go`）。
 - 会话创建：`Service.StartResolved` 调用 `conpty.Start(commandLine, opts...)`，通过 `ConPtyDimensions` / `ConPtyWorkDir` / `ConPtyEnv` 传入初始尺寸、工作目录与环境。
 - 默认尺寸：未指定时为 120 列 × 40 行。
-- **默认 Shell 为 WSL**：Windows 平台能力 `DefaultShellKey = "wsl"`（`internal/platform/capabilities_runtime.go`）。WSL 会话以 `wsl.exe -d <distro> --cd "<winWorkDir>" -- bash -lic '<payload>'` 形式启动，整个 payload 作为单一 argv 传给 wsl.exe；无可用发行版时回退 pwsh/powershell/cmd（详见 `internal/pty/service.go` 的 WSL 包装注释）。
+- **默认 Shell 为 WSL**：Windows 平台能力 `DefaultShellKey = "wsl"`（`internal/platform/capabilities_runtime.go`）。WSL 会话以 `wsl.exe -d <distro> --cd "<winWorkDir>" --exec bash -lic '<payload>'` 形式启动，整个 payload 作为单一 argv 传给 wsl.exe；无可用发行版时回退 pwsh/powershell/cmd（详见 `internal/pty/service.go` 的 WSL 包装注释）。
 - Shell 包装（非 WSL 时）：
     - PowerShell / pwsh：以 `-NoProfile -NoLogo -NoExit -ExecutionPolicy Bypass -Command "..."` 形式启动。`-ExecutionPolicy Bypass` 是进程级参数，仅对当前会话生效，不改变系统执行策略，目的是让 npm 全局安装的 `.ps1` shim 在系统策略为 `Restricted` 的机器上也能运行。
     - cmd：以 `/K "chcp 65001 >nul && <命令>"` 形式启动，显式切到 UTF-8 代码页。

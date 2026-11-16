@@ -14,7 +14,7 @@ const (
 	BootstrapShellInline   LaunchBootstrapMode = "shell-inline"
 	BootstrapShellAttach   LaunchBootstrapMode = "shell-attach"
 	// BootstrapWSL runs the CLI inside a WSL distro. The PTY layer builds the
-	// `wsl.exe -d <distro> --cd <workdir> -- bash -lic '<cli>; exec bash -li'`
+	// `wsl.exe -d <distro> --cd <workdir> --exec bash -lic '<cli>; exec bash -li'`
 	// command line; the CLI is resolved by the Linux PATH inside WSL, not by the
 	// Windows resolver, and injected env crosses the boundary via WSLENV.
 	BootstrapWSL LaunchBootstrapMode = "wsl"

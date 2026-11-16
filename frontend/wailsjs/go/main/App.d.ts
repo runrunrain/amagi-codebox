@@ -408,6 +408,8 @@ export function SaveTerminalPreset(arg1:string,arg2:string,arg3:config.TerminalP
 
 export function SelfHealDockerWSLIntegration():Promise<dockerwsl.SelfHealReport>;
 
+export function SessionListDirectories(arg1:string,arg2:string):Promise<string>;
+
 export function SetAgentCLIEnabled(arg1:boolean):Promise<void>;
 
 export function SetClaudeAccountRotation(arg1:boolean,arg2:number,arg3:string):Promise<void>;

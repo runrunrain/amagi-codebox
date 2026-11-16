@@ -32,6 +32,7 @@ type PtySession struct {
 	shellReady     chan struct{}
 	shellReadyOnce sync.Once
 	bootstrapMode  platform.LaunchBootstrapMode
+	wslDistro      string     // immutable actual target captured at process start
 	outputHistory  []byte     // 最近输出的环形缓冲区，供后加入的 WebSocket 客户端重放
 	historyMu      sync.Mutex // 保护 outputHistory
 	emitSeq        uint64     // monotonic counter incremented per PTY output chunk under historyMu
@@ -295,6 +296,18 @@ func (s *Service) StartResolvedWithRun(sessionID string, spec platform.ResolvedL
 // StartResolvedWithRunEvidence returns the concrete exact-close capability
 // minted with the backend map insertion. Callers retain it in processcap.Registry.
 func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (processcap.StartEvidence, error) {
+	// Validate in the target distro, outside the PTY mutex. wsl.exe may report
+	// relay chdir failures with exit=0; never publish a doomed/wrong-directory
+	// session. This funnel covers desktop, remote and restart starts.
+	wslDistro := ""
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		wslDistro = platform.DefaultWSLDistro(spec.Env.Variables)
+		var err error
+		spec, err = prepareWSLStartupSpec(spec, wslDistro)
+		if err != nil {
+			return processcap.StartEvidence{}, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -319,7 +332,15 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 	}
 
 	workDir := spec.WorkDir
-	commandLine, sendAutoCommand := buildResolvedStartupPlan(spec, s.log)
+	var commandLine, sendAutoCommand string
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		// Use the same captured distro for validation, process creation and
+		// later directory browsing, even if a concurrent environment refresh
+		// invalidates the platform's default-distro cache.
+		commandLine = buildWSLCommandLineForDistro(spec, s.log, wslDistro)
+	} else {
+		commandLine, sendAutoCommand = buildResolvedStartupPlan(spec, s.log)
+	}
 
 	// nil logger is a supported wiring (service_darwin.go already guards every
 	// s.log call the same way; NewService(nil) must not panic on Windows).
@@ -382,6 +403,7 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 		exited:        exited,
 		shellReady:    make(chan struct{}),
 		bootstrapMode: spec.BootstrapMode,
+		wslDistro:     wslDistro,
 		currentCols:   cols,
 		currentRows:   rows,
 		runHandle:     runHandle,
@@ -915,7 +937,7 @@ func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
 // buildWSLCommandLine assembles the ConPTY command line for a WSL-backed
 // session:
 //
-//	wsl.exe -d <distro> --cd "<winWorkDir>" -- bash -lic "<payload>"
+//	wsl.exe -d <distro> --cd "<winWorkDir>" --exec bash -lic "<payload>"
 //
 // Two layers of quoting are involved and BOTH matter:
 //
@@ -934,7 +956,10 @@ func buildStartupCommandLine(commandLine, autoCommand string) (string, string) {
 // --cd lets WSL do the /mnt mapping; WSLENV (already in spec.Env.Variables)
 // carries injected auth/provider env across the boundary.
 func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service) string {
-	distro := platform.DefaultWSLDistro(spec.Env.Variables)
+	return buildWSLCommandLineForDistro(spec, log, platform.DefaultWSLDistro(spec.Env.Variables))
+}
+
+func buildWSLCommandLineForDistro(spec platform.ResolvedLaunchSpec, log *logging.Service, distro string) string {
 	if distro == "" {
 		// Defensive: the resolver only selects WSL when a usable distro exists.
 		// If we somehow reach here without one, fall back to a bare wsl.exe so the
@@ -950,7 +975,12 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 	// (verified on real Windows CommandLineToArgvW parsing). Distro names from
 	// `wsl -l -q` are plain tokens without spaces, so pass the name bare.
 	parts := []string{"wsl.exe", "-d", distro}
-	if strings.TrimSpace(spec.WorkDir) != "" {
+	if spec.WorkDir == "" {
+		// Defensive standalone command construction; production starts use the
+		// exact absolute directory returned by prepareWSLStartupSpec.
+		parts = append(parts, "--cd", windowsQuoteArg("~"))
+	}
+	if spec.WorkDir != "" {
 		parts = append(parts, "--cd", windowsQuoteArg(spec.WorkDir))
 		// C8: a Windows drive-letter workdir lands on the /mnt/<drive> DrvFS/9P
 		// mount, whose I/O is dramatically slower than the distro's ext4 for
@@ -973,7 +1003,9 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 			}
 		}
 	}
-	parts = append(parts, "--", "bash", "-lic")
+	// --exec is essential: the prelude contains shell variables that must
+	// only expand inside the login bash, not WSL's intermediate shell.
+	parts = append(parts, "--exec", "bash", "-lic")
 
 	// WSL Pi 登录：StartupCommand 非空时它是权威 bash payload——上游
 	//（pi_login_launch.go 的 WSL 重锚）在载荷内只嵌 env -u 凭据键前缀重锚
@@ -981,11 +1013,18 @@ func buildWSLCommandLine(spec platform.ResolvedLaunchSpec, log *logging.Service)
 	// 替代缺省的 CLI 拼装。resolver 的 WSL 分支不产 StartupCommand，该覆盖面
 	// 当前只有登录重锚一个生产写入方。
 	if strings.TrimSpace(spec.StartupCommand) != "" {
-		parts = append(parts, windowsQuoteArg(spec.StartupCommand))
+		payload := spec.StartupCommand
+		if strings.EqualFold(spec.AppType, "pi") {
+			payload = platform.WSLPiRuntimePrelude() + "\n" + payload
+		}
+		parts = append(parts, windowsQuoteArg(payload))
 		return strings.Join(parts, " ")
 	}
 
 	payload := buildWSLInnerCommand(spec.CLI.Path, spec.CLI.Args)
+	if strings.EqualFold(spec.AppType, "pi") {
+		payload = platform.WSLPiRuntimePrelude() + "\n" + payload
+	}
 	parts = append(parts, windowsQuoteArg(payload))
 	return strings.Join(parts, " ")
 }

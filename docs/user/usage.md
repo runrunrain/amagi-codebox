@@ -72,6 +72,21 @@ Windows 上内嵌会话默认落在 WSL，工作目录的选择直接决定会�
 
 > CodeBox 启动 WSL 会话时，若 `--cd` 工作目录映射到 `/mnt/<盘符>`（DrvFS/9P），后端会记一条 warn 日志「DrvFS 工作区 I/O 显著慢于 ext4」作为提示（`/logs` 页可查）；这只是建议，不会阻止会话启动。
 
+WSL 启动前会在实际发行版中校验目录；不存在或不可访问时直接提示并拒绝启动，不会悄悄换到主目录。导入自 macOS 的 `/Users/...` 收藏不会自动映射到 Linux `/home/...`。例如本机工程应选择 `X:\WorkSpace\amagi-codebox`，或目标发行版内确实存在的路径。
+
+### WSL Pi 的任务运行数据
+
+WSL Pi 仍直接使用 Windows 的 agent 根读取配置、登录凭据与插件，不复制 `auth.json`、`models.json` 等文件。高频写入的任务状态与归档默认改放到 WSL 本地文件系统：
+
+| 内容 | 默认位置（相对 `${XDG_STATE_HOME:-$HOME/.local/state}/amagi-codebox/pi`） | 覆盖变量 |
+|------|------|------|
+| Amagi 任务状态、通道、journal 等 | `data` | `AMAGI_DATA_DIR` |
+| 任务回流归档 | `artifacts` | `AMAGI_ARTIFACT_ROOT` |
+
+已有显式环境变量值优先；目录无法创建或仍在跨系统文件系统时会告警并沿用既有位置。不会搬迁或删除历史数据。Pi 会话 JSONL 仍保留在原 agent 根的 `sessions` 中，避免破坏 Windows/WSL 之间的续接和 CodeBox 用量统计。新任务状态与归档可从 Windows 通过 `\\wsl.localhost\<发行版>\home\<用户>\...` 访问。
+
+这项优化减少的是 agent 任务状态与归档的跨盘读写，不会把 Windows 工程或插件代码自动搬入 WSL。本机小文件基准有明显改善，但插件代码仍需经 `/mnt/...` 加载，冷启动和工程扫描仍可能较慢；若需要彻底避开该开销，应使用 Windows 原生会话，或在确认同步方案后另行安排 WSL 本地代码部署。
+
 ---
 
 ## 终端 `/terminal`（TerminalPageView）

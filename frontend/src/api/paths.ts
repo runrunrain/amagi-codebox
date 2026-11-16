@@ -17,7 +17,7 @@ import {
   ListDirectories,
 } from '../../wailsjs/go/paths/PathsService';
 
-import { BrowseDirectory, OpenFileInEditor } from '../../wailsjs/go/main/App';
+import { BrowseDirectory, OpenFileInEditor, SessionListDirectories } from '../../wailsjs/go/main/App';
 
 import { paths } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
@@ -116,6 +116,22 @@ export function savePaths(): Promise<void> {
 export function listDirectories(root: string): Promise<ListDirectoriesResult> {
   return callApi('[api.paths.listDirectories]', async () => {
     const raw = await ListDirectories(root);
+    return JSON.parse(raw) as ListDirectoriesResult;
+  });
+}
+
+/**
+ * 会话感知的目录列表（快抱功能「输入工作路径」）：后端以会话权威启动
+ * 上下文判定目标文件系统 —— WSL 内嵌会话在目标 distro 内列出（空 root
+ * = distro $HOME，Windows 盘符 root 实测转换为 Linux 路径），其余会话
+ * 与 listDirectories 完全同路（原生行为不变）。载荷 JSON 同形。
+ */
+export function sessionListDirectories(
+  sessionId: string,
+  root: string,
+): Promise<ListDirectoriesResult> {
+  return callApi('[api.paths.sessionListDirectories]', async () => {
+    const raw = await SessionListDirectories(sessionId, root);
     return JSON.parse(raw) as ListDirectoriesResult;
   });
 }

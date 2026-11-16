@@ -127,9 +127,11 @@
       </div>
     </Teleport>
 
-    <!-- 快捷功能：输入工作路径（目录多选 → 组装文本写入终端输入框） -->
+    <!-- 快捷功能：输入工作路径（目录多选 → 组装文本写入终端输入框）；
+         session-id 供后端按会话权威启动上下文分派 WSL distro / 原生目录树 -->
     <PathPickerDialog
       :visible="pathPickerVisible"
+      :session-id="sessionId"
       :work-dir="session?.workDir || ''"
       @close="pathPickerVisible = false"
       @confirm="onPathPickerConfirm"

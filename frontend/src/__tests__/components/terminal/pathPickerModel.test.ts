@@ -376,3 +376,132 @@ describe('PathPickerModel Linux 路径形态声明', () => {
     expect(model.errorMsg).toBe('')
   })
 })
+
+// ---- 会话感知加载器（WSL 会话目录选择链路的前端半段） ----
+
+import {
+  createSessionPathLoader,
+  type SessionAwareLoaders,
+} from '../../../components/terminal/pathPickerModel'
+
+describe('createSessionPathLoader', () => {
+  const stubLoaders = (
+    sessionImpl?: (sessionId: string, root: string) => Promise<ListDirectoriesResult>,
+  ): SessionAwareLoaders & { nativeRoots: string[]; sessionCalls: [string, string][] } => {
+    const nativeRoots: string[] = []
+    const sessionCalls: [string, string][] = []
+    return {
+      nativeRoots,
+      sessionCalls,
+      listDirectories: async (root) => {
+        nativeRoots.push(root)
+        return listingOf('/native', ['a'])
+      },
+      sessionListDirectories: sessionImpl
+        ?? (async (sessionId, root) => {
+            sessionCalls.push([sessionId, root])
+            return listingOf('/wsl-home', ['proj'])
+          }),
+    }
+  }
+
+  it('空/缺省 sessionId 回退原生入口（独立使用场景行为不变）', async () => {
+    for (const id of ['', '   ', undefined]) {
+      const loaders = stubLoaders()
+      const loader = createSessionPathLoader(id, loaders)
+      const result = await loader('/w')
+      expect(result.root).toBe('/native')
+      expect(loaders.nativeRoots).toEqual(['/w'])
+    }
+  })
+
+  it('非空 sessionId 固定携带会话 ID 走 facade，root 原样透传', async () => {
+    const loaders = stubLoaders()
+    const loader = createSessionPathLoader(' sess-1 ', loaders)
+    await loader('')
+    await loader('/home/u')
+    await loader('~/proj')
+    expect(loaders.sessionCalls).toEqual([
+      ['sess-1', ''],
+      ['sess-1', '/home/u'],
+      ['sess-1', '~/proj'],
+    ])
+    expect(loaders.nativeRoots).toEqual([])
+  })
+
+  it('facade 错误透传（不吞错，供错误态展示）', async () => {
+    const loaders = stubLoaders(async () => {
+      throw new Error('发行版不可达')
+    })
+    const loader = createSessionPathLoader('sess-2', loaders)
+    await expect(loader('/home/u')).rejects.toThrow('发行版不可达')
+  })
+})
+
+describe('PathPickerModel 会话目录流（WSL 分支）', () => {
+  it('Linux 形态 root 由后端成功返回：正常展示行与勾选（不再触发形态声明）', async () => {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      return listingOf('/home/u', ['proj-a', 'proj-b'])
+    }
+    const model = new PathPickerModel(loader)
+
+    await model.resetAndLoad('/home/u/proj-a')
+
+    expect(calls).toEqual(['/home/u'])
+    expect(model.linuxForm).toBe(false)
+    expect(model.rows.map((r) => (r.kind === 'dir' ? r.path : r.kind))).toEqual([
+      '/home/u/proj-a',
+      '/home/u/proj-b',
+    ])
+    model.toggleCheck('/home/u/proj-b')
+    expect([...model.selected]).toEqual(['/home/u/proj-b'])
+  })
+
+  it('显式导航到不存在目录：明确错误态，goHome 透传空 root（WSL = distro 主目录）', async () => {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      if (root === '/gone') throw new Error('目录在 WSL 发行版内不存在或不可访问：/gone；可点「从主目录开始」')
+      return listingOf('/home/u', ['proj'])
+    }
+    const model = new PathPickerModel(loader)
+
+    await model.resetAndLoad('/home/u/proj')
+    expect(model.listing?.root).toBe('/home/u')
+
+    // 显式导航失败：不降级、展示明确错误（原生语义不变）
+    model.navigate('/gone')
+    await vi.waitFor(() => expect(model.errorMsg).toContain('不存在或不可访问'))
+    expect(model.listing).toBeNull()
+
+    // 「从主目录开始」= 空 root 透传（WSL 会话由后端展开 distro $HOME）
+    model.goHome()
+    await vi.waitFor(() => expect(model.listing?.root).toBe('/home/u'))
+    expect(calls[calls.length - 1]).toBe('')
+  })
+
+  it('初始 WSL root 不可达：保留错误，重试原目录；显式 goHome 才进入发行版主目录', async () => {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      if (root === '/gone') throw new Error('会话目录不可用：目录在 WSL 发行版内不存在或不可访问：/gone')
+      return listingOf('/home/u', ['proj'])
+    }
+    const model = new PathPickerModel(loader)
+
+    await model.resetAndLoad('/gone/proj')
+
+    expect(calls).toEqual(['/gone'])
+    expect(model.listing).toBeNull()
+    expect(model.errorMsg).toContain('会话目录不可用')
+    model.retry()
+    await vi.waitFor(() => expect(calls).toEqual(['/gone', '/gone']))
+    expect(model.listing).toBeNull()
+    model.goHome()
+    await vi.waitFor(() => expect(model.listing?.root).toBe('/home/u'))
+    expect(calls).toEqual(['/gone', '/gone', ''])
+    expect(model.errorMsg).toBe('')
+  })
+})

@@ -782,6 +782,10 @@ export function SelfHealDockerWSLIntegration() {
   return window['go']['main']['App']['SelfHealDockerWSLIntegration']();
 }
 
+export function SessionListDirectories(arg1, arg2) {
+  return window['go']['main']['App']['SessionListDirectories'](arg1, arg2);
+}
+
 export function SetAgentCLIEnabled(arg1) {
   return window['go']['main']['App']['SetAgentCLIEnabled'](arg1);
 }
