@@ -1,6 +1,6 @@
 module amagi-codebox
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
@@ -13,8 +13,8 @@ require (
 	github.com/tidwall/pretty v1.2.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/wailsapp/wails/v2 v2.13.0
-	golang.org/x/net v0.60.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.54.0
 )
@@ -46,8 +46,8 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
