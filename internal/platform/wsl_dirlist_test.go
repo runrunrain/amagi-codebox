@@ -131,11 +131,22 @@ func TestWSLDirectoryScriptsOnPOSIXFilesystem(t *testing.T) {
 	if _, exists, err := wslListSubdirsForOS("windows", "test", filepath.Join(home, "missing")); err != nil || exists {
 		t.Fatalf("missing exists=%v err=%v", exists, err)
 	}
+	// 解析结果是物理路径（EvalSymlinks 语义）；macOS 的 t.TempDir() 位于
+	// /var → /private/var 符号链接之后，期望值须同样归一到物理路径，否则
+	// 平台间前缀差异导致误报（Linux 无此前缀不受影响）。
+	physHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, input := range []string{"", "~", root} {
 		resolved, err := WSLResolveDirectoryContext(context.Background(), "test", input)
-		expected := home
+		expected := physHome
 		if input == root {
-			expected = root
+			expected = physRoot
 		}
 		if err != nil || resolved != expected {
 			t.Fatalf("input=%q resolved=%q err=%v", input, resolved, err)
@@ -173,9 +184,15 @@ func TestWSLResolveDirectoryKeepsPhysicalSymlinkDotDotTarget(t *testing.T) {
 		return exec.CommandContext(ctx, sh, "-c", script).Output()
 	})
 	// Do not filepath.Join this input: its lexical clean would erase the case.
+	// 期望值须用物理化的 root（EvalSymlinks）：macOS 的 t.TempDir() 位于
+	// /var → /private/var 符号链接之后，词法 root 会与前缀失配。
+	physRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	input := root + "/link/../peer"
 	resolved, err := WSLResolveDirectoryContext(context.Background(), "Captured", input)
-	if err != nil || resolved != filepath.Join(root, "real/peer") {
+	if err != nil || resolved != filepath.Join(physRoot, "real/peer") {
 		t.Fatalf("resolved=%q err=%v", resolved, err)
 	}
 }
