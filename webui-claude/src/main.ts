@@ -14,5 +14,10 @@ import './tokens.css'
 
 const params = new URLSearchParams(window.location.search)
 document.documentElement.classList.toggle('webui-embedded-light', params.get('skin') === 'light')
+// 独立开发态（?mock=1）兜底底色：生产嵌入态由宿主皮肤层承托（body 透明
+// 透皮），独立浏览器打开没有宿主层，近白文字会落在浏览器白画布上不可读
+// （2026-11-16 浏览器实测）；mock 态补一块与目标肤同源的底色模拟宿主。
+// 生产 iframe 不携带 mock 参数，永不命中。
+document.documentElement.classList.toggle('mock-backdrop', params.get('mock') === '1')
 
 createApp(App).mount('#app')

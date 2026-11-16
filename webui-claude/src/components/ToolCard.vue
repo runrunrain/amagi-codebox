@@ -55,10 +55,11 @@ const inputPreview = computed(() => {
 
 <style scoped>
 .tool {
-  border: 1px solid var(--plane-border);
+  border: 1px solid var(--plane-hairline);
   border-radius: var(--radius-sm);
   font-size: 12px;
   overflow: hidden;
+  background: var(--plane-block);
 }
 
 .tool-head {
@@ -66,7 +67,7 @@ const inputPreview = computed(() => {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  background: var(--plane-card);
+  background: transparent;
 }
 
 .tool-status {
@@ -135,7 +136,7 @@ const inputPreview = computed(() => {
   padding: 3px 8px;
   color: var(--plane-text-dim);
   user-select: none;
-  border-top: 1px solid var(--plane-border);
+  border-top: 1px solid var(--plane-hairline);
 }
 
 .tool-sec-err {
@@ -151,6 +152,6 @@ const inputPreview = computed(() => {
   word-break: break-word;
   font-family: var(--mono);
   color: var(--plane-text-dim);
-  border-top: 1px solid var(--plane-border);
+  border-top: 1px solid var(--plane-hairline);
 }
 </style>

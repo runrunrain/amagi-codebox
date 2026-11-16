@@ -1,9 +1,17 @@
 <template>
   <div class="plane-root">
     <header class="plane-header">
-      <span class="plane-title" :title="doc.title">{{ headerTitle }}</span>
-      <span v-if="doc.truncatedHead" class="plane-note">已省略较早消息</span>
-      <span v-if="reconnecting" class="plane-note" role="status">连接中断，重连中…</span>
+      <div class="hdr-l">
+        <span class="plane-title" :title="doc.title">{{ headerTitle }}</span>
+        <span v-if="doc.truncatedHead" class="pill">已省略较早消息</span>
+        <span v-if="reconnecting" class="pill pill-warn" role="status">连接中断，重连中…</span>
+      </div>
+      <div class="hdr-r">
+        <span class="conn" :data-conn="connState" role="status">
+          <span class="conn-dot" aria-hidden="true"></span>
+          <span>{{ connText }}</span>
+        </span>
+      </div>
     </header>
 
     <!-- 页内错误态（design §7.2-3，白屏防线的另一半）：token 缺失/非法或
@@ -54,7 +62,19 @@ const planeToken = ref('')
 let source: DataSource | null = null
 let mockMode = false
 
-const headerTitle = computed(() => doc.title || 'Claude 会话')
+const headerTitle = computed(() => doc.title || 'Claude · 会话')
+
+/** 连接指示三态（pi hdr conn 同构）：live / connecting / ended。 */
+const connState = computed(() => {
+  if (ended.value) return 'ended'
+  return phase.value === 'live' ? 'live' : 'connecting'
+})
+
+const connText = computed(() => {
+  if (ended.value) return '会话已结束'
+  if (reconnecting.value) return '重连中…'
+  return phase.value === 'live' ? '已连接' : '连接中…'
+})
 
 const errorTitle = computed(() => {
   switch (errorKind.value) {
@@ -166,7 +186,9 @@ watch(ended, (value) => {
 <style>
 /* 全局（非 scoped）：body 透明 + 语义配色映射（tokens.css 1:1 快照之上的
    双肤组合层——深色嵌入缺省，?skin=light → .webui-embedded-light 浅色；
-   零手写色值，全部引用 token）。 */
+   零手写色值，全部引用 token 或其 color-mix 派生）。
+   版式基线对齐 pi webui 嵌入模式（amagi-pi webui.css「嵌入皮肤模式」段）：
+   面板化（半透明深底 + backdrop blur + 发丝线）+ 全链透皮。 */
 html,
 body {
   margin: 0;
@@ -174,7 +196,9 @@ body {
   height: 100%;
 }
 
-/* 透明 body：内嵌态透出宿主皮肤层（与 pi 页面同约定，design §7.2）。 */
+/* 透明 body：内嵌态透出宿主皮肤层（与 pi 页面同约定，design §7.2）。
+   不得声明 color-scheme: dark——UA 会为 transparent 根背景画暗基色，
+   盖掉宿主皮肤（WebView2 透明 iframe 实测教训，见 pi webui.css 同款注释）。 */
 body {
   background: transparent;
   color: var(--termText);
@@ -184,26 +208,50 @@ body {
   line-height: 1.6;
 }
 
+/* 独立开发态（?mock=1）兜底：模拟宿主深肤底（生产嵌入态不命中，见 main.ts）。 */
+html.mock-backdrop body {
+  background: var(--termBg);
+}
+
+html.mock-backdrop.webui-embedded-light body {
+  background: var(--window);
+}
+
 :root {
+  /* 文字层级（深肤：终端材质令牌） */
   --plane-text: var(--termText);
   --plane-text-dim: var(--termGray);
   --plane-accent: var(--termBlue);
+  --plane-accent-hover: color-mix(in srgb, var(--termBlue) 85%, var(--termBg));
+  --plane-accent-contrast: var(--termText);
   --plane-success: var(--termGreen);
   --plane-danger: var(--danger);
-  --plane-card: var(--termBg);
-  --plane-border: var(--termGray);
-  --plane-user-card: var(--termBg);
+  /* 面板档（pi embed-panel / embed-block 同源派生） */
+  --plane-panel: color-mix(in srgb, var(--termBg) 72%, transparent);
+  --plane-block: color-mix(in srgb, var(--termBg) 45%, transparent);
+  --plane-field: color-mix(in srgb, var(--termBg) 55%, transparent);
+  --plane-hairline: color-mix(in srgb, var(--termText) 16%, transparent);
+  --plane-user-bar: color-mix(in srgb, var(--termText) 70%, transparent);
+  --plane-focus-ring: color-mix(in srgb, var(--termBlue) 22%, transparent);
+  --plane-shadow: 0 6px 24px color-mix(in srgb, var(--termBg) 45%, transparent);
+  --plane-blur: 14px;
 }
 
 .webui-embedded-light {
   --plane-text: var(--label);
   --plane-text-dim: var(--secondary);
   --plane-accent: var(--accent);
+  --plane-accent-hover: var(--accentHover);
+  --plane-accent-contrast: var(--window);
   --plane-success: var(--success-strong);
   --plane-danger: var(--danger-strong);
-  --plane-card: var(--card);
-  --plane-border: var(--separator);
-  --plane-user-card: var(--control);
+  --plane-panel: color-mix(in srgb, var(--card) 82%, transparent);
+  --plane-block: color-mix(in srgb, var(--card) 60%, transparent);
+  --plane-field: color-mix(in srgb, var(--window) 82%, transparent);
+  --plane-hairline: color-mix(in srgb, var(--label) 14%, transparent);
+  --plane-user-bar: var(--label);
+  --plane-focus-ring: color-mix(in srgb, var(--accent) 22%, transparent);
+  --plane-shadow: var(--shadow);
 }
 
 .plane-root {
@@ -213,27 +261,88 @@ body {
   color: var(--plane-text);
 }
 
+/* 顶栏：pi hdr 嵌入版式——面板化（半透明底 + blur + 发丝线底边） */
 .plane-header {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--plane-border);
+  gap: 16px;
+  padding: 10px clamp(24px, 5vw, 48px);
+  background: var(--plane-panel);
+  -webkit-backdrop-filter: blur(var(--plane-blur));
+  backdrop-filter: blur(var(--plane-blur));
+  border-bottom: 1px solid var(--plane-hairline);
   flex: none;
 }
 
+.hdr-l {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.hdr-r {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  white-space: nowrap;
+}
+
 .plane-title {
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  max-width: 40vw;
 }
 
-.plane-note {
-  color: var(--plane-text-dim);
+/* 药丸徽标（pi pill 同构）：次级字 + control 底 + 小圆角 */
+.pill {
+  display: inline-flex;
+  align-items: center;
   font-size: 12px;
+  color: var(--plane-text-dim);
+  background: var(--plane-block);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
   white-space: nowrap;
+}
+
+.pill-warn {
+  color: var(--warning-strong);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+/* 连接指示（pi conn 同构）：圆点 + 文字，点色分态 */
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--plane-text-dim);
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--plane-text-dim);
+  flex: none;
+}
+
+.conn[data-conn='live'] .conn-dot {
+  background: var(--plane-success);
+}
+
+.conn[data-conn='live'] {
+  color: var(--plane-text-dim);
+}
+
+.conn[data-conn='ended'] .conn-dot {
+  background: var(--plane-text-dim);
 }
 
 .plane-error {
@@ -241,9 +350,12 @@ body {
   max-width: 420px;
   padding: 20px 24px;
   text-align: center;
-  background: var(--plane-card);
-  border: 1px solid var(--plane-border);
+  background: var(--plane-panel);
+  -webkit-backdrop-filter: blur(var(--plane-blur));
+  backdrop-filter: blur(var(--plane-blur));
+  border: 1px solid var(--plane-hairline);
   border-radius: var(--radius-card);
+  box-shadow: var(--plane-shadow);
 }
 
 .plane-error-title {
@@ -258,18 +370,25 @@ body {
 }
 
 .plane-btn {
-  padding: 6px 18px;
+  padding: 4px 16px;
   font-size: 13px;
-  color: var(--plane-text);
-  background: var(--plane-card);
-  border: 1px solid var(--plane-border);
-  border-radius: var(--radius-sm);
+  font-family: inherit;
+  min-height: 24px;
+  color: var(--plane-accent-contrast);
+  background: var(--plane-accent);
+  border: 1px solid var(--plane-accent);
+  border-radius: var(--radius-md);
+  font-weight: 600;
   cursor: pointer;
 }
 
 .plane-btn:hover {
-  border-color: var(--plane-accent);
-  color: var(--plane-accent);
+  background: var(--plane-accent-hover);
+}
+
+.plane-btn:focus-visible {
+  outline: 2px solid var(--plane-accent);
+  outline-offset: 2px;
 }
 
 .sr-only {
