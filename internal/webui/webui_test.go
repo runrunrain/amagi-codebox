@@ -962,3 +962,86 @@ func TestProbe_WindowsShellAttachEmptyTokenStillRejected(t *testing.T) {
 		t.Fatalf("空 token + pid 失配不应采纳，got %s", st.State)
 	}
 }
+
+// --- WSL 慢启动与 503 token 豁免（2026-11-16 修复） -------------------------
+
+func TestProbe_503WithTokenExemptsPIDMismatch(t *testing.T) {
+	// WSL 会话：tracker pid 是 wsl.exe 的 Windows pid，/api/info 的 pid 是
+	// WSL 内 pi 的 Linux pid，必然失配。携正确 token 收到的 503 已证归属
+	//（amagi 扩展先验 bearer 再回 503，错 token 得 403）→ 视为"未就绪"保持
+	// probing，不转注册表回退（回退会误删候选条目）。
+	s := newTestService(t, time.Minute)
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"v":1,"ready":false,"sessionId":null,"pid":127,"port":null,"startedAt":"x","seq":0,"buffered":0,"clients":0,"pendingCount":0}`)
+	})
+	// 注册表放一条 token 匹配的候选：若 503 被误判不可达会走回退并删除它。
+	writeRegistryEntry(t, s.registryDir, 127, RegistryEntry{
+		V: 1, PID: 127, Host: "127.0.0.1", Port: port, SessionID: "pi-sess-wsl", Token: "tok-wsl", Ready: false,
+	})
+	s.RegisterSession("wsl503", 28828, port, "tok-wsl")
+
+	if st := s.ProbeWebUI("wsl503"); st.State != StateProbing {
+		t.Fatalf("token 已证归属的 503 pid 失配应视为未就绪（probing），got %s", st.State)
+	}
+	if _, err := os.Stat(filepath.Join(s.registryDir, "127.json")); err != nil {
+		t.Fatalf("notReady 候选的注册表条目不应被删除: %v", err)
+	}
+}
+
+func TestProbe_RegistryFallbackNotReadyKeepsEntry(t *testing.T) {
+	// 通道 2 候选探测得 503（pid 校验通过）：服务存活、session 未就绪——
+	// 不删注册文件（稍后即绪仍需它加速发现），状态保持 probing。
+	s := newTestService(t, time.Minute)
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"v":1,"ready":false,"sessionId":null,"pid":4321,"port":null,"startedAt":"x","seq":0,"buffered":0,"clients":0,"pendingCount":0}`)
+	})
+	writeRegistryEntry(t, s.registryDir, 4321, RegistryEntry{
+		V: 1, PID: 4321, Host: "127.0.0.1", Port: port, SessionID: "pi-sess-slow", Ready: false,
+	})
+	s.RegisterSession("slow", 4321, 0, "") // 纯注册表发现
+
+	if st := s.ProbeWebUI("slow"); st.State != StateProbing {
+		t.Fatalf("候选 503 未就绪应保持 probing，got %s", st.State)
+	}
+	if _, err := os.Stat(filepath.Join(s.registryDir, "4321.json")); err != nil {
+		t.Fatalf("notReady 候选的注册表条目不应被删除: %v", err)
+	}
+}
+
+func TestRegisterSessionWithWindow_WSLSlowStartSurvivesDefaultWindow(t *testing.T) {
+	// WSL+DrvFS 下 pi 扩展 webui server 就绪实测 30-75s+，默认 45s 窗口会在
+	// 服务就绪前耗尽误判 unavailable。RegisterSessionWithWindow 放宽的会话
+	// 在默认窗口耗尽后仍保持 probing；默认窗口的会话同时刻已 unavailable。
+	s := newTestService(t, 10*time.Second)
+	base := time.Now()
+	clock := base
+	s.now = func() time.Time { return clock }
+
+	free, err := AllocateFreePort()
+	if err != nil {
+		t.Fatalf("AllocateFreePort: %v", err)
+	}
+	s.RegisterSessionWithWindow("wsl", 1, free, "", 60*time.Second)
+	s.RegisterSession("native", 2, free, "")
+
+	if st := s.ProbeWebUI("wsl"); st.State != StateProbing {
+		t.Fatalf("连接拒绝在窗口内应 probing，got %s", st.State)
+	}
+	if st := s.ProbeWebUI("native"); st.State != StateProbing {
+		t.Fatalf("连接拒绝在窗口内应 probing，got %s", st.State)
+	}
+
+	clock = base.Add(20 * time.Second) // 超出服务默认窗口、仍在 WSL 放宽窗口内
+	if st := s.ProbeWebUI("wsl"); st.State != StateProbing {
+		t.Fatalf("放宽窗口内应保持 probing，got %s", st.State)
+	}
+	if st := s.ProbeWebUI("native"); st.State != StateUnavailable {
+		t.Fatalf("默认窗口耗尽应 unavailable，got %s", st.State)
+	}
+}

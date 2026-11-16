@@ -64,6 +64,11 @@ type tracker struct {
 	port         int // 当前确认/候选端口
 	registeredAt time.Time
 	failStreak   int // available 之后连续探测失败次数（ended 判定，§7.4）
+	// probingWindow 是本会话的探测窗口（0 = 用服务默认值）。WSL 会话经
+	// RegisterSessionWithWindow 放宽：WSL+DrvFS 工作区下 pi 扩展的 webui
+	// server 就绪实测 30-75s+（登录 shell + jiti 加载 200 模块全部落在
+	// /mnt 慢路径），45s 默认窗口会在服务就绪前误判 unavailable。
+	probingWindow time.Duration
 
 	// probeMu 串行化同一 tracker 的探测轮（I/O 在全局锁外执行，靠它防止
 	// 同会话并发探测交叉提交）。
@@ -77,6 +82,12 @@ const (
 	// defaultProbingWindow 是注册后等待 available 的总窗口；窗口耗尽判
 	// unavailable（典型场景：pi 未装 amagi 插件，端口永不就绪）。
 	defaultProbingWindow = 45 * time.Second
+	// DefaultWSLProbingWindow 是 WSL 目标会话的探测窗口（RegisterSession
+	// WithWindow 用）：WSL 内 pi 的 webui server 就绪需 30-75s+（实测
+	// 2026-11-16：amagi-pi on Ubuntu-24.04 + /mnt DrvFS 工作区 74s），45s
+	// 默认窗口会在服务就绪前耗尽误判 unavailable，前端随即隐藏 web 视图
+	// 入口。取 3 分钟给冷启动/高负载留足余量。
+	DefaultWSLProbingWindow = 3 * time.Minute
 	// endedFailThreshold 是 available 之后判定 ended 所需的连续失败次数
 	//（§7.4：连接失败持续超过探测窗口；§10 建议 ≥2 次间隔探测）。
 	endedFailThreshold = 2
@@ -116,17 +127,27 @@ func NewService(log *logging.Service, registryDir string) *Service {
 // RegisterSession 注册一个 embedded pi 会话（app.go LaunchPiSession 在 PTY
 // 启动成功后调用；不暴露给前端）。injectedPort<=0 表示端口分配/注入失败，
 // 发现完全走注册表回退通道；token 为 AMAGI_WEBUI_TOKEN 注入值（v1.0.2），
-// 空串表示未注入（探测时从注册表条目补读 token）。
+// 空串表示未注入（探测时从注册表条目补读 token）。窗口取服务默认值。
 func (s *Service) RegisterSession(sessionID string, pid, injectedPort int, token string) {
+	s.RegisterSessionWithWindow(sessionID, pid, injectedPort, token, 0)
+}
+
+// RegisterSessionWithWindow 以指定探测窗口注册会话（window<=0 取服务
+// 默认）。WSL 目标会话应传 DefaultWSLProbingWindow：WSL+DrvFS 下 pi 扩展
+// 的 webui server 就绪送慢于 Windows 原生（jiti 模块加载落在 /mnt 慢路径），
+// 默认 45s 窗口会在服务就绪前耗尽 → unavailable → 前端隐藏 web 视图入口
+//（实测 2026-11-16：74s 就绪 vs 45s 窗口）。
+func (s *Service) RegisterSessionWithWindow(sessionID string, pid, injectedPort int, token string, window time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.trackers[sessionID] = &tracker{
-		pid:          pid,
-		injectedPort: injectedPort,
-		token:        token,
-		state:        StateProbing,
-		port:         injectedPort,
-		registeredAt: s.now(),
+		pid:           pid,
+		injectedPort:  injectedPort,
+		token:         token,
+		state:         StateProbing,
+		port:          injectedPort,
+		registeredAt:  s.now(),
+		probingWindow: window,
 	}
 }
 
@@ -368,6 +389,11 @@ func (s *Service) runProbe(client *http.Client, registryDir string, snap *probeS
 			if validateAdoption(snap, info, e.Port, token != "") {
 				return resultAdopted, e.Port, info, token
 			}
+		} else if outcome == probeNotReady {
+			// 503（v/pid 校验通过）：本候选确属目标服务，只是 session 未就绪
+			// ——服务存活、稍后即绪，不删其注册文件（删了反而丢失发现加速器）
+			// 且无需继续扫其余候选。
+			return resultNotReady, 0, nil, ""
 		}
 		// 探测失败/校验不通过 → 淘汰该候选，继续下一个；best-effort 删除注册文件。
 		if e.file != "" {
@@ -435,7 +461,11 @@ func (s *Service) adoptLocked(t *tracker, port int, info *Info, token string) {
 // markStillProbingLocked 处理"尚未 available"：窗口内保持 probing，
 // 窗口耗尽落 unavailable（A-4：前端据此隐藏切换控件）。调用方必须持有 s.mu。
 func (s *Service) markStillProbingLocked(t *tracker) {
-	if s.now().Sub(t.registeredAt) > s.probingWindow {
+	window := t.probingWindow
+	if window <= 0 {
+		window = s.probingWindow
+	}
+	if s.now().Sub(t.registeredAt) > window {
 		if t.state != StateUnavailable {
 			s.log.Info("webui", "webui 探测窗口耗尽，判定 unavailable（未装插件或服务未起）")
 		}

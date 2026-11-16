@@ -1396,7 +1396,14 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
 		// T-1.5：注册 webui 探测（携带注入端口、pid 与 v1.0.2 token，供
 		// /api/info 探测与注册表回退匹配；webuiPort=0 表示纯注册表发现）。
-		a.WebUI.RegisterSession(sess.ID, pid, webuiPort, webuiToken)
+		// WSL 目标用放宽窗口：WSL+DrvFS 下 pi 扩展的 webui server 就绪实测
+		// 30-75s+（登录 shell + jiti 加载 200 模块落在 /mnt 慢路径），默认
+		// 45s 窗口会在服务就绪前耗尽误判 unavailable，前端随即隐藏 web 视图。
+		if spec.BootstrapMode == platform.BootstrapWSL {
+			a.WebUI.RegisterSessionWithWindow(sess.ID, pid, webuiPort, webuiToken, webui.DefaultWSLProbingWindow)
+		} else {
+			a.WebUI.RegisterSession(sess.ID, pid, webuiPort, webuiToken)
+		}
 
 		go func(id string) {
 			for a.Pty.IsRunning(id) {

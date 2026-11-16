@@ -46,7 +46,12 @@ type Info struct {
 
 // probeInfo 对 127.0.0.1:<port>/api/info 执行一次探测（v1.0.2：token 非空
 // 时携带 Authorization: Bearer 头）。expectPID>0 时用于 503 体的 pid 校验
-// （Major3：仅 v/pid 校验通过的 503 才视为"未就绪"）。
+// （Major3：仅 v/pid 校验通过的 503 才视为"未就绪"）。WSL 修订：token 非空时
+// 豁免 503 的 pid 等值校验——amagi 扩展的 /api/info 先验 bearer capability
+// 再回 503 infoBody（错 token 得 403），携正确 token 收到的 503 已证归属；
+// 而 WSL 会话的 tracker pid 是 wsl.exe 的 Windows pid，与 WSL 内 pi 进程的
+// Linux pid 必然失配，pid 防线在该架构下恒误判为不可达。无 token（legacy/
+// 独立终端未注入）时维持 pid 防线。
 // 返回的 *Info 仅在 probeReady 时保证非 nil。
 func probeInfo(ctx context.Context, client *http.Client, port int, token string, expectPID int) (*Info, probeOutcome) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/api/info", port)
@@ -84,7 +89,8 @@ func probeInfo(ctx context.Context, client *http.Client, port int, token string,
 	if is503 {
 		// Major3：仅 v/pid 校验通过的 503 才是"目标服务未就绪"；否则是端口
 		// 被他服务占用/陈旧注册表指向，按不可达让调用方转注册表回退。
-		if expectPID > 0 && info.PID != expectPID {
+		// WSL 修订：token 非空时豁免 pid 等值（函数头注释——token 已证归属）。
+		if token == "" && expectPID > 0 && info.PID != expectPID {
 			return nil, probeUnreachable
 		}
 		return nil, probeNotReady
