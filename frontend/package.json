@@ -30,6 +30,8 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@emnapi/core": "2.0.0-beta.2",
+    "@emnapi/runtime": "2.0.0-beta.2",
     "@eslint/js": "10.0.1",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.5",
@@ -58,7 +60,9 @@
     ],
     "ignoreDependencies": [
       "@playwright/test",
-      "playwright"
+      "playwright",
+      "@emnapi/core",
+      "@emnapi/runtime"
     ]
   }
 }

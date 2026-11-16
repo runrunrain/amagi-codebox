@@ -28,6 +28,8 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@emnapi/core": "2.0.0-beta.2",
+    "@emnapi/runtime": "2.0.0-beta.2",
     "@types/node": "^24.12.0",
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/compiler-dom": "^3.5.45",
@@ -51,7 +53,9 @@
       "scripts/check-contrast.mjs"
     ],
     "ignoreDependencies": [
-      "@capacitor/android"
+      "@capacitor/android",
+      "@emnapi/core",
+      "@emnapi/runtime"
     ]
   }
 }

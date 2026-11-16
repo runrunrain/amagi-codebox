@@ -50,11 +50,14 @@ describe('pluginIconStyle（确定性算法纯函数）', () => {
   });
 
   it('哈希符合契约公式 Σ charCodeAt(i)*31^i (mod 997) 的色板下标', () => {
-    // 独立复算（直接求幂 + 取模），验证实现未偏离契约公式
+    // 独立复算（BigInt 直接求幂 + 取模），验证实现未偏离契约公式。
+    // 不能用 Number 的 31**i：i≥11 时超出 Number.MAX_SAFE_INTEGER，
+    // 浮点舍入随 V8 版本/平台漂移（曾致 CI 必挂而 Windows 本地全绿）；
+    // BigInt 求幂精确，与实现的逐步取模写法数学等价。
     const name = 'contract-check';
-    let expected = 0;
+    let expected = 0n;
     for (let i = 0; i < name.length; i += 1) {
-      expected = (expected + name.charCodeAt(i) * 31 ** i) % 997;
+      expected = (expected + BigInt(name.charCodeAt(i)) * 31n ** BigInt(i)) % 997n;
     }
     const palette = [
       'var(--accent)',
@@ -63,7 +66,7 @@ describe('pluginIconStyle（确定性算法纯函数）', () => {
       'var(--purple)',
       'var(--danger)',
     ];
-    expect(pluginIconStyle(name).color).toBe(palette[expected % 5]);
+    expect(pluginIconStyle(name).color).toBe(palette[Number(expected % 5n)]);
   });
 });
 
