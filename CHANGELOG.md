@@ -4,6 +4,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.138] - 2026-11-16
+
+### Fixed
+
+- **WSL 内 pi 会话 Web 视图加载不出**：WSL+DrvFS 工作区下 pi 扩展的 webui server 就绪实测 30-75s+（登录 shell + jiti 加载 200 模块落在 /mnt 慢路径），默认 45s 探测窗口在服务就绪前耗尽误判 unavailable，前端随即隐藏 Web 视图入口。embedded pi 会话在 WSL 目标（BootstrapWSL）改用 3 分钟探测窗口注册（`RegisterSessionWithWindow`），冷启动/高负载不再误判。同修两个连带误判：携正确 capability token 收到的 503（amagi 扩展先验 bearer 再回 503 infoBody，错 token 得 403）不再因 WSL pid 命名空间失配（tracker 记录的是 wsl.exe 的 Windows pid，与 WSL 内 pi 的 Linux pid 必然不等）被当不可达转注册表回退；注册表候选探测得 503（未就绪）不再 best-effort 删除注册文件——服务存活稍后即绪，删除反而丢失发现加速器。
+
+### Notes
+
+- 已验证：`go vet ./internal/webui/ ./` 通过；webui 包全量测试断言通过（新增 3 例：503 token 豁免 pid 失配、注册表候选 notReady 保留条目、WSL 放宽窗口差异化；本地 Windows 跑 go test 的 TempDir 清理失败为 logging 句柄锁的既有环境问题，原代码同样复现，CI 在 macOS 不受影响）；`wails build -trimpath` 通过。排查链：WSL pi 会话 webui 74s 就绪 vs 45s 窗口（当日三次会话 30s/41s/74s），env 注入/端口监听/Windows→WSL localhost 转发均实测正常。
+
 ## [1.3.137] - 2026-11-16
 
 ### Changed
