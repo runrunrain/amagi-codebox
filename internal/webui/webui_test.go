@@ -971,8 +971,7 @@ func TestProbe_503WithTokenExemptsPIDMismatch(t *testing.T) {
 	//（amagi 扩展先验 bearer 再回 503，错 token 得 403）→ 视为"未就绪"保持
 	// probing，不转注册表回退（回退会误删候选条目）。
 	s := newTestService(t, time.Minute)
-	var port int
-	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+	port := startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"v":1,"ready":false,"sessionId":null,"pid":127,"port":null,"startedAt":"x","seq":0,"buffered":0,"clients":0,"pendingCount":0}`)
@@ -995,8 +994,7 @@ func TestProbe_RegistryFallbackNotReadyKeepsEntry(t *testing.T) {
 	// 通道 2 候选探测得 503（pid 校验通过）：服务存活、session 未就绪——
 	// 不删注册文件（稍后即绪仍需它加速发现），状态保持 probing。
 	s := newTestService(t, time.Minute)
-	var port int
-	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+	port := startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"v":1,"ready":false,"sessionId":null,"pid":4321,"port":null,"startedAt":"x","seq":0,"buffered":0,"clients":0,"pendingCount":0}`)
