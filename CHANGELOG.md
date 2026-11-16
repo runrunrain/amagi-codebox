@@ -4,6 +4,18 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.139] - 2026-11-17
+
+### Added
+
+- **会话感知的 WSL 目录选择器**：目录选择器按会话实际文件系统浏览——WSL 会话列出 distro 内目录（新增 `App.SessionListDirectories` 与 `PathsService.ListWSLDirectories` 绑定），Windows 收藏根在会话捕获的 distro 内换算（含 UNC）；换算不到的收藏显式标不可用、会话目标失效时以「会话目录不可用」失败收敛，绝不静默替换成其他家目录。pty 在进程启动瞬间捕获实际 wslDistro（不可变），校验/建进程/目录浏览全程使用同一 distro，不受并发环境刷新影响；新增 `SessionWSLTarget` 只读查询。
+- **WSL Pi 任务数据本地化**：任务状态与归档默认写 WSL 本地文件系统（`${XDG_STATE_HOME:-~/.local/state}/amagi-codebox/pi` 下 `data`/`artifacts`，可经 `AMAGI_DATA_DIR`/`AMAGI_ARTIFACT_ROOT` 覆盖），减少跨盘高频读写；`auth.json`/`models.json` 等仍读 Windows agent 根，不复制凭据；目录不可建或仍在跨系统文件系统时告警并沿用原位置。
+- **会话权威启动上下文只读投影**：`LaunchContextByID` 暴露会话定谳的 mode/workdir 与权威记录的 ShellRef，供只读消费方校验会话归属与模式（实际文件系统目标仍须读 PTY 捕获值，不重放请求偏好）。
+
+### Fixed
+
+- **WSL 启动不再静默落到错误目录**：启动前在实际发行版内校验工作目录，不存在或不可访问时直接提示并拒绝启动（覆盖 wsl.exe relay chdir 失败但 exit=0 的场景，不再悄悄换到主目录）；wsl.exe 命令行改用 `--exec` 精确传参。
+
 ## [1.3.138] - 2026-11-16
 
 ### Fixed
