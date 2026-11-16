@@ -28,7 +28,7 @@ export interface MockSourceOptions {
 }
 
 /** 默认剧本：hello → 用户问 → 助手思考+两个工具（成功/失败）+ 用量 → 未配对工具（running）→ 收尾。 */
-export const DEFAULT_MOCK_SCRIPT: MockSceneStep[] = [
+const DEFAULT_MOCK_SCRIPT: MockSceneStep[] = [
   {
     kind: 'hello',
     delayMs: 0,

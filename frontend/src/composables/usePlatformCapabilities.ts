@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 /**
  * Shell descriptor from backend capability truth source.
  */
-export interface ShellDescriptor {
+interface ShellDescriptor {
   key: string
   label: string
   resolvedPath: string

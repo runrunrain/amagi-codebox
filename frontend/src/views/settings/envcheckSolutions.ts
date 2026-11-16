@@ -170,7 +170,7 @@ function solutionDedupeKey(sol: SolutionLike): string {
  * 批次「顶层修复按钮处理中不禁用」的 Major 2（旧实现带 idx，模板与
  * executeSolution 的 idx 永远对不上）。
  */
-export function solutionIdentity(sol: SolutionLike): string {
+function solutionIdentity(sol: SolutionLike): string {
   return solutionDedupeKey(sol)
 }
 
@@ -308,7 +308,7 @@ export function planPostFixRefresh(result: FixResultLike | null | undefined): Po
 }
 
 /** 与 envcheck.WSLSyncResult 结构兼容的最小类型（安装/升级双侧联动，direction §2.4）。 */
-export interface WSLSyncLike {
+interface WSLSyncLike {
   status?: string
   distro?: string
   version?: string

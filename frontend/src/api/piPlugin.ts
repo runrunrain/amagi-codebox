@@ -35,7 +35,7 @@ export interface PiPackage {
   themes?: string[];
 }
 
-export interface PiResourceInfo {
+interface PiResourceInfo {
   name: string;
   filePath: string;
   type: 'extension' | 'skill' | 'prompt' | 'theme';
@@ -110,7 +110,7 @@ export interface PiPluginTargetedResult {
   results: PiPluginOpOutcome[];
 }
 
-export interface WSLPluginItem {
+interface WSLPluginItem {
   source: string;
   identity: string;
   sourceType: string;
@@ -131,7 +131,7 @@ export interface WSLPluginItem {
   lastErrorCode?: string;
 }
 
-export interface WSLPluginSnapshot {
+interface WSLPluginSnapshot {
   distro: string;
   available: boolean;
   reason?: string;
@@ -145,7 +145,7 @@ export interface WSLPluginSnapshot {
   local: number;
 }
 
-export interface PluginRegistrationSummary {
+interface PluginRegistrationSummary {
   managed: number;
   installed: number;
   failed: number;

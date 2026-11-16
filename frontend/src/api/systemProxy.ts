@@ -9,7 +9,6 @@
 
 import { GetSystemProxyStatus, SetSystemProxyEnabled } from '../../wailsjs/go/main/App'
 import {
-  GetSystemProxyEndpoint,
   SetSystemProxyEndpoint,
 } from '../../wailsjs/go/settings/Service'
 import { callApi } from './internal/call'
@@ -25,12 +24,6 @@ export interface SystemProxyStatus {
   configuredPort: number
 }
 
-/** 持久化的代理端点 */
-export interface SystemProxyEndpoint {
-  host: string
-  port: number
-}
-
 /** 读取系统显式代理实时状态（含可达性探测与持久化端点） */
 export function getSystemProxyStatus(): Promise<SystemProxyStatus> {
   return callApi('[api.systemProxy.getStatus]', () => GetSystemProxyStatus())
@@ -42,11 +35,6 @@ export function getSystemProxyStatus(): Promise<SystemProxyStatus> {
  */
 export function setSystemProxyEnabled(enabled: boolean): Promise<SystemProxyStatus> {
   return callApi('[api.systemProxy.setEnabled]', () => SetSystemProxyEnabled(enabled))
-}
-
-/** 读取持久化的代理端点（Load 时已归一，非零值） */
-export function getSystemProxyEndpoint(): Promise<SystemProxyEndpoint> {
-  return callApi('[api.systemProxy.getEndpoint]', () => GetSystemProxyEndpoint())
 }
 
 /** 校验并保存代理端点（去 scheme/拆内嵌端口/范围校验由后端完成） */

@@ -30,11 +30,7 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@babel/types": "^7.18.10",
-    "@emnapi/core": "^1.10.0",
-    "@emnapi/runtime": "^1.10.0",
     "@eslint/js": "10.0.1",
-    "@types/js-yaml": "^4.0.9",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.5",
     "eslint": "10.8.1",
@@ -48,5 +44,21 @@
   },
   "overrides": {
     "minimatch": "^11.0.1"
+  },
+  "knip": {
+    "entry": [
+      "e2e/**/*.spec.ts",
+      "harness/**/*.ts",
+      "harness/**/*.vue",
+      "playwright.stopping.config.ts",
+      "harness/remote/run.playwright.mjs"
+    ],
+    "ignore": [
+      "wailsjs/**"
+    ],
+    "ignoreDependencies": [
+      "@playwright/test",
+      "playwright"
+    ]
   }
 }

@@ -30,18 +30,18 @@ export const TIMING_BUDGET_MS = Object.freeze({
   R0_R1: 5000,
 } as const)
 
-export type TimingStatus =
+type TimingStatus =
   | 'not_occurred'
   | 'pending'
   | 'observed'
   | 'invalid'
 
-export type TimingBudgetStatus =
+type TimingBudgetStatus =
   | 'not_evaluated'
   | 'within_budget'
   | 'over_budget'
 
-export type TimingRejectionReason =
+type TimingRejectionReason =
   | 'unknown_mark'
   | 'duplicate_mark'
   | 'missing_predecessor'
@@ -72,7 +72,7 @@ export type TimingTransition =
   | Readonly<{ accepted: true }>
   | Readonly<{ accepted: false; reason: TimingRejectionReason }>
 
-export type TimingReporter = (report: TimingReportV1) => void
+type TimingReporter = (report: TimingReportV1) => void
 
 export interface TimingRecorder {
   mark(mark: TimingMark): TimingTransition

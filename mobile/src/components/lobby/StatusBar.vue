@@ -13,7 +13,7 @@
  */
 import { computed, ref, watch } from 'vue';
 
-export type LayerTone = 'ok' | 'warning' | 'danger' | 'neutral';
+type LayerTone = 'ok' | 'warning' | 'danger' | 'neutral';
 
 export interface StatusLayer {
   key: 'connection' | 'auth' | 'session' | 'control' | 'history';

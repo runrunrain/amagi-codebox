@@ -34,8 +34,8 @@ import type { JsonResponse, Transport } from '../data/source'
 export const MAX_INPUT_BYTES = 128 * 1024
 
 /** 错误信封码值（{v:1,error:<code>}；与 input.go writeLane 映射对齐）。 */
-export const CONTROL_FORBIDDEN_CODE = 'control.forbidden'
-export const SERVICE_DOWN_CODE = 'service.down'
+const CONTROL_FORBIDDEN_CODE = 'control.forbidden'
+const SERVICE_DOWN_CODE = 'service.down'
 
 export type ComposerMode = 'idle' | 'busy' | 'ended'
 

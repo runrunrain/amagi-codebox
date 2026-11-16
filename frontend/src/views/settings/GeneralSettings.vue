@@ -8,7 +8,7 @@
         <label>默认服务提供商</label>
         <select class="sel" v-model="defaults.provider">
           <option value="">（不指定）</option>
-          <option v-for="(p, name) in anthropicProviders" :key="name" :value="name">
+          <option v-for="(_p, name) in anthropicProviders" :key="name" :value="name">
             {{ name }}
           </option>
         </select>

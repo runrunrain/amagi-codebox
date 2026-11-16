@@ -26,13 +26,9 @@ import { main } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
 
 export type ClaudeAccount = main.ClaudeAccountDTO;
-export type ClaudeAccountHealth = main.ClaudeAccountHealthDTO;
 export type ClaudeAccountOperation = main.ClaudeAccountOperationDTO;
 export type ClaudeAccountsPool = main.ClaudeAccountsPoolDTO;
 export type ClaudeAccountNativeState = main.ClaudeAccountNativeStateDTO;
-export type ClaudeAccountReconcileResult = main.ClaudeAccountReconcileResultDTO;
-export type ClaudeAccountRotationConfig = main.ClaudeAccountRotationConfigDTO;
-
 /** 启用自动轮换前必须确认的风险声明版本（与后端 claudeAccountsRiskAckVersion 一致）。 */
 export const CLAUDE_ROTATION_RISK_ACK_VERSION = 'claude-rotation-v1';
 
@@ -63,7 +59,7 @@ export const CLAUDE_ACCOUNT_ERROR_MESSAGES: Record<string, string> = {
 };
 
 /** 无法识别错误码时的兜底文案。 */
-export const CLAUDE_ACCOUNT_ERROR_FALLBACK = '操作失败，请重试';
+const CLAUDE_ACCOUNT_ERROR_FALLBACK = '操作失败，请重试';
 
 /**
  * 从错误对象中解析稳定错误码与详细信息。

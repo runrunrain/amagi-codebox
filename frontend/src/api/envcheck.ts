@@ -6,17 +6,13 @@
 import {
   RunEnvCheck,
   CheckTool,
-  InstallTool,
-  UpdateTool,
   StartInstallToolAsync,
   StartUpdateToolAsync,
   GetEnvCheckSnapshot,
   RunEnvFixAction,
-  InstallClaudeWithMethod,
   StartInstallClaudeWithMethodAsync,
   CleanClaudeInstall,
   UninstallClaudeCode,
-  CheckClaudeConfig,
   FixClaudeConfig,
 } from '../../wailsjs/go/main/App';
 
@@ -43,20 +39,6 @@ export function runEnvCheck(): Promise<OverallStatus> {
  */
 export function checkTool(tool: string): Promise<CheckStatus> {
   return callApi('[api.envcheck.checkTool]', () => CheckTool(tool));
-}
-
-/**
- * Install tool
- */
-export function installTool(tool: string): Promise<InstallResult> {
-  return callApi('[api.envcheck.installTool]', () => InstallTool(tool));
-}
-
-/**
- * Update tool
- */
-export function updateTool(tool: string): Promise<InstallResult> {
-  return callApi('[api.envcheck.updateTool]', () => UpdateTool(tool));
 }
 
 /**
@@ -88,13 +70,6 @@ export function runEnvFixAction(action: string, tool: string, extraPath: string)
 }
 
 /**
- * Install Claude with method
- */
-export function installClaudeWithMethod(method: string): Promise<InstallResult> {
-  return callApi('[api.envcheck.installClaudeWithMethod]', () => InstallClaudeWithMethod(method));
-}
-
-/**
  * Start async Claude install
  */
 export function startInstallClaudeWithMethodAsync(method: string): Promise<OperationState> {
@@ -113,13 +88,6 @@ export function cleanClaudeInstall(method: string): Promise<InstallResult> {
  */
 export function uninstallClaudeCode(method: string): Promise<InstallResult> {
   return callApi('[api.envcheck.uninstallClaudeCode]', () => UninstallClaudeCode(method));
-}
-
-/**
- * Check Claude config
- */
-export function checkClaudeConfig(): Promise<envcheck.ClaudeConfigStatus> {
-  return callApi('[api.envcheck.checkClaudeConfig]', () => CheckClaudeConfig());
 }
 
 /**

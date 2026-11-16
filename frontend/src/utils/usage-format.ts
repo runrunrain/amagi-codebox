@@ -42,7 +42,7 @@ const CURRENCY_SYMBOL: Record<string, string> = {
  * 取币种展示符号，未知币种回退为 ISO 代码前缀。
  * Get the display symbol for a currency code; unknown codes fall back to the code itself.
  */
-export function currencySymbol(currencyCode: string): string {
+function currencySymbol(currencyCode: string): string {
   return CURRENCY_SYMBOL[currencyCode || 'USD'] || `${currencyCode} `;
 }
 
@@ -50,7 +50,7 @@ export function currencySymbol(currencyCode: string): string {
  * 把后端 micro 整数换算为浮点币种值。
  * Convert a backend micro-currency int to a float currency value.
  */
-export function microToCurrency(micro: number): number {
+function microToCurrency(micro: number): number {
   if (!Number.isFinite(micro) || micro === 0) return 0;
   return micro / MICRO_PER_UNIT;
 }
@@ -106,42 +106,4 @@ export function formatTokens(n: number): string {
 export function formatCount(n: number): string {
   if (!Number.isFinite(n) || n === 0) return '0';
   return Math.trunc(n).toLocaleString('en-US');
-}
-
-/**
- * 把后端 any 类型的时间字段安全转为字符串（Go time.Time 序列化为 ISO 8601 字符串）。
- * Safely render a backend `any` time field (Go time.Time → ISO 8601 string) as a localized string.
- */
-export function formatTimeValue(value: unknown, locale = 'zh-CN'): string {
-  if (!value) return '';
-  if (typeof value === 'string') {
-    const d = new Date(value);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleString(locale, {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    }
-    return value;
-  }
-  if (typeof value === 'number') {
-    // 10 位秒 / 13 位毫秒 / 16 位微秒 / 19 位纳秒
-    let ms = value;
-    if (value < 1e12) ms = value * 1000;
-    else if (value > 1e15) ms = value / 1e6;
-    const d = new Date(ms);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleString(locale, {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    }
-  }
-  return String(value);
 }

@@ -31,7 +31,7 @@ export interface OperationObs {
   result?: { version?: string; message?: string; error?: string } | null
 }
 
-export interface PendingOperation {
+interface PendingOperation {
   /** 受理回执的 operation id；uninstall_tool 受理无回执时为 ''。 */
   id: string
   tool: string
@@ -51,7 +51,7 @@ export interface OperationTrackerState {
   pending: PendingOperation | null
 }
 
-export type TrackerEvent =
+type TrackerEvent =
   | { type: 'none' }
   /** 受理的操作已达终态（含没见过 running 直接终态的快照乱序场景）。 */
   | { type: 'terminal'; status: 'succeeded' | 'failed' | 'timeout'; op: OperationObs }

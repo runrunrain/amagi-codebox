@@ -15,14 +15,14 @@
 // ---------------------------------------------------------------------------
 
 /** 工具调用块（assistant 行 content[].type=="tool_use"）。 */
-export interface ToolUseWire {
+interface ToolUseWire {
   id: string
   name: string
   input?: unknown
 }
 
 /** 工具结果块（user 行 content[].type=="tool_result"）。 */
-export interface ToolResultWire {
+interface ToolResultWire {
   id: string
   isError?: boolean
   content?: string
@@ -95,7 +95,7 @@ export interface TransportRequest {
   body?: string
 }
 
-export interface WsHandlers {
+interface WsHandlers {
   /** 收到一条消息（原始载荷，通常是 JSON 字符串）。 */
   onMessage(raw: unknown): void
   onOpen(): void
@@ -136,7 +136,7 @@ export interface DataSource {
 }
 
 /** 重连退避表（design §7.2：1s/2s/5s 封顶）。 */
-export const RECONNECT_BACKOFF_MS = [1000, 2000, 5000]
+const RECONNECT_BACKOFF_MS = [1000, 2000, 5000]
 
 /** 退避取值：第 n 次尝试（1 起）→ 表内第 n 项，越界取末项封顶。 */
 export function backoffDelayMs(attempt: number): number {

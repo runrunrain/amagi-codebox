@@ -41,7 +41,7 @@ export interface PendingSwitch {
 type BusyAction = '' | 'capture' | 'enroll' | 'capture-enrolled' | 'switch' | 'inspect' | 'reconcile' | 'rotation' | 'remove' | 'rename';
 
 /** 生成 switch requestId（幂等键）：优先 crypto.randomUUID。 */
-export function newSwitchRequestId(): string {
+function newSwitchRequestId(): string {
   const c = globalThis.crypto;
   if (c && typeof c.randomUUID === 'function') return c.randomUUID();
   return `sw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;

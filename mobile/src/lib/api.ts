@@ -44,11 +44,10 @@ import {
   type ControlSnapshot,
   type CreateSessionRequest,
   type ConfirmActionRequest,
-  type SessionWebUIStatus,
-  type WebUIState,
+  type SessionWebUIStatus
 } from './contract';
 
-export type { WebUIState, SessionWebUIStatus };
+export type {  SessionWebUIStatus };
 
 /** 客户端侧结构化错误：网络层失败也会被综合为契约错误形态（code=net.unreachable）。 */
 export class ApiRequestError extends Error {

@@ -57,7 +57,7 @@ import { createTimingRecorder, type TimingRecorder, type TimingReportV1 } from '
 // --- 错误分类（展示层消费；禁笼统失败） ---
 
 /** 大厅级错误分类：连接 / 宿主服务 / 授权 / 其他契约错误。 */
-export type LobbyErrorKind = 'connection' | 'service' | 'auth' | 'other';
+type LobbyErrorKind = 'connection' | 'service' | 'auth' | 'other';
 
 export interface ClassifiedError {
   kind: LobbyErrorKind;
@@ -72,7 +72,7 @@ export interface ClassifiedError {
 }
 
 /** 启动失败四分类（AC-25，design §8.3）。 */
-export type LaunchFailureKind = 'workdir' | 'launch-failed' | 'control' | 'connection' | 'other';
+type LaunchFailureKind = 'workdir' | 'launch-failed' | 'control' | 'connection' | 'other';
 
 export interface ClassifiedLaunchError {
   kind: LaunchFailureKind;
@@ -141,7 +141,7 @@ export function classifyLobbyError(rawErr: unknown): ClassifiedError {
 }
 
 /** 启动失败分类（AC-25）：400→workdir；422→launch-failed（服务端固定文案呈现）；control.*→控制权。 */
-export function classifyLaunchError(rawErr: unknown, cliType: CLIType): ClassifiedLaunchError {
+function classifyLaunchError(rawErr: unknown, cliType: CLIType): ClassifiedLaunchError {
   const err = toApiRequestError(rawErr);
   if (err.code === ERROR_CODE_BAD_REQUEST) {
     return {

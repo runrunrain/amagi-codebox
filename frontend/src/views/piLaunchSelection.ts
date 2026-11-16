@@ -32,7 +32,7 @@ export function isPiLoginPresetKey(key: string): boolean {
   return parts.length === 3 && parts[0] === PI_LOGIN_SEGMENT && decodableBase64Url(parts[1]) && decodableBase64Url(parts[2]);
 }
 
-export interface PiChoice {
+interface PiChoice {
   key: string;
   provider: string;
 }

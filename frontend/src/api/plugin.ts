@@ -9,8 +9,6 @@ import {
   GetInstalledPlugins,
   GetAvailablePlugins,
   GetPluginDetail,
-  GetPluginSubItemStates,
-  GetPluginSubItems,
   AnalyzePluginType,
   InstallPlugin,
   UninstallPlugin,
@@ -18,10 +16,7 @@ import {
   DisablePlugin,
   UpdatePlugin,
   UpdateMarketplace,
-  AddMarketplace,
-  RemoveMarketplace,
-  SetSubItemEnabled,
-  RefreshPlugins,
+  AddMarketplace
 } from '../../wailsjs/go/plugin/Service';
 
 // SetPluginSubItemEnabled 走 main.App 统一入口（按 pluginId 是否含 '@' 自动分派 Codex/Claude）
@@ -35,13 +30,10 @@ import { callApi } from './internal/call';
 type Marketplace = plugin.Marketplace;
 type InstalledPlugin = plugin.InstalledPlugin;
 type PluginDetail = plugin.PluginDetail;
-type SubItem = plugin.SubItem;
-type PluginSubItemState = plugin.PluginSubItemState;
 // wailsjs AnalyzePluginType declares plugin.PluginType but the generated
 // models.ts does not emit that class; fall back to string.
 type PluginType = string;
 type CommandResult = plugin.CommandResult;
-type SubItemRef = plugin.SubItemRef;
 
 /**
  * Get marketplaces
@@ -76,20 +68,6 @@ export function getAvailablePlugins(): Promise<PluginDetail[]> {
  */
 export function getPluginDetail(pluginId: string): Promise<PluginDetail> {
   return callApi('[api.plugin.getPluginDetail]', () => GetPluginDetail(pluginId));
-}
-
-/**
- * Get plugin sub items
- */
-export function getPluginSubItems(pluginId: string): Promise<SubItem[]> {
-  return callApi('[api.plugin.getPluginSubItems]', () => GetPluginSubItems(pluginId));
-}
-
-/**
- * Get plugin sub item states
- */
-export function getPluginSubItemStates(pluginId: string): Promise<PluginSubItemState> {
-  return callApi('[api.plugin.getPluginSubItemStates]', () => GetPluginSubItemStates(pluginId));
 }
 
 /**
@@ -149,27 +127,6 @@ export function addMarketplace(source: string): Promise<CommandResult> {
 }
 
 /**
- * Remove marketplace
- */
-export function removeMarketplace(name: string): Promise<CommandResult> {
-  return callApi('[api.plugin.removeMarketplace]', () => RemoveMarketplace(name));
-}
-
-/**
- * Set sub item enabled
- *
- * 注意：此函数调的是 plugin.Service.SetSubItemEnabled（Claude 专用、对象参数版本）。
- * 仅适用于 Claude 引擎。Codex 引擎或需要 Codex/Claude 双路兼容时，请使用 setPluginSubItemEnabled。
- */
-export function setSubItemEnabled(
-  pluginId: string,
-  subItemRef: SubItemRef,
-  enabled: boolean
-): Promise<void> {
-  return callApi('[api.plugin.setSubItemEnabled]', () => SetSubItemEnabled(pluginId, subItemRef, enabled));
-}
-
-/**
  * Set plugin sub item enabled (统一入口)
  *
  * 调 main.App.SetPluginSubItemEnabled：基于 Claude 已安装插件注册表自动分派到 Codex/Claude 服务。
@@ -191,11 +148,4 @@ export function setPluginSubItemEnabled(
   enabled: boolean
 ): Promise<void> {
   return callApi('[api.plugin.setPluginSubItemEnabled]', () => AppSetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled));
-}
-
-/**
- * Refresh plugins
- */
-export function refreshPlugins(): Promise<void> {
-  return callApi('[api.plugin.refreshPlugins]', () => RefreshPlugins());
 }

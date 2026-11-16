@@ -45,7 +45,7 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let bakeFailed = false
 
 /** 烘焙能力探测：canvas 2d filter 与 createImageBitmap 均可用才启用。 */
-export function bakeSupported(): boolean {
+function bakeSupported(): boolean {
   if (bakeFailed) return false
   try {
     if (typeof createImageBitmap !== 'function') return false

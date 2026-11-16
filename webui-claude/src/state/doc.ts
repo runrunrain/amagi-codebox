@@ -44,7 +44,7 @@ export interface StreamMessage {
   tools: ToolCardModel[]
 }
 
-export interface StreamDocMeta {
+interface StreamDocMeta {
   title?: string
   truncatedHead?: boolean
 }

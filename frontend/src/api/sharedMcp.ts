@@ -7,7 +7,6 @@
 
 import {
   ListSharedMcp,
-  RefreshSharedMcp,
   CreateSharedMcpEntry,
   UpdateSharedMcpEntry,
   DeleteSharedMcpEntry,
@@ -88,11 +87,6 @@ export interface SharedMcpOverview {
 /** 枚举登记条目并实测各引擎分发状态（含 drift/conflict/unsupported） */
 export function listSharedMcp(): Promise<SharedMcpOverview> {
   return callApi('[api.sharedMcp.listSharedMcp]', () => ListSharedMcp());
-}
-
-/** 显式刷新（语义别名：服务层无缓存，= listSharedMcp；契约点名的 Refresh） */
-export function refreshSharedMcp(): Promise<SharedMcpOverview> {
-  return callApi('[api.sharedMcp.refreshSharedMcp]', () => RefreshSharedMcp());
 }
 
 /** 新增登记条目（同名已存在后端拒绝），返回最新 Overview */

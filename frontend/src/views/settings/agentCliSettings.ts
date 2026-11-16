@@ -27,7 +27,7 @@ type AgentCLIStatus = main.AgentCLIStatus;
 type AgentCLIInstallStatus = main.AgentCLIInstallStatus;
 export type { AgentCLIStatus, AgentCLIInstallStatus };
 
-export type { AgentCLISkillTarget, AgentCLIInstallState } from '../../api/agentcli';
+export type { AgentCLISkillTarget,  } from '../../api/agentcli';
 
 /** 技能安装目标展示元数据（顺序即视图渲染顺序，对齐后端 install.SkillTargets）。 */
 export const SKILL_TARGETS: ReadonlyArray<{ target: AgentCLISkillTarget; label: string }> = [
@@ -315,5 +315,3 @@ export function createAgentCliSettingsController(deps: AgentCliControllerDeps) {
     removeSkill,
   };
 }
-
-export type AgentCliSettingsController = ReturnType<typeof createAgentCliSettingsController>;

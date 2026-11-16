@@ -12,7 +12,6 @@ import { main } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
 
 export type WSLConfigSupplyStatus = main.WSLConfigSupplyStatus;
-export type WSLConfigSupplyFace = main.WSLConfigSupplyFace;
 
 /**
  * Read the sanitized WSL config-supply status snapshot (cache read only: never
@@ -33,13 +32,9 @@ export function grantWSLVisionConsent(): Promise<void> {
 // ---------------------------------------------------------------------------
 // 共享 DTO（S4 claude/codex 键级单元与技能/资源面消费）
 // ---------------------------------------------------------------------------
-
-export type WSLConfigUnitDetail = main.WSLConfigUnitDetail;
 export type WSLConfigUnitPreview = main.WSLConfigUnitPreview;
-export type WSLConfigUnitKeyPreview = main.WSLConfigUnitKeyPreview;
 export type WSLConfigUnitOutcome = main.WSLConfigUnitOutcome;
 export type WSLSkillsSupplyStatus = main.WSLSkillsSupplyStatus;
-export type WSLSkillSummary = main.WSLSkillSummary;
 export type WSLSkillPreview = main.WSLSkillPreview;
 
 // ---------------------------------------------------------------------------

@@ -52,9 +52,9 @@ function errText(err: unknown): string {
  * 后端 Linux 形态错误消息的稳定标记（与 internal/paths 的
  * LinuxStylePathMarker 成对维护，改动需同步）。
  */
-export const LINUX_FORM_PATH_MARKER = 'WSL/Linux 路径形态'
+const LINUX_FORM_PATH_MARKER = 'WSL/Linux 路径形态'
 /** App facade marker: never silently replace an unavailable session tree. */
-export const SESSION_DIRECTORY_ERROR_MARKER = '会话目录不可用'
+const SESSION_DIRECTORY_ERROR_MARKER = '会话目录不可用'
 
 /**
  * workDir 的父目录（兼容 / 与 \ 分隔、容忍尾部重复分隔符）。

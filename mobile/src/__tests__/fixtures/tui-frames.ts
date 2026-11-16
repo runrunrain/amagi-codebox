@@ -22,7 +22,7 @@
  */
 
 /** oracle 视口几何（经典 80×24 字符栅格）。 */
-export const ORACLE_COLS = 80;
+const ORACLE_COLS = 80;
 export const ORACLE_ROWS = 24;
 
 /** 合成样本元数据：显式声明来源，防止误当真实录制帧。 */

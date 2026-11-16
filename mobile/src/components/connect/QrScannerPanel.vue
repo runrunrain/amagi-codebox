@@ -11,7 +11,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 // html5-qrcode 动态导入：仅在用户进入扫码路径时加载（P5 §9 首屏预算）。
 import type { Html5Qrcode as Html5QrcodeInstance } from 'html5-qrcode';
 
-export type ScannerFailure = 'permission-denied' | 'no-camera' | 'unavailable';
+type ScannerFailure = 'permission-denied' | 'no-camera' | 'unavailable';
 
 const emit = defineEmits<{
   (e: 'decoded', text: string): void;

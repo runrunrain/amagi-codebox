@@ -12,7 +12,7 @@ export interface CatalogModel {
   contextWindow?: number;
 }
 
-export interface CatalogProvider {
+interface CatalogProvider {
   name: string;
   api?: string;
   models: CatalogModel[];

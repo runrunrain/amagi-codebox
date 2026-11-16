@@ -103,7 +103,7 @@ export type PrimaryNoticeLevel = 'fatal' | 'error' | 'recovery' | 'degraded' | n
 // MessageID/requestId 仅存内存映射，绝不进 DOM/快照（隐私 fail-closed）。
 // ---------------------------------------------------------------------------
 
-export type OutboxDelivery = 'sending' | 'settled' | 'halted';
+type OutboxDelivery = 'sending' | 'settled' | 'halted';
 
 interface OutboxMirrorEntry {
   key: string;

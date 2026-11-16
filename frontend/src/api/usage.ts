@@ -9,11 +9,9 @@
 
 import {
   GetUsageSummary,
-  GetDailyTrends,
   GetModelDailyTrends,
   GetModelStats,
   GetProviderStats,
-  GetRequestLogs,
   SyncSessionUsage,
   GetSyncState,
   GetModelPricing,
@@ -30,9 +28,7 @@ import { callApi } from './internal/call';
 export type SummaryFilter = usage.SummaryFilter;
 export type TrendFilter = usage.TrendFilter;
 export type StatFilter = usage.StatFilter;
-export type LogFilter = usage.LogFilter;
 export type Summary = usage.Summary;
-export type DailyTrendPoint = usage.DailyTrendPoint;
 export type ModelDailyTrendPoint = usage.ModelDailyTrendPoint;
 export type ModelStat = usage.ModelStat;
 export type ProviderStat = usage.ProviderStat;
@@ -126,11 +122,6 @@ export function getUsageSummary(filter: SummaryFilter): Promise<Summary> {
   return callApi('[api.usage.getUsageSummary]', () => GetUsageSummary(filter));
 }
 
-/** 拉取日趋势（最近 N 天，每日成本与 token） */
-export function getDailyTrends(filter: TrendFilter): Promise<DailyTrendPoint[]> {
-  return callApi('[api.usage.getDailyTrends]', () => GetDailyTrends(filter));
-}
-
 /** Per-model daily trends. Each model remains an independent curve. */
 export function getModelDailyTrends(filter: TrendFilter): Promise<ModelDailyTrendPoint[]> {
   return callApi('[api.usage.getModelDailyTrends]', () => GetModelDailyTrends(filter));
@@ -144,11 +135,6 @@ export function getModelStats(filter: StatFilter): Promise<ModelStat[]> {
 /** 供应商维度统计（请求数/各币种成本/总 token/模型数） */
 export function getProviderStats(filter: StatFilter): Promise<ProviderStat[]> {
   return callApi('[api.usage.getProviderStats]', () => GetProviderStats(filter));
-}
-
-/** 明细日志查询（分页） */
-export function getRequestLogs(filter: LogFilter): Promise<UsageRecord[]> {
-  return callApi('[api.usage.getRequestLogs]', () => GetRequestLogs(filter));
 }
 
 /** 未知模型列表（usage_records 中存在但价格表未匹配） */

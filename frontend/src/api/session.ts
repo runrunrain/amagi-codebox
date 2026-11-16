@@ -11,14 +11,7 @@ import {
   LaunchOmpSession,
   StopSession,
   GetSessions,
-  GetSession,
-  RemoveSession,
-  ClearStoppedSessions,
-  PtyWrite,
-  PtyWriteLarge,
-  PtyResize,
-  GetOutputHistorySnapshot,
-  GetPtyDimensions,
+  RemoveSession
 } from '../../wailsjs/go/main/App';
 
 import { session } from '../../wailsjs/go/models';
@@ -137,61 +130,8 @@ export function getSessions(): Promise<SessionInfo[]> {
 }
 
 /**
- * Get a specific session
- */
-export function getSession(sessionId: string): Promise<session.SessionInfo> {
-  return callApi('[api.session.getSession]', () => GetSession(sessionId));
-}
-
-/**
  * Remove a session
  */
 export function removeSession(sessionId: string): Promise<void> {
   return callApi('[api.session.removeSession]', () => RemoveSession(sessionId));
-}
-
-/**
- * Clear all stopped sessions
- */
-export function clearStoppedSessions(): Promise<number> {
-  return callApi('[api.session.clearStoppedSessions]', () => ClearStoppedSessions());
-}
-
-/**
- * Write to PTY
- */
-export function ptyWrite(sessionId: string, data: string): Promise<void> {
-  return callApi('[api.session.ptyWrite]', () => PtyWrite(sessionId, data));
-}
-
-/**
- * Write large data to PTY
- */
-export function ptyWriteLarge(sessionId: string, data: string): Promise<void> {
-  return callApi('[api.session.ptyWriteLarge]', () => PtyWriteLarge(sessionId, data));
-}
-
-/**
- * Resize PTY
- */
-export function ptyResize(sessionId: string, cols: number, rows: number): Promise<void> {
-  return callApi('[api.session.ptyResize]', () => PtyResize(sessionId, cols, rows));
-}
-
-/**
- * Get output history snapshot
- */
-export function getOutputHistorySnapshot(sessionId: string): Promise<string> {
-  return callApi('[api.session.getOutputHistorySnapshot]', () => GetOutputHistorySnapshot(sessionId));
-}
-
-/**
- * Get PTY dimensions.
- * Backend packs cols and rows into a single number (cols * 1000 + rows).
- */
-export function getPtyDimensions(sessionId: string): Promise<{ cols: number; rows: number }> {
-  return callApi('[api.session.getPtyDimensions]', async () => {
-    const packed = await GetPtyDimensions(sessionId);
-    return { cols: Math.floor(packed / 1000), rows: packed % 1000 };
-  });
 }

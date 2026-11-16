@@ -8,12 +8,6 @@
  */
 import type { APIVersion, CLIType, DeviceID, Seq, SessionID, SessionState } from './scalars';
 
-/** PairingCompleteRequest — the only unauthenticated endpoint body. */
-export interface PairingCompleteRequest {
-  code: string; // one-time pairing material; never logged
-  deviceName: string;
-}
-
 export interface DeviceSummary {
   id: DeviceID;
   name: string;
@@ -25,33 +19,33 @@ export interface CLIAvailability {
   available: boolean; // required; false is meaningful (no omitempty)
 }
 
-export interface LaunchPathOption {
+interface LaunchPathOption {
   path: string;
   label: string;
 }
 
-export interface LaunchProviderOption {
+interface LaunchProviderOption {
   ref: string;
   label: string;
   kind?: string;
   defaultModel?: string;
 }
 
-export interface LaunchPresetOption {
+interface LaunchPresetOption {
   ref: string;
   label: string;
   providerRef?: string;
   modelRef?: string;
 }
 
-export interface LaunchDefaults {
+interface LaunchDefaults {
   providerRef?: string;
   presetRef?: string;
   modelRef?: string;
   shellRef?: string;
 }
 
-export interface CLILaunchSettings {
+interface CLILaunchSettings {
   cliType: CLIType;
   providers: LaunchProviderOption[];
   presets: LaunchPresetOption[];
@@ -126,7 +120,7 @@ export interface ConfirmActionRequest {
 // Production endpoint manifest (addendum §6.1). The sole consumer-importable
 // 10-endpoint surface; consumers must NOT copy path strings.
 // ---------------------------------------------------------------------------
-export type RestMethod = 'GET' | 'POST' | 'DELETE';
+type RestMethod = 'GET' | 'POST' | 'DELETE';
 
 export interface RestEndpoint {
   readonly method: RestMethod;

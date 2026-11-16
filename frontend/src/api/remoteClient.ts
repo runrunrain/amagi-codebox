@@ -11,7 +11,6 @@
 
 import {
   RemoteClientListHosts,
-  RemoteClientAddHost,
   RemoteClientUpdateHost,
   RemoteClientRenameHost,
   RemoteClientRemoveHost,
@@ -20,8 +19,6 @@ import {
   RemoteClientConnect,
   RemoteClientDisconnect,
   RemoteClientListRemoteSessions,
-  RemoteClientGetRemoteSession,
-  RemoteClientLaunchRemoteSession,
   RemoteClientStopRemoteSession,
   RemoteClientRestartRemoteSession,
   RemoteClientDeleteRemoteSession,
@@ -55,7 +52,7 @@ export type ControlView = remoteclient.ControlView;
 export type LegacyProviderSummary = remoteclient.LegacyProviderSummary;
 
 /** 契约 12 稳定错误码（internal/remote/contract/errors.go KnownErrorCodes）。 */
-export const REMOTE_ERROR_CODES = [
+const REMOTE_ERROR_CODES = [
   'net.unreachable',
   'service.down',
   'auth.unpaired',
@@ -103,11 +100,6 @@ export function remoteErrorText(err: unknown): string {
 /** 主机登记簿全部条目（恒为非 null 数组）。 */
 export function listRemoteHosts(): Promise<HostEntry[]> {
   return callApi('[api.remoteClient.listRemoteHosts]', () => RemoteClientListHosts());
-}
-
-/** 新增未配对主机条目（Health=probing）。 */
-export function addRemoteHost(displayName: string, hostPort: string): Promise<HostEntry> {
-  return callApi('[api.remoteClient.addRemoteHost]', () => RemoteClientAddHost(displayName, hostPort));
 }
 
 /** 修改目标地址（域层重置配对态并清理旧凭据）。 */
@@ -167,32 +159,6 @@ export async function listRemoteSessions(): Promise<RemoteSessionSummary[]> {
     const list = (await RemoteClientListRemoteSessions()) as unknown as RemoteSessionSummary[] | null;
     return list ?? [];
   });
-}
-
-/** 会话详情。 */
-export function getRemoteSession(sessionID: string): Promise<RemoteSessionDetail> {
-  return callApi('[api.remoteClient.getRemoteSession]', () => RemoteClientGetRemoteSession(sessionID));
-}
-
-/** 在宿主上启动新会话（可选参数空串表示交宿主默认解析）。 */
-export function launchRemoteSession(params: {
-  cliType: string;
-  workdir?: string;
-  providerRef?: string;
-  presetRef?: string;
-  modelRef?: string;
-  shellRef?: string;
-}): Promise<RemoteSessionDetail> {
-  return callApi('[api.remoteClient.launchRemoteSession]', () =>
-    RemoteClientLaunchRemoteSession(
-      params.cliType,
-      params.workdir ?? '',
-      params.providerRef ?? '',
-      params.presetRef ?? '',
-      params.modelRef ?? '',
-      params.shellRef ?? '',
-    ),
-  );
 }
 
 /** 停止会话（幂等收敛）。 */

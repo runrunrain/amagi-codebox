@@ -19,7 +19,7 @@ export type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 export type ConnectState = 'disconnected' | 'connecting' | 'connected' | 'failed';
 
 /** 本机 scope 常量。 */
-export const LOCAL_SCOPE = 'local';
+const LOCAL_SCOPE = 'local';
 
 /** 远端会话列表轮询节奏（远程 REST 短连接，比本机 PTY 轮询低频）。 */
 const SESSION_POLL_INTERVAL_MS = 4000;
@@ -31,7 +31,7 @@ const HOST_PROBE_MIN_INTERVAL_MS = 15000;
 const HOST_PROBE_PERIODIC_MS = 30000;
 
 /** 终端连接状态投影（internal/remoteclient/conn.go ConnState 冻结五态）。 */
-export type RemoteConnState = 'disconnected' | 'connecting' | 'attached' | 'readonly' | 'degraded';
+type RemoteConnState = 'disconnected' | 'connecting' | 'attached' | 'readonly' | 'degraded';
 
 /**
  * RC4 远程配置域装载状态：idle/loading/ready + 两个专属降级态——
@@ -39,7 +39,7 @@ export type RemoteConnState = 'disconnected' | 'connecting' | 'attached' | 'read
  * （含 401：已配 token 但被拒 → 提示重填）。authRejected 置位时视图
  * 文案切换为「令牌无效/被拒，请重新配置」。
  */
-export type RemoteConfigLoadState = 'idle' | 'loading' | 'needs-token' | 'error' | 'ready';
+type RemoteConfigLoadState = 'idle' | 'loading' | 'needs-token' | 'error' | 'ready';
 
 export interface RemoteConfigSnapshot {
   state: RemoteConfigLoadState;

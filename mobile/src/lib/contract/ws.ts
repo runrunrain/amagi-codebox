@@ -46,13 +46,13 @@ export const KNOWN_CLIENT_FRAME_TYPES = [
 // ---------------------------------------------------------------------------
 // Server event type constants
 // ---------------------------------------------------------------------------
-export const SERVER_EVENT_TYPE_SESSION_ATTACHED = 'session.attached' as const;
-export const SERVER_EVENT_TYPE_OUTPUT = 'output' as const;
-export const SERVER_EVENT_TYPE_BACKFILL_RESULT = 'backfill.result' as const;
-export const SERVER_EVENT_TYPE_SESSION_STATE = 'session.state' as const;
-export const SERVER_EVENT_TYPE_CONTROL_STATE = 'control.state' as const;
-export const SERVER_EVENT_TYPE_AUTH_REVOKED = 'auth.revoked' as const;
-export const SERVER_EVENT_TYPE_ERROR = 'error' as const;
+const SERVER_EVENT_TYPE_SESSION_ATTACHED = 'session.attached' as const;
+const SERVER_EVENT_TYPE_OUTPUT = 'output' as const;
+const SERVER_EVENT_TYPE_BACKFILL_RESULT = 'backfill.result' as const;
+const SERVER_EVENT_TYPE_SESSION_STATE = 'session.state' as const;
+const SERVER_EVENT_TYPE_CONTROL_STATE = 'control.state' as const;
+const SERVER_EVENT_TYPE_AUTH_REVOKED = 'auth.revoked' as const;
+const SERVER_EVENT_TYPE_ERROR = 'error' as const;
 export const SERVER_EVENT_TYPE_INPUT_ACK = 'input.ack' as const;
 export const KNOWN_SERVER_EVENT_TYPES = [
   SERVER_EVENT_TYPE_SESSION_ATTACHED,
@@ -89,8 +89,6 @@ export const AUTH_REVOKED_CLOSE_CODE = 1008 as const;
 // absent/unknown. A malformed ACK normalizes to Unknown + force-read-only.
 // ---------------------------------------------------------------------------
 export const INPUT_ACK_MODE_SESSION_WINDOW_V1 = 'session-window-v1' as const;
-export type InputAckMode = typeof INPUT_ACK_MODE_SESSION_WINDOW_V1;
-
 // isCanonicalMessageID: CG-03 producer discriminator. "msg-v1-" + 32 lowercase
 // hex (39 ASCII bytes). Pure byte classifier (no regex); canonical IDs opt into
 // the session ledger + ACK path, legacy non-empty IDs keep per-connection dedupe.
@@ -128,13 +126,13 @@ export function isCanonicalRequestID(rid: string): boolean {
 // Snapshot layers (session.attached). HistorySnapshot is a conditional union
 // (addendum §1.4): gap state requires a GapRange; continuous/backfilled forbid it.
 // ---------------------------------------------------------------------------
-export interface ConnectionSnapshot {
+interface ConnectionSnapshot {
   state: 'connected';
 }
-export interface AuthSnapshot {
+interface AuthSnapshot {
   state: 'authorized';
 }
-export interface SessionSnapshot {
+interface SessionSnapshot {
   state: SessionState;
 }
 export interface GapRange {
@@ -145,7 +143,7 @@ export interface GapRange {
 export type HistorySnapshot =
   | { state: 'continuous' | 'backfilled'; gap?: never }
   | { state: 'gap'; gap: GapRange };
-export interface FiveLayerSnapshot {
+interface FiveLayerSnapshot {
   connection: ConnectionSnapshot;
   auth: AuthSnapshot;
   session: SessionSnapshot;
@@ -191,7 +189,7 @@ export type ClientFrame = AttachFrame | InputFrame | ResizeFrame | BackfillFrame
 // ---------------------------------------------------------------------------
 // Server events — 8 categories
 // ---------------------------------------------------------------------------
-export interface SessionAttachedEvent {
+interface SessionAttachedEvent {
   type: typeof SERVER_EVENT_TYPE_SESSION_ATTACHED;
   requestId: RequestID;
   apiVersion: APIVersion;
@@ -203,7 +201,7 @@ export interface SessionAttachedEvent {
   inputAckMode?: typeof INPUT_ACK_MODE_SESSION_WINDOW_V1;
 }
 
-export interface OutputEvent {
+interface OutputEvent {
   type: typeof SERVER_EVENT_TYPE_OUTPUT;
   sessionId: SessionID;
   seq: Seq;
@@ -221,12 +219,12 @@ type BackfillCommon = {
   latestSeq: Seq;
 };
 
-export type BackfillFramesResultEvent = BackfillCommon & {
+type BackfillFramesResultEvent = BackfillCommon & {
   frames: ReplayFrame[];
   gap?: never;
 };
 
-export type BackfillGapResultEvent = BackfillCommon & {
+type BackfillGapResultEvent = BackfillCommon & {
   gap: GapRange;
   frames?: never;
 };
@@ -242,7 +240,7 @@ export interface SessionStateEvent {
   occurredAt: string;
 }
 
-export interface SessionRestartBoundaryEvent {
+interface SessionRestartBoundaryEvent {
   type: typeof SERVER_EVENT_TYPE_SESSION_STATE;
   sessionId: SessionID;
   state: SessionState;
@@ -269,7 +267,7 @@ export interface AuthRevokedEvent {
   occurredAt: string;
 }
 
-export interface ErrorEvent {
+interface ErrorEvent {
   type: typeof SERVER_EVENT_TYPE_ERROR;
   requestId?: RequestID;
   sessionId?: SessionID;
@@ -309,13 +307,13 @@ export type KnownServerEvent =
 // UnknownServerEvent — sanitized fail-safe (addendum §4.4). NO raw payload,
 // field values, unknown field names or sensitive values are retained.
 // ---------------------------------------------------------------------------
-export type UnknownServerEventReason =
+type UnknownServerEventReason =
   | 'unknown-type'
   | 'malformed-known-event'
   | 'unknown-enum'
   | 'unsafe-seq';
 
-export type UnknownServerEventFallback =
+type UnknownServerEventFallback =
   | 'ignore'
   | 'force-unauthorized'
   | 'force-read-only'

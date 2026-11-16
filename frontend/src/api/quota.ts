@@ -19,8 +19,6 @@ import { callApi } from './internal/call';
 
 // === 类型别名（wailsjs 真相源 re-export）===
 export type ProviderQuotaEntry = config.ProviderQuotaEntry;
-export type QuotaWindow = config.QuotaWindow;
-export type QuotaBalance = config.QuotaBalance;
 
 /** 全量额度缓存快照（页面挂载加载） */
 export function getProviderQuotas(): Promise<Record<string, ProviderQuotaEntry>> {

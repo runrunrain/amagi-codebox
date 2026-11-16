@@ -145,7 +145,7 @@ export interface MountOptions {
 // ---------------------------------------------------------------------------
 
 /** 一帧终端输出（data 为 base64 编码字节流）。 */
-export interface TerminalOutputChunk {
+interface TerminalOutputChunk {
   seq: number
   data: string
   runToken?: string
@@ -153,14 +153,14 @@ export interface TerminalOutputChunk {
 }
 
 /** 会话进程退出通知。 */
-export interface TerminalExitInfo {
+interface TerminalExitInfo {
   exitCode?: number
   runToken?: string
   runVersion?: string
 }
 
 /** 历史快照（data 兼容 string base64 / Array<number> / Uint8Array 三态）。 */
-export interface TerminalHistorySnapshot {
+interface TerminalHistorySnapshot {
   data: unknown
   seq?: number
   runToken?: string
@@ -189,7 +189,7 @@ export interface TerminalTransport {
 /**
  * 本地（默认）传输适配器：现有 Wails 触点原样上移，行为不变。
  */
-export function createLocalTerminalTransport(sessionId: string): TerminalTransport {
+function createLocalTerminalTransport(sessionId: string): TerminalTransport {
   return {
     subscribeOutput(cb) {
       return EventsOn('pty:data:' + sessionId, (eventData: unknown) => {

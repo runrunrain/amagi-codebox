@@ -28,10 +28,10 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@emnapi/core": "2.0.0-beta.2",
-    "@emnapi/runtime": "2.0.0-beta.2",
     "@types/node": "^24.12.0",
     "@vitejs/plugin-vue": "^6.0.5",
+    "@vue/compiler-dom": "^3.5.45",
+    "@vue/compiler-sfc": "^3.5.45",
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.9.0",
     "jsdom": "^29.0.1",
@@ -43,5 +43,15 @@
   "overrides": {
     "glob": "^14.0.2",
     "minimatch": "^11.0.1"
+  },
+  "knip": {
+    "entry": [
+      "scripts/audit-touch-targets.mjs",
+      "scripts/audit-touch-targets.selftest.mjs",
+      "scripts/check-contrast.mjs"
+    ],
+    "ignoreDependencies": [
+      "@capacitor/android"
+    ]
   }
 }

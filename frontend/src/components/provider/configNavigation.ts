@@ -37,11 +37,5 @@ export const OPENCODE_SECTIONS: ConfigSectionItem[] = [
   { id: 'mcp', label: 'MCP 服务器' }, { id: 'permission', label: '权限' }, { id: 'instructions', label: '指令文件' },
   { id: 'plugin', label: '插件' }, { id: 'experimental', label: '实验特性' }, { id: 'unknown', label: '其他键' },
 ];
-export function staticSections(page: ConfigPageId): ConfigSectionItem[] {
-  if (page === 'pi:agents') return PI_SECTIONS;
-  if (page === 'omp:agents') return OMP_SECTIONS;
-  if (page === 'opencode:global') return OPENCODE_SECTIONS.filter(i => i.id !== 'model' && i.id !== 'unknown');
-  return [];
-}
 export const pageSectionId = (page: string, id: string) => `section:${page}:${encodeURIComponent(id)}`;
 export const providerSectionId = (name: string) => `provider:${encodeURIComponent(name)}`;

@@ -50,64 +50,6 @@ export function tagColor(tag: string): string {
 }
 
 /**
- * Plugin badge color by plugin sub-item type.
- * Returns a CSS value (token reference or hex) suitable for badge backgrounds.
- */
-export function pluginBadgeColor(type: string): string {
-  const colors: Record<string, string> = {
-    integration: 'var(--accent)',
-    hybrid: 'var(--purple)',
-    skill: '#5AC8FA',
-    hook: 'var(--warning)',
-    command: 'var(--success)',
-    agent: '#FF2D55',
-    mcp: '#5AC8FA',
-    unknown: 'var(--tertiary)',
-  };
-  return colors[type] || colors.unknown;
-}
-
-/**
- * Format badge color.
- * A -> Anthropic format (purple), O -> OpenAI format (green).
- */
-export function formatBadgeColor(fmt: string): string {
-  const colors: Record<string, string> = {
-    A: 'var(--purple)',
-    O: 'var(--success)',
-  };
-  return colors[fmt] || 'var(--tertiary)';
-}
-
-/**
- * Mask a sensitive value (API keys, tokens). Shows prefix when not revealed.
- */
-export function maskValue(value: string, visible = false): string {
-  if (!value) return '';
-  if (visible) return value;
-  if (value.length <= 8) return '•'.repeat(value.length);
-  return value.slice(0, 8) + '•'.repeat(Math.min(value.length - 8, 12));
-}
-
-/**
- * Format a byte count into a human readable string.
- */
-export function formatFileSize(bytes: number): string {
-  if (!bytes || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
-
-/**
- * Format a number using locale grouping.
- */
-export function formatNumber(num: number): string {
-  return num.toLocaleString();
-}
-
-/**
  * Truncate text with an ellipsis when it exceeds maxLength.
  */
 export function truncate(text: string, maxLength: number): string {

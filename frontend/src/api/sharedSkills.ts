@@ -9,8 +9,7 @@ import {
   SetSharedSkillEnabled,
   DeleteSharedSkill,
   OpenSharedSkillFolder,
-  OpenSharedSkillsRoot,
-  RefreshSharedSkills,
+  OpenSharedSkillsRoot
 } from '../../wailsjs/go/main/App';
 
 import { callApi } from './internal/call';
@@ -67,9 +66,4 @@ export function openSharedSkillFolder(name: string): Promise<void> {
 /** 打开 ~/.agents/skills 技能根目录 */
 export function openSharedSkillsRoot(): Promise<void> {
   return callApi('[api.sharedSkills.openSharedSkillsRoot]', () => OpenSharedSkillsRoot());
-}
-
-/** 显式刷新（语义别名：服务层无缓存，= listSharedSkills；契约点名的 Refresh） */
-export function refreshSharedSkills(): Promise<SharedSkillView[]> {
-  return callApi('[api.sharedSkills.refreshSharedSkills]', () => RefreshSharedSkills());
 }

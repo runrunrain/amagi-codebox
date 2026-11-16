@@ -22,7 +22,7 @@ import { resolvePlaneBase, type PlaneLocation } from '../data/basePath'
 import type { Transport } from '../data/source'
 
 /** PUT 防抖窗口（t8 任务卡：500ms）。 */
-export const DRAFT_DEBOUNCE_MS = 500
+const DRAFT_DEBOUNCE_MS = 500
 
 export interface DraftSync {
   /** GET /api/draft；任何失败静默返回 ''（绝不抛错）。 */

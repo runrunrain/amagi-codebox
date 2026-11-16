@@ -12,7 +12,7 @@
  */
 
 /** Go 导出常量 remoteclient.RemoteManagedMask 的前端镜像。 */
-export const REMOTE_MANAGED_MASK = '«remote-managed»';
+const REMOTE_MANAGED_MASK = '«remote-managed»';
 
 /** 子串模式：命中即疑似凭据字段（镜像 credentialFieldMarkers）。 */
 const CREDENTIAL_MARKERS = ['apikey', 'authkey', 'secret', 'password', 'passwd', 'authorization', 'credential'];
@@ -34,7 +34,7 @@ const EXACT_CREDENTIAL_FIELDS = new Set([
 const NON_CREDENTIAL_FIELDS = new Set(['maxtokens']);
 
 /** 字段名归一化：小写 + 去 `_`/`-`/空格（镜像 normalizeFieldName）。 */
-export function normalizeCredentialFieldName(name: string): string {
+function normalizeCredentialFieldName(name: string): string {
   return name.toLowerCase().replace(/[_\-\s]/g, '');
 }
 
@@ -50,7 +50,7 @@ export function looksLikeCredentialField(name: string): boolean {
  * 是否为「空值=保留宿主现值」语义的统一密钥字段（镜像 isUnifiedKeyField）：
  * 顶层 api_key 与 anthropic/openai 嵌套 api_key。这些字段剔除后宿主不动 secrets。
  */
-export function isUnifiedKeyField(name: string): boolean {
+function isUnifiedKeyField(name: string): boolean {
   return normalizeCredentialFieldName(name) === 'apikey';
 }
 
@@ -98,7 +98,7 @@ function walk(value: unknown, path: string, result: MaskScan): void {
  * 就地剔除文档中值为掩码占位的凭据字段（递归，含 headers map 键）。
  * 调用方须先经 scanMaskedCredentialFields 确认无阻断项（otherMasked 为空）。
  */
-export function stripMaskedCredentialFields(value: unknown): void {
+function stripMaskedCredentialFields(value: unknown): void {
   if (Array.isArray(value)) {
     value.forEach((item) => stripMaskedCredentialFields(item));
     return;

@@ -29,13 +29,13 @@ export const INPUT_OUTBOX_MAX_BYTES = 256 * 1024;
 export const INPUT_OUTBOX_MAX_ATTEMPTS = 8;
 export const INPUT_OUTBOX_WINDOW_MS = 30_000;
 /** 每项最多保留的 requestId 数（与 attempts 上限对齐，entry 销毁前不淘汰）。 */
-export const INPUT_OUTBOX_MAX_ATTEMPT_IDS = 8;
+const INPUT_OUTBOX_MAX_ATTEMPT_IDS = 8;
 /** 单条 requestId canonical reserve（design R3：8×39-byte 预留）。 */
-export const CANONICAL_REQUEST_ID_BYTES = 39;
+const CANONICAL_REQUEST_ID_BYTES = 39;
 /** 单条 MessageID canonical 字节数。 */
-export const CANONICAL_MESSAGE_ID_BYTES = 39;
+const CANONICAL_MESSAGE_ID_BYTES = 39;
 /** issued set 上限（本页去重 + fail-closed）。 */
-export const INPUT_ISSUED_MAX = 8192;
+const INPUT_ISSUED_MAX = 8192;
 
 /** attempt 间隔（秒）：1,2,4,5,5,5,5,5（design §5）。 */
 const ATTEMPT_DELAYS_SEC = [1, 2, 4, 5, 5, 5, 5, 5];
@@ -43,8 +43,8 @@ const ATTEMPT_DELAYS_SEC = [1, 2, 4, 5, 5, 5, 5, 5];
 /** 单帧 base64 data 上限（留余量给 JSON 开销；WS 帧硬上限 64KiB）。 */
 const INPUT_FRAME_MAX_BYTES = 60_000;
 
-export type InputOutboxState = 'pending' | 'settled' | 'halted' | 'unknown';
-export type InputRejectReason = 'outbox.full' | 'secure_id_unavailable' | 'input.too_large';
+type InputOutboxState = 'pending' | 'settled' | 'halted' | 'unknown';
+type InputRejectReason = 'outbox.full' | 'secure_id_unavailable' | 'input.too_large';
 
 export interface InputOutboxEntry {
   readonly id: MessageID;

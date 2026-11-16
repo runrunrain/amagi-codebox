@@ -106,7 +106,7 @@
             <div class="pre-models-head">
               <span class="pre-label">模型</span>
             </div>
-            <ConfigContentGroup v-for="(m, idx) in providerModels(name)" :key="idx" class="pre-model" icon="model" :label="`模型 ${idx + 1}`">
+            <ConfigContentGroup v-for="(_m, idx) in providerModels(name)" :key="idx" class="pre-model" icon="model" :label="`模型 ${idx + 1}`">
               <template #header>
               <div class="pre-model-head">
                 <TextInput

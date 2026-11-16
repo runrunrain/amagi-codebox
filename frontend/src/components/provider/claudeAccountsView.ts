@@ -76,7 +76,7 @@ export function deriveSectionState(
 // 双端登录健康（1a GrantHealth：ready/expired/needs-login/refresh-uncertain/quarantined）
 // ---------------------------------------------------------------------------
 
-export type HealthTone = 'ok' | 'warn' | 'error' | 'muted';
+type HealthTone = 'ok' | 'warn' | 'error' | 'muted';
 
 export interface GrantHealthView {
   label: string;
@@ -118,7 +118,7 @@ export function accountNeedsLogin(account: ClaudeAccount): boolean {
 // ---------------------------------------------------------------------------
 
 /** 未显隐切换时的占位符（与真实遮罩形态一致，避免布局跳动）。 */
-export const EMAIL_MASK_PLACEHOLDER = '•••••••@—';
+const EMAIL_MASK_PLACEHOLDER = '•••••••@—';
 
 /**
  * 遮罩邮箱显示不变量：revealed=true 时显示后端给定的遮罩值本身，

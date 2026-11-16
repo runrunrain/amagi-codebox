@@ -288,18 +288,3 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
 
 /** 配对卡手动局域网地址在 localStorage 的持久化键（自检卡共用读取） */
 export const CUSTOM_LAN_HOST_STORAGE_KEY = 'amagi.remote.customLanHost';
-
-/** 自检卡项严重度级别 */
-export type SelfCheckSeverity = 'ok' | 'warning' | 'danger' | 'info' | 'stopped';
-
-/** 自检项数据结构 */
-export interface SelfCheckItem {
-  id: string;
-  label: string;
-  valueText: string;
-  status: SelfCheckSeverity;
-  detail: string;
-  actionText?: string;
-  actionType?: 'goto-service' | 'goto-lan' | 'set-host-wildcard' | 'refresh';
-}
-

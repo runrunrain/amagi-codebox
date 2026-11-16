@@ -23,7 +23,7 @@ import type { ProviderQuotaEntry } from '../api/quota';
 export const CODEX_QUOTA_KEY = 'codex';
 
 /** ensure 冷却：距上次探测 <10min 不重复后台探测（设计 §3 刷新策略） */
-export const ENSURE_COOLDOWN_MS = 10 * 60 * 1000;
+const ENSURE_COOLDOWN_MS = 10 * 60 * 1000;
 
 export const useQuotaStore = defineStore('quota', () => {
   // === State ===

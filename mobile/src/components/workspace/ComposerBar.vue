@@ -15,7 +15,7 @@ import { nextTick, ref, watch } from 'vue';
 import KeyTray from './KeyTray.vue';
 
 /** outbox 可视投影（M3-C；store.outboxView 形状）。 */
-export interface OutboxStripView {
+interface OutboxStripView {
   pendingCount: number;
   haltedCount: number;
   maxAttemptNo: number;

@@ -1,5 +1,3 @@
-export type SubItemType = 'skill' | 'agent' | 'command' | 'hook' | 'mcp'
-
 export interface PluginSubItemView {
   type: string
   name: string
@@ -12,7 +10,7 @@ export interface PluginSubItemView {
   selectable?: boolean
 }
 
-export interface PluginResourceItemView {
+interface PluginResourceItemView {
   name?: string
   description?: string
   filePath?: string
@@ -29,7 +27,7 @@ export interface PluginDetailInput {
   mcpServers?: Record<string, unknown>
 }
 
-export interface PluginManifestView {
+interface PluginManifestView {
   description?: string
   interface?: {
     capabilities?: string[]
@@ -104,7 +102,7 @@ export interface AvailablePluginView {
  * ui/Badge.vue 的 type prop 联合镜像（Badge.vue 未导出 Props 接口，无法直接引用）。
  * Badge 的 type 联合变化时需同步此处。
  */
-export type PluginBadgeType =
+type PluginBadgeType =
   | 'type'
   | 'ver'
   | 'tag'

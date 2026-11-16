@@ -33,7 +33,7 @@ import type { SessionState } from './contract';
 // 渲染条目类型（七类内容组件 + 用户指令 + 边界/缺口标记）
 // ---------------------------------------------------------------------------
 
-export type TimelineItemKind =
+type TimelineItemKind =
   | 'user'
   | 'prompt-action'
   | 'option'
@@ -45,13 +45,13 @@ export type TimelineItemKind =
   | 'boundary'
   | 'gap';
 
-export interface TimelineItemBase {
+interface TimelineItemBase {
   id: string;
   kind: TimelineItemKind;
 }
 
 /** 可答选项：label 展示；input 为发送给会话的完整载荷（编号选项含回车，y/n 为单按键）。 */
-export interface AnswerOption {
+interface AnswerOption {
   key: string;
   label: string;
   input: string;
