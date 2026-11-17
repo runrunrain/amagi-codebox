@@ -34,7 +34,7 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `pty.Service`：终端写入/调整尺寸只能走 `App.PtyWrite` / `App.PtyWriteLarge` / `App.PtyResize` 门面；门面在 control-runtime 未就绪时 fail-closed（M-005）。
 - `secrets.SecretsService` / `envcheck.Service` / `logging.Service` / `updater.Service` / `opencodeconfig.Service` / `ompconfig.Service`：已从 Bind 列表移除，仅保留为内部服务，前端通过 `App` 上的窄门面方法访问（`secrets.SecretsService.GetAllProviders` 仅保留给 `agentcli` 调用方内部使用）。
 
-另有 `sharedskills.Service`（公共技能，`internal/sharedskills`）与 `sharedmcp.Service`（共用 MCP，`internal/sharedmcp`）同样不进 Bind 列表，前端经 `App` 门面访问（见下文「公共技能」与「共用 MCP」节）。
+另有 `sharedskills.Service`（公共技能，`internal/sharedskills`）、`sharedmcp.Service`（共用 MCP，`internal/sharedmcp`）与 `sharedmarket.Service`（共用插件市场，`internal/sharedmarket`）同样不进 Bind 列表，前端经 `App` 门面访问（见下文「公共技能」「共用 MCP」与「共用插件市场」节）。
 
 同样被排除的：
 
@@ -146,6 +146,20 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `SetSharedMcpEngineSelection(name, engine string, selected, force bool) (*SharedMcpOverview, error)` — 设置「条目 × 引擎」一格勾选：selected=true → Distribute（幂等 resync，drift 格的「重新分发」即本方法；目标被外部改过返回 ErrForeignModified，force 确认后才覆盖）；false → Undistribute（外改同样需 force）。逐引擎独立成败，互不牵连。
 
 所有方法返回最新 Overview（前端免二次请求）；错误文案与日志不含 env / headers 明文。「打开登记目录」复用通用门面 `OpenFileInEditor`。
+
+### 共用插件市场（`app_sharedmarket.go`）
+
+把 Claude Code 插件市场（或任意 git 市场源）以引擎中立形式纳入统一管理：浅 clone 到 `~/.agents/marketplaces/<name>`，登记状态存 `~/.agents/marketplaces.json`（tmp+rename 原子写）；市场内插件的 skills 可一键部署到 `~/.agents/skills/<技能名>` 成为共用技能（跨 CLI 生效，由「共用技能」门面统一启停管理）。机制本体在 `internal/sharedmarket`（git 经注入点执行，不感知来源引擎），不进 Bind 列表。设计边界：部署只覆盖 skills——commands/agents/hooks/MCP 是 Claude 插件系统语义、无 `~/.agents` 对应物，外部 git 引用条目（官方市场 git-subdir 形态）如实标记不可部署；部署不覆盖已存在技能目录（防丢用户改动），复制走技能根下隐藏暂存目录 `.deploy-staging`，全部就绪后逐个原子发布，失败清理可重试。
+
+- `ListSharedMarkets() ([]sharedmarket.Marketplace, error)` — 全部共用市场（状态 + 实时目录扫描；单市场 clone/目录不可读时置 `missing` 如实呈现）。
+- `RefreshSharedMarkets() ([]sharedmarket.Marketplace, error)` — 显式刷新；服务层无缓存，语义等同 `ListSharedMarkets`。
+- `AddSharedMarketplace(source string) ([]sharedmarket.Marketplace, error)` — 从 git URL/本地路径新增：浅 clone → 校验 `.claude-plugin/marketplace.json`（非法市场回滚清理）→ 落状态（失败回滚 clone）；市场名从源地址 basename 推导，同名拒绝。
+- `ListClaudeMarketplacesForImport() ([]ClaudeMarketplaceForImport, error)` — Claude Code 已注册市场 + 已导入标记（源转换：URL > github repo 合成 > 本地 installLocation）。
+- `ImportSharedMarketplacesFromClaude(names []string) ([]sharedmarket.Marketplace, error)` — 按名从 Claude 注册表导入（保持同名）；单市场原子，批量不回滚、失败即中止并携带市场名。
+- `UpdateSharedMarketplace(name string) ([]sharedmarket.Marketplace, error)` — `git pull --ff-only`；clone 目录缺失时重新克隆恢复。
+- `RemoveSharedMarketplace(name string) ([]sharedmarket.Marketplace, error)` — 删除 clone 目录与登记（已部署技能不受影响）。
+- `DeploySharedMarketplacePlugin(marketName, pluginName string) (*sharedmarket.DeployReport, error)` — 部署插件 skills 到 `~/.agents/skills`（名称段/符号链接祖先/最终目标三层安全校验；报告 `deployed`/`skipped` 恒为数组）。
+- `OpenSharedMarketplaceFolder(name string) error` — 系统文件管理器打开市场 clone 目录。
 
 ### 远程服务器（Remote Server）
 

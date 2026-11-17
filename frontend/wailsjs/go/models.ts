@@ -2585,6 +2585,26 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ClaudeMarketplaceForImport {
+	    name: string;
+	    source: string;
+	    repo?: string;
+	    url?: string;
+	    imported: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClaudeMarketplaceForImport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.repo = source["repo"];
+	        this.url = source["url"];
+	        this.imported = source["imported"];
+	    }
+	}
 	export class ModalityProbeNowResult {
 	    conclusive: boolean;
 	    vision: boolean;
@@ -5143,6 +5163,99 @@ export namespace settings {
 	
 	
 	
+
+}
+
+export namespace sharedmarket {
+	
+	export class DeployReport {
+	    marketplace: string;
+	    plugin: string;
+	    deployed: string[];
+	    skipped: string[];
+	    targetRoot: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeployReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.marketplace = source["marketplace"];
+	        this.plugin = source["plugin"];
+	        this.deployed = source["deployed"];
+	        this.skipped = source["skipped"];
+	        this.targetRoot = source["targetRoot"];
+	    }
+	}
+	export class Plugin {
+	    name: string;
+	    version?: string;
+	    description?: string;
+	    author?: string;
+	    skills: string[];
+	    externalSource?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Plugin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.description = source["description"];
+	        this.author = source["author"];
+	        this.skills = source["skills"];
+	        this.externalSource = source["externalSource"];
+	    }
+	}
+	export class Marketplace {
+	    name: string;
+	    source: string;
+	    clonePath: string;
+	    description: string;
+	    addedAt: string;
+	    lastUpdated: string;
+	    pluginCount: number;
+	    plugins: Plugin[];
+	    missing?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Marketplace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.clonePath = source["clonePath"];
+	        this.description = source["description"];
+	        this.addedAt = source["addedAt"];
+	        this.lastUpdated = source["lastUpdated"];
+	        this.pluginCount = source["pluginCount"];
+	        this.plugins = this.convertValues(source["plugins"], Plugin);
+	        this.missing = source["missing"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

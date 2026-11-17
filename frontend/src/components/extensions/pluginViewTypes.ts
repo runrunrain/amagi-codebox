@@ -7,6 +7,7 @@ export interface PluginSubItemView {
   event?: string
   enabled?: boolean
   globallyEnabled?: boolean
+  /** false = 该类型子项不支持单独启停（如 hooks），行不可切换 */
   selectable?: boolean
 }
 

@@ -165,15 +165,9 @@ func (s *Service) readMarketplacePluginEntry(installed InstalledPlugin) (marketp
 }
 
 func readMarketplacePluginEntryFromLocation(installLocation, pluginName string) (marketplacePluginEntry, error) {
-	catalogPath := filepath.Join(installLocation, ".claude-plugin", "marketplace.json")
-	b, err := os.ReadFile(catalogPath)
+	catalog, err := readMarketplaceCatalog(installLocation)
 	if err != nil {
 		return marketplacePluginEntry{}, err
-	}
-
-	var catalog marketplaceCatalogFile
-	if err := json.Unmarshal(b, &catalog); err != nil {
-		return marketplacePluginEntry{}, fmt.Errorf("parse marketplace catalog: %w", err)
 	}
 
 	for _, entry := range catalog.Plugins {
@@ -192,7 +186,7 @@ func readMarketplacePluginEntryFromLocation(installLocation, pluginName string) 
 }
 
 func readMarketplaceSourceManifest(installLocation, pluginRoot string, entry marketplacePluginEntry) (PluginManifest, error) {
-	if strings.TrimSpace(entry.Source) == "" && strings.TrimSpace(pluginRoot) == "" && strings.TrimSpace(entry.Name) == "" {
+	if strings.TrimSpace(string(entry.Source)) == "" && strings.TrimSpace(pluginRoot) == "" && strings.TrimSpace(entry.Name) == "" {
 		return PluginManifest{}, os.ErrNotExist
 	}
 
@@ -211,8 +205,8 @@ func readMarketplaceSourceManifest(installLocation, pluginRoot string, entry mar
 }
 
 func marketplacePluginDir(installLocation, pluginRoot string, entry marketplacePluginEntry) string {
-	if strings.TrimSpace(entry.Source) != "" {
-		return cleanMarketplacePath(installLocation, entry.Source)
+	if strings.TrimSpace(string(entry.Source)) != "" {
+		return cleanMarketplacePath(installLocation, string(entry.Source))
 	}
 	if strings.TrimSpace(pluginRoot) != "" && strings.TrimSpace(entry.Name) != "" {
 		return cleanMarketplacePath(installLocation, filepath.Join(pluginRoot, entry.Name))

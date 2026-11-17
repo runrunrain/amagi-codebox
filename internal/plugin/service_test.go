@@ -28,11 +28,7 @@ func TestNormalizeAvailablePluginsKeepsMarketplaceLinkage(t *testing.T) {
 	}
 
 	plugins := make(map[string]AvailablePlugin, len(available))
-	for _, item := range available {
-		plugin, ok := item.(AvailablePlugin)
-		if !ok {
-			t.Fatalf("expected AvailablePlugin item, got %T", item)
-		}
+	for _, plugin := range available {
 		plugins[plugin.PluginID] = plugin
 	}
 

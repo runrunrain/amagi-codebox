@@ -1,5 +1,7 @@
 package plugin
 
+import "encoding/json"
+
 // PluginType 表示插件的自动分析类型。
 type PluginType string
 
@@ -180,7 +182,7 @@ type marketplaceCatalogMetadata struct {
 
 type marketplacePluginEntry struct {
 	Name        string            `json:"name"`
-	Source      string            `json:"source"`
+	Source      flexibleString    `json:"source"`
 	Version     string            `json:"version"`
 	Description string            `json:"description"`
 	Author      map[string]string `json:"author,omitempty"`
@@ -188,6 +190,22 @@ type marketplacePluginEntry struct {
 	Keywords    []string          `json:"keywords,omitempty"`
 	Homepage    string            `json:"homepage,omitempty"`
 	Repository  string            `json:"repository,omitempty"`
+}
+
+// flexibleString 接受字符串或对象形状的 JSON 字段：官方市场等外部插件的
+// source 是 {source,url,path,ref,sha} 对象（git-subdir 引用），无法映射为
+// 本地相对路径——置空降级，保证整个 catalog 不因单字段形状差异解析失败
+//（条目其余字段如 name/description/version 照常可用）。
+type flexibleString string
+
+func (f *flexibleString) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*f = flexibleString(text)
+		return nil
+	}
+	*f = ""
+	return nil
 }
 
 type marketplaceSource struct {

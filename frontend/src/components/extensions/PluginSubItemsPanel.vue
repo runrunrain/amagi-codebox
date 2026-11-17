@@ -12,7 +12,7 @@
         :description="item.description"
         :type-badge="item.type"
         :enabled="item.enabled !== false"
-        :toggleable="engine === 'claude'"
+        :toggleable="engine === 'claude' && item.selectable !== false"
         @toggle="(value) => handleToggleItem(item, value)"
       />
     </div>

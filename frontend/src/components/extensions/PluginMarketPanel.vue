@@ -42,12 +42,14 @@
             </template>
           </ListToolbar>
 
-          <!-- 市场源行（与技能列表同构：名称+类型/计数徽章+描述完整多行；Codex 行尾删除） -->
+          <!-- 市场源行（与技能列表同构：名称+类型/计数徽章+描述完整多行；Codex 行尾删除）。
+               计数文案用「N 个插件」：目录含已安装条目（本地市场目录直读），
+               不再是只含未安装的「可安装」子集 -->
           <div class="market-source-list">
             <PluginRow
               name="全部市场"
-              description="汇总所有市场源的可安装插件，支持跨源搜索"
-              :badges="[{ text: `${totalAvailableCount} 个可安装`, type: 'scope', variant: 'muted' }]"
+              description="汇总所有市场源的插件目录，支持跨源搜索"
+              :badges="[{ text: `${totalAvailableCount} 个插件`, type: 'scope', variant: 'muted' }]"
               @click="openAllMarkets"
             />
             <PluginRow
@@ -84,7 +86,7 @@
         <DetailHeader
           :breadcrumb="[{ label: '插件市场', clickable: true }, { label: activeMarketLabel }]"
           :title="activeMarketLabel"
-          :badges="[{ text: `${marketPluginCount} 个可安装`, type: 'scope', variant: 'muted' }]"
+          :badges="[{ text: `${marketPluginCount} 个插件`, type: 'scope', variant: 'muted' }]"
           @back="backToSources"
         >
           <template #actions>
@@ -441,7 +443,7 @@ function sourceRowBadges(market: MarketplaceSourceView): PluginBadgeDescriptor[]
     badges.push({ text: typeLabel, type: 'type', color: 'plugin' });
   }
   badges.push({
-    text: `${getPluginCountForMarket(market)} 个可安装`,
+    text: `${getPluginCountForMarket(market)} 个插件`,
     type: 'scope',
     variant: 'muted',
   });
@@ -451,7 +453,8 @@ function sourceRowBadges(market: MarketplaceSourceView): PluginBadgeDescriptor[]
 // --- 插件条目 helpers ---
 function getPluginKey(plugin: AvailablePluginView): string {
   if (props.engine === 'claude') {
-    return plugin.name || plugin.id || '';
+    // 优先完整 pluginId（name@marketplace）：同名插件可能跨市场存在，仅按 name 会撞 key
+    return plugin.pluginId || plugin.name || plugin.id || '';
   }
   return plugin.pluginId || plugin.id || '';
 }
@@ -488,6 +491,11 @@ function rowBadges(plugin: AvailablePluginView): PluginBadgeDescriptor[] {
 // 已安装判定（真实推导，无后端字段；契约 §6.6）
 function isInstalled(plugin: AvailablePluginView): boolean {
   if (props.engine === 'claude') {
+    // 优先按完整 id（name@marketplace）精确匹配：同一插件名可能同时存在于多个市场
+    //（如 writing-skills 同时在 amagi 与 vexel），仅按名称会跨市场误判已安装
+    if (plugin.pluginId) {
+      return ccInstalled.value.some((p) => p.id === plugin.pluginId);
+    }
     return ccInstalled.value.some((p) => p.name === plugin.name);
   }
   return cxInstalled.value.some((p) => p.id === plugin.pluginId || p.name === plugin.name);
@@ -525,7 +533,8 @@ async function handleInstall(plugin: AvailablePluginView) {
   installingKeys.value = { ...installingKeys.value, [key]: true };
   try {
     if (props.engine === 'claude') {
-      await installCcPlugin(plugin.name || plugin.id || '');
+      // 传完整 pluginId（name@marketplace）：同名插件跨市场时仅按名称安装有歧义
+      await installCcPlugin(plugin.pluginId || plugin.name || plugin.id || '');
     } else {
       await installCxPlugin(plugin.pluginId || plugin.id || '', plugin.marketplaceName);
     }

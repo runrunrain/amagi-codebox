@@ -10,21 +10,8 @@ import (
 	"strings"
 )
 
-func (s *Service) readDisabledSubItems(pluginID string) ([]SubItemRef, error) {
-	stateFile, err := s.readSubItemStateFile()
-	if err != nil {
-		return nil, err
-	}
-	for _, state := range stateFile {
-		if state.PluginID == pluginID {
-			return normalizeSubItemRefs(state.DisabledSubItems), nil
-		}
-	}
-	return []SubItemRef{}, nil
-}
-
 func (s *Service) readSubItemStateFile() ([]PluginSubItemState, error) {
-	path := defaultSubItemStatePath(defaultConfigDir())
+	path := defaultSubItemStatePath(s.configDirOrDefault())
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -50,7 +37,7 @@ func (s *Service) readSubItemStateFile() ([]PluginSubItemState, error) {
 }
 
 func (s *Service) writeSubItemStateFile(states []PluginSubItemState) error {
-	path := defaultSubItemStatePath(defaultConfigDir())
+	path := defaultSubItemStatePath(s.configDirOrDefault())
 	states = normalizeStateEntries(states)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir plugin subitems dir: %w", err)
@@ -160,6 +147,14 @@ func defaultConfigDir() string {
 		return filepath.Join(homeDir, ".amagi-codebox")
 	}
 	return filepath.Join(".", ".amagi-codebox")
+}
+
+// configDirOrDefault 返回生效的应用配置目录（注入优先，回退 ~/.amagi-codebox）。
+func (s *Service) configDirOrDefault() string {
+	if strings.TrimSpace(s.configDir) != "" {
+		return s.configDir
+	}
+	return defaultConfigDir()
 }
 
 func cloneMap(input map[string]interface{}) map[string]interface{} {

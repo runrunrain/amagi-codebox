@@ -48,6 +48,7 @@ import (
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
+	"amagi-codebox/internal/sharedmarket"
 	"amagi-codebox/internal/sharedmcp"
 	"amagi-codebox/internal/sharedskills"
 	"amagi-codebox/internal/skins"
@@ -202,6 +203,10 @@ type App struct {
 	// Claude/Codex/OpenCode/Pi 四引擎写入，共用 MCP spec §2）。**非 Wails
 	// 绑定**——经 App 门面（app_sharedmcp.go）暴露。
 	SharedMcp *sharedmcp.Service
+	// SharedMarkets 是共用插件市场服务（~/.agents/marketplaces 克隆管理 +
+	// 插件技能部署到 ~/.agents/skills）。**非 Wails 绑定**——经 App 门面
+	// （app_sharedmarket.go）暴露。
+	SharedMarkets *sharedmarket.Service
 	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
 	// 仅 embedded pi 会话注册；其他 CLI 不感知。
 	WebUI *webui.Service
@@ -478,6 +483,9 @@ func NewApp(mobileAssets embed.FS) *App {
 	// 共用 MCP 服务（共用 MCP spec §2）：~/.agents/.mcp.json 登记 CRUD +
 	// 四引擎分发；前端门面在 app_sharedmcp.go。
 	app.constructSharedMcp()
+	// 共用插件市场服务：~/.agents/marketplaces 克隆管理 + 插件技能部署到
+	// ~/.agents/skills；前端门面在 app_sharedmarket.go。
+	app.constructSharedMarkets()
 	// Claude 订阅账号轮换（design §6.3/§7.2）：装配 1a 领域服务（Keychain 池
 	// 后端、canonical 原生适配器、MutationGate/Quiescence 生产实现）。启动
 	// 恢复在 Startup（§4.5 时序：池加载 → RecoverAtStartup → 开放受影响启动）。

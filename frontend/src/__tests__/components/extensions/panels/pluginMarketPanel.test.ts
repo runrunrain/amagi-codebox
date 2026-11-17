@@ -78,17 +78,17 @@ describe('市场视图渲染', () => {
     store.ccMarkets = [{ Name: 'official', Description: '官方市场' }];
     store.ccInstalled = [ccInstalledFixture()];
     store.ccAvailable = [
-      { name: 'Alpha', pluginId: 'alpha', marketplaceName: 'official', installCount: 1500, description: '已装的那个' },
-      { name: 'NewOne', pluginId: 'new', marketplaceName: 'official', installCount: 2, description: '新的那个' },
+      { name: 'Alpha', pluginId: 'alpha@official', marketplaceName: 'official', installCount: 1500, description: '已装的那个' },
+      { name: 'NewOne', pluginId: 'new@official', marketplaceName: 'official', installCount: 2, description: '新的那个' },
     ] as unknown as typeof store.ccAvailable;
 
     const { html, instances } = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
     const panel = instanceOf(instances, PluginMarketPanel);
 
-    // 一级市场源行：名称 + Description 完整展示 + 可安装计数徽章
+    // 一级市场源行：名称 + Description 完整展示 + 目录计数徽章（含已安装条目）
     expect(html).toMatch(/plugin-row-name[^>]*>official</);
     expect(html).toContain('官方市场');
-    expect(html).toContain('2 个可安装');
+    expect(html).toContain('2 个插件');
 
     // 二级插件列表：已安装推导（名称命中 →「已安装」；未命中 →「安装」两种状态并存）
     panel.exposed?.selectMarket({ Name: 'official' });
@@ -141,6 +141,40 @@ describe('市场视图渲染', () => {
     expect(html).toContain('已安装');
     expect(html.replaceAll('已安装', '')).toContain('安装');
     expect(html).toContain('Other');
+  });
+
+  it('Claude：跨市场同名插件按完整 id 精确判定已安装，不互相污染', async () => {
+    const store = usePluginStore();
+    store.ccMarkets = [
+      { Name: 'amagi-plugins-marketplace' },
+      { Name: 'vexel-plugins-marketplace' },
+    ];
+    // writing-skills 同时存在于两个市场：仅 vexel 侧已安装
+    store.ccInstalled = [
+      ccInstalledFixture({ id: 'writing-skills@vexel-plugins-marketplace', name: 'writing-skills', marketplace: 'vexel-plugins-marketplace' }),
+    ];
+    store.ccAvailable = [
+      { name: 'writing-skills', pluginId: 'writing-skills@amagi-plugins-marketplace', marketplaceName: 'amagi-plugins-marketplace' },
+      { name: 'writing-skills', pluginId: 'writing-skills@vexel-plugins-marketplace', marketplaceName: 'vexel-plugins-marketplace' },
+    ] as unknown as typeof store.ccAvailable;
+
+    const { instances } = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
+    const panel = instanceOf(instances, PluginMarketPanel);
+    // 「已安装」出现次数：先剥离模板注释（SSR 会输出注释，字面计数会被注释污染），
+    // 状态页签恒占 1 次，行按钮命中时 +1（页签文案与按钮文案同字，用计数区分）
+    const installedOccurrences = (html: string) =>
+      html.replace(/<!--[\s\S]*?-->/g, '').split('已安装').length - 1;
+
+    // amagi 市场：同名但未安装 → 仅页签 1 次，行按钮为「安装」
+    panel.exposed?.selectMarket({ Name: 'amagi-plugins-marketplace' });
+    let html = await renderInstanceAgain(panel);
+    expect(installedOccurrences(html)).toBe(1);
+    expect(html).toContain('安装');
+
+    // vexel 市场：完整 id 命中 → 页签 + 行按钮共 2 次
+    panel.exposed?.selectMarket({ Name: 'vexel-plugins-marketplace' });
+    html = await renderInstanceAgain(panel);
+    expect(installedOccurrences(html)).toBe(2);
   });
 
   it('无市场源 → EmptyStateCard + 添加市场入口', async () => {
@@ -250,17 +284,18 @@ describe('行为断言（expose 触发器）', () => {
     expect(onBack).toHaveBeenCalled();
   });
 
-  it('handleInstall：Claude 按名称安装 / Codex 按 pluginId+marketplaceName 安装', async () => {
+  it('handleInstall：Claude 按完整 pluginId 安装 / Codex 按 pluginId+marketplaceName 安装', async () => {
     const claudeStore = usePluginStore();
     claudeStore.ccMarkets = [{ Name: 'official' }];
     claudeStore.ccInstalled = [];
     claudeStore.ccAvailable = [
-      { name: 'NewOne', pluginId: 'new', marketplaceName: 'official' },
+      { name: 'NewOne', pluginId: 'NewOne@official', marketplaceName: 'official' },
     ] as unknown as typeof claudeStore.ccAvailable;
     const claudeRender = await renderWithCapture(PluginMarketPanel, { engine: 'claude' });
-    const avail: AvailablePluginView = { name: 'NewOne', pluginId: 'new', marketplaceName: 'official' };
+    const avail: AvailablePluginView = { name: 'NewOne', pluginId: 'NewOne@official', marketplaceName: 'official' };
     await instanceOf(claudeRender.instances, PluginMarketPanel).exposed?.handleInstall(avail);
-    expect(apiMocks.installPlugin).toHaveBeenCalledWith('NewOne');
+    // 同名插件跨市场时仅按名称安装有歧义，必须传 name@marketplace 完整 id
+    expect(apiMocks.installPlugin).toHaveBeenCalledWith('NewOne@official');
 
     setActivePinia(createPinia());
     const codexStore = usePluginStore();

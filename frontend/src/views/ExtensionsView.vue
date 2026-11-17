@@ -1,6 +1,6 @@
 <template>
   <section class="view-extensions">
-    <PageHead title="扩展管理" description="管理 Claude Code、OpenCode、Codex、Pi、OMP 的插件，以及 ~/.agents 下的共用技能与共用 MCP"/>
+    <PageHead title="扩展管理" description="管理 Claude Code、OpenCode、Codex、Pi、OMP 的插件，以及 ~/.agents 下的共用技能、共用 MCP 与共用插件市场"/>
 
     <!-- RC1-6：远程模式提示条（扩展管理为本机功能） -->
     <RemoteScopeBanner subject="扩展管理" />
@@ -27,6 +27,9 @@
 
       <!-- 公共：共用 MCP（~/.agents/.mcp.json 登记 + 四引擎分发） -->
       <SharedMcpPanel v-else-if="extSubPage === 'shared-mcp'" />
+
+      <!-- 公共：共用插件市场（~/.agents/marketplaces 克隆管理 + 技能部署） -->
+      <SharedMarketPanel v-else-if="extSubPage === 'shared-market'" />
 
       <!-- ClaudeCode 子页 -->
       <!-- :key 区分 Claude/Codex 两分支：否则 v-if 切换时 Vue 原地 patch、
@@ -128,6 +131,7 @@ import PiPluginPanel from '../components/extensions/PiPluginPanel.vue';
 import OmpPluginPanel from '../components/extensions/OmpPluginPanel.vue';
 import SharedSkillsPanel from '../components/extensions/SharedSkillsPanel.vue';
 import SharedMcpPanel from '../components/extensions/SharedMcpPanel.vue';
+import SharedMarketPanel from '../components/extensions/SharedMarketPanel.vue';
 import WSLPluginTargetPlaceholder from '../components/extensions/WSLPluginTargetPlaceholder.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import { usePluginStore } from '../stores/plugin';
@@ -149,6 +153,7 @@ interface SubPageTab {
 const subPageTabs: SubPageTab[] = [
   { key: 'shared-skills', label: '共用技能' },
   { key: 'shared-mcp', label: '共用 MCP' },
+  { key: 'shared-market', label: '共用市场' },
   { key: 'claude', label: 'Claude Code' },
   { key: 'opencode', label: 'OpenCode' },
   { key: 'codex', label: 'Codex' },

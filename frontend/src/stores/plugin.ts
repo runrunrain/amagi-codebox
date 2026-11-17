@@ -41,11 +41,13 @@ interface ResourceFilter {
 
 /**
  * 扩展中心子页 key（契约 §1.2）：'shared-skills' = 公共「共用技能」子页、
- * 'shared-mcp' = 公共「共用 MCP」子页；其余五个值与 pluginEngine 引擎名同字面（引擎子页）。
+ * 'shared-mcp' = 公共「共用 MCP」子页、'shared-market' = 公共「共用插件市场」
+ * 子页；其余五个值与 pluginEngine 引擎名同字面（引擎子页）。
  */
 export type ExtSubPage =
   | 'shared-skills'
   | 'shared-mcp'
+  | 'shared-market'
   | 'claude'
   | 'opencode'
   | 'codex'
@@ -207,19 +209,21 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   // 引擎子页判定（共用 MCP 契约 §4.1）：ExtSubPage 中与 pluginEngine 同字面的
-  // 五个值；公共子页 'shared-skills' / 'shared-mcp' 不联动引擎态。类型收窄使
-  // setPluginEngine(page) 通过编译（'shared-mcp' 不在引擎联合内）。
+  // 五个值；公共子页 'shared-skills' / 'shared-mcp' / 'shared-market' 不联动
+  // 引擎态。类型收窄使 setPluginEngine(page) 通过编译（公共子页不在引擎联合内）。
   function isEngineSubPage(
     page: ExtSubPage,
   ): page is 'claude' | 'opencode' | 'codex' | 'pi' | 'omp' {
-    return page !== 'shared-skills' && page !== 'shared-mcp';
+    return (
+      page !== 'shared-skills' && page !== 'shared-mcp' && page !== 'shared-market'
+    );
   }
 
   // 子页切换（契约 §1.3）：setExtSubPage 是 extSubPage 的唯一写入口。
   // - 同值守卫：顶部页签重击当前子页不得清 activePluginId / 重置 pluginView（防详情态被踢回列表）；
   // - 引擎子页：联动既有引擎切换契约——setPluginEngine（清 activePluginId）+
   //   setPluginView('installed') 重置回列表态（原 ExtensionsView handleEngineChange 契约平移）；
-  // - shared-skills / shared-mcp 公共子页：不动引擎态（pluginEngine/pluginView/activePluginId 均保持）。
+  // - shared-skills / shared-mcp / shared-market 公共子页：不动引擎态（pluginEngine/pluginView/activePluginId 均保持）。
   function setExtSubPage(page: ExtSubPage) {
     if (page === extSubPage.value) return;
     extSubPage.value = page;
@@ -495,10 +499,16 @@ export const usePluginStore = defineStore('plugin', () => {
   async function addCcMarketplace(source: string) {
     try {
       const result = await pluginApi.addMarketplace(source);
-      // Refresh after add
-      await loadCcMarkets();
+      // 新市场已 clone 到本地，立即失效缓存并全量刷新（市场源+目录+已装）：
+      // 只刷新市场列表的话 ccAvailable 的 5min 缓存不失效，新市场会显示 0 个插件
+      ccDataLoaded.value = false;
+      await Promise.all([loadCcMarkets(), loadCcInstalled(), loadCcAvailable()]);
+      ccDataLoaded.value = true;
+      ccDataLoadedAt.value = Date.now();
       return result;
     } catch (error) {
+      // 失败时确保不留下陈旧“已加载”缓存
+      ccDataLoaded.value = false;
       console.error('[plugin.store.addCcMarketplace]', error);
       throw error;
     }

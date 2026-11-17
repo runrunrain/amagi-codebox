@@ -497,7 +497,13 @@ func (a *App) SetPluginSubItemEnabled(pluginId string, subItemType string, subIt
 	// Claude 与 Codex 插件 ID 都使用 `name@marketplace` 格式（见 plugin/service.go 与
 	// codexplugin/helpers.go 的 splitPluginID），不能用 strings.Contains(@) 区分。
 	// 改为查询 Claude 已安装插件注册表：命中则派 Claude service，否则派 Codex service。
-	if a.isClaudePlugin(pluginId) {
+	isClaude, err := a.isClaudePlugin(pluginId)
+	if err != nil {
+		// 注册表读取失败时无法确定引擎归属：显式失败而非静默落到 Codex no-op
+		//（否则 Claude 插件的开关会无声不生效，用户无从排查）。
+		return fmt.Errorf("无法确定插件 %s 的引擎归属（读取 Claude 注册表失败：%v），请重试", pluginId, err)
+	}
+	if isClaude {
 		return a.Plugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
 	}
 	return a.CodexPlugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
@@ -505,27 +511,21 @@ func (a *App) SetPluginSubItemEnabled(pluginId string, subItemType string, subIt
 
 // isClaudePlugin 判断 pluginId 是否为 Claude 引擎下已安装的插件。
 // 以 Claude 注册表（~/.claude/plugins/installed_plugins.json，经 plugin.Service 抽象）
-// 为单一真相源，避免基于字符串启发式误判。
-func (a *App) isClaudePlugin(pluginId string) bool {
+// 为单一真相源，避免基于字符串启发式误判；读取失败返回错误由调用方显式处理。
+func (a *App) isClaudePlugin(pluginId string) (bool, error) {
 	if a.Plugins == nil {
-		return false
+		return false, nil
 	}
 	plugins, err := a.Plugins.GetInstalledPlugins()
 	if err != nil {
-		// 读注册表失败时保守按非 Claude 处理（落到 Codex 分派），并告警暴露。
-		// 注意：Codex SetPluginSubItemEnabled 当前只记日志返回 nil，若实际为 Claude
-		// 插件而注册表读取失败，开关会静默不生效，故必须记日志可观测。
-		if a.Log != nil {
-			a.Log.Warn("plugin", "读取 Claude 已安装插件列表失败，按 Codex 引擎分派", fmt.Sprintf("pluginId=%s err=%v", pluginId, err))
-		}
-		return false
+		return false, err
 	}
 	for i := range plugins {
 		if plugins[i].ID == pluginId {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {

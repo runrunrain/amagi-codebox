@@ -10,6 +10,10 @@ export function AddSavedWorkDir(arg1, arg2) {
   return window['go']['main']['App']['AddSavedWorkDir'](arg1, arg2);
 }
 
+export function AddSharedMarketplace(arg1) {
+  return window['go']['main']['App']['AddSharedMarketplace'](arg1);
+}
+
 export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
@@ -108,6 +112,10 @@ export function DeleteSharedSkill(arg1) {
 
 export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
+}
+
+export function DeploySharedMarketplacePlugin(arg1, arg2) {
+  return window['go']['main']['App']['DeploySharedMarketplacePlugin'](arg1, arg2);
 }
 
 export function DisableWSLUnifiedSupply() {
@@ -410,6 +418,10 @@ export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
 }
 
+export function ImportSharedMarketplacesFromClaude(arg1) {
+  return window['go']['main']['App']['ImportSharedMarketplacesFromClaude'](arg1);
+}
+
 export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
 }
@@ -466,6 +478,10 @@ export function LaunchSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function ListClaudeMarketplacesForImport() {
+  return window['go']['main']['App']['ListClaudeMarketplacesForImport']();
+}
+
 export function ListCodexAdvisorChats(arg1) {
   return window['go']['main']['App']['ListCodexAdvisorChats'](arg1);
 }
@@ -480,6 +496,10 @@ export function ListRemoteDevices() {
 
 export function ListRemoteSecurityEvents(arg1) {
   return window['go']['main']['App']['ListRemoteSecurityEvents'](arg1);
+}
+
+export function ListSharedMarkets() {
+  return window['go']['main']['App']['ListSharedMarkets']();
 }
 
 export function ListSharedMcp() {
@@ -504,6 +524,10 @@ export function OpenFileInEditor(arg1, arg2) {
 
 export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
+}
+
+export function OpenSharedMarketplaceFolder(arg1) {
+  return window['go']['main']['App']['OpenSharedMarketplaceFolder'](arg1);
 }
 
 export function OpenSharedSkillFolder(arg1) {
@@ -552,6 +576,10 @@ export function ReconcileClaudeAccounts(arg1, arg2) {
 
 export function RefreshAIProxySubscription(arg1) {
   return window['go']['main']['App']['RefreshAIProxySubscription'](arg1);
+}
+
+export function RefreshSharedMarkets() {
+  return window['go']['main']['App']['RefreshSharedMarkets']();
 }
 
 export function RefreshSharedMcp() {
@@ -704,6 +732,10 @@ export function RemoveSavedWorkDir(arg1) {
 
 export function RemoveSession(arg1) {
   return window['go']['main']['App']['RemoveSession'](arg1);
+}
+
+export function RemoveSharedMarketplace(arg1) {
+  return window['go']['main']['App']['RemoveSharedMarketplace'](arg1);
 }
 
 export function RemoveUrlFromHistory(arg1, arg2) {
@@ -900,6 +932,10 @@ export function UpdatePiPackageTargeted(arg1, arg2) {
 
 export function UpdateProvider(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateProvider'](arg1, arg2, arg3);
+}
+
+export function UpdateSharedMarketplace(arg1) {
+  return window['go']['main']['App']['UpdateSharedMarketplace'](arg1);
 }
 
 export function UpdateSharedMcpEntry(arg1, arg2) {
