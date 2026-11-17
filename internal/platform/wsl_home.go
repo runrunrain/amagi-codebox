@@ -271,16 +271,3 @@ func embeddedLaunchTargetsWSLForOS(osName string, launchMode string, requestedSh
 	shell, _, _ := resolveRequestedShell(strings.TrimSpace(requestedShellPath), env, capabilitiesForTarget("windows", runtime.GOARCH))
 	return strings.EqualFold(shell.Key, "wsl")
 }
-
-// resetWSLHomeCachesForTest clears the home/UNC/tools probe caches.
-func resetWSLHomeCachesForTest() {
-	wslHomeMu.Lock()
-	wslHomeCache = map[string]string{}
-	wslHomeMu.Unlock()
-	wslUNCRootMu.Lock()
-	wslUNCRootCache = map[string]string{}
-	wslUNCRootMu.Unlock()
-	wslToolsMu.Lock()
-	wslToolsCache = map[string]WSLSearchTools{}
-	wslToolsMu.Unlock()
-}

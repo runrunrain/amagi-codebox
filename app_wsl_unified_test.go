@@ -865,3 +865,10 @@ func TestWSLUnifiedGenerationChangeWhileEnabledDoesNotInherit(t *testing.T) {
 		t.Fatal("disable must stop the reconcile loop synchronously (no goroutine leak)")
 	}
 }
+
+// waitForWSLSupplyPushIdleForTest 等待全部已调度的后台推送退出（PR09：
+// 仅供测试 cleanup 使用——Add 在 schedule 内同步完成，Enable/保存调用
+// 返回后本等待即覆盖其全部后台生命周期）。
+func waitForWSLSupplyPushIdleForTest() {
+	wslSupplyPushWG.Wait()
+}

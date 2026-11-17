@@ -288,13 +288,6 @@ func (a *App) scheduleWSLSupplyPush() {
 	}()
 }
 
-// waitForWSLSupplyPushIdleForTest 等待全部已调度的后台推送退出（PR09：
-// 仅供测试 cleanup 使用——Add 在 schedule 内同步完成，Enable/保存调用
-// 返回后本等待即覆盖其全部后台生命周期）。
-func waitForWSLSupplyPushIdleForTest() {
-	wslSupplyPushWG.Wait()
-}
-
 // pushWSLSupplyOnce 是 single-flight 入口：已在工作时只置 rerun 标记；
 // 工作循环完成后 rerun 仍置位则就地再消费一轮，所有退出路径都释放 running
 // （SA-08：等锁期间/执行中再次标脏的保存不得永久停摆后续推送）。

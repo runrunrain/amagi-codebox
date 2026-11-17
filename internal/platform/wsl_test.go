@@ -847,3 +847,21 @@ func TestAppendWSLWindowsRoots(t *testing.T) {
 		}
 	}
 }
+
+// resetWSLDistroVersionCacheForTest clears the version-probe cache.
+func resetWSLDistroVersionCacheForTest() {
+	wslDistroVersionCacheMu.Lock()
+	defer wslDistroVersionCacheMu.Unlock()
+	wslDistroVersionCacheDone = false
+	wslDistroVersionCache = nil
+	wslDistroStateCache = nil
+}
+
+// resetWSLDistroCacheForTest clears the probe cache so tests can re-run with a
+// different injected lister.
+func resetWSLDistroCacheForTest() {
+	wslDistroCacheMu.Lock()
+	defer wslDistroCacheMu.Unlock()
+	wslDistroCacheDone = false
+	wslDistroCache = nil
+}
