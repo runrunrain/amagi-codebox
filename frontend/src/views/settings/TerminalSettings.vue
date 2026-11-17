@@ -26,7 +26,7 @@
   <div class="set-card">
     <h2>Claude Code Web 视图</h2>
     <p class="set-sub">
-      为内嵌 Claude Code 会话提供网页视图平面；WSL 与外部终端会话不适用；运行中切换不影响已启动会话。
+      为内嵌 Claude Code 会话提供网页视图平面（WSL 会话经发行版文件共享跨界读取转录）；外部终端会话不适用；运行中切换不影响已启动会话。
     </p>
 
     <div class="setting-row">

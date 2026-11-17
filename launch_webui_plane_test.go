@@ -8,7 +8,8 @@ package main
 //     携带 WebUIPlane 材料，executor 不注 AMAGI_WEBUI_* env，commit 后依次
 //     RecordClaudeSessionID → Start（PlaneConfig 含 sid/workDir/transcriptRoot）
 //     → RegisterTracker；Start 失败仅记日志不注册；
-//   - 非 pi/claudecode 会话（codex/omp）不注入不注册；WSL 目标不置平面字段。
+//   - 非 pi/claudecode 会话（codex/omp）不注入不注册；WSL 目标的平面可行性
+//     由 executor 转录根跨界裁决（2026-11 扩展，失败降级为无平面）。
 //   Abort 路径不得残留任何注册或平面调用。
 
 import (
@@ -481,17 +482,19 @@ func TestWebuiLaunchPlaneNilKeepsPiLaunchWorking(t *testing.T) {
 	prepared.MarkCommitted() // 不得 panic
 }
 
-// TestPlannerClaudeWebUIPlaneField：非 WSL 目标的 claude 计划携带
-// WebUIPlane（sid 与 argv 注入值一致）；WSL 目标（launchTargetsWSLFn 预判
-// 接缝打桩为 true）不注入 --session-id、不置字段——R8：字段缺位即 executor
-// 不起平面。
+// TestPlannerClaudeWebUIPlaneField：claude 计划无条件携带 WebUIPlane（sid
+// 与 argv 注入值一致）。2026-11 WSL 扩展：不再按目标形态分叉——桌面链本就
+// 无条件注入 --session-id，remote 链对齐；WSL 目标的平面可行性（转录根跨界
+// 翻译）由 executor 在 Prepare 阶段裁决，失败仅降级为无平面（R8：字段缺位
+// 即 executor 不起平面）。launchTargetsWSLFn 预判接缝打桩为 true 验证它不再
+// 影响注入决策。
 func TestPlannerClaudeWebUIPlaneField(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		wslPreGate bool
 	}{
 		{"native", false},
-		{"wsl", true},
+		{"wsl-pre-gate-ignored", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			orig := launchTargetsWSLFn
@@ -515,17 +518,8 @@ func TestPlannerClaudeWebUIPlaneField(t *testing.T) {
 			if proc == nil {
 				t.Fatal("plan missing process effect")
 			}
-			if tc.wslPreGate {
-				if proc.WebUIPlane != nil {
-					t.Fatalf("WSL 目标不应置 WebUIPlane 字段: %+v", proc.WebUIPlane)
-				}
-				if sid := findSessionIDArg(proc.Resolved.CLI.Args); sid != "" {
-					t.Fatalf("WSL 目标不应注入 --session-id: %v", proc.Resolved.CLI.Args)
-				}
-				return
-			}
 			if proc.WebUIPlane == nil || proc.WebUIPlane.ClaudeSessionID == "" {
-				t.Fatalf("非 WSL 目标应携带 WebUIPlane（含 sid），got %+v", proc.WebUIPlane)
+				t.Fatalf("claude 计划应携带 WebUIPlane（含 sid），got %+v", proc.WebUIPlane)
 			}
 			sid := findSessionIDArg(proc.Resolved.CLI.Args)
 			if sid == "" || sid != proc.WebUIPlane.ClaudeSessionID {

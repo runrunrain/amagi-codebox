@@ -136,11 +136,12 @@ Claude Code 会话与 pi 会话共享同一套 Web 平面**宿主设施**（`web
 
 | 链路 | 行为 |
 | --- | --- |
-| 桌面 embedded（原生目标） | `LaunchSession` 注入 `--session-id`（既有）→ 门控 `claudeWebPlaneEnabled`（开关开（默认 true）+ 非 WSL + Manager 已接线）放行则预分配 port/token（失败仅 WARN 放弃平面，不阻断启动）→ PTY 成功 `SetPID` 后 `startClaudeWebPlane`：转录根从最终 spec env 解析（§8）→ `ClaudeWebUI.Start` → `WebUI.RegisterSession`（tracker probing → available）。Start 失败 WARN 不注册（状态 unknown → 前端无切换控件） |
-| remote v1 create/restart | planner（`launch_planner.go` `buildClaudePlan`）非 WSL 目标生成 sid、`CLIArgs: ["--session-id", sid]`（resolver 三消费点覆盖：WSL/原生/attach）+ `ProcessStartSpec.WebUIPlane{ClaudeSessionID}` 携带材料；executor（`launch_executor.go`）门控 `WebUIPlane != nil && claudeWebUI 已接线` 才注入平面 effect，commit 后 `RecordClaudeSessionID` → `Start` → `RegisterTracker`；Abort 路径零调用零残留 |
+| 桌面 embedded（原生目标） | `LaunchSession` 注入 `--session-id`（既有）→ 门控 `claudeWebPlaneEnabled`（开关开（默认 true）+ Manager 已接线）放行则预分配 port/token（失败仅 WARN 放弃平面，不阻断启动）→ PTY 成功 `SetPID` 后 `startClaudeWebPlane`：转录根从最终 spec env 解析（§8）→ `ClaudeWebUI.Start` → `WebUI.RegisterSession`（tracker probing → available）。Start 失败 WARN 不注册（状态 unknown → 前端无切换控件） |
+| 桌面 embedded（WSL 目标，2026-11 扩展） | 门控同上（不再按目标形态分叉）→ `startClaudeWebPlane` 内走跨界转录根解析：PTY 实际目标（`SessionWSLTarget`，不可变）→ `CLAUDE_CONFIG_DIR`（存活值：Windows 盘符原样 / Linux 绝对路径 UNC 翻译 / 相对路径拒绝）→ 缺省 distro 默认用户 home + `/.claude`（`WSLTargetIdentity` 一次 wsl.exe 探测）→ `WSLToUNCPath` 翻译为 `\\wsl.localhost\<distro>\...`；解析失败仅 WARN 放弃平面（会话照常）。tailer 是 Stat 轮询（500ms），inotify 不经 9P 传播与 UNC 天然兼容 |
+| remote v1 create/restart | planner（`launch_planner.go` `buildClaudePlan`）无条件生成 sid、`CLIArgs: ["--session-id", sid]`（resolver 三消费点覆盖：WSL/原生/attach）+ `ProcessStartSpec.WebUIPlane{ClaudeSessionID}` 携带材料（2026-11 WSL 扩展：不再按目标形态分叉，与桌面链对齐）；executor（`launch_executor.go`）门控 `WebUIPlane != nil && claudeWebUI 已接线` 才注入平面 effect，WSL 目标在 Prepare 阶段经 `wslClaudeTranscriptRootForDistro(DefaultWSLDistro(spec.Env), env)` 解析跨界根（失败 WARN 放弃平面、不分配 port/token），commit 后 `RecordClaudeSessionID` → `Start` → `RegisterTracker`；Abort 路径零调用零残留 |
 | PTY 退出 | 退出 goroutine `stopClaudeWebPlane`：`ClaudeWebUI.Stop`（幂等，listener 立即释放）+ `WebUI.Invalidate`（tracker → ended） |
 | 会话删除 / 批量清理 | 三处 commit 点（`removeWebUITracker` / `SetRunTerminalCleanup` / `SetPostRemoveCleanup`）同样 Stop——防 listener 泄漏 |
-| WSL 目标 / 外部终端/VSCode/Zed / 开关关闭 | 不 Start 不 Register，状态 unknown，前端无切换控件（与 pi 不可用会话同语义） |
+| 外部终端/VSCode/Zed / 开关关闭 / WSL 转录根解析失败 | 不 Start 不 Register，状态 unknown，前端无切换控件（与 pi 不可用会话同语义） |
 | `/resume`（TUI 内切换会话） | 锁定 jsonl 停滞；v1 不跟随（与标题 tracker 方案 R 同语义）；显示停留在旧转录 |
 | 多会话 | per-session 独立 server/port/token；同 workDir 会话靠锁定 sid 隔离转录 |
 
@@ -209,7 +210,7 @@ SPA ↔ 宿主 `WebPlaneHost` 的 postMessage 桥**复用 pi 平面的跨仓冻�
 
 ## 10. 设置项
 
-`settings.json` 新键 `claudeWebUIEnabled`（`*bool` 三态，`nil` = 默认 true，照 `agentCLIEnabled` 模式；`internal/settings/service.go` `GetClaudeWebUIEnabled`/`SetClaudeWebUIEnabled`）。设置页入口：终端设置 → 「启用 Claude Code Web 视图」（说明口径：为内嵌 Claude Code 会话提供网页视图平面；WSL/外部终端会话不适用）。**该开关只在会话启动时读取**；运行中翻转不影响已起平面。
+`settings.json` 新键 `claudeWebUIEnabled`（`*bool` 三态，`nil` = 默认 true，照 `agentCLIEnabled` 模式；`internal/settings/service.go` `GetClaudeWebUIEnabled`/`SetClaudeWebUIEnabled`）。设置页入口：终端设置 → 「启用 Claude Code Web 视图」（说明口径：为内嵌 Claude Code 会话提供网页视图平面（WSL 会话经发行版文件共享跨界读取转录）；外部终端会话不适用）。**该开关只在会话启动时读取**；运行中翻转不影响已起平面。
 
 ## 11. 移动端与远程入口（引用）
 

@@ -51,6 +51,19 @@ func (a *App) startClaudeWebPlane(sessionID, claudeSID string, spec platform.Res
 		homeDir = home
 	}
 	transcriptRoot := claude.ClaudeConfigRoot(homeDir, spec.Env.Variables)
+	// WSL 目标（claude-webui design §5.1 WSL 扩展，2026-11）：claude 在 distro
+	// 内运行，转录写在发行版文件系统的 Linux 路径下——Windows 侧的 env 推导
+	// （USERPROFILE/HOME）指向错根。改经 PTY 捕获的实际 distro + 身份探测翻译
+	// 为 UNC（\wsl.localhost\<distro>\...）供进程内数据面 server 经 9P 读取；
+	// 解析失败仅 WARN 放弃平面（不阻断启动，与端口/token 分配失败同口径）。
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		root, rootErr := a.resolveWSLClaudeTranscriptRoot(sessionID, spec)
+		if rootErr != nil {
+			a.Log.Warn("claudewebui", "WSL 会话转录根解析失败，本会话无 Web 平面（会话照常）", rootErr.Error())
+			return
+		}
+		transcriptRoot = root
+	}
 
 	boundPort, err := a.ClaudeWebUI.Start(claudewebui.PlaneConfig{
 		SessionID:       sessionID,
@@ -87,12 +100,78 @@ func (a *App) stopClaudeWebPlane(sessionID string) {
 
 // claudeWebPlaneEnabled 判定 embedded claude 会话是否预分配 Web 平面材料
 // （design §5.3-1 门控，LaunchSession 在 resolveEmbeddedLaunchSpec 成功后调用）：
-// 开关开（默认 true）+ 非 WSL 目标（WSL 降级为无平面，design §2/§9-A4）+
-// Manager 已接线。Settings 未接线（测试构造）视为关（fail-closed，不误起平面）。
+// 开关开（默认 true）+ Manager 已接线。WSL 目标同样放行（2026-11 扩展：转录根
+// 在 startClaudeWebPlane 内经 UNC 翻译解析，失败才降级为无平面）。Settings 未
+// 接线（测试构造）视为关（fail-closed，不误起平面）。
 func (a *App) claudeWebPlaneEnabled(spec platform.ResolvedLaunchSpec) bool {
 	return a.ClaudeWebUI != nil &&
-		a.Settings != nil && a.Settings.GetClaudeWebUIEnabled() &&
-		spec.BootstrapMode != platform.BootstrapWSL
+		a.Settings != nil && a.Settings.GetClaudeWebUIEnabled()
+}
+
+// wslClaudeIdentityFn 是 WSL distro 身份探测接缝（生产
+// platform.WSLTargetIdentity——一次 wsl.exe 取 uid/$HOME/machine-id）；测试注入
+// 以免真调 wsl.exe。
+var wslClaudeIdentityFn = platform.WSLTargetIdentity
+
+// claudePlaneWSLTargetFn 是 PTY 实际目标查询接缝（生产 a.Pty.SessionWSLTarget；
+// 测试注入。模式对齐 app_wsldirpicker.go 的 sessionWSLTargetFn）。
+var claudePlaneWSLTargetFn = func(a *App, sessionID string) (bool, string, error) {
+	if a.Pty == nil {
+		return false, "", fmt.Errorf("PTY 服务未接线，无法取得 WSL 会话的实际发行版")
+	}
+	return a.Pty.SessionWSLTarget(sessionID)
+}
+
+// isWindowsDrivePath 报告 s 是否 Windows 盘符绝对路径（C:\... 形态；大小写
+// 不敏感，兼容正斜杠）。
+func isWindowsDrivePath(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	c := s[0]
+	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+		return false
+	}
+	return s[1] == ':' && (s[2] == '\\' || s[2] == '/')
+}
+
+// resolveWSLClaudeTranscriptRoot 为 WSL claude 会话解析宿主侧可读的转录根
+// （claude-webui design §5.1 WSL 扩展）。优先级：
+//   - CLAUDE_CONFIG_DIR 显式重定向（WSL 防线剥离后存活的值）：Windows 盘符
+//     路径（per-key /p 放行场景——CLI 内经翻译用 /mnt 形态，转录实际落在
+//     Windows 侧）→ 原样使用（宿主原生可读）；Linux 绝对路径 → UNC 翻译；
+//     相对路径/怪值 → 拒绝（fail closed，防错根静默空转录）；
+//   - 缺省：distro 默认用户 home（wslClaudeIdentityFn 探测）+ /.claude → UNC 翻译。
+//
+// distro 取 PTY 进程启动瞬间捕获的实际目标（SessionWSLTarget，不可变），与
+// 供给/启动链同一权威源；探测失败返回错误（调用方仅 WARN 降级）。
+func (a *App) resolveWSLClaudeTranscriptRoot(sessionID string, spec platform.ResolvedLaunchSpec) (string, error) {
+	wsl, distro, err := claudePlaneWSLTargetFn(a, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("查询 WSL 会话目标失败: %w", err)
+	}
+	if !wsl {
+		return "", fmt.Errorf("会话 %s 不是 WSL 目标", sessionID)
+	}
+	return wslClaudeTranscriptRootForDistro(distro, spec.Env.Variables)
+}
+
+// wslClaudeTranscriptRootForDistro 是 resolveWSLClaudeTranscriptRoot 的纯逻辑核
+// （distro 已知形态，供 remote 启动链 executor 复用——executor 无 PTY 会话
+// 可查，distro 由 DefaultWSLDistro(spec.Env) 与 PTY 同源预判）。env 为最终生效
+// spec 的进程环境（含 WSL 防线剥离结果）。
+func wslClaudeTranscriptRootForDistro(distro string, env []string) (string, error) {
+	if dir := claude.LookupConfigDir(env); dir != "" {
+		if isWindowsDrivePath(dir) {
+			return dir, nil // 宿主原生路径，无需跨界
+		}
+		return platform.WSLToUNCPath(distro, dir)
+	}
+	ident := wslClaudeIdentityFn(distro)
+	if !ident.OK || ident.Home == "" {
+		return "", fmt.Errorf("WSL %s 身份探测失败（uid/$HOME），无法定位转录根", distro)
+	}
+	return platform.WSLToUNCPath(distro, ident.Home+"/.claude")
 }
 
 // appClaudeInputPort 把 claudewebui.InputPort 适配到 App 的控制门双车道写口

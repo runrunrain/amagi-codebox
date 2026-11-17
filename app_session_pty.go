@@ -327,7 +327,8 @@ func (a *App) LaunchSession(providerName, presetName string, mode string, workDi
 		}
 
 		// Claude Web 平面材料预分配（design §5.3-1）：开关开（claudeWebUIEnabled，
-		// 默认 true）+ 非 WSL 目标 + Manager 已接线才分配端口/token。任何失败
+		// 默认 true）+ Manager 已接线才分配端口/token（WSL 目标同放行——转录根
+		// 跨界解析在 SetPID 后的 startClaudeWebPlane 内裁决）。任何失败
 		// 仅 WARN 放弃平面（本会话 unknown，前端无切换控件），不阻断启动——
 		// 对齐 pi 的 env 注入口径（app.go:3935-3951）。转录根在 SetPID 后的
 		// startClaudeWebPlane 内从最终 spec env 解析（含受管边界剥离结果）。

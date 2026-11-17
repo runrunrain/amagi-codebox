@@ -276,7 +276,8 @@ func (b *preparedEffectBuilder) buildPTYStart(proc *launchplan.ProcessStartSpec)
 	// homeDir——重定向过的 remote 会话转录路径才不会错）；port/token 此刻
 	// 预分配，失败仅记日志不阻断启动（port=0 由 Manager 自选；token 空则
 	// commit 时 Start 报错跳过注册，会话照常、平面 unknown）。门控要求
-	// 计划携带 WebUIPlane（planner 仅非 WSL 目标置字段，R8）且已接线。
+	// 计划携带 WebUIPlane（planner 无条件置字段，R8；WSL 目标 2026-11 起同携）
+	// 且已接线。
 	var claudePlane *claudeWebPlaneMaterial
 	if b.deps.claudeWebUI != nil && proc.WebUIPlane != nil && spec.AppType == string(session.AppTypeClaudeCode) {
 		material := &claudeWebPlaneMaterial{
@@ -290,6 +291,33 @@ func (b *preparedEffectBuilder) buildPTYStart(proc *launchplan.ProcessStartSpec)
 			homeDir = home
 		}
 		material.transcriptRoot = claude.ClaudeConfigRoot(homeDir, spec.Env.Variables)
+		// WSL 目标（claude-webui design §5.1 WSL 扩展，2026-11）：转录在 distro
+		// 内 Linux 路径下，宿主侧 env 推导指向错根——改经 distro 身份探测翻译
+		// 为 UNC。distro 取 DefaultWSLDistro(spec.Env)（与 PTY 启动同源判定面）。
+		// 解析失败仅告警并放弃平面（会话照常，与桌面 startClaudeWebPlane 同
+		// 口径）。
+		if spec.BootstrapMode == platform.BootstrapWSL {
+			root, rootErr := wslClaudeTranscriptRootForDistro(platform.DefaultWSLDistro(spec.Env.Variables), spec.Env.Variables)
+			if rootErr != nil {
+				b.warnClaudePlane("WSL 会话转录根解析失败，本会话无 Web 平面（会话照常）", rootErr.Error())
+				material = nil
+			} else {
+				material.transcriptRoot = root
+			}
+		}
+		if material == nil {
+			// WSL 转录根解析失败已告警：不再分配端口/token，平面材料整体缺席
+			//（commit 后零调用零残留，与 Start 失败降级同口径）。
+			return &ptyStartEffect{
+				deps:       b.deps,
+				sessionID:  b.sessionID,
+				spec:       spec,
+				runHandle:  b.runHandle,
+				webuiPlane: webuiPlane,
+				webuiPort:  webuiPort,
+				webuiToken: webuiToken,
+			}, nil
+		}
 		if port, portErr := webui.AllocateFreePort(); portErr == nil {
 			material.port = port
 		} else {

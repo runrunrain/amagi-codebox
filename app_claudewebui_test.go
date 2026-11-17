@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -287,8 +288,10 @@ func TestStartClaudeWebPlane_ClaudeConfigDirRootOverride(t *testing.T) {
 
 // --- 门控与不注册情形 ------------------------------------------------------
 
-// TestClaudeWebPlaneEnabled_Gating：WSL 目标 / 开关关 / Manager 未接线 → 不预
-// 分配平面材料（LaunchSession 的门控谓词，design §5.3-1）。
+// TestClaudeWebPlaneEnabled_Gating：开关关 / Manager 未接线 → 不预分配平面
+// 材料（LaunchSession 的门控谓词，design §5.3-1）。WSL 目标同样放行
+// （2026-11 扩展：转录根跨界解析在 startClaudeWebPlane 内裁决，门控不再按
+// 目标形态分叉；解析失败仅降级为无平面）。
 func TestClaudeWebPlaneEnabled_Gating(t *testing.T) {
 	app, configDir := newTestAppWithConfigDir(t)
 	app.ClaudeWebUI = claudewebui.NewManager(app.Log)
@@ -304,8 +307,8 @@ func TestClaudeWebPlaneEnabled_Gating(t *testing.T) {
 	}
 
 	wsl := platform.ResolvedLaunchSpec{BootstrapMode: platform.BootstrapWSL}
-	if app.claudeWebPlaneEnabled(wsl) {
-		t.Fatal("WSL 目标应降级为无平面")
+	if !app.claudeWebPlaneEnabled(wsl) {
+		t.Fatal("WSL 目标应放行（转录根跨界解析在启动后裁决，失败才降级）")
 	}
 
 	if err := st.SetClaudeWebUIEnabled(false); err != nil {
@@ -517,4 +520,146 @@ func TestAppClaudeInputPort_FailClosed(t *testing.T) {
 	t.Run("nil app", func(t *testing.T) {
 		check(t, "nil app", appClaudeInputPort{})
 	})
+}
+
+// --- WSL 转录根解析（2026-11 WSL 扩展） ------------------------------------
+
+// TestWSLClaudeTranscriptRootForDistro：CLAUDE_CONFIG_DIR 优先（Windows 盘符
+// 原样 / Linux 绝对路径 UNC 翻译 / 相对路径 fail closed）+ 缺省回落 distro
+// home/.claude（UNC）+ 身份探测失败错误。
+func TestWSLClaudeTranscriptRootForDistro(t *testing.T) {
+	orig := wslClaudeIdentityFn
+	wslClaudeIdentityFn = func(distro string) platform.WSLUserIdentity {
+		if distro != "Ubuntu-24.04" {
+			return platform.WSLUserIdentity{}
+		}
+		return platform.WSLUserIdentity{UID: "1000", Home: "/home/amagi", OK: true}
+	}
+	t.Cleanup(func() { wslClaudeIdentityFn = orig })
+
+	t.Run("缺省回落 distro home", func(t *testing.T) {
+		got, err := wslClaudeTranscriptRootForDistro("Ubuntu-24.04", nil)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if want := `\\wsl.localhost\Ubuntu-24.04\home\amagi\.claude`; got != want {
+			t.Fatalf("root = %q, want %q", got, want)
+		}
+	})
+	t.Run("CLAUDE_CONFIG_DIR Linux 绝对路径 UNC 翻译", func(t *testing.T) {
+		got, err := wslClaudeTranscriptRootForDistro("Ubuntu-24.04", []string{"CLAUDE_CONFIG_DIR=/srv/claude-root"})
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if want := `\\wsl.localhost\Ubuntu-24.04\srv\claude-root`; got != want {
+			t.Fatalf("root = %q, want %q", got, want)
+		}
+	})
+	t.Run("CLAUDE_CONFIG_DIR Windows 盘符原样（per-key /p 放行场景）", func(t *testing.T) {
+		got, err := wslClaudeTranscriptRootForDistro("Ubuntu-24.04", []string{`CLAUDE_CONFIG_DIR=C:\Users\u\.claude-managed`})
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if want := `C:\Users\u\.claude-managed`; got != want {
+			t.Fatalf("root = %q, want %q", got, want)
+		}
+	})
+	t.Run("CLAUDE_CONFIG_DIR 相对路径 fail closed", func(t *testing.T) {
+		if _, err := wslClaudeTranscriptRootForDistro("Ubuntu-24.04", []string{"CLAUDE_CONFIG_DIR=relative/dir"}); err == nil {
+			t.Fatal("相对路径应拒绝（防错根静默空转录）")
+		}
+	})
+	t.Run("身份探测失败错误（fail closed）", func(t *testing.T) {
+		if _, err := wslClaudeTranscriptRootForDistro("NoSuchDistro", nil); err == nil {
+			t.Fatal("身份探测失败应返回错误")
+		}
+	})
+}
+
+// TestSessionJSONLPathInRoot_WSLUNCRootAndLinuxWorkDir：UNC 转录根 + Linux
+// workDir 的编码落位——tailer 侧 resolvePath 直接拼接（纯函数，跨平台可测）。
+func TestSessionJSONLPathInRoot_WSLUNCRootAndLinuxWorkDir(t *testing.T) {
+	root, err := platform.WSLToUNCPath("Ubuntu-24.04", "/home/amagi/.claude")
+	if err != nil {
+		t.Fatalf("WSLToUNCPath: %v", err)
+	}
+	got := claude.SessionJSONLPathInRoot(root, "/mnt/d/WorkPace/amagi-codebox", "1bdc84ba-0000")
+	want := `\\wsl.localhost\Ubuntu-24.04\home\amagi\.claude\projects\-mnt-d-WorkPace-amagi-codebox\1bdc84ba-0000.jsonl`
+	if filepath.ToSlash(got) != filepath.ToSlash(want) && got != want {
+		t.Fatalf("jsonl path = %q, want %q", got, want)
+	}
+}
+
+// TestStartClaudeWebPlane_WSLSpec_UsesCrossBoundaryRoot：WSL 目标的会话走跨界
+// 转录根解析（2026-11 扩展）：PTY 实际目标经 claudePlaneWSLTargetFn 接缝注入；
+// CLAUDE_CONFIG_DIR 为宿主原生路径（Windows 盘符）时原样透传——fixture 可直读，
+// 平面起且 tracker 注册。宿主差异：macOS 上临时目录是 POSIX 路径 → UNC 翻译
+// 后不可直读，仅断言平面启动与注册（转录断言限 Windows）。
+func TestStartClaudeWebPlane_WSLSpec_UsesCrossBoundaryRoot(t *testing.T) {
+	app := newTestApp(t)
+	webuiSvc, _ := wireClaudeWebPlane(t, app)
+
+	origTarget := claudePlaneWSLTargetFn
+	claudePlaneWSLTargetFn = func(*App, string) (bool, string, error) {
+		return true, "Ubuntu-24.04", nil
+	}
+	t.Cleanup(func() { claudePlaneWSLTargetFn = origTarget })
+
+	workDir := "/mnt/d/WorkPace/amagi-codebox"
+	configDirRoot := t.TempDir()
+	const claudeSID = "claude-sid-wsl-0001"
+	const sessID = "sess-plane-wsl"
+	const fixtureText = "wsl cross-boundary root record"
+	writeClaudePlaneFixture(t, configDirRoot, workDir, claudeSID, fixtureText)
+
+	port, err := webui.AllocateFreePort()
+	if err != nil {
+		t.Fatalf("allocate port: %v", err)
+	}
+	spec := platform.ResolvedLaunchSpec{
+		BootstrapMode: platform.BootstrapWSL,
+		WorkDir:       workDir,
+		Env:           platform.ResolvedEnv{Variables: []string{"CLAUDE_CONFIG_DIR=" + configDirRoot}},
+	}
+	app.startClaudeWebPlane(sessID, claudeSID, spec, 222222, port, "test-plane-token-wsl")
+
+	// 宿主无关断言：平面已启动并注册（tracker probing → available）。
+	st := webuiSvc.GetWebUIStatus(sessID)
+	if st.State != webui.StateProbing && st.State != webui.StateAvailable {
+		t.Fatalf("WSL 会话平面应已注册，got state=%s", st.State)
+	}
+	if runtime.GOOS == "windows" {
+		claudePlaneWaitFor(t, "history 读到跨界根下 fixture", func() bool {
+			var h claudePlaneHistory
+			if err := claudePlaneGet(t, port, "test-plane-token-wsl", "/api/history", &h); err != nil {
+				return false
+			}
+			return len(h.Items) == 1 && h.Items[0].Text == fixtureText
+		})
+	}
+	app.stopClaudeWebPlane(sessID)
+}
+
+// TestStartClaudeWebPlane_WSLSpecRootFailureDegrades：WSL 目标查询失败 →
+// 放弃平面（WARN 语义），不启动不注册、不 panic（会话照常）。
+func TestStartClaudeWebPlane_WSLSpecRootFailureDegrades(t *testing.T) {
+	app := newTestApp(t)
+	webuiSvc, _ := wireClaudeWebPlane(t, app)
+
+	origTarget := claudePlaneWSLTargetFn
+	claudePlaneWSLTargetFn = func(*App, string) (bool, string, error) {
+		return false, "", errors.New("PTY session unavailable")
+	}
+	t.Cleanup(func() { claudePlaneWSLTargetFn = origTarget })
+
+	port, err := webui.AllocateFreePort()
+	if err != nil {
+		t.Fatalf("allocate port: %v", err)
+	}
+	spec := platform.ResolvedLaunchSpec{BootstrapMode: platform.BootstrapWSL, WorkDir: "/mnt/d/x"}
+	app.startClaudeWebPlane("sess-plane-wsl-fail", "sid-fail", spec, 333333, port, "tok-fail")
+
+	if st := webuiSvc.GetWebUIStatus("sess-plane-wsl-fail"); st.State != webui.StateUnknown {
+		t.Fatalf("目标查询失败应放弃平面（tracker unknown），got %s", st.State)
+	}
 }

@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **WSL 目标的 Claude Code 会话 Web 平面**（claude-webui design §5.1 WSL 扩展）：此前 WSL 会话有意降级为无平面（转录写在 distro 内、宿主读不到）。现经发行版文件共享跨界读取：PTY 捕获的实际 distro（不可变）→ 身份探测（`WSLTargetIdentity`，一次 wsl.exe）取默认用户 home → `WSLToUNCPath` 翻译为 `\\wsl.localhost\<distro>\...` UNC 路径供进程内数据面 server 经 9P 读取；`CLAUDE_CONFIG_DIR` 存活值优先（Windows 盘符原样 / Linux 绝对路径 UNC 翻译 / 相对路径拒绝），tailer 的 Stat 轮询语义与 9P 天然兼容（inotify 不经 9P 传播）。桌面门控不再按目标形态分叉；remote v1 链 planner 无条件携带 sid+平面材料，executor Prepare 阶段裁决跨界根（失败仅 WARN 降级为无平面、会话照常）。设置页与设计文档口径同步更新。
+
 ### Fixed
 
 - **WSL 启动的 pi 会话 Web 视图永不出现（探测窗口耗尽后停探，服务晚就绪无人再探）**：WSL+DrvFS 目标下 pi 扩展的 webui server 就绪耗时可达 3m42s+（2026-11-17 会话 b5415434 实测：11:35:03 启动、11:38:45 就绪，超出 3min WSL 探测窗口 42s），后端落 unavailable 后前端把该态当终态永久停探——服务真正就绪（端口仍在监听）后无人再探测，Web 视图入口永不出现。修复三面：桌面前端（`stores/session.ts`）unavailable 非终态，转 10s 低频复活探测（后端状态机本就允许 unavailable → available，一轮探测即恢复）；mobile `useSessionWebUI` 同口径（网络瞬断亦自愈）；remote v1 启动链（`launch_executor.go`）WSL 目标补齐桌面同款的 `DefaultWSLProbingWindow` 分窗口注册（原默认 45s，同族缺口）。连带根治 `internal/webui` 测试在 Windows 上因日志句柄未关导致的 TempDir 清理文件锁失败（`newTestService` 等两处轻 `t.Cleanup` 关闭日志句柄）。

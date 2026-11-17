@@ -8,8 +8,8 @@
  *
  * 这里只回答「会话类型上是否可能有 Web 平面」；平面是否真的可用仍由 webui 探测
  * 状态机决定（webui.Service 五态，按 sessionId 键控、与 appType 无关）。不具备平面的
- * 具体会话（WSL 目标 / 外部终端 / 关闭开关的 claudecode 会话）不会注册 tracker，
- * 探测恒为 unknown，切换控件自然不出现——无需在此枚举降级形态。
+ * 具体会话（外部终端 / 关闭开关 / WSL 转录根解析失败的 claudecode 会话）不会注册
+ * tracker，探测恒为 unknown，切换控件自然不出现——无需在此枚举降级形态。
  *
  * 数据面宿主的差别（pi = amagi-pi 扩展进程；claudecode = CodeBox 进程内
  * internal/claudewebui）对本闸门透明：两者共用同一探测契约与 WebPlaneHost 容器。

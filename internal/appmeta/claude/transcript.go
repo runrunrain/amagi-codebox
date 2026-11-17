@@ -346,6 +346,14 @@ func ClaudeConfigRoot(homeDir string, env []string) string {
 	return filepath.Join(homeDir, ".claude")
 }
 
+// LookupConfigDir 返回 env 中首个非空 CLAUDE_CONFIG_DIR 值（大小写不敏感；
+// 不存在返回 ""）。与 ClaudeConfigRoot 的优先级同源，供需要区分「显式重定向」
+// 与「缺省回落」的调用方（如 WSL 会话的转录根翻译：显式值需跨界翻译，
+// 缺省才回落 distro home）。
+func LookupConfigDir(env []string) string {
+	return lookupEnvFold(env, "CLAUDE_CONFIG_DIR")
+}
+
 // lookupEnvFold 在 "KEY=VALUE" 列表中大小写不敏感地查找 key，
 // 返回第一个非空值；不存在或全为空时返回 ""。
 func lookupEnvFold(env []string, key string) string {
