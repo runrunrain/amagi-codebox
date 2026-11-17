@@ -324,25 +324,6 @@ type RunEventSink interface {
 	OfferExit(ctx context.Context, permit *RunObservationPermit, obs ProcessExitObservation) error
 }
 
-// RunEventSinkFunc is a function adapter for RunEventSink (testing).
-type RunEventSinkFunc struct {
-	OutputFn func(ctx context.Context, permit *RunObservationPermit, data []byte) error
-	ExitFn   func(ctx context.Context, permit *RunObservationPermit, obs ProcessExitObservation) error
-}
-
-func (f RunEventSinkFunc) OfferOutput(ctx context.Context, p *RunObservationPermit, data []byte) error {
-	if f.OutputFn != nil {
-		return f.OutputFn(ctx, p, data)
-	}
-	return nil
-}
-func (f RunEventSinkFunc) OfferExit(ctx context.Context, p *RunObservationPermit, obs ProcessExitObservation) error {
-	if f.ExitFn != nil {
-		return f.ExitFn(ctx, p, obs)
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // ControlTransition — internal event record (design §8.1, §8.3)
 // ---------------------------------------------------------------------------

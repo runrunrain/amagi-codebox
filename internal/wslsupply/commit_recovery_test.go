@@ -432,3 +432,10 @@ func (s *stateStore) readIntent(opID string) (OperationIntent, bool, error) {
 	}
 	return op, true, nil
 }
+
+// add 注入一个故障（测试故障注入通道；生产恒空表）。
+func (f *commitFaults) add(stage string, times int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults = append(f.faults, commitFault{stage: stage, times: times, err: err})
+}

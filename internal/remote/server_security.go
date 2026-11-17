@@ -57,16 +57,6 @@ func NewProductionSecurityOptions(configDir string, hostSummary HostSummaryFunc)
 	}
 }
 
-// newSecurityOptions is the private constructor for deterministic test deps.
-func newSecurityOptions(configDir string, hostSummary HostSummaryFunc, clock Clock, random interface{ Read([]byte) (int, error) }, sink SecurityEventSink) SecurityOptions {
-	if configDir == "" || hostSummary == nil || clock == nil || random == nil || sink == nil {
-		panic("security: all options are required")
-	}
-	return SecurityOptions{configDir: configDir, hostSummary: hostSummary, clock: clock, random: random, sinkFactory: func(_ *securityHealthRegister) SecurityEventSink {
-		return sink
-	}}
-}
-
 // randomReader adapts the injected random source to io.Reader.
 type randomReader struct {
 	r interface{ Read([]byte) (int, error) }
