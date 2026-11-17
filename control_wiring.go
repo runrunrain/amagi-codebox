@@ -144,8 +144,30 @@ func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := runWSLSharedFilesForSpec(ctx, a.WSLSupply, spec); err != nil {
+	// WSL 启动预检融合：一次 wsl.exe 调用同时取得身份三件套与工作目录定谳，
+	// 结果只在本次启动 RPC 作用域内显式传递（供给闸门 + PTY 启动共用），不做
+	// 跨启动缓存。失败 fail-closed 阻断启动；成功后 WorkDir 即定谳绝对路径。
+	var preflight *platform.WSLLaunchPreflight
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		preflightStart := time.Now()
+		pf, err := wslLaunchPreflightProbeFn(ctx, wslDefaultDistroFn(spec.Env.Variables), spec.WorkDir)
+		if err != nil {
+			return 0, err
+		}
+		preflight = &pf
+		spec.WorkDir = pf.ResolvedWorkDir
+		spec.WSLWorkDirPreflightResolved = true
+		if a.Log != nil {
+			a.Log.Info("session", "WSL 启动预检完成（一次探测取得身份与定谳目录）",
+				fmt.Sprintf("id=%s 耗时=%dms distro用户uid=%s 定谳目录=%s", sessionID, time.Since(preflightStart).Milliseconds(), pf.Identity.UID, pf.ResolvedWorkDir))
+		}
+	}
+	gateStart := time.Now()
+	if err := runWSLSharedFilesForSpec(ctx, a.WSLSupply, spec, preflight); err != nil {
 		return 0, fmt.Errorf("WSL shared supply: %w", err)
+	}
+	if preflight != nil && a.Log != nil {
+		a.Log.Info("session", "WSL 供给闸门完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(gateStart).Milliseconds()))
 	}
 	launchPermit, runPermit, obsPermit, err := a.control.BeginDesktopRun(ctx, contract.SessionID(sessionID))
 	if err != nil {
@@ -191,10 +213,14 @@ func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation
 		}
 	}
 
+	ptyStart := time.Now()
 	start, err := a.Pty.StartResolvedWithRunEvidence(sessionID, spec, obsPermit)
 	if err != nil {
 		abortHidden(err)
 		return 0, err
+	}
+	if a.Log != nil {
+		a.Log.Info("session", "PTY 启动完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(ptyStart).Milliseconds()))
 	}
 	if err := start.Validate(processcap.BackendPTY); err != nil {
 		_ = start.Binding.CloseExact(ctx)

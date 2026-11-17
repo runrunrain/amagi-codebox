@@ -148,7 +148,7 @@ func TestWSLSharedGateReviewFixPR01LegacyRiskBlocks(t *testing.T) {
 	}
 	// 宿主关闭导出（升级后用户停用视觉清单导出）。
 	env.src.mode = "closed"
-	gateErr := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
+	gateErr := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu", nil)
 	if gateErr == nil {
 		t.Fatal("legacy sensitive copy risk must block the launch gate")
 	}
@@ -156,7 +156,7 @@ func TestWSLSharedGateReviewFixPR01LegacyRiskBlocks(t *testing.T) {
 		t.Fatalf("block must carry an actionable Chinese error, got %v", gateErr)
 	}
 	// 其它 distro 不被误算（无该 distro 的遗留风险）。
-	if err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Other"); err != nil {
+	if err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Other", nil); err != nil {
 		t.Fatalf("other distro must not inherit the legacy risk: %v", err)
 	}
 }
@@ -167,7 +167,7 @@ func TestWSLSharedGateReviewFixPR01ManagedSourceErrorBlocks(t *testing.T) {
 	env := newReviewFixGateEnv(t, true)
 	env.publish(t)
 	env.src.mode = "error"
-	err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
+	err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu", nil)
 	if err == nil {
 		t.Fatal("managed copy + source failure must block the launch gate")
 	}
@@ -184,7 +184,7 @@ func TestWSLSharedGateReviewFixPR01IdentityFailureBlocks(t *testing.T) {
 		env := newReviewFixGateEnv(t, true)
 		env.publish(t)
 		*env.identity = false // 身份探测失败（machine-id 不可得等）
-		err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
+		err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu", nil)
 		if err == nil {
 			t.Fatal("identity failure with a possible managed copy must block the launch gate")
 		}
@@ -194,7 +194,7 @@ func TestWSLSharedGateReviewFixPR01IdentityFailureBlocks(t *testing.T) {
 	})
 	t.Run("without managed copy passes", func(t *testing.T) {
 		env := newReviewFixGateEnv(t, false)
-		err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu")
+		err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu", nil)
 		if err != nil {
 			t.Fatalf("identity failure without any copy history must not block normal launch: %v", err)
 		}
@@ -206,7 +206,7 @@ func TestWSLSharedGateReviewFixPR01IdentityFailureBlocks(t *testing.T) {
 func TestWSLSharedGateReviewFixPR01NoHistoryPasses(t *testing.T) {
 	env := newReviewFixGateEnv(t, true)
 	env.src.mode = "closed" // 宿主无导出 + 本目标从未发布 → ActionNone/Fresh
-	if err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu"); err != nil {
+	if err := runWSLSharedFilesAtLaunch(context.Background(), env.c, "Ubuntu", nil); err != nil {
 		t.Fatalf("no-history optional state must not block launch: %v", err)
 	}
 }

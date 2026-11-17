@@ -1338,13 +1338,9 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
-		if wslDistro != "" {
-			// Windows 路径值变量的剥离已上移到 resolveEmbeddedLaunchSpec（全引擎
-			// 统一 WSL 防线，覆盖五前缀 + 精确键 + 自定义键）。
-			// fd/ripgrep 一次探测 + WARN（PI_OFFLINE=1 保留转发，避免 pi 启动时联网
-			// 下载工具卡住；缺工具时给出安装引导）。
-			a.warnWSLSearchToolsOnce(wslDistro)
-		}
+		// Windows 路径值变量的剥离已上移到 resolveEmbeddedLaunchSpec（全引擎
+		// 统一 WSL 防线，覆盖五前缀 + 精确键 + 自定义键）。fd/ripgrep 探测 +
+		// WARN 已移到会话成功启动后异步执行（见下方 go a.warnWSLSearchToolsOnce）。
 
 		args := []string{}
 		if launchSettings.Provider != "" {
@@ -1394,6 +1390,13 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
+		if wslDistro != "" {
+			// fd/rg 探测只是日志告警（PI_OFFLINE=1 保留转发，缺工具时给出安装
+			// 引导），不参与启动决策：会话成功启动后异步执行，不占启动关键路径
+			//（platform.WSLSearchToolStatus 的 per-distro 缓存与 sync.Once 单飞
+			// 语义保持不变）。
+			go a.warnWSLSearchToolsOnce(wslDistro)
+		}
 		// T-1.5：注册 webui 探测（携带注入端口、pid 与 v1.0.2 token，供
 		// /api/info 探测与注册表回退匹配；webuiPort=0 表示纯注册表发现）。
 		// WSL 目标用放宽窗口：WSL+DrvFS 下 pi 扩展的 webui server 就绪实测
@@ -1625,11 +1628,8 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
 		baseEnv := a.EnvVars.MergeWithSystem()
 		env := launcher.BuildEnv(baseEnv, envOverrides)
-		if wslDistro != "" {
-			// 与 LaunchPiSession 对称：Windows 路径值剥离已上移到
-			// resolveEmbeddedLaunchSpec；此处保留 fd/rg 探测。
-			a.warnWSLSearchToolsOnce(wslDistro)
-		}
+		// 与 LaunchPiSession 对称：Windows 路径值剥离已上移到
+		// resolveEmbeddedLaunchSpec；fd/rg 探测移到会话成功启动后异步执行。
 
 		args := []string{}
 		if launchSettings.Provider != "" {
@@ -1658,6 +1658,11 @@ func (a *App) LaunchOmpSession(modelName string, providerID string, mode string,
 		authorityCommitted = true
 		a.Sessions.SetPID(sess.ID, pid)
 		a.Log.Info("session", "omp PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
+		if wslDistro != "" {
+			// 与 LaunchPiSession 对称：fd/rg 探测只是日志告警，不参与启动决策
+			// ——会话成功启动后异步执行，不占启动关键路径（缓存/单飞语义不变）。
+			go a.warnWSLSearchToolsOnce(wslDistro)
+		}
 
 		go func(id string) {
 			for a.Pty.IsRunning(id) {

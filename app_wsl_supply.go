@@ -128,21 +128,59 @@ func wslSupplyUnitsFiltered(runner wslsupply.Runner, units ...wslsupply.UnitID) 
 // 调用时机：已解析 distro、PTY 启动之前。内部 Go API，不进 Wails 绑定。
 // runWSLSharedFilesForSpec is shared by desktop activation and the remote/restart
 // PTY effect. Keep this out of BuildPlan: distro probing and supply are effects.
-func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec platform.ResolvedLaunchSpec) error {
+// preflight 可为 nil：非 nil（桌面启动的融合预检成功后传入）且 runner 实现了
+// wslPreflightTargetRunner 时，shared 与 cli-config 两轮 RunUnits 都改走免重探
+// 的 RunUnitsWithTarget（两轮 CLI 作用域不同，分别用 TargetFromIdentity 构造）；
+// nil（remote/restart 调用点）或 runner 不支持时回退既有 RunUnits 路径，行为
+// 完全不变。
+func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec platform.ResolvedLaunchSpec, preflight *platform.WSLLaunchPreflight) error {
 	if spec.BootstrapMode != platform.BootstrapWSL || runner == nil {
 		return nil
 	}
 	distro := wslDefaultDistroFn(spec.Env.Variables)
-	if err := runWSLSharedFilesAtLaunch(ctx, runner, distro); err != nil {
+	if err := runWSLSharedFilesAtLaunch(ctx, runner, distro, preflight); err != nil {
 		return err
 	}
 	// P2-B 统一管理：Claude/Codex 键级单元的启动 lazy 补漏（只告警不阻断；
 	// pi 共享 Windows agent 根无需补漏，资源/技能不进启动链）。
-	runWSLCliConfigAtLaunch(ctx, runner, distro, spec.AppType)
+	runWSLCliConfigAtLaunch(ctx, runner, distro, spec.AppType, preflight)
 	return nil
 }
 
-func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string) error {
+// wslPreflightTargetRunner 是「启动预检一次取得身份」的免重探供给面（生产
+// *wslsupply.Coordinator 实现；测试 stub 运行器不实现 → 回退既有 RunUnits）。
+type wslPreflightTargetRunner interface {
+	// TargetFromIdentity 由预检身份构造该 CLI 作用域目标（零 wsl.exe 探测）。
+	TargetFromIdentity(distro string, cli wslsupply.CLI, ident platform.WSLUserIdentity) (wslsupply.TargetRef, error)
+	// RunUnitsWithTarget 与 RunUnits 同流程，跳过入口解析与 Apply 重探复核。
+	RunUnitsWithTarget(ctx context.Context, target wslsupply.TargetRef, reason wslsupply.Reason, units []wslsupply.UnitID) (wslsupply.RunResult, error)
+}
+
+// runWSLSupplyUnitsAtLaunch 是启动链 RunUnits 的统一适配：预检身份可用且
+// runner 支持时走 RunUnitsWithTarget（目标按 CLI 作用域分别构造，不再重探
+// 身份）；目标不可解析时按 RunUnits 的 target-unresolved 阻断语义构造逐单元
+// 结果（fail-closed，不重探）。preflight 为 nil 或 runner 不支持时走既有
+// RunUnits（remote/restart/测试 stub 路径不变）。
+func runWSLSupplyUnitsAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, cli wslsupply.CLI, reason wslsupply.Reason, units []wslsupply.UnitID, preflight *platform.WSLLaunchPreflight) (wslsupply.RunResult, error) {
+	if preflight != nil {
+		if pf, ok := runner.(wslPreflightTargetRunner); ok {
+			target, terr := pf.TargetFromIdentity(distro, cli, preflight.Identity)
+			if terr != nil {
+				res := wslsupply.RunResult{Results: make([]wslsupply.UnitResult, 0, len(units))}
+				for _, unit := range units {
+					res.Results = append(res.Results, wslsupply.UnitResult{
+						Unit: unit, Outcome: wslsupply.UnitBlocked, Detail: "target-unresolved", Err: terr,
+					})
+				}
+				return res, nil
+			}
+			return pf.RunUnitsWithTarget(ctx, target, reason, units)
+		}
+	}
+	return runner.RunUnits(ctx, distro, cli, reason, units)
+}
+
+func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, preflight *platform.WSLLaunchPreflight) error {
 	if runner == nil || strings.TrimSpace(distro) == "" {
 		return nil
 	}
@@ -153,7 +191,7 @@ func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, dis
 	if len(units) == 0 {
 		return nil // 裸运行器无 shared 适配器：不阻断普通启动
 	}
-	res, runErr := runner.RunUnits(ctx, distro, wslsupply.CLICommon, wslsupply.ReasonLaunch, units)
+	res, runErr := runWSLSupplyUnitsAtLaunch(ctx, runner, distro, wslsupply.CLICommon, wslsupply.ReasonLaunch, units, preflight)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -273,6 +311,12 @@ var wslDistroRunningFn = func(distro string) bool {
 // process-wide 缓存空），全量测试并发负载下可被瞬时失败污染——依赖它的
 // 单测必须注入固定值而非依赖真机状态。
 var wslDefaultDistroFn = platform.DefaultWSLDistro
+
+// wslLaunchPreflightProbeFn 是启动预检融合探测接缝（生产
+// platform.WSLLaunchPreflightProbe——一次 wsl.exe 同时取得身份三件套与工作
+// 目录定谳；测试注入固定值，动机同 wslDefaultDistroFn：单测不依赖真机
+// wsl.exe）。
+var wslLaunchPreflightProbeFn = platform.WSLLaunchPreflightProbe
 
 // scheduleWSLSupplyPush 异步调度一次保存后推送（非阻塞；失败仅告警——「宿主
 // 保存成功」与「WSL 已同步」是两个结果）。后台 goroutine 由包级 WaitGroup

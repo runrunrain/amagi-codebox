@@ -145,11 +145,28 @@ func (c *Coordinator) ResolveTarget(ctx context.Context, distro string, cli CLI)
 	if distro == "" {
 		return TargetRef{}, errors.New("wsl distro is required")
 	}
+	if _, ok := cliTargetRoot(cli); !ok {
+		return TargetRef{}, fmt.Errorf("unsupported wsl supply CLI: %q", string(cli))
+	}
+	ident := c.probes.Identity(ctx, distro)
+	return c.TargetFromIdentity(distro, cli, ident)
+}
+
+// TargetFromIdentity 由一次启动预检取得的身份构造 CLI 目标（不再重探身份）。
+// 语义与 ResolveTarget 的构造段一致：distro 为空、身份 OK=false、目标根不可
+// 映射均返回错误（fail closed）；generation/LegacyGeneration 与 ResolveTarget
+// 同源（generationFor/legacyGenerationOf）。供单次启动 RPC 使用（WSL 启动预检
+// 一次取得身份后经 RunUnitsWithTarget 消费，见 app 层接线）；不引入任何跨启动
+// 缓存。
+func (c *Coordinator) TargetFromIdentity(distro string, cli CLI, ident platform.WSLUserIdentity) (TargetRef, error) {
+	distro = strings.TrimSpace(distro)
+	if distro == "" {
+		return TargetRef{}, errors.New("wsl distro is required")
+	}
 	rel, ok := cliTargetRoot(cli)
 	if !ok {
 		return TargetRef{}, fmt.Errorf("unsupported wsl supply CLI: %q", string(cli))
 	}
-	ident := c.probes.Identity(ctx, distro)
 	if !ident.OK {
 		return TargetRef{}, fmt.Errorf("cannot resolve default user identity in WSL distro %q", distro)
 	}
@@ -348,6 +365,13 @@ func (c *Coordinator) Plan(req SupplyRequest, snap *Snapshot) (*SupplyPlan, erro
 // 投影单元先复核当前 hash 仍等于计划预期值再经提交原语写入。部分失败不虚报
 // 整批成功。
 func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, error) {
+	return c.apply(ctx, plan, nil)
+}
+
+// apply 是 Apply 的内部变体：preset 非 nil（RunUnitsWithTarget 传入）时跳过
+// 「重探身份复核」改用传入 target——身份由启动预检一次取得，在该启动 RPC
+// 作用域内视为当次真值；preset 为 nil 时保持公开 Apply 的全部既有语义。
+func (c *Coordinator) apply(ctx context.Context, plan *SupplyPlan, preset *TargetRef) (RunResult, error) {
 	if plan == nil || len(plan.Units) == 0 {
 		return RunResult{}, errors.New("apply requires a non-empty plan")
 	}
@@ -364,17 +388,24 @@ func (c *Coordinator) Apply(ctx context.Context, plan *SupplyPlan) (RunResult, e
 
 	result := RunResult{Target: plan.Request.Target}
 
-	// 复核目标：重探身份，拒绝计划后的目标替换（重装/换用户/换 Home）。
-	current, err := c.ResolveTarget(ctx, plan.Request.Target.Distro, plan.Request.Target.CLI)
-	if err != nil || !current.SameIdentity(plan.Request.Target) {
-		for _, unit := range plan.Units {
-			result.Results = append(result.Results, UnitResult{
-				Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
-				Detail: "target-changed-since-planning",
-				Err:    fmt.Errorf("wsl supply target changed since planning: %v", err),
-			})
+	var current TargetRef
+	if preset != nil {
+		// 启动预检作用域：身份即当次真值，不重探（见 RunUnitsWithTarget 契约）。
+		current = *preset
+	} else {
+		// 复核目标：重探身份，拒绝计划后的目标替换（重装/换用户/换 Home）。
+		var err error
+		current, err = c.ResolveTarget(ctx, plan.Request.Target.Distro, plan.Request.Target.CLI)
+		if err != nil || !current.SameIdentity(plan.Request.Target) {
+			for _, unit := range plan.Units {
+				result.Results = append(result.Results, UnitResult{
+					Unit: unit.Unit, Policy: unit.Policy, Outcome: UnitBlocked,
+					Detail: "target-changed-since-planning",
+					Err:    fmt.Errorf("wsl supply target changed since planning: %v", err),
+				})
+			}
+			return result, nil
 		}
-		return result, nil
 	}
 
 	for _, unit := range plan.Units {
@@ -896,6 +927,22 @@ func (c *Coordinator) recordProjectionFreeze(target TargetRef, unit UnitID, poli
 // remote/v1 effect 共用（S0 统一执行边界）；目标不可解析时以逐单元阻断结果
 // 返回而不是 error（调用方按 fail-closed 闸门语义消费）。
 func (c *Coordinator) RunUnits(ctx context.Context, distro string, cli CLI, reason Reason, units []UnitID) (RunResult, error) {
+	return c.runUnits(ctx, distro, cli, reason, units, nil)
+}
+
+// RunUnitsWithTarget 与 RunUnits 相同流程（Inspect → 健康门 → ReconcilePending
+// → Plan → Apply），但入口跳过 ResolveTarget，且 Apply 的「重探身份复核」改用
+// 传入 target——身份由启动预检（platform.WSLLaunchPreflightProbe）一次取得，
+// 在该次启动 RPC 作用域内视为当次真值；跨启动 generation 失效语义不变（下次
+// 启动重新预检，重装/换用户/换 Home 仍会被新预检看见）。供单次启动 RPC 使用；
+// 公开的 RunUnits/Apply 语义与全部既有测试不变。
+func (c *Coordinator) RunUnitsWithTarget(ctx context.Context, target TargetRef, reason Reason, units []UnitID) (RunResult, error) {
+	return c.runUnits(ctx, target.Distro, target.CLI, reason, units, &target)
+}
+
+// runUnits 是 RunUnits/RunUnitsWithTarget 的共用实现：preset 非 nil 时跳过入口
+// 目标解析并沿传给 apply（跳过重探复核）。
+func (c *Coordinator) runUnits(ctx context.Context, distro string, cli CLI, reason Reason, units []UnitID, preset *TargetRef) (RunResult, error) {
 	blocked := func(detail string, err error) (RunResult, error) {
 		res := RunResult{Results: make([]UnitResult, 0, len(units))}
 		for _, unit := range units {
@@ -917,9 +964,15 @@ func (c *Coordinator) RunUnits(ctx context.Context, distro string, cli CLI, reas
 			return RunResult{}, fmt.Errorf("unknown wsl supply unit: %q", string(unit))
 		}
 	}
-	target, err := c.ResolveTarget(ctx, distro, cli)
-	if err != nil {
-		return blocked("target-unresolved", err)
+	var target TargetRef
+	if preset != nil {
+		target = *preset // 启动预检作用域：目标已由预检身份构造，不重探
+	} else {
+		var err error
+		target, err = c.ResolveTarget(ctx, distro, cli)
+		if err != nil {
+			return blocked("target-unresolved", err)
+		}
 	}
 	snap, err := c.Inspect(ctx, target)
 	if err != nil {
@@ -944,7 +997,7 @@ func (c *Coordinator) RunUnits(ctx context.Context, distro string, cli CLI, reas
 	if err != nil {
 		return blocked("plan-failed", err)
 	}
-	return c.Apply(ctx, plan)
+	return c.apply(ctx, plan, preset)
 }
 
 // MarkDirty 保存事件后标脏：合并来源 revision 并落盘 desired revision（重启可

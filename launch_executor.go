@@ -848,7 +848,9 @@ func (e *ptyStartEffect) Apply(ctx context.Context) (launchplan.EffectEvidence, 
 	if e.deps.pty == nil {
 		return launchplan.EffectEvidence{}, errors.New("PTY service unavailable")
 	}
-	if err := runWSLSharedFilesForSpec(ctx, e.deps.wslSupply, e.spec); err != nil {
+	// remote/restart effect 不做启动预检（preflight=nil）：供给与目录定谳保持
+	// 既有 RunUnits + prepareWSLStartupSpec 路径，行为不变。
+	if err := runWSLSharedFilesForSpec(ctx, e.deps.wslSupply, e.spec, nil); err != nil {
 		return launchplan.EffectEvidence{}, fmt.Errorf("WSL shared supply: %w", err)
 	}
 	start, err := e.deps.pty.StartResolvedWithRunEvidence(e.sessionID, e.spec, e.runHandle)
