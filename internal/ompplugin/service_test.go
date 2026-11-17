@@ -4,7 +4,10 @@ import (
 	"amagi-codebox/internal/platform"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -495,5 +498,136 @@ func TestWriteOperationsRejectUnsafeSpec(t *testing.T) {
 	}
 	if _, err := svc.UpgradePlugin(""); err == nil {
 		t.Fatal("expected rejection for UpgradePlugin with empty name")
+	}
+}
+
+// ============================================================================
+// P4：skills 扫描（InspectPlugin/GetPluginDetails）与变更通知
+// ============================================================================
+
+func writeOmpSkillTree(t *testing.T, root string) {
+	t.Helper()
+	writeOmpFile(t, filepath.Join(root, "skills", "alpha", "SKILL.md"), "---\nname: alpha\n---\n# alpha")
+	writeOmpFile(t, filepath.Join(root, "skills", "top.md"), "# top")
+	writeOmpFile(t, filepath.Join(root, "skills", "notes.txt"), "not a skill")
+	writeOmpFile(t, filepath.Join(root, "dist", "index.js"), "// extension entry")
+}
+
+func writeOmpFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanPluginSkillsConventionDirs(t *testing.T) {
+	root := t.TempDir()
+	writeOmpSkillTree(t, root)
+
+	skills := scanPluginSkills(root)
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills (SKILL.md dir + top-level .md), got %+v", skills)
+	}
+	if skills[0].Name != "alpha" || skills[1].Name != "top" {
+		t.Fatalf("unexpected skill names: %+v", skills)
+	}
+	if !strings.HasSuffix(skills[0].FilePath, filepath.Join("skills", "alpha", "SKILL.md")) {
+		t.Fatalf("unexpected alpha path: %s", skills[0].FilePath)
+	}
+	// 无 skills 目录（纯 extension 插件）诚实为空。
+	if got := scanPluginSkills(filepath.Join(root, "dist")); len(got) != 0 {
+		t.Fatalf("expected empty skills for dir without skills/, got %+v", got)
+	}
+}
+
+func TestInspectPluginScansNpmInstallPathWithoutCLI(t *testing.T) {
+	root := t.TempDir()
+	writeOmpSkillTree(t, root)
+	runner := &testRunner{}
+	svc := NewServiceWithDeps(nil, testResolver{}, runner)
+
+	detail := svc.InspectPlugin(Plugin{
+		ID: "demo-pkg", Name: "demo-pkg", Kind: pluginKindNPM,
+		Enabled: true, InstallPath: root,
+	})
+	if len(runner.specs) != 0 {
+		t.Fatalf("InspectPlugin must not fork CLI, got %d calls", len(runner.specs))
+	}
+	if len(detail.Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %+v", detail.Skills)
+	}
+	if detail.InstallPath != root {
+		t.Fatalf("install path should be filled, got %q", detail.InstallPath)
+	}
+}
+
+func TestInspectPluginMarketplaceFallbackReadsInstalledPluginsJSON(t *testing.T) {
+	pluginsRoot := t.TempDir()
+	pluginRoot := t.TempDir()
+	writeOmpSkillTree(t, pluginRoot)
+	writeOmpFile(t, filepath.Join(pluginsRoot, "installed_plugins.json"), fmt.Sprintf(
+		`{"version":1,"plugins":{"theme-pack@catalog":[{"scope":"user","installPath":%q,"version":"1.0.0"}]}}`, pluginRoot))
+	runner := &testRunner{}
+	svc := NewServiceWithDeps(nil, testResolver{}, runner)
+	svc.pluginsRoot = pluginsRoot
+
+	detail := svc.InspectPlugin(Plugin{
+		ID: "theme-pack@catalog", Name: "theme-pack@catalog", Kind: pluginKindMarketplace, Enabled: true,
+	})
+	if detail.InstallPath != pluginRoot {
+		t.Fatalf("marketplace install path not resolved: %+v", detail)
+	}
+	if len(detail.Skills) != 2 {
+		t.Fatalf("expected skills via marketplace path, got %+v", detail.Skills)
+	}
+}
+
+func TestGetPluginDetailsResolvesViaCLIList(t *testing.T) {
+	root := t.TempDir()
+	writeOmpSkillTree(t, root)
+	runner := &testRunner{run: func(platform.CommandSpec) (*platform.ProcessResult, error) {
+		return &platform.ProcessResult{Stdout: fmt.Sprintf(
+			`{"npm":[{"name":"demo-pkg","version":"1.0.0","enabled":true,"path":%q}],"marketplace":[]}`, root)}, nil
+	}}
+	svc := NewServiceWithDeps(nil, testResolver{}, runner)
+
+	detail, err := svc.GetPluginDetails("demo-pkg")
+	if err != nil {
+		t.Fatalf("GetPluginDetails: %v", err)
+	}
+	if detail.Name != "demo-pkg" || len(detail.Skills) != 2 {
+		t.Fatalf("unexpected detail: %+v", detail)
+	}
+
+	if _, err := svc.GetPluginDetails("missing"); err == nil {
+		t.Fatal("expected error for unknown plugin")
+	}
+}
+
+func TestOmpWriteOpsNotifyChange(t *testing.T) {
+	runner := &testRunner{run: func(platform.CommandSpec) (*platform.ProcessResult, error) {
+		return &platform.ProcessResult{Stdout: `{"npm":[],"marketplace":[]}`}, nil
+	}}
+	svc := NewServiceWithDeps(nil, testResolver{}, runner)
+	notified := 0
+	svc.OnChange = func() { notified++ }
+
+	if _, err := svc.InstallPlugin("demo-pkg"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := svc.SetPluginEnabled("demo-pkg", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := svc.UpgradePlugin("demo-pkg"); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if _, err := svc.UninstallPlugin("demo-pkg"); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if notified != 4 {
+		t.Fatalf("expected 4 notifications, got %d", notified)
 	}
 }

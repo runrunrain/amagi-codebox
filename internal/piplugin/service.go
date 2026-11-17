@@ -46,6 +46,9 @@ type Service struct {
 	log      *logging.Service
 	resolver platform.CLIResolver
 	runner   platform.ProcessRunner
+	// OnChange 在成功变更已装插件面后调用一次（P4：供上层失效共用中心聚合
+	// 缓存）。导出字段而非方法：避免进入 Wails 绑定面；装配期注入，运行中只读。
+	OnChange func()
 	mu       sync.Mutex
 }
 
@@ -351,7 +354,11 @@ func (s *Service) InstallPackage(source string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executePiCommand(context.TODO(), "install", source)
+	res, err := s.executePiCommand(context.TODO(), "install", source)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }
 
 // RemovePackage 通过 pi CLI 移除包（从 settings.json packages[] 删除；实体保留）。
@@ -368,7 +375,11 @@ func (s *Service) RemovePackage(source string) (*CommandResult, error) {
 			source = registered
 		}
 	}
-	return s.executePiCommand(context.TODO(), "remove", source)
+	res, err := s.executePiCommand(context.TODO(), "remove", source)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }
 
 // UpdatePackage 通过 pi CLI 更新单个包。
@@ -389,7 +400,11 @@ func (s *Service) UpdatePackage(source string) (*CommandResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// 用 settings 原始登记串调 CLI（相对形态在 cwd=agentDir 下稳匹配）。
-	return s.executePiCommand(context.TODO(), "update", registered)
+	res, err := s.executePiCommand(context.TODO(), "update", registered)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }
 
 // inspectPackage 扫描实体目录补全包元数据；resources=true 时进一步枚举子资源。
@@ -413,7 +428,9 @@ func (s *Service) inspectPackage(cfg configuredPackage, resources bool) PackageD
 			SourceType: parsed.sourceType,
 			Name:       fallbackName(cfg.source),
 			Scope:      "user",
-			Enabled:    true,
+			// 包级启停（P4）：packages 条目的四键全排除标记（!**×4）= 禁用；
+			// 其余（含无过滤键的纯字符串条目）= 启用（pi 原生语义：在位即加载）。
+			Enabled:    !isPackageDisabledEntry(cfg),
 			Extensions: cfg.extensions,
 			Skills:     cfg.skills,
 			Prompts:    cfg.prompts,
@@ -470,6 +487,18 @@ func (s *Service) inspectPackage(cfg configuredPackage, resources bool) PackageD
 		return detail
 	}
 	detail.Resources = scanPiResources(manifestDir, declared)
+	// skill 级启停态（P4）：按 pi 过滤语义评估每个 skill 资源的加载态，
+	// 供详情面板与共用中心聚合展示「已停用」标记（skills 键省略 = 全部加载）。
+	if cfg.skills != nil {
+		for i := range detail.Resources {
+			if detail.Resources[i].Type != resourceSkill {
+				continue
+			}
+			if !skillEnabledByFilters(manifestDir, detail.Resources[i].FilePath, cfg.skills) {
+				detail.Resources[i].Disabled = true
+			}
+		}
+	}
 	return detail
 }
 
@@ -728,5 +757,6 @@ func (s *Service) SwitchPackageSource(oldSource, newSource string) (*CommandResu
 		}, nil
 	}
 	installRes.Output = fmt.Sprintf("已从 %s 切换到 %s\n%s", oldSource, newSource, installRes.Output)
+	s.notifyChanged()
 	return installRes, nil
 }

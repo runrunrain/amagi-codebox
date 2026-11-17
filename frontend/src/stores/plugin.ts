@@ -606,6 +606,21 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  // Update a single Codex plugin（P4：市场刷新 + 卸载重装 + 恢复启用状态，
+  // 后端 codexplugin.UpdatePlugin）；成功后强制刷新列表。
+  async function updateCxPlugin(pluginId: string, marketplace?: string) {
+    try {
+      const selector = { pluginId, marketplace };
+      const result = await codexPluginApi.updateCodexPlugin(selector);
+      // Refresh after update (force bypass cache)
+      await loadCxPlugins(true);
+      return result;
+    } catch (error) {
+      console.error('[plugin.store.updateCxPlugin]', error);
+      throw error;
+    }
+  }
+
   // Add Codex marketplace
   async function addCxMarketplace(source: string) {
     try {
@@ -749,6 +764,7 @@ export const usePluginStore = defineStore('plugin', () => {
     toggleCxPlugin,
     installCxPlugin,
     uninstallCxPlugin,
+    updateCxPlugin,
     addCxMarketplace,
     removeCxMarketplace,
     upgradeCxMarketplace,

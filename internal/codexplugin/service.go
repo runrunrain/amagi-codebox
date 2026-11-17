@@ -19,7 +19,17 @@ type Service struct {
 	log      *logging.Service
 	resolver platform.CLIResolver
 	runner   platform.ProcessRunner
+	// OnChange 在成功变更已装插件面后调用一次（P4：供上层失效共用中心聚合
+	// 缓存）。导出字段而非方法：避免进入 Wails 绑定面；装配期注入，运行中只读。
+	OnChange func()
 	mu       sync.Mutex
+}
+
+// notifyChanged 在成功变更已装插件面后调用；回调异常不阻断主流程。
+func (s *Service) notifyChanged() {
+	if s.OnChange != nil {
+		s.OnChange()
+	}
 }
 
 func NewService(codexDir string, log *logging.Service) *Service {
@@ -315,6 +325,7 @@ func (s *Service) InstallPlugin(selector PluginSelector) (*CommandResult, error)
 		return &CommandResult{Success: false, Output: strings.TrimSpace(result.Output + "\n" + message), Error: message}, err
 	}
 	appendInstallVerificationOutput(result, verification)
+	s.notifyChanged()
 	return result, nil
 }
 
@@ -331,6 +342,66 @@ func (s *Service) UninstallPlugin(selector PluginSelector) (*CommandResult, erro
 		s.log.Warn("codexplugin", "卸载后清理 config.toml 插件项失败", cleanupErr.Error())
 		result.Output = strings.TrimSpace(result.Output + "\n插件已卸载，但清理 config.toml 状态失败：" + cleanupErr.Error())
 	}
+	s.notifyChanged()
+	return result, nil
+}
+
+// UpdatePlugin 更新单个 Codex 插件到市场最新版（P4）。
+// 探测结论（codex-cli 0.169.0-alpha.11.1，`codex plugin --help`）：CLI 仅有
+// add/list/marketplace/remove 子命令，无原生单插件 update——采用「市场刷新 +
+// 卸载重装」模拟：
+//  1. 读取旧 enabled 状态（config.toml；重装会重置为启用，必须先存后恢复）；
+//  2. marketplace upgrade 刷新市场快照（失败仅记日志继续——快照陈旧不阻断重装）；
+//  3. uninstall + install 重装拉取最新版；
+//  4. 恢复 enabled 状态。
+//
+// 子项级禁用状态无需恢复：Codex 无子项状态存储（SetPluginSubItemEnabled 为
+// 兼容占位，见该方法注释）。
+func (s *Service) UpdatePlugin(selector PluginSelector) (*CommandResult, error) {
+	pluginID, err := selectorPluginID(selector)
+	if err != nil {
+		return nil, err
+	}
+	// ① 旧 enabled 状态（读取失败按默认启用处理，仅记日志）。
+	oldEnabled := true
+	if states, stateErr := s.readPluginStates(); stateErr == nil {
+		if enabled, ok := states[pluginID]; ok {
+			oldEnabled = enabled
+		}
+	} else if s.log != nil {
+		s.log.Warn("codexplugin", "更新前读取插件状态失败，按默认启用恢复", pluginID, stateErr.Error())
+	}
+	// ② 刷新市场快照（失败不阻断：重装仍可用现有快照完成）。
+	if _, marketplace := splitPluginID(pluginID); marketplace != "" {
+		if _, mpErr := s.UpgradeMarketplace(marketplace); mpErr != nil && s.log != nil {
+			s.log.Warn("codexplugin", "更新插件前刷新市场快照失败（继续用现有快照重装）", marketplace, mpErr.Error())
+		}
+	}
+	// ③ 卸载旧版本（失败即中止：插件保持原状）。
+	if _, err := s.UninstallPlugin(selector); err != nil {
+		return nil, fmt.Errorf("卸载旧版本失败（插件保持原状，未重装）: %w", err)
+	}
+	// ④ 重装（失败时明确提示：旧版本已卸载，需要手动恢复）。
+	result, err := s.InstallPlugin(selector)
+	if err != nil {
+		if result == nil {
+			result = &CommandResult{Success: false, Error: err.Error()}
+		}
+		result.Error = fmt.Sprintf("重装最新版失败（旧版本已卸载，请重新安装 %s）: %s", pluginID, result.Error)
+		return result, err
+	}
+	// ⑤ 恢复 enabled 状态（InstallPlugin 固定写启用）。
+	if !oldEnabled {
+		if enableErr := s.setPluginEnabled(pluginID, false); enableErr != nil {
+			message := fmt.Sprintf("插件已更新，但恢复禁用状态失败：%s", enableErr.Error())
+			if s.log != nil {
+				s.log.Warn("codexplugin", "更新后恢复插件禁用状态失败", pluginID, enableErr.Error())
+			}
+			result.Output = strings.TrimSpace(result.Output + "\n" + message)
+		}
+	}
+	result.Output = strings.TrimSpace(fmt.Sprintf("已更新插件 %s\n%s", pluginID, result.Output))
+	s.notifyChanged()
 	return result, nil
 }
 
@@ -346,6 +417,7 @@ func (s *Service) SetPluginEnabled(selector PluginSelector, enabled bool) (*Comm
 	if enabled {
 		verb = "enabled"
 	}
+	s.notifyChanged()
 	return &CommandResult{Success: true, Output: fmt.Sprintf("plugin %s %s", pluginID, verb)}, nil
 }
 

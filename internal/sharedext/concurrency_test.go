@@ -22,6 +22,15 @@ func TestConcurrentRegistryAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 64)
 
+	// 前置导入必须真正前置：在并发导入者启动前完成，确保 victim 存在。
+	// （原实现把主导入放在并发 goroutine 启动之后，并发者先完成时主导入
+	// 全部撞同名冲突，导致间歇性失败与 Fatalf 后 goroutine 继续写临时目录。）
+	pre, err := env.svc.ImportSkillFromDir(src)
+	if err != nil || len(pre) == 0 {
+		t.Fatalf("前置导入失败: %v", err)
+	}
+	victim := pre[0].Name
+
 	// 并发导入同一批 skill（同名冲突是预期行为，错误不视为失败）。
 	for w := 0; w < 4; w++ {
 		wg.Add(1)
@@ -54,12 +63,7 @@ func TestConcurrentRegistryAccess(t *testing.T) {
 		}(w)
 	}
 
-	// 并发启停已导入 skill（先导入一个确保存在）。
-	pre, err := env.svc.ImportSkillFromDir(src)
-	if err != nil || len(pre) == 0 {
-		t.Fatalf("前置导入失败: %v", err)
-	}
-	victim := pre[0].Name
+	// 并发启停已导入 skill（victim 由上方前置导入提供）。
 	for w := 0; w < 4; w++ {
 		wg.Add(1)
 		go func(id int) {

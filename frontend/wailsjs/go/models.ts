@@ -3219,6 +3219,68 @@ export namespace ompplugin {
 	        this.installPath = source["installPath"];
 	    }
 	}
+	export class ResourceInfo {
+	    name: string;
+	    filePath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.filePath = source["filePath"];
+	    }
+	}
+	export class PluginDetail {
+	    id: string;
+	    name: string;
+	    version?: string;
+	    kind: string;
+	    enabled: boolean;
+	    enabledFeatures?: string[];
+	    description?: string;
+	    scope?: string;
+	    installPath?: string;
+	    skills: ResourceInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.kind = source["kind"];
+	        this.enabled = source["enabled"];
+	        this.enabledFeatures = source["enabledFeatures"];
+	        this.description = source["description"];
+	        this.scope = source["scope"];
+	        this.installPath = source["installPath"];
+	        this.skills = this.convertValues(source["skills"], ResourceInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class PluginsData {
 	    installed: Plugin[];
 	    warnings?: string[];
@@ -3619,6 +3681,7 @@ export namespace piplugin {
 	    name: string;
 	    filePath: string;
 	    type: string;
+	    disabled?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ResourceInfo(source);
@@ -3629,6 +3692,7 @@ export namespace piplugin {
 	        this.name = source["name"];
 	        this.filePath = source["filePath"];
 	        this.type = source["type"];
+	        this.disabled = source["disabled"];
 	    }
 	}
 	export class PackageDetail {

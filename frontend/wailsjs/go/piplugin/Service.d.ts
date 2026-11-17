@@ -16,6 +16,10 @@ export function ResolvedEntityCommit(arg1:string):Promise<string>;
 
 export function ResolvedEntityVersion(arg1:string):Promise<string>;
 
+export function SetPackageEnabled(arg1:string,arg2:boolean):Promise<piplugin.CommandResult>;
+
+export function SetPackageSkillEnabled(arg1:string,arg2:string,arg3:boolean):Promise<piplugin.CommandResult>;
+
 export function SwitchPackageSource(arg1:string,arg2:string):Promise<piplugin.CommandResult>;
 
 export function UpdatePackage(arg1:string):Promise<piplugin.CommandResult>;

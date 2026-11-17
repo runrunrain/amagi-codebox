@@ -12,6 +12,7 @@ import (
 
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/ompplugin"
 	"amagi-codebox/internal/opencodeplugin"
 	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/plugin"
@@ -54,7 +55,8 @@ func TestClaudePluginSkillsProvider(t *testing.T) {
 }
 
 func TestCodexPluginSkillsProvider(t *testing.T) {
-	installed := codexplugin.CodexPlugin{ID: "cx-demo", Name: "CxDemo"}
+	// Enabled=true：无任何禁用（子项级机制不存在，见 P4 报告）→ 禁用表为空。
+	installed := codexplugin.CodexPlugin{ID: "cx-demo", Name: "CxDemo", Enabled: true}
 	detail := &codexplugin.CodexPluginDetail{
 		Skills: []codexplugin.SkillInfo{{Name: "gamma", Description: "G"}},
 	}
@@ -201,5 +203,72 @@ func TestAppReadTextFileLimits(t *testing.T) {
 	// 目录拒绝
 	if _, err := a.ReadTextFile(dir); err == nil {
 		t.Fatal("directory path must error")
+	}
+}
+
+// ============================================================================
+// P4：provider 的插件级/子项级禁用映射
+// ============================================================================
+
+func TestCodexPluginSkillsProviderDisabledPluginMarksAllSkills(t *testing.T) {
+	installed := codexplugin.CodexPlugin{ID: "cx-off", Name: "CxOff", Enabled: false}
+	detail := &codexplugin.CodexPluginDetail{
+		Skills: []codexplugin.SkillInfo{{Name: "one"}, {Name: "two"}},
+	}
+
+	p := codexPluginSkillsProvider(installed, detail)
+	if !p.SubItemsDisabled["skill/one"] || !p.SubItemsDisabled["skill/two"] {
+		t.Fatalf("disabled plugin should mark all skills disabled: %+v", p.SubItemsDisabled)
+	}
+	if len(p.SubItemsDisabled) != 2 {
+		t.Fatalf("unexpected disabled map size: %+v", p.SubItemsDisabled)
+	}
+}
+
+func TestPiPackageSkillsProviderMarksSkillAndPackageDisabled(t *testing.T) {
+	// 子项级：ResourceInfo.Disabled（skills[] 过滤语义评估结果）。
+	pkg := piplugin.Package{ID: "npm:p", Source: "npm:p", Name: "p", Enabled: true}
+	detail := &piplugin.PackageDetail{
+		Resources: []piplugin.ResourceInfo{
+			{Name: "off", FilePath: "/x/skills/off/SKILL.md", Type: "skill", Disabled: true},
+			{Name: "on", FilePath: "/x/skills/on/SKILL.md", Type: "skill"},
+		},
+	}
+	p := piPackageSkillsProvider(pkg, detail)
+	if !p.SubItemsDisabled["skill/off"] || p.SubItemsDisabled["skill/on"] {
+		t.Fatalf("skill-level disable mapping wrong: %+v", p.SubItemsDisabled)
+	}
+
+	// 包级：Enabled=false（!**×4 标记）→ 全部 skill 标记停用。
+	pkg.Enabled = false
+	p = piPackageSkillsProvider(pkg, detail)
+	if !p.SubItemsDisabled["skill/off"] || !p.SubItemsDisabled["skill/on"] {
+		t.Fatalf("package-level disable should mark all skills: %+v", p.SubItemsDisabled)
+	}
+}
+
+func TestOmpPluginSkillsProvider(t *testing.T) {
+	installed := ompplugin.Plugin{ID: "omp-demo", Name: "omp-demo", Enabled: true}
+	detail := &ompplugin.PluginDetail{
+		Skills: []ompplugin.ResourceInfo{
+			{Name: "alpha", FilePath: "/x/skills/alpha/SKILL.md"},
+		},
+	}
+
+	p := ompPluginSkillsProvider(installed, detail)
+	if p.Engine != sharedext.EngineOmp {
+		t.Fatalf("engine = %q, want omp", p.Engine)
+	}
+	if len(p.Skills) != 1 || p.Skills[0].Name != "alpha" || p.Skills[0].Description != "" {
+		t.Fatalf("skills mapping wrong: %+v", p.Skills)
+	}
+	if len(p.SubItemsDisabled) != 0 {
+		t.Fatalf("enabled plugin must not disable skills: %+v", p.SubItemsDisabled)
+	}
+
+	installed.Enabled = false
+	p = ompPluginSkillsProvider(installed, detail)
+	if !p.SubItemsDisabled["skill/alpha"] {
+		t.Fatalf("disabled plugin should mark all skills: %+v", p.SubItemsDisabled)
 	}
 }

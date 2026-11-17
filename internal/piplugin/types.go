@@ -62,6 +62,10 @@ type ResourceInfo struct {
 	FilePath string `json:"filePath"`
 	// Type 取值：extension / skill / prompt / theme。
 	Type string `json:"type"`
+	// Disabled（P4，仅 skill 填充）：按 packages 条目 skills[] 过滤语义评估
+	// 该资源当前不会加载（如 "-path" 精确排除 / 白名单未命中）。键省略=全部
+	// 加载时恒为 false。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // PackageDetail contains package metadata plus the discoverable pi resources.

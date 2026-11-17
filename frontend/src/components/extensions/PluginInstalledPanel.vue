@@ -360,6 +360,7 @@ const {
   loadCxPlugins,
   toggleCxPlugin,
   uninstallCxPlugin,
+  updateCxPlugin,
   loadCxPluginDetail,
   loadPluginDetail,
   setPluginSubItemEnabled,
@@ -739,20 +740,21 @@ async function handleUpdate() {
   updating.value = true;
   try {
     if (props.engine === 'codex') {
-      // Codex 没有单插件更新接口，更新机制是整个市场源 upgrade
+      // P4：Codex 单插件更新（市场刷新 + 卸载重装 + 恢复启用状态，后端 UpdatePlugin）。
+      // 缺少市场来源时提示（重装需要 plugin@marketplace 定位）。
       const marketplace = (plugin as any).marketplace;
+      const pid = (plugin as any).pluginId || plugin.id;
       if (!marketplace) {
         showError('该插件缺少市场来源信息，无法更新');
         return;
       }
-      showInfo(`正在更新市场源「${marketplace}」…`);
-      await upgradeCxMarketplace(marketplace);
-      // 重载选中插件详情，让 UI 即时反映升级后的内容
-      const pid = (plugin as any).pluginId || plugin.id;
+      showInfo(`正在更新插件「${plugin.name}」…`);
+      await updateCxPlugin(pid, marketplace);
+      // 重载选中插件详情，让 UI 即时反映更新后的内容
       if (pid) {
         await loadCxPluginDetail(pid, marketplace);
       }
-      showSuccess(`市场「${marketplace}」已更新，插件「${plugin.name}」内容已刷新`);
+      showSuccess(`插件「${plugin.name}」已更新到市场最新版`);
     } else {
       showInfo(`正在更新插件「${plugin.name}」…`);
       await updatePlugin(plugin.id);
@@ -769,7 +771,7 @@ async function handleUpdate() {
 }
 
 // 更新整个市场源（市场分组头部「更新市场」入口）
-// - Codex: 后端无单插件更新接口，市场源 upgrade 即为其更新机制
+// - Codex: 市场级入口（市场分组头部）；单插件更新走 handleUpdate（P4 UpdatePlugin）
 // - Claude: 调 plugin.Service.UpdateMarketplace 拉取指定市场源最新内容
 // store action 内部已 force reload，UI 会随 ccInstalled/cxInstalled 响应式刷新
 async function handleUpdateMarket(market: string) {

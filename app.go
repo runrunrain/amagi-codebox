@@ -512,6 +512,16 @@ func NewApp(mobileAssets embed.FS) *App {
 		// 公共扩展中心：仓库根 = <configDir>/shared（与 Config/Skins 等同根）。
 		sharedExt: sharedext.NewService(configDir, log),
 	}
+	// P4 插件生命周期联动：四引擎插件服务在成功的写操作（install/uninstall/
+	// update/启停）后回调，置位共用中心聚合的强制刷新标记——下次聚合拉取
+	// （App.GetAllSharedSkillsAggregated）旁路 30s TTL 重建。Claude 引擎的
+	// internal/plugin 不在 P4 写面内：其插件变更依赖 30s TTL + 面板切 tab 重挂
+	// 时重新拉取兜底（ExtensionsView 各 pane 为 v-if，切换即重载）。
+	invalidateShared := app.InvalidateSharedExtCache
+	codexPluginsSvc.OnChange = invalidateShared
+	openCodePluginsSvc.OnChange = invalidateShared
+	piPluginsSvc.OnChange = invalidateShared
+	ompPluginsSvc.OnChange = invalidateShared
 	// P3-S1：WSL 供给协调器携带托管面适配器（pi/managed-models + 共享小文件）；
 	// 业务快照源闭包引用 app，在字面量之后装配。
 	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
@@ -7004,19 +7014,26 @@ func (a *App) ReadTextFile(path string) (string, error) {
 // 使用。任一引擎失败只降级为空并记日志，不让整个聚合失败（CLI 不可用、
 // 配置读取失败等都是可容忍的降级场景）。
 //
-// 覆盖现状（P2 基线）：
+// 覆盖现状（P4 后）：
 //   - claude：skills + 子项禁用（GetPluginDetail 已把 plugin-subitems.json
-//     合并进 detail.SubItems，一次扫描同时取两者）；
-//   - codex：skills 可取；子项级禁用未支持（服务层为兼容占位）→ 空；
-//   - opencode：skills 可取（ResourceInfo 无描述字段）；子项禁用 → 空；
-//   - pi：包资源里 type=skill 的条目；子项禁用 → 空；
-//   - omp：ompplugin 无 skills 扫描能力 → 暂不提供 provider（P4 补）。
+//     合并进 detail.SubItems）；插件级 Enabled 不映射（claude settings
+//     enabledPlugins 缺省语义不确定，避免误标，交内建 TTL/刷新）；
+//   - codex：skills + 插件级禁用映射（config.toml enabled=false → 全部
+//     skill 标记停用）；子项级禁用无存储（CLI/配置均无该机制，探测证据
+//     见 P4 报告）→ 空；
+//   - opencode：skills 可取（ResourceInfo 无描述字段）；无子项/插件级启停
+//     机制（opencode.json plugin 数组仅成员语义，1.19.3 无 enable 字段）→ 空；
+//   - pi：skills + skill 级禁用（packages 条目 skills[] 过滤语义评估）+
+//     包级禁用（!**×4 标记 → 全部标记停用）；
+//   - omp：skills（npm 实体路径扫描；marketplace 回退 installed_plugins.json）
+//   - 插件级禁用映射（omp plugin disable → 全部标记停用）；无 skill 级机制。
 func (a *App) buildSharedSkillProviders() []sharedext.PluginSkillsProvider {
 	providers := make([]sharedext.PluginSkillsProvider, 0, 16)
 	providers = append(providers, a.sharedSkillProvidersClaude()...)
 	providers = append(providers, a.sharedSkillProvidersCodex()...)
 	providers = append(providers, a.sharedSkillProvidersOpenCode()...)
 	providers = append(providers, a.sharedSkillProvidersPi()...)
+	providers = append(providers, a.sharedSkillProvidersOmp()...)
 	return providers
 }
 
@@ -7093,18 +7110,27 @@ func (a *App) sharedSkillProvidersCodex() []sharedext.PluginSkillsProvider {
 }
 
 // codexPluginSkillsProvider 把 Codex 插件详情映射为聚合 provider（纯函数）。
-// Codex 子项级禁用未支持（服务层 SetPluginSubItemEnabled 为兼容占位），
-// SubItemsDisabled 暂空（P4）。
+// Codex 无子项级禁用机制（SetPluginSubItemEnabled 为兼容占位，config.toml
+// 仅插件级 enabled）——子项禁用表恒空；插件级禁用（Enabled=false）映射为
+// 全部 skill 停用（插件不加载，其 skill 均不可用）。
 func codexPluginSkillsProvider(installed codexplugin.CodexPlugin, detail *codexplugin.CodexPluginDetail) sharedext.PluginSkillsProvider {
 	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
 	for _, sk := range detail.Skills {
 		skills = append(skills, sharedext.PluginSkill{Name: sk.Name, Description: sk.Description})
 	}
+	var disabled map[string]bool
+	if !installed.Enabled {
+		disabled = make(map[string]bool, len(skills))
+		for _, sk := range skills {
+			disabled["skill/"+sk.Name] = true
+		}
+	}
 	return sharedext.PluginSkillsProvider{
-		Engine:     sharedext.EngineCodex,
-		PluginID:   installed.ID,
-		PluginName: installed.Name,
-		Skills:     skills,
+		Engine:           sharedext.EngineCodex,
+		PluginID:         installed.ID,
+		PluginName:       installed.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
 	}
 }
 
@@ -7133,7 +7159,10 @@ func (a *App) sharedSkillProvidersOpenCode() []sharedext.PluginSkillsProvider {
 
 // openCodePluginSkillsProvider 把 OpenCode 插件详情映射为聚合 provider
 // （纯函数）。ResourceInfo 只有 Name/FilePath，无描述字段；PluginID 取
-// Plugin.ID（与 Spec 同值，P3 跳插件详情可直接用）。子项禁用暂空（P4）。
+// Plugin.ID（与 Spec 同值，P3 跳插件详情可直接用）。OpenCode 无子项级启停
+// 机制（P4 探测：opencode.json plugin 数组仅成员语义，1.19.3 CLI 无 enable
+// 子命令；新 schema 的 plugins "-id" 指令作用于插件 ID 而非 skill）——
+// SubItemsDisabled 恒空，前端 opengine 条目不提供单 skill 开关（不造假开关）。
 func openCodePluginSkillsProvider(installed opencodeplugin.Plugin, detail *opencodeplugin.PluginDetail) sharedext.PluginSkillsProvider {
 	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
 	for _, sk := range detail.Skills {
@@ -7172,19 +7201,78 @@ func (a *App) sharedSkillProvidersPi() []sharedext.PluginSkillsProvider {
 
 // piPackageSkillsProvider 把 pi 包详情映射为聚合 provider（纯函数）。
 // 资源类型字面量 "skill" 对应 piplugin.ResourceInfo.Type 的取值域
-// （extension/skill/prompt/theme；piplugin 的类型常量为包私有）。子项禁用
-// 暂空（P4）。
+// （extension/skill/prompt/theme；piplugin 的类型常量为包私有）。
+// 子项禁用（P4）：ResourceInfo.Disabled 按包条目 skills[] 过滤语义评估
+// （pi 原生 "-path" 精确排除 / 白名单未命中）；包级禁用（四键 !** 全排除
+// 标记，Enabled=false）→ 全部 skill 标记停用。
 func piPackageSkillsProvider(pkg piplugin.Package, detail *piplugin.PackageDetail) sharedext.PluginSkillsProvider {
 	skills := make([]sharedext.PluginSkill, 0)
+	var disabled map[string]bool
 	for _, res := range detail.Resources {
-		if res.Type == "skill" {
-			skills = append(skills, sharedext.PluginSkill{Name: res.Name})
+		if res.Type != "skill" {
+			continue
+		}
+		skills = append(skills, sharedext.PluginSkill{Name: res.Name})
+		if res.Disabled || !pkg.Enabled {
+			if disabled == nil {
+				disabled = make(map[string]bool)
+			}
+			disabled["skill/"+res.Name] = true
 		}
 	}
 	return sharedext.PluginSkillsProvider{
-		Engine:     sharedext.EnginePi,
-		PluginID:   pkg.ID,
-		PluginName: pkg.Name,
-		Skills:     skills,
+		Engine:           sharedext.EnginePi,
+		PluginID:         pkg.ID,
+		PluginName:       pkg.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
+	}
+}
+
+// sharedSkillProvidersOmp 收集 omp 已装插件的 skills（P4 补齐）。
+// 一次 CLI list 后对每个插件做本地目录扫描（InspectPlugin 不再 fork CLI），
+// 避免 N+1 次 CLI 调用；CLI 不可用时该引擎降级为空。
+func (a *App) sharedSkillProvidersOmp() []sharedext.PluginSkillsProvider {
+	plugins, err := a.OmpPlugins.ListPlugins()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取 omp 已装插件失败，聚合降级为空", err.Error())
+		return nil
+	}
+	out := make([]sharedext.PluginSkillsProvider, 0, len(plugins))
+	for _, p := range plugins {
+		detail := a.OmpPlugins.InspectPlugin(p)
+		if detail == nil {
+			continue
+		}
+		provider := ompPluginSkillsProvider(p, detail)
+		if len(provider.Skills) > 0 {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+// ompPluginSkillsProvider 把 omp 插件详情映射为聚合 provider（纯函数）。
+// omp 无 skill 级启停机制（P4 探测：omp plugin enable/disable 为插件级，
+// features 是包可选特性而非 skill）——子项禁用表恒空；插件级禁用
+// （Enabled=false，omp plugin disable）映射为全部 skill 停用。
+func ompPluginSkillsProvider(installed ompplugin.Plugin, detail *ompplugin.PluginDetail) sharedext.PluginSkillsProvider {
+	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
+	for _, sk := range detail.Skills {
+		skills = append(skills, sharedext.PluginSkill{Name: sk.Name})
+	}
+	var disabled map[string]bool
+	if !installed.Enabled {
+		disabled = make(map[string]bool, len(skills))
+		for _, sk := range skills {
+			disabled["skill/"+sk.Name] = true
+		}
+	}
+	return sharedext.PluginSkillsProvider{
+		Engine:           sharedext.EngineOmp,
+		PluginID:         installed.ID,
+		PluginName:       installed.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
 	}
 }

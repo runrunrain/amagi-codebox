@@ -42,7 +42,7 @@
 |---|---|---|---|---|---|
 | P1 | internal/sharedext 包：skill 导入(zip安全/文件夹)/删除/启停/复制分发+清单回收；MCP JSON 多格式导入/删除/启停/5 CLI 写入移除；聚合器(手动+插件来源标记,带缓存)；精简 TOML 保真编辑器；全单测 | luban | - | 单测绿+vet 绿；commit `4c16b6ab` | done ✅ |
 | P2 | app.go 接线+bind_list.go+文件/目录选择对话框；frontend api/sharedExt.ts+stores/sharedExt.ts；wails generate module | luban | P1 | 绑定可调；store 单测；commit `6eb9b37f` | done ✅ |
-| P3 | 前端「共用」主 tab：CommonSkillsPanel(来源徽章/启停/删除禁用/目标勾选/导入)、CommonMCPPanel(JSON导入预览/启停/删除/目标)；跳转插件详情；Vitest | luban | P2 | Vitest 绿+npm build 绿；commit | pending |
+| P3 | 前端「共用」主 tab：CommonSkillsPanel(来源徽章/启停/删除禁用/目标勾选/导入)、CommonMCPPanel(JSON导入预览/启停/删除/目标)；跳转插件详情；Vitest | luban | P2 | Vitest 绿+npm build 绿；commit `4a0f3234` | done ✅ |
 | P4 | 生命周期补齐：Codex 单插件更新；Pi 包启停+skill 级过滤启停；OpenCode/OMP skill 级启停(按 CLI 实际能力)；更新/卸载后聚合刷新联动 | luban | P2 (可与P3并行度受限于共享前端文件→串行) | 单测绿；commit | pending |
 | P5 | 集成验证(go vet/test、前端 build、e2e 语义核对)+diting full 审核阶段 diff+文档(docs/api.md, docs/user/plugins.md)+版本 bump 1.3.145 | Leader+diting | P1-P4 | 审核通过/修复闭环；commit | pending |
 | P6 | 合并 master→推送→tag v1.3.145→GitHub Release 构建确认 | Leader | P5 | 远端 Release 发布 | pending |
@@ -61,3 +61,4 @@
 - 2026-10-14 创建。master 实为主分支（用户口中"main"），tag 线 v1.3.144 领先 wails.json 1.3.118，P5 统一 bump 至 1.3.145。P1 已派发（luban）。
 - P1 回流（commit 4c16b6ab）：4043 行/32 测试全绿，Leader 抽验 zip 穿越 4 形态+symlink+限额后接受。
 - P2 回流（commit 6eb9b37f）：17 门面+绑定+api/store；omp provider 缺口如实标注归 P4；wailsjs 陈旧欠账一并刷新（已审阅为已存在方法的绑定补齐）；amagi-task/ 入 .gitignore。
+- P3 回流（commit 4a0f3234）：4 组件+3 composable+1 model，27 新用例；plugin 条目 canDelete=false+提示文案在 model 层验证；全量 369 用例绿、build 绿。

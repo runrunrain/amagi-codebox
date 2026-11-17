@@ -30,6 +30,14 @@ export function ResolvedEntityVersion(arg1) {
   return window['go']['piplugin']['Service']['ResolvedEntityVersion'](arg1);
 }
 
+export function SetPackageEnabled(arg1, arg2) {
+  return window['go']['piplugin']['Service']['SetPackageEnabled'](arg1, arg2);
+}
+
+export function SetPackageSkillEnabled(arg1, arg2, arg3) {
+  return window['go']['piplugin']['Service']['SetPackageSkillEnabled'](arg1, arg2, arg3);
+}
+
 export function SwitchPackageSource(arg1, arg2) {
   return window['go']['piplugin']['Service']['SwitchPackageSource'](arg1, arg2);
 }

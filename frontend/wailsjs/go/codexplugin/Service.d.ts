@@ -24,4 +24,6 @@ export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4
 
 export function UninstallPlugin(arg1:codexplugin.PluginSelector):Promise<codexplugin.CommandResult>;
 
+export function UpdatePlugin(arg1:codexplugin.PluginSelector):Promise<codexplugin.CommandResult>;
+
 export function UpgradeMarketplace(arg1:string):Promise<codexplugin.CommandResult>;

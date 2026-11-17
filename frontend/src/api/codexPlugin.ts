@@ -12,6 +12,7 @@ import {
   ListPlugins,
   InstallPlugin,
   UninstallPlugin,
+  UpdatePlugin,
   SetPluginEnabled,
   GetPluginDetails,
   ListAvailablePlugins,
@@ -78,6 +79,14 @@ export function installCodexPlugin(selector: PluginSelectorType): Promise<Comman
  */
 export function uninstallCodexPlugin(selector: PluginSelectorType): Promise<CommandResultType> {
   return callApi('[api.codexPlugin.uninstallCodexPlugin]', () => UninstallPlugin(selector));
+}
+
+/**
+ * Update a single plugin（P4）：市场刷新 + 卸载重装拉取最新版，并恢复原启用状态。
+ * 后端实现见 internal/codexplugin service.UpdatePlugin（codex CLI 无原生单插件 update）。
+ */
+export function updateCodexPlugin(selector: PluginSelectorType): Promise<CommandResultType> {
+  return callApi('[api.codexPlugin.updateCodexPlugin]', () => UpdatePlugin(selector));
 }
 
 /**
