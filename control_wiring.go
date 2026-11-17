@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"time"
 
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
@@ -29,6 +31,42 @@ import (
 // the gated auto-command (bootstrap) write (M-005). Mirrors the legacy PTY
 // service's 1s shell-init wait.
 const desktopBootstrapDelay = 1000 * time.Millisecond
+
+// launch:progress 事件契约：WSL 冷启动数秒等待中的阶段提示。负载
+// {stage, message, appType}，stage 取下方稳定枚举，与前端
+// useSessionLaunch 的 LAUNCH_STAGE_TEXT 键一一对应（两端同步修改）。
+const (
+	launchProgressEvent          = "launch:progress"
+	launchProgressStagePreflight = "preflight"
+	launchProgressStageSupply    = "supply"
+	launchProgressStagePTY       = "pty"
+)
+
+// launchProgressEmitFn 是事件发射接缝（生产为带守卫的 wails EventsEmit；
+// 测试注入记录器断言发射点，镜像 wslDefaultDistroFn 的替换模式）。
+var launchProgressEmitFn = emitLaunchProgressEvent
+
+// emitLaunchProgressEvent best-effort 发射：Wails EventsEmit 对未携带
+// events 值的 ctx 会 log.Fatalf（vendor wails/v2/pkg/runtime getEvents），
+// 故仅当 ctx 为 Startup 注入的运行时 ctx（携带 "events" 值）时才发射——
+// 测试/非 Wails 环境（ctx 缺失或裸 context）自然降级为不发，绝不影响
+// 启动主流程。
+func emitLaunchProgressEvent(ctx context.Context, event string, data ...any) {
+	if ctx == nil || ctx.Value("events") == nil {
+		return
+	}
+	wailsRuntime.EventsEmit(ctx, event, data...)
+}
+
+// emitLaunchProgress 向前端发射一个 WSL 启动阶段进度事件（仅阶段提示，
+// 发射路径任何失败都不阻断启动）。appType 透传 spec.AppType（五引擎枚举）。
+func (a *App) emitLaunchProgress(stage, message, appType string) {
+	launchProgressEmitFn(a.ctx, launchProgressEvent, map[string]any{
+		"stage":   stage,
+		"message": message,
+		"appType": appType,
+	})
+}
 
 // appPTYRaw adapts pty.Service to the remote.PTYRawPort interface (raw bytes,
 // not base64). It is NEVER Wails-bound (design §4.1 C-01).
@@ -150,6 +188,9 @@ func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation
 	var preflight *platform.WSLLaunchPreflight
 	if spec.BootstrapMode == platform.BootstrapWSL {
 		preflightStart := time.Now()
+		// 阶段提示（best-effort）：冷启动探测前先让前端亮出「正在唤醒 WSL」，
+		// 数秒等待不再无反馈。
+		a.emitLaunchProgress(launchProgressStagePreflight, "WSL 预检开始：探测发行版与工作目录", spec.AppType)
 		pf, err := wslLaunchPreflightProbeFn(ctx, wslDefaultDistroFn(spec.Env.Variables), spec.WorkDir)
 		if err != nil {
 			return 0, err
@@ -157,6 +198,7 @@ func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation
 		preflight = &pf
 		spec.WorkDir = pf.ResolvedWorkDir
 		spec.WSLWorkDirPreflightResolved = true
+		a.emitLaunchProgress(launchProgressStagePreflight, "WSL 预检完成：发行版已就绪", spec.AppType)
 		if a.Log != nil {
 			a.Log.Info("session", "WSL 启动预检完成（一次探测取得身份与定谳目录）",
 				fmt.Sprintf("id=%s 耗时=%dms distro用户uid=%s 定谳目录=%s", sessionID, time.Since(preflightStart).Milliseconds(), pf.Identity.UID, pf.ResolvedWorkDir))
@@ -166,8 +208,12 @@ func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation
 	if err := runWSLSharedFilesForSpec(ctx, a.WSLSupply, spec, preflight); err != nil {
 		return 0, fmt.Errorf("WSL shared supply: %w", err)
 	}
-	if preflight != nil && a.Log != nil {
-		a.Log.Info("session", "WSL 供给闸门完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(gateStart).Milliseconds()))
+	if preflight != nil {
+		// 仅 WSL 启动发进度事件（非 WSL 无事件 → 前端维持现状文案）。
+		a.emitLaunchProgress(launchProgressStageSupply, "共享配置供给完成", spec.AppType)
+		if a.Log != nil {
+			a.Log.Info("session", "WSL 供给闸门完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(gateStart).Milliseconds()))
+		}
 	}
 	launchPermit, runPermit, obsPermit, err := a.control.BeginDesktopRun(ctx, contract.SessionID(sessionID))
 	if err != nil {
@@ -218,6 +264,9 @@ func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation
 	if err != nil {
 		abortHidden(err)
 		return 0, err
+	}
+	if preflight != nil {
+		a.emitLaunchProgress(launchProgressStagePTY, "PTY 已启动", spec.AppType)
 	}
 	if a.Log != nil {
 		a.Log.Info("session", "PTY 启动完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(ptyStart).Milliseconds()))
