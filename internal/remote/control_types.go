@@ -415,7 +415,6 @@ func (l *SharedDependencyLease) Promoted() bool {
 // input/resize/start. External code cannot construct it.
 type ShutdownCleanupPermit struct {
 	generation uint64
-	used       atomic.Bool
 }
 
 // ---------------------------------------------------------------------------
