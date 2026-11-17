@@ -456,3 +456,21 @@ func TestLaunchCodexSession_Terminal_DualFormatProvider_UsesUnifiedProviderKey(t
 
 	app.StopSession(sessionID)
 }
+
+func setTestUserHome(t *testing.T, home string) {
+	t.Helper()
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		key := key
+		oldValue, hadValue := os.LookupEnv(key)
+		if err := os.Setenv(key, home); err != nil {
+			t.Fatalf("set %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if hadValue {
+				_ = os.Setenv(key, oldValue)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+}

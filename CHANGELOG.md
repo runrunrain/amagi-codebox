@@ -16,7 +16,7 @@
 
 ### Notes
 
-- 已验证：go build/vet/golangci-lint（0 issues，含 --tests=false 复扫仅剩 8 项已豁免平台盲区）/gofmt 全空；受影响包与全量 Windows 测试失败集与清扫前基线逐族一致（Pairing/MigrationGate 翻转项经基线代码单跑复验为 Windows 预存文件锁/时序 flake 族）；macOS CI 全量为权威门。
+- 已验证：go build/vet/golangci-lint（0 issues，含 --tests=false 复扫仅剩 8 项已豁免平台盲区）/gofmt 全空；受影响包与全量 Windows 测试失败集与清扫前基线逐族一致（Pairing/MigrationGate 翻转项经基线代码单跑复验为 Windows 预存文件锁/时序 flake 族）；macOS CI 全量为权威门；setTestUserHome 因唯一消费者为 windows-only 测试文件在 darwin 编译集成 lint 孤儿，已随消费者归位（GOOS=darwin lint 预扫复核干净）。
 
 ## [1.3.140] - 2026-11-17
 

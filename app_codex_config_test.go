@@ -34,24 +34,6 @@ func TestIsCustomCodexOpenAIBaseURL(t *testing.T) {
 	}
 }
 
-func setTestUserHome(t *testing.T, home string) {
-	t.Helper()
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		key := key
-		oldValue, hadValue := os.LookupEnv(key)
-		if err := os.Setenv(key, home); err != nil {
-			t.Fatalf("set %s: %v", key, err)
-		}
-		t.Cleanup(func() {
-			if hadValue {
-				_ = os.Setenv(key, oldValue)
-			} else {
-				_ = os.Unsetenv(key)
-			}
-		})
-	}
-}
-
 // --- Codex global headroom openai_base_url marker block tests ---
 
 // TestRemoveCodexLegacyHeadroomMarkerConfig 验证启动善后链路（R4 §4.5）：
