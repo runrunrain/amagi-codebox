@@ -220,3 +220,110 @@ func TestSkillMissingFlag(t *testing.T) {
 		t.Fatal("Missing 条目启用应失败")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P5-Fix：M1 部分失败落盘 / M2 用户自建同名目录保护
+// ---------------------------------------------------------------------------
+
+// M1：多引擎部分失败（codex 基准根被文件占位、claude 成功）→ 返回聚合
+// 错误但 registry 已记录成功引擎；后续禁用能把已写入目标回收干净
+//（diting D5 场景不复现）。
+func TestSkillPartialDeployRecordsSuccess(t *testing.T) {
+	base := t.TempDir()
+	env := newTestService(t)
+	// codex 基准根改为已存在文件 → engineSkillsDir 的 MkdirAll 失败。
+	blocker := filepath.Join(base, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.svc.SetEngineBaseDir(EngineCodex, blocker)
+
+	name := importOne(t, env, "partial")
+	if err := env.svc.SetSharedSkillTargets(name, []Engine{EngineClaude, EngineCodex}); err != nil {
+		t.Fatal(err)
+	}
+
+	enableErr := env.svc.SetSharedSkillEnabled(name, true)
+	if enableErr == nil {
+		t.Fatal("预期 codex 部署失败返回聚合错误")
+	}
+	claudeTarget := filepath.Join(env.roots[EngineClaude], ".claude", "skills", name, "SKILL.md")
+	if _, err := os.Stat(claudeTarget); err != nil {
+		t.Fatalf("claude 目标应有 skill 文件（磁盘实况）: %v", err)
+	}
+	skills, err := env.svc.ListSharedSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || !skills[0].Enabled || !reflect.DeepEqual([]Engine(skills[0].Deployed), []Engine{EngineClaude}) {
+		t.Fatalf("registry 应记录 enabled=true deployed=[claude]: %+v", skills)
+	}
+
+	// 禁用：按 Deployed 回收 claude（不再永久残留）。
+	if err := env.svc.SetSharedSkillEnabled(name, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(claudeTarget); !os.IsNotExist(err) {
+		t.Fatalf("禁用后 claude 目标应被回收: %v", err)
+	}
+}
+
+// M2：目标存在同名目录且该引擎不在 Deployed 清单（用户自建）→ 拒绝部署
+// 且目录原样；CodeBox 自己部署过的（Deployed 含该引擎）→ 重部署覆盖成功。
+func TestSkillDeployUserDirConflictRefused(t *testing.T) {
+	env := newTestService(t)
+	name := importOne(t, env, "clashy")
+	if err := env.svc.SetSharedSkillTargets(name, []Engine{EnginePi}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 用户自建同名目录。
+	piTarget := env.skillsTarget(EnginePi, name)
+	if err := os.MkdirAll(piTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userMD := "用户自建内容，绝不能被删\n"
+	if err := os.WriteFile(filepath.Join(piTarget, "SKILL.md"), []byte(userMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 启用：pi 目标冲突 → 报错且用户目录原样。
+	enableErr := env.svc.SetSharedSkillEnabled(name, true)
+	if enableErr == nil || !strings.Contains(enableErr.Error(), "非 CodeBox 管理目录") {
+		t.Fatalf("用户自建同名目录应拒绝部署: %v", enableErr)
+	}
+	if got := mustReadFile(t, filepath.Join(piTarget, "SKILL.md")); got != userMD {
+		t.Fatalf("用户目录内容应原样保留:\n%s", got)
+	}
+	skills, err := env.svc.ListSharedSkills()
+	if err != nil || len(skills) != 1 {
+		t.Fatal(err)
+	}
+	if len(skills[0].Deployed) != 0 {
+		t.Fatalf("冲突引擎不应进 Deployed: %+v", skills[0].Deployed)
+	}
+
+	// CodeBox 自己部署过的引擎（Deployed 含该引擎）→ 重部署覆盖成功。
+	if err := env.svc.SetSharedSkillTargets(name, []Engine{EngineOmp}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.SetSharedSkillEnabled(name, true); err != nil {
+		t.Fatalf("omp 无冲突应部署成功: %v", err)
+	}
+	ompTarget := env.skillsTarget(EngineOmp, name)
+	// 修改仓库内容后重复启用（Deployed 含 omp）→ 覆盖为新内容。
+	repoMD := filepath.Join(env.svc.skillsRepoDir(), name, "SKILL.md")
+	if err := os.WriteFile(repoMD, []byte("---\nname: clashy\ndescription: d\n---\n\n第二版正文\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.SetSharedSkillEnabled(name, true); err != nil {
+		t.Fatalf("重部署自己管理的目录应覆盖成功: %v", err)
+	}
+	if got := mustReadFile(t, filepath.Join(ompTarget, "SKILL.md")); !contains(got, "第二版正文") {
+		t.Fatalf("重部署应覆盖为新内容: %q", got)
+	}
+	// 用户自建目录在整过程中仍原样。
+	if got := mustReadFile(t, filepath.Join(piTarget, "SKILL.md")); got != userMD {
+		t.Fatalf("用户目录内容应始终原样:\n%s", got)
+	}
+}

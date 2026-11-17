@@ -5,8 +5,6 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 // ImportMCPServers 双桩用于断言 api 不走「丢弃 skipped」的服务面绑定。
 const svc = vi.hoisted(() => ({
   ListSharedSkills: vi.fn(),
-  ImportSkillFromZip: vi.fn(),
-  ImportSkillFromDir: vi.fn(),
   DeleteSharedSkill: vi.fn(),
   SetSharedSkillEnabled: vi.fn(),
   SetSharedSkillTargets: vi.fn(),
@@ -14,14 +12,18 @@ const svc = vi.hoisted(() => ({
   DeleteSharedMCPServer: vi.fn(),
   SetSharedMCPServerEnabled: vi.fn(),
   SetSharedMCPServerTargets: vi.fn(),
-  // 陷阱面：Wails 生成器对该方法只保留第一个返回值（skipped 被丢弃），
-  // api 层禁止使用；此处打桩仅为断言零调用。
+  // 陷阱面：Wails 生成器对多返回值方法只保留第一个返回值（部分成功信息
+  // 被丢弃），api 层禁止使用；此处打桩仅为断言零调用。
   ImportMCPServers: vi.fn(),
+  ImportSkillFromZip: vi.fn(),
+  ImportSkillFromDir: vi.fn(),
 }))
 
 const app = vi.hoisted(() => ({
   PreviewSharedMCPJSON: vi.fn(),
   ImportSharedMCPServers: vi.fn(),
+  ImportSharedSkillFromZip: vi.fn(),
+  ImportSharedSkillFromDir: vi.fn(),
   GetAllSharedSkillsAggregated: vi.fn(),
   PickSharedSkillZipFile: vi.fn(),
   PickSharedSkillDir: vi.fn(),
@@ -67,14 +69,21 @@ describe('api/sharedExt 绑定路由与透传', () => {
     expect(svc.SetSharedSkillTargets).toHaveBeenCalledWith('a', ['claude', 'pi'])
   })
 
-  it('skill 导入 zip/dir 透传路径并归一化返回', async () => {
-    svc.ImportSkillFromZip.mockResolvedValueOnce([skill('z')])
-    await expect(api.importSkillFromZip('/tmp/z.zip')).resolves.toHaveLength(1)
-    expect(svc.ImportSkillFromZip).toHaveBeenCalledWith('/tmp/z.zip')
+  it('skill 导入 zip/dir 走 App 信封（部分成功 skipped 透出），绝不调用丢弃部分的 Service 绑定', async () => {
+    app.ImportSharedSkillFromZip.mockResolvedValueOnce({ imported: [skill('z')], skipped: ['dup（同名已存在，跳过）'] })
+    const result = await api.importSkillFromZip('/tmp/z.zip')
+    expect(app.ImportSharedSkillFromZip).toHaveBeenCalledWith('/tmp/z.zip')
+    expect(result.imported).toHaveLength(1)
+    expect(result.skipped[0]).toContain('dup')
+    expect(svc.ImportSkillFromZip).not.toHaveBeenCalled()
 
-    svc.ImportSkillFromDir.mockResolvedValueOnce(null)
-    await expect(api.importSkillFromDir('/tmp/dir')).resolves.toEqual([])
-    expect(svc.ImportSkillFromDir).toHaveBeenCalledWith('/tmp/dir')
+    app.ImportSharedSkillFromDir.mockResolvedValueOnce({ imported: [skill('d')], skipped: [] })
+    await expect(api.importSkillFromDir('/tmp/dir')).resolves.toEqual({ imported: [skill('d')], skipped: [] })
+    expect(svc.ImportSkillFromDir).not.toHaveBeenCalled()
+
+    // 绑定返回 null 时归一化为空信封，不抛错
+    app.ImportSharedSkillFromZip.mockResolvedValueOnce(null)
+    await expect(api.importSkillFromZip('/x.zip')).resolves.toEqual({ imported: [], skipped: [] })
   })
 
   it('MCP 读/删/启停/目标走 Service；预览与导入走 App 绑定', async () => {

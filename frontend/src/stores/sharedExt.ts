@@ -15,6 +15,7 @@ import * as sharedExtApi from '../api/sharedExt';
 import type {
   AggregatedSkill,
   ImportSharedMCPResult,
+  ImportSharedSkillResult,
   SharedExtEngine,
   SharedMCPServer,
   SharedSkill,
@@ -83,11 +84,15 @@ export const useSharedExtStore = defineStore('sharedExt', () => {
   }
 
   // ----- 公共 skill 变更 -----
-  async function importSkillFromZip(path: string): Promise<SharedSkill[]> {
+  /** 导入（zip/文件夹）：部分成功（skipped 非空）不抛错，返回信封供 UI
+   * 双 toast（M3，语义同 importMCPServers）；imported>0 才刷新清单。 */
+  async function importSkillFromZip(path: string): Promise<ImportSharedSkillResult> {
     try {
-      const imported = await sharedExtApi.importSkillFromZip(path);
-      await loadSkills();
-      return imported;
+      const result = await sharedExtApi.importSkillFromZip(path);
+      if (result.imported.length > 0) {
+        await loadSkills();
+      }
+      return result;
     } catch (e) {
       console.error('[sharedExt.store.importSkillFromZip]', e);
       setError(e);
@@ -95,11 +100,13 @@ export const useSharedExtStore = defineStore('sharedExt', () => {
     }
   }
 
-  async function importSkillFromDir(path: string): Promise<SharedSkill[]> {
+  async function importSkillFromDir(path: string): Promise<ImportSharedSkillResult> {
     try {
-      const imported = await sharedExtApi.importSkillFromDir(path);
-      await loadSkills();
-      return imported;
+      const result = await sharedExtApi.importSkillFromDir(path);
+      if (result.imported.length > 0) {
+        await loadSkills();
+      }
+      return result;
     } catch (e) {
       console.error('[sharedExt.store.importSkillFromDir]', e);
       setError(e);

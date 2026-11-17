@@ -1,12 +1,29 @@
 package sharedext
 
 // aggregate_test.go — 覆盖清单 11：manual+plugin 合并、来源标记、禁用
-// subitem 反映、TTL 缓存与 force、写操作失效缓存、排序。
+// subitem 反映、TTL 缓存与 force、写操作失效缓存、排序。P5 后：providers
+// 以惰性构建器传入（m2），缓存命中时构建器不执行。
 
 import (
 	"testing"
 	"time"
 )
+
+// providersOf 把静态 providers 包装为惰性构建器（供 GetAggregatedSkills
+// 的 m2 签名使用；调用计数场景用 countableProviders）。
+func providersOf(list ...PluginSkillsProvider) func() []PluginSkillsProvider {
+	return func() []PluginSkillsProvider { return list }
+}
+
+// countableProviders 同 providersOf，额外返回构建器调用次数指针（m2：
+// 验证缓存命中不组装 providers）。
+func countableProviders(list ...PluginSkillsProvider) (func() []PluginSkillsProvider, *int) {
+	calls := 0
+	return func() []PluginSkillsProvider {
+		calls++
+		return list
+	}, &calls
+}
 
 // 覆盖 11a：manual + plugin 合并、来源标记、Managed/Enabled 语义。
 func TestAggregatedSkillsMergeAndMarkers(t *testing.T) {
@@ -29,7 +46,7 @@ func TestAggregatedSkillsMergeAndMarkers(t *testing.T) {
 		},
 	}
 
-	agg, err := env.svc.GetAggregatedSkills(providers, true)
+	agg, err := env.svc.GetAggregatedSkills(providersOf(providers...), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +83,7 @@ func TestAggregatedSkillsManualPriority(t *testing.T) {
 	providers := []PluginSkillsProvider{
 		{Engine: EnginePi, PluginID: "p1", Skills: []PluginSkill{{Name: "clash", Description: "插件版"}}},
 	}
-	agg, err := env.svc.GetAggregatedSkills(providers, true)
+	agg, err := env.svc.GetAggregatedSkills(providersOf(providers...), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,33 +97,50 @@ func TestAggregatedSkillsCache(t *testing.T) {
 	env := newTestService(t)
 
 	// 空聚合建立缓存。
-	agg, err := env.svc.GetAggregatedSkills(nil, false)
+	buildCalls := 0
+	emptyBuild := func() []PluginSkillsProvider {
+		buildCalls++
+		return nil
+	}
+	agg, err := env.svc.GetAggregatedSkills(emptyBuild, false)
 	if err != nil || len(agg) != 0 {
 		t.Fatal(err)
 	}
 	if env.svc.aggCache == nil {
 		t.Fatal("应已建立缓存")
 	}
+	if buildCalls != 1 {
+		t.Fatalf("未命中重建应调用构建器，实际 %d 次", buildCalls)
+	}
 
-	// 非 force：providers 变化不触发重建（30s TTL 内读缓存）。
+	// 非 force：providers 变化不触发重建（30s TTL 内读缓存），且构建器
+	// 不被调用（m2：缓存命中不组装 providers）。
 	providers := []PluginSkillsProvider{
 		{Engine: EngineClaude, PluginID: "p", Skills: []PluginSkill{{Name: "cached-out"}}},
 	}
-	agg, err = env.svc.GetAggregatedSkills(providers, false)
+	build, calls := countableProviders(providers...)
+	agg, err = env.svc.GetAggregatedSkills(build, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(agg) != 0 {
 		t.Fatalf("TTL 内应返回缓存结果: %+v", agg)
 	}
+	if *calls != 0 {
+		t.Fatalf("m2：缓存命中不应组装 providers，构建器被调 %d 次", *calls)
+	}
 
-	// force：旁路缓存。
-	agg, err = env.svc.GetAggregatedSkills(providers, true)
+	// force：旁路缓存（构建器执行）。
+	build, calls = countableProviders(providers...)
+	agg, err = env.svc.GetAggregatedSkills(build, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(agg) != 1 || agg[0].Name != "cached-out" {
 		t.Fatalf("force 应重建: %+v", agg)
+	}
+	if *calls != 1 {
+		t.Fatalf("force 重建应调用构建器，实际 %d 次", *calls)
 	}
 
 	// TTL 过期：手动老化缓存后非 force 重建。

@@ -272,3 +272,68 @@ func TestOmpPluginSkillsProvider(t *testing.T) {
 		t.Fatalf("disabled plugin should mark all skills: %+v", p.SubItemsDisabled)
 	}
 }
+
+// ============================================================================
+// P5-Fix M3：App 层 skill 导入单值信封（部分成功不退化为失败）
+// ============================================================================
+
+func TestAppImportSharedSkillEnvelope(t *testing.T) {
+	a := newSharedExtTestApp(t)
+
+	// 准备导入源：两个 skill 目录（alpha + beta）。
+	src := t.TempDir()
+	alphaMD := "---\nname: alpha\ndescription: A\n---\n\nalpha 正文\n"
+	betaMD := "---\nname: beta\ndescription: B\n---\n\nbeta 正文\n"
+	for name, md := range map[string]string{"alpha": alphaMD, "beta": betaMD} {
+		dir := filepath.Join(src, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 全部成功：信封 Imported=2、Skipped 空、无 error。
+	first, err := a.ImportSharedSkillFromDir(src)
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if len(first.Imported) != 2 || len(first.Skipped) != 0 {
+		t.Fatalf("envelope = %+v", first)
+	}
+
+	// 部分成功（beta 同名跳过 + gamma 新导入）：不返回 error，Skipped 透出明细。
+	gammaDir := filepath.Join(src, "gamma", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(gammaDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gammaDir, []byte("---\nname: gamma\ndescription: G\n---\n\ngamma 正文\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.ImportSharedSkillFromDir(src)
+	if err != nil {
+		t.Fatalf("部分成功不应报错: %v", err)
+	}
+	if len(second.Imported) != 1 || second.Imported[0].Name != "gamma" {
+		t.Fatalf("imported = %+v", second.Imported)
+	}
+	if len(second.Skipped) != 1 || !strings.Contains(second.Skipped[0], "beta") {
+		t.Fatalf("skipped = %+v, want beta 同名跳过明细", second.Skipped)
+	}
+
+	// 全失败（目录无 SKILL.md）：error 原样透传。
+	empty := t.TempDir()
+	if _, err := a.ImportSharedSkillFromDir(empty); err == nil {
+		t.Fatal("全失败应返回 error")
+	}
+	if _, err := a.ImportSharedSkillFromZip(filepath.Join(empty, "absent.zip")); err == nil {
+		t.Fatal("zip 打不开应返回 error")
+	}
+
+	// 落库实况：alpha/beta/gamma 三条入库。
+	skills := a.GetSharedSkills()
+	if len(skills) != 3 {
+		t.Fatalf("GetSharedSkills len = %d, want 3", len(skills))
+	}
+}

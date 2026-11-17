@@ -6,8 +6,13 @@ package sharedext
 // 替换，只解析受管作用域 mcp_servers.* 的表头与作用域判定；段范围之外的
 // 一切字节（非目标节、注释、空行、行尾风格 CRLF/LF）逐字节保留。编辑 =
 // 整段替换/删除受管行区间、文末追加新段。受管作用域内出现不支持形态
-//（数组表头、裸表、点引号段名、根级点键内联表、日期时间值）→ 返回错误
-// 不修改原文件。
+//（数组表头、裸表、点引号段名、根级点键内联表、日期时间值、未闭合的
+// 多行字符串）→ 返回错误不修改原文件。
+//
+// C2：行扫描器跟踪多行字符串（"""/'''）状态——处于打开状态时其内部
+// 行不是表头/键值（防字符串内嵌 [mcp_servers.x] 幻影段边界写坏文件）。
+// C3：非 bare key 段名（中文/空格等）以基本字符串引号包裹写出
+//（[mcp_servers."名字"]），读侧 splitTOMLKeyPath 的引号解析天然互通。
 
 import (
 	"errors"
@@ -48,6 +53,9 @@ func parseTOMLDoc(data []byte) (*tomlDoc, error) {
 	var curSection string // 当前正在累积的受管段（"" = 非受管上下文）
 	var curEnd int        // 当前段范围的最新结束行（不含）
 	curStart := 0         // 当前段范围的起始行
+	// C2：多行字符串状态。inML 为打开中的定界符（'"' 或 '\''）；处于打开
+	// 状态的行是字符串内容，不是表头/键值。
+	inML := byte(0)
 
 	flush := func(end int) {
 		if curSection != "" {
@@ -57,7 +65,22 @@ func parseTOMLDoc(data []byte) (*tomlDoc, error) {
 	}
 
 	for i := 0; i < len(doc.lines); i++ {
-		line := strings.TrimSpace(stripLineEnd(doc.lines[i]))
+		raw := stripLineEnd(doc.lines[i])
+		line := strings.TrimSpace(raw)
+
+		startedInML := inML != 0
+		inML = scanTOMLStringState(raw, inML)
+
+		if startedInML {
+			// 本行以多行字符串内容开始：整行按字符串内容处理（闭合定界符
+			// 之后的同行残余也不可能是新表头——TOML 值之后不允许跟表头）。
+			// 受管段内的多行字符串行仍属于段范围。
+			if curSection != "" {
+				curEnd = i + 1
+			}
+			continue
+		}
+
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -107,6 +130,11 @@ func parseTOMLDoc(data []byte) (*tomlDoc, error) {
 		}
 	}
 	flush(curEnd)
+	if inML != 0 {
+		// C2：文件存在未闭合的多行字符串——TOML 本身非法，且行级编辑器
+		// 无法可靠判定段边界，拒绝编辑不动文件。
+		return nil, fmt.Errorf("%w: 文件存在未闭合的多行字符串", errTomlUnsupported)
+	}
 
 	// 段区间向后吸收段内尾随空行/注释（整体替换/删除时一并处理，
 	// 避免残留孤立分隔；与 wslsupply 同款取舍）。
@@ -142,6 +170,87 @@ func (d *tomlDoc) addRange(key string, start, end int) {
 	d.sectionRanges[key] = append(ranges, [2]int{start, end})
 }
 
+// scanTOMLStringState 扫描一行的字符串状态机，返回行末仍处于打开状态的
+// 多行字符串定界符（'"' 或 '\''；0 = 行末不在多行字符串内）。inML 是行首
+// 携带的状态。规则（TOML 多行字符串的行级简化）：
+//   - 多行定界符支持「同行闭合」（闭合后继续扫描同行剩余内容）与
+//     「跨行至终结行」（未闭合则状态延续到下一行）；
+//   - 闭合处的定界符 run 取末尾 3 个引号（run 前部 1-2 个属于字符串内容）；
+//   - 基本串（"""）内转义对 \\" 整体跳过；字面串（'''）无转义；
+//   - 单行字符串与注释中的引号不影响多行状态；未闭合的单行串（畸形行）
+//     状态不跨行。
+func scanTOMLStringState(line string, inML byte) byte {
+	i, n := 0, len(line)
+	for i < n {
+		if inML != 0 {
+			if inML == '"' && line[i] == '\\' && i+1 < n {
+				i += 2 // 基本串转义对整体跳过，不参与定界符 run 计数
+				continue
+			}
+			if line[i] != inML {
+				i++
+				continue
+			}
+			j := i
+			for j < n && line[j] == inML {
+				j++
+			}
+			if j-i >= 3 {
+				inML = 0 // run 末尾 3 个定界符字符 = 闭合
+			}
+			i = j
+			continue
+		}
+		switch c := line[i]; c {
+		case '"':
+			if strings.HasPrefix(line[i:], `"""`) {
+				inML = '"'
+				i += 3
+				continue
+			}
+			end := scanSingleLineBasic(line, i)
+			if end < 0 {
+				return 0
+			}
+			i = end
+		case '\'':
+			if strings.HasPrefix(line[i:], `'''`) {
+				inML = '\''
+				i += 3
+				continue
+			}
+			j := strings.IndexByte(line[i+1:], '\'')
+			if j < 0 {
+				return 0
+			}
+			i += j + 2
+		case '#':
+			return 0 // 注释：行剩余部分不含字符串定界符
+		default:
+			i++
+		}
+	}
+	return inML
+}
+
+// scanSingleLineBasic 返回从开引号 line[i] 起的单行基本串闭合引号后一位的
+// 下标；未闭合返回 -1（尊重反斜杠转义）。
+func scanSingleLineBasic(line string, i int) int {
+	n := len(line)
+	j := i + 1
+	for j < n {
+		switch line[j] {
+		case '\\':
+			j += 2
+		case '"':
+			return j + 1
+		default:
+			j++
+		}
+	}
+	return -1
+}
+
 // ---------------------------------------------------------------------------
 // 编辑操作
 // ---------------------------------------------------------------------------
@@ -157,7 +266,8 @@ func SetMCPServerSection(data []byte, name string, def map[string]any) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	block, err := serializeTOMLSection("mcp_servers."+name, def, doc.crlf)
+	// C3：非 bare key 段名以基本字符串引号包裹写入（[mcp_servers."名字"]）。
+	block, err := serializeTOMLSection("mcp_servers."+tomlKeyString(name), def, doc.crlf)
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +368,8 @@ func tomlSectionValue(data []byte, name string) (map[string]any, bool) {
 }
 
 // validateTOMLSectionName 校验 server 名可安全用作 TOML 段名。
+// 非法集合之外的非 bare key（中文/空格/=/@ 等）合法——写入侧由
+// tomlKeyString 引号包裹（C3）。
 func validateTOMLSectionName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("MCP server 名为空")
@@ -265,7 +377,36 @@ func validateTOMLSectionName(name string) error {
 	if strings.ContainsAny(name, ".\"'[]#\n\t") {
 		return fmt.Errorf("MCP server 名 %q 含 TOML 段名不支持的字符（./引号/括号等）", name)
 	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("MCP server 名 %q 含控制字符", name)
+		}
+	}
 	return nil
+}
+
+// isTOMLBareKey 报告 s 是否为 TOML bare key（[A-Za-z0-9_-]+）。
+func isTOMLBareKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// tomlKeyString 渲染键段：bare key 原样，否则按 TOML 基本字符串引号包裹
+//（含转义）——中文/空格等名字写出合法 TOML 形态（C3）。
+func tomlKeyString(k string) string {
+	if isTOMLBareKey(k) {
+		return k
+	}
+	return quoteTOMLBasicString(k)
 }
 
 // appendBlock 文末追加段（前置空行分隔；沿用主行尾风格；确保末行有行尾符）。
@@ -711,8 +852,10 @@ func splitKeepEnds(s string) []string {
 // 序列化（确定性输出：command/args 首序 → 字典序标量 → 字典序嵌套子表）
 // ---------------------------------------------------------------------------
 
-// serializeTOMLSection 把段键（"mcp_servers.foo"）+ entry 序列化为行块。
-// 嵌套 map（如 env）作为子表段输出；嵌套 map 内再嵌 map 不支持。
+// serializeTOMLSection 把段键（已渲染的 "mcp_servers.<键段>"，非 bare key
+// 段由调用方 tomlKeyString 引号包裹）+ entry 序列化为行块。嵌套 map（如
+// env）作为子表段输出；嵌套 map 内再嵌 map 不支持。键名同样经
+// tomlKeyString 渲染（非法 bare key 的 env 键写出引号形态）。
 func serializeTOMLSection(key string, entry map[string]any, crlf bool) ([]string, error) {
 	nl := "\n"
 	if crlf {
@@ -730,7 +873,7 @@ func serializeTOMLSection(key string, entry map[string]any, crlf bool) ([]string
 			if err != nil {
 				return nil, fmt.Errorf("键 %q: %w", k, err)
 			}
-			emit("%s = %s", k, vs)
+			emit("%s = %s", tomlKeyString(k), vs)
 			done[k] = true
 		}
 	}
@@ -751,13 +894,13 @@ func serializeTOMLSection(key string, entry map[string]any, crlf bool) ([]string
 		if err != nil {
 			return nil, fmt.Errorf("键 %q: %w", k, err)
 		}
-		emit("%s = %s", k, vs)
+		emit("%s = %s", tomlKeyString(k), vs)
 	}
 	sort.Strings(nested)
 	for _, k := range nested {
 		child, _ := entry[k].(map[string]any)
 		emit("")
-		emit("[%s.%s]", key, k)
+		emit("[%s.%s]", key, tomlKeyString(k))
 		keys := make([]string, 0, len(child))
 		for ck := range child {
 			keys = append(keys, ck)
@@ -771,7 +914,7 @@ func serializeTOMLSection(key string, entry map[string]any, crlf bool) ([]string
 			if err != nil {
 				return nil, fmt.Errorf("键 %q.%q: %w", k, ck, err)
 			}
-			emit("%s = %s", ck, vs)
+			emit("%s = %s", tomlKeyString(ck), vs)
 		}
 	}
 	return out, nil
@@ -836,6 +979,12 @@ func quoteTOMLBasicString(s string) string {
 		case '\r':
 			out.WriteString(`\r`)
 		default:
+			// 其余控制字符（\f/\b/\v/\x7f 等）按 \uXXXX 转义——TOML 基本
+			// 字符串内裸控制字符非法（C3 引号包裹的前提）。
+			if r < 0x20 || r == 0x7f {
+				out.WriteString(fmt.Sprintf(`\u%04X`, r))
+				continue
+			}
 			out.WriteRune(r)
 		}
 	}

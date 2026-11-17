@@ -250,9 +250,9 @@ export function ImportEnvVarsFromFile():Promise<void>;
 
 export function ImportSharedMCPServers(arg1:Array<sharedext.SharedMCPServer>):Promise<main.ImportSharedMCPResult>;
 
-export function ImportSharedSkillFromDir(arg1:string):Promise<Array<sharedext.SharedSkill>>;
+export function ImportSharedSkillFromDir(arg1:string):Promise<main.ImportSharedSkillResult>;
 
-export function ImportSharedSkillFromZip(arg1:string):Promise<Array<sharedext.SharedSkill>>;
+export function ImportSharedSkillFromZip(arg1:string):Promise<main.ImportSharedSkillResult>;
 
 export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 

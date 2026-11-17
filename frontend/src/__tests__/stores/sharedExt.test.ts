@@ -89,18 +89,26 @@ describe('stores/sharedExt（清单加载 / 变更刷新 / 部分成功语义）
     expect(fns.getSharedSkills).toHaveBeenCalledTimes(2)
   })
 
-  it('skill 导入 zip/dir 成功后刷新清单并返回导入结果', async () => {
+  it('skill 导入 zip/dir 返回信封：imported>0 刷新清单，全跳过（imported=0）不刷新', async () => {
     const store = useSharedExtStore()
     fns.getSharedSkills.mockResolvedValue([skill('z')])
-    fns.importSkillFromZip.mockResolvedValueOnce([skill('z')])
+    fns.importSkillFromZip.mockResolvedValueOnce({ imported: [skill('z')], skipped: ['dup（同名已存在，跳过）'] })
 
-    const imported = await store.importSkillFromZip('/tmp/z.zip')
-    expect(imported.map((s) => s.name)).toEqual(['z'])
+    const result = await store.importSkillFromZip('/tmp/z.zip')
+    expect(result.imported.map((s: { name: string }) => s.name)).toEqual(['z'])
+    expect(result.skipped[0]).toContain('dup')
+    expect(store.error).toBe('') // 部分成功不写全局 error
     expect(fns.getSharedSkills).toHaveBeenCalledTimes(1)
 
-    fns.importSkillFromDir.mockResolvedValueOnce([])
+    // imported=0（全跳过走信封）：服务端无变化，不刷新清单
+    fns.importSkillFromDir.mockResolvedValueOnce({ imported: [], skipped: [] })
     await store.importSkillFromDir('/tmp/d')
-    expect(fns.getSharedSkills).toHaveBeenCalledTimes(2)
+    expect(fns.getSharedSkills).toHaveBeenCalledTimes(1)
+
+    // 整体失败：写 error 并抛出
+    fns.importSkillFromZip.mockRejectedValueOnce(new Error('无 SKILL.md'))
+    await expect(store.importSkillFromZip('/bad')).rejects.toThrow('无 SKILL.md')
+    expect(store.error).toContain('无 SKILL.md')
   })
 
   it('importMCPServers 部分成功（skipped 非空）不抛错，返回结果并刷新清单', async () => {

@@ -58,7 +58,9 @@ func parseMCPObject(obj map[string]any) []SharedMCPServer {
 	for _, wrapper := range []string{"mcpServers", "mcp"} {
 		if inner, ok := obj[wrapper].(map[string]any); ok && len(inner) > 0 {
 			for name, def := range inner {
-				if d, ok := def.(map[string]any); ok {
+				// C3：含双引号/控制字符的名字不可入库（TOML/JSON 写入侧硬伤），
+				// 预览阶段直接丢弃。
+				if d, ok := def.(map[string]any); ok && validMCPName(name) {
 					out = append(out, makeParsedServer(name, d))
 				}
 			}
@@ -70,7 +72,7 @@ func parseMCPObject(obj map[string]any) []SharedMCPServer {
 	// 否则视为不识别（避免把任意 JSON 误当 server 列表）。
 	for name, def := range obj {
 		d, ok := def.(map[string]any)
-		if !ok {
+		if !ok || !validMCPName(name) {
 			continue
 		}
 		if _, hasCommand := d["command"]; !hasCommand {
@@ -93,6 +95,26 @@ func makeParsedServer(name string, def map[string]any) SharedMCPServer {
 	}
 }
 
+// validMCPName 判断 MCP server 名可入库（C3）：目录名安全（validName）且
+// 不含双引号与控制字符——这两类字符在 TOML/JSON 写入侧都是硬伤，在导入
+// 入口直接拒绝（预览阶段丢弃、ImportMCPServers 记 skipped）。含点/单引号
+// 等其他边界字符的名字可在 JSON 引擎使用，分发到 codex 时由
+// validateTOMLSectionName 给出明确错误（M1 保证部分失败可回收）。
+func validMCPName(name string) bool {
+	if !validName(name) {
+		return false
+	}
+	if strings.ContainsRune(name, '"') {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // ImportMCPServers 批量落库（Config 深拷贝防外泄引用）；同名已存在跳过并
 // 聚合到 skipped。
 func (s *Service) ImportMCPServers(servers []SharedMCPServer) (imported []SharedMCPServer, skipped []string, err error) {
@@ -109,7 +131,7 @@ func (s *Service) ImportMCPServers(servers []SharedMCPServer) (imported []Shared
 
 	for _, server := range servers {
 		name := strings.TrimSpace(server.Name)
-		if !validName(name) {
+		if !validMCPName(name) {
 			skipped = append(skipped, fmt.Sprintf("%s（名称非法）", server.Name))
 			continue
 		}
@@ -204,18 +226,24 @@ func (s *Service) SetSharedMCPServerEnabled(name string, enabled bool) error {
 			reg.MCP[name] = server
 			return s.saveRegistryLocked(reg)
 		}
-		if err := s.deployMCPLocked(&server, server.Targets); err != nil {
+		deployErr := s.deployMCPLocked(&server, server.Targets)
+		// M1：部分失败时已成功引擎的 Deployed 增量仍先落盘，再聚合返回
+		// 错误（防状态漂移；语义同 skills 侧 SetSharedSkillEnabled）。
+		server.Enabled = deployErr == nil || len(server.Deployed) > 0
+		reg.MCP[name] = server
+		if err := s.saveRegistryLocked(reg); err != nil {
 			return err
 		}
-		server.Enabled = true
-	} else {
-		if err := s.undeployMCPLocked(&server, server.Deployed); err != nil {
-			return err
-		}
-		server.Enabled = false
+		return deployErr
 	}
+	undeployErr := s.undeployMCPLocked(&server, server.Deployed)
+	// M1：部分回收失败也先落盘（已回收引擎移出 Deployed，失败者保留待重试）。
+	server.Enabled = false
 	reg.MCP[name] = server
-	return s.saveRegistryLocked(reg)
+	if err := s.saveRegistryLocked(reg); err != nil {
+		return err
+	}
+	return undeployErr
 }
 
 // SetSharedMCPServerTargets 更新 MCP server 的目标引擎并 diff 分发
@@ -252,16 +280,23 @@ func (s *Service) SetSharedMCPServerTargets(name string, targets []Engine) error
 				remove = append(remove, e)
 			}
 		}
+		var opErrs []error
 		if len(remove) > 0 {
 			if err := s.undeployMCPLocked(&server, remove); err != nil {
-				return err
+				opErrs = append(opErrs, err)
 			}
 		}
 		if len(add) > 0 {
 			if err := s.deployMCPLocked(&server, add); err != nil {
-				return err
+				opErrs = append(opErrs, err)
 			}
 		}
+		reg.MCP[name] = server
+		if err := s.saveRegistryLocked(reg); err != nil {
+			return err
+		}
+		// M1：部分失败先落盘实际 Deployed 状态，再返回聚合错误。
+		return joinErrors(opErrs)
 	}
 	reg.MCP[name] = server
 	return s.saveRegistryLocked(reg)

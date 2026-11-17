@@ -373,19 +373,29 @@ func (s *Service) SetSharedSkillEnabled(name string, enabled bool) error {
 			reg.Skills[name] = skill
 			return s.saveRegistryLocked(reg)
 		}
-		if err := s.deploySkillLocked(&skill, targets); err != nil {
+		deployErr := s.deploySkillLocked(&skill, targets)
+		// M1：部分失败时已成功引擎的 Deployed 增量（deploy 循环内逐引擎
+		// 追加）仍先落盘，再聚合返回错误——防止「磁盘已写、registry 未记」
+		// 的永久残留（禁用/删除按 Deployed 回收不掉）。Enabled 记录实际
+		// 部署状态：全部失败且从未部署过任何引擎才停用。
+		skill.Enabled = deployErr == nil || len(skill.Deployed) > 0
+		if skill.Enabled {
+			skill.DeployedAt = nowRFC3339()
+		}
+		reg.Skills[name] = skill
+		if err := s.saveRegistryLocked(reg); err != nil {
 			return err
 		}
-		skill.Enabled = true
-		skill.DeployedAt = nowRFC3339()
-	} else {
-		if err := s.undeploySkillLocked(&skill); err != nil {
-			return err
-		}
-		skill.Enabled = false
+		return deployErr
 	}
+	undeployErr := s.undeploySkillLocked(&skill)
+	// M1：部分回收失败也先落盘（已回收引擎移出 Deployed，失败者保留待重试）。
+	skill.Enabled = false
 	reg.Skills[name] = skill
-	return s.saveRegistryLocked(reg)
+	if err := s.saveRegistryLocked(reg); err != nil {
+		return err
+	}
+	return undeployErr
 }
 
 // SetSharedSkillTargets 更新 skill 的目标引擎并 diff 分发：
@@ -424,16 +434,23 @@ func (s *Service) SetSharedSkillTargets(name string, targets []Engine) error {
 				remove = append(remove, e)
 			}
 		}
+		var opErrs []error
 		if len(remove) > 0 {
 			if err := s.undeploySkillEnginesLocked(&skill, remove); err != nil {
-				return err
+				opErrs = append(opErrs, err)
 			}
 		}
 		if len(add) > 0 {
 			if err := s.deploySkillLocked(&skill, add); err != nil {
-				return err
+				opErrs = append(opErrs, err)
 			}
 		}
+		reg.Skills[name] = skill
+		if err := s.saveRegistryLocked(reg); err != nil {
+			return err
+		}
+		// M1：部分失败先落盘实际 Deployed 状态，再返回聚合错误。
+		return joinErrors(opErrs)
 	}
 	reg.Skills[name] = skill
 	return s.saveRegistryLocked(reg)

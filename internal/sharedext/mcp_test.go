@@ -348,3 +348,213 @@ func TestMCPTargetsDiffAndDisabled(t *testing.T) {
 		t.Fatal("omp 保留目标不应回收")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P5-Fix：C1 吞读错误 / C3 导入名拒绝 / M1 部分失败落盘 / m1 非法 JSON 拒写
+// ---------------------------------------------------------------------------
+
+// C3(c)：含双引号/控制字符的名字在解析预览阶段直接丢弃（不可入库）。
+func TestParseMCPJSONInvalidNamesDropped(t *testing.T) {
+	servers, err := ParseMCPJSON(`{"mcpServers": {
+		"good": {"command": "npx"},
+		"a\"b": {"command": "x"},
+		"ctl\u0001name": {"command": "y"}
+	}}`)
+	if err != nil {
+		t.Fatalf("合法条目应可解析: %v", err)
+	}
+	if len(servers) != 1 || servers[0].Name != "good" {
+		t.Fatalf("非法名条目应被丢弃: %+v", servers)
+	}
+
+	// 全部非法 → 识别为空（拒绝导入）。
+	if _, err := ParseMCPJSON(`{"a\"b": {"command": "x"}}`); err == nil {
+		t.Fatal("全部名字非法时应报无法识别")
+	}
+}
+
+// C3(c)：ImportMCPServers 对含引号/控制字符的名字记 skipped「名称非法」。
+func TestImportMCPServersInvalidNameSkipped(t *testing.T) {
+	env := newTestService(t)
+	imported, skipped, err := env.svc.ImportMCPServers([]SharedMCPServer{
+		{Name: "ok-one", Config: map[string]any{"command": "npx"}},
+		{Name: "a\"b", Config: map[string]any{"command": "x"}},
+		{Name: "ctl\x01", Config: map[string]any{"command": "y"}},
+	})
+	if err != nil {
+		t.Fatalf("部分成功不报错: %v", err)
+	}
+	if len(imported) != 1 || imported[0].Name != "ok-one" {
+		t.Fatalf("合法条目应导入: %+v", imported)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("两条非法名应 skipped: %v", skipped)
+	}
+	for _, s := range skipped {
+		if !strings.Contains(s, "名称非法") {
+			t.Fatalf("skipped 应注明名称非法: %v", skipped)
+		}
+	}
+}
+
+// C1：config.toml 不可读（读错误非 ErrNotExist）→ 写入报错且原文件字节
+// 不变，绝不被静默替换为仅含 MCP 段的内容（diting D7 场景不复现）。
+func TestMCPTOMLReadErrorNoClobber(t *testing.T) {
+	env := newTestService(t)
+	servers, err := ParseMCPJSON(`{"mcpServers": {"foo": {"command": "npx"}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.svc.ImportMCPServers(servers); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.SetSharedMCPServerTargets("foo", []Engine{EngineCodex}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 形态一（跨平台）：config.toml 是目录 → ReadFile 返回 EISDIR。
+	if err := os.MkdirAll(filepath.Join(env.roots[EngineCodex], "config.toml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err = env.svc.SetSharedMCPServerEnabled("foo", true)
+	if err == nil || !strings.Contains(err.Error(), "读取") {
+		t.Fatalf("读错误应立即返回而非按空文件覆盖: %v", err)
+	}
+	info, serr := os.Lstat(filepath.Join(env.roots[EngineCodex], "config.toml"))
+	if serr != nil || !info.IsDir() {
+		t.Fatalf("目标应保持目录原样未被写成文件: %v", serr)
+	}
+
+	// 形态二（diting D7 原取证）：chmod 000 的真实文件 → 报错且字节不变。
+	if os.Geteuid() == 0 {
+		t.Skip("root 用户 chmod 000 无法触发 permission denied")
+	}
+	env2 := newTestService(t)
+	if _, _, err := env2.svc.ImportMCPServers(servers); err != nil {
+		t.Fatal(err)
+	}
+	if err := env2.svc.SetSharedMCPServerTargets("foo", []Engine{EngineCodex}); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(env2.roots[EngineCodex], "config.toml")
+	original := "model = \"gpt-5\"\nprofile = \"work\"\n[profiles.work]\nfoo = 1\n"
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cfgPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := env2.svc.SetSharedMCPServerEnabled("foo", true); err == nil || !strings.Contains(err.Error(), "读取") {
+		t.Fatalf("不可读文件上启用应报读错误: %v", err)
+	}
+	if err := os.Chmod(cfgPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustReadFile(t, cfgPath); got != original {
+		t.Fatalf("原文件字节应不变:\n--- got ---\n%s", got)
+	}
+}
+
+// M1：多引擎部分失败（codex TOML 拒绝编辑、claude 成功）→ 返回聚合错误
+// 但 registry 已记录成功引擎；后续禁用能把已写入的回收干净（diting D6
+// 场景不复现）。
+func TestMCPPartialDeployRecordsSuccess(t *testing.T) {
+	env := newTestService(t)
+	// codex config.toml 含受管作用域不支持形态（数组表头）→ 写入报错。
+	if err := os.MkdirAll(env.roots[EngineCodex], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env.roots[EngineCodex], "config.toml"),
+		[]byte("[[mcp_servers.x]]\ncommand = \"a\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := ParseMCPJSON(`{"mcpServers": {"foo": {"command": "npx", "args": ["x"]}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.svc.ImportMCPServers(servers); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.SetSharedMCPServerTargets("foo", []Engine{EngineClaude, EngineCodex}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 启用：codex 失败、claude 成功 → 返回错误但 registry 记录 claude。
+	enableErr := env.svc.SetSharedMCPServerEnabled("foo", true)
+	if enableErr == nil {
+		t.Fatal("预期 codex 部分失败返回聚合错误")
+	}
+	claudeJSON := filepath.Join(env.roots[EngineClaude], ".claude.json")
+	if !strings.Contains(mustReadFile(t, claudeJSON), `"foo"`) {
+		t.Fatal("claude 目标应已写入（磁盘实况）")
+	}
+	list, err := env.svc.ListSharedMCPServers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, sv := range list {
+		if sv.Name == "foo" {
+			found = true
+			if !sv.Enabled || !reflect.DeepEqual([]Engine(sv.Deployed), []Engine{EngineClaude}) {
+				t.Fatalf("registry 应记录 enabled=true deployed=[claude]: %+v", sv)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("条目应存在")
+	}
+
+	// 禁用：按 Deployed 回收 claude 写入（不再永久残留）。
+	if err := env.svc.SetSharedMCPServerEnabled("foo", false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(mustReadFile(t, claudeJSON), `"foo"`) {
+		t.Fatalf("禁用后 claude 写入应被回收: %s", mustReadFile(t, claudeJSON))
+	}
+}
+
+// m1：目标 JSON 文件非法（用户手改坏）→ 写入与移除均拒绝且文件字节不变。
+func TestMCPInvalidJSONTargetRefused(t *testing.T) {
+	env := newTestService(t)
+	claudeJSON := filepath.Join(env.roots[EngineClaude], ".claude.json")
+	if err := os.MkdirAll(filepath.Dir(claudeJSON), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := `{"broken":`
+	if err := os.WriteFile(claudeJSON, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, err := ParseMCPJSON(`{"mcpServers": {"foo": {"command": "npx"}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.svc.ImportMCPServers(servers); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.SetSharedMCPServerTargets("foo", []Engine{EngineClaude}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.SetSharedMCPServerEnabled("foo", true); err == nil || !strings.Contains(err.Error(), "不是合法 JSON") {
+		t.Fatalf("非法 JSON 目标应拒绝写入: %v", err)
+	}
+	if got := mustReadFile(t, claudeJSON); got != broken {
+		t.Fatalf("原文件字节应不变（不写垃圾字节）:\n%s", got)
+	}
+
+	// 移除路径同样拒绝（不能假装回收成功）。
+	target, err := env.svc.engineMCPTarget(EngineClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.svc.removeMCPServer(target, "foo"); err == nil || !strings.Contains(err.Error(), "不是合法 JSON") {
+		t.Fatalf("非法 JSON 目标应拒绝编辑: %v", err)
+	}
+	if got := mustReadFile(t, claudeJSON); got != broken {
+		t.Fatalf("原文件字节应不变:\n%s", got)
+	}
+}

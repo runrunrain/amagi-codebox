@@ -123,7 +123,7 @@ describe('useCommonSkillsPanel：导入 / 删除 / 启停 / 跳转', () => {
   it('zip 导入流：pick 返回路径 → import → 成功 toast + 聚合刷新；用户取消（空串）不导入', async () => {
     const panel = await freshPanel()
     fns.pickSkillZip.mockResolvedValueOnce('/tmp/skills.zip')
-    fns.importSkillFromZip.mockResolvedValueOnce([manualSkill('a')])
+    fns.importSkillFromZip.mockResolvedValueOnce({ imported: [manualSkill('a')], skipped: [] })
     fns.getAggregatedSkills.mockClear()
 
     await panel.handleImportZip()
@@ -131,10 +131,28 @@ describe('useCommonSkillsPanel：导入 / 删除 / 启停 / 跳转', () => {
     expect(fns.getAggregatedSkills).toHaveBeenCalledTimes(1) // 导入后刷新聚合
     const toasts = useToast().toasts.map((t) => `${t.type}:${t.message}`)
     expect(toasts).toContain('success:已导入 1 个技能')
+    expect(toasts.some((t) => t.startsWith('warn:'))).toBe(false) // 无跳过不弹 warn
 
     fns.pickSkillZip.mockResolvedValueOnce('') // 取消
     await panel.handleImportZip()
     expect(fns.importSkillFromZip).toHaveBeenCalledTimes(1)
+  })
+
+  it('zip 导入部分成功：成功 toast + 跳过 warn 双透出，列表仍刷新（M3）', async () => {
+    const panel = await freshPanel()
+    fns.pickSkillZip.mockResolvedValueOnce('/tmp/skills.zip')
+    fns.importSkillFromZip.mockResolvedValueOnce({
+      imported: [manualSkill('a')],
+      skipped: ['dup（同名已存在，跳过）'],
+    })
+    fns.getAggregatedSkills.mockClear()
+
+    await panel.handleImportZip()
+    expect(fns.getAggregatedSkills).toHaveBeenCalledTimes(1) // 部分成功也刷新聚合
+    const toasts = useToast().toasts.map((t) => `${t.type}:${t.message}`)
+    expect(toasts).toContain('success:已导入 1 个技能')
+    expect(toasts.some((t) => t.startsWith('warn:') && t.includes('dup'))).toBe(true)
+    expect(toasts.some((t) => t.startsWith('error:'))).toBe(false) // 不再误报「导入失败」
   })
 
   it('文件夹导入失败：错误 toast，不刷新聚合', async () => {

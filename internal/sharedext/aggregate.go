@@ -13,14 +13,21 @@ import (
 const aggCacheTTL = 30 * time.Second
 
 // GetAggregatedSkills 返回聚合 skill 视图。
-// providers 由调用方（P2 app.go）组装（各插件引擎的 skill 清单与子项禁用
-// 状态）；force=true 旁路缓存强制重建。
-func (s *Service) GetAggregatedSkills(providers []PluginSkillsProvider, force bool) ([]AggregatedSkill, error) {
+// buildProviders 由调用方（P2 app.go）提供（各插件引擎的 skill 清单与子项
+// 禁用状态），以惰性构建器传入——仅在缓存未命中需要重建时调用，缓存
+// 命中时跳过（m2：省去 codex CLI fork 与五引擎目录扫描等重活）。
+// force=true 旁路缓存强制重建。
+func (s *Service) GetAggregatedSkills(buildProviders func() []PluginSkillsProvider, force bool) ([]AggregatedSkill, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !force && s.aggCache != nil && time.Since(s.aggCachedAt) < aggCacheTTL {
 		return append([]AggregatedSkill(nil), s.aggCache...), nil
+	}
+
+	var providers []PluginSkillsProvider
+	if buildProviders != nil {
+		providers = buildProviders()
 	}
 
 	reg, err := s.loadRegistryLocked()

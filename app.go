@@ -6855,16 +6855,46 @@ func (a *App) GetSharedSkills() []sharedext.SharedSkill {
 	return skills
 }
 
+// ImportSharedSkillResult 是 ImportSharedSkillFromZip/Dir 的单值返回信封
+//（M3，语义同 ImportSharedMCPResult）：部分成功（同名/非法名跳过）不返回
+// error，跳过明细折叠进 Skipped 供前端双 toast；仅整体失败（一个都没导入）
+// 才返回 error。
+type ImportSharedSkillResult struct {
+	Imported []sharedext.SharedSkill `json:"imported"`
+	Skipped  []string                `json:"skipped"`
+}
+
+// partialSkillImportPrefix 是 internal/sharedext 部分成功错误的固定前缀，
+// App 层据此把「已导入 + 部分跳过」折叠为信封（内部方法契约不变）。
+const partialSkillImportPrefix = "部分 skill 未导入: "
+
+// wrapSkillImport 把服务层 (imported, error) 双返回值折叠为信封：
+// error 为 nil → 信封；部分成功（imported 非空 + 错误）→ 跳过明细从固定
+// 前缀后的错误文本提取，信封返回不报错；全失败（imported 空 + 错误）→
+// 原错误透传（Wails 契约下前端只拿到 error，此时才应如此）。
+func wrapSkillImport(skills []sharedext.SharedSkill, err error) (ImportSharedSkillResult, error) {
+	if err == nil {
+		return ImportSharedSkillResult{Imported: skills, Skipped: []string{}}, nil
+	}
+	if len(skills) == 0 {
+		return ImportSharedSkillResult{}, err
+	}
+	detail := strings.TrimPrefix(err.Error(), partialSkillImportPrefix)
+	return ImportSharedSkillResult{Imported: skills, Skipped: []string{detail}}, nil
+}
+
 // ImportSharedSkillFromZip 从 zip 压缩包导入公共 skill（可含多个）。
-// 同名跳过项聚合进返回的 error 文本（部分成功不阻断，已导入项仍返回）。
-func (a *App) ImportSharedSkillFromZip(zipPath string) ([]sharedext.SharedSkill, error) {
-	return a.sharedExt.ImportSkillFromZip(zipPath)
+// 部分成功不报错：已导入项在 Imported，跳过明细在 Skipped。
+func (a *App) ImportSharedSkillFromZip(zipPath string) (ImportSharedSkillResult, error) {
+	skills, err := a.sharedExt.ImportSkillFromZip(zipPath)
+	return wrapSkillImport(skills, err)
 }
 
 // ImportSharedSkillFromDir 从文件夹导入公共 skill（自身含 SKILL.md 视为单个，
-// 否则扫描一层子目录）。
-func (a *App) ImportSharedSkillFromDir(dirPath string) ([]sharedext.SharedSkill, error) {
-	return a.sharedExt.ImportSkillFromDir(dirPath)
+// 否则扫描一层子目录）。部分成功语义同 ImportSharedSkillFromZip。
+func (a *App) ImportSharedSkillFromDir(dirPath string) (ImportSharedSkillResult, error) {
+	skills, err := a.sharedExt.ImportSkillFromDir(dirPath)
+	return wrapSkillImport(skills, err)
 }
 
 // DeleteSharedSkill 删除公共 skill（先按 Deployed 清单回收各目标引擎，再删
@@ -6934,8 +6964,9 @@ func (a *App) GetAllSharedSkillsAggregated(force bool) ([]sharedext.AggregatedSk
 	if a.sharedExtAggForce.Swap(false) {
 		force = true
 	}
-	providers := a.buildSharedSkillProviders()
-	return a.sharedExt.GetAggregatedSkills(providers, force)
+	// m2：providers 组装（含 codex CLI fork 与五引擎扫描）以惰性构建器
+	// 传入，缓存命中时不再执行——原无条件组装使 30s TTL 缓存几乎无收益。
+	return a.sharedExt.GetAggregatedSkills(a.buildSharedSkillProviders, force)
 }
 
 // InvalidateSharedExtCache 使聚合视图缓存失效（下一次聚合强制重建）。

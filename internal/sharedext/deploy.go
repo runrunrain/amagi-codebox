@@ -5,6 +5,7 @@ package sharedext
 // 引擎不回滚，registry 只记录实际成功的 Deployed 状态。
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,6 +41,14 @@ func (s *Service) deploySkillLocked(skill *SharedSkill, engines []Engine) error 
 			continue
 		}
 		target := filepath.Join(dst, skill.Name)
+		// M2：目标已存在且该引擎不在 Deployed 清单（非 CodeBox 上次部署）
+		//→ 拒绝覆盖，保护用户自建同名 skill 目录不被静默删除。
+		if _, terr := os.Lstat(target); terr == nil && !containsEngine(skill.Deployed, engine) {
+			errs = append(errs, fmt.Errorf(
+				"%s: 目标已存在同名非 CodeBox 管理目录 %s，已跳过部署（如需部署请先移除或改名该目录）",
+				engine, target))
+			continue
+		}
 		if err := s.replaceDir(src, target); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", engine, err))
 			continue
@@ -61,6 +70,7 @@ func (s *Service) undeploySkillLocked(skill *SharedSkill) error {
 // 目录不存在视为已回收（幂等），不报错。
 func (s *Service) undeploySkillEnginesLocked(skill *SharedSkill, engines []Engine) error {
 	var errs []error
+	recycled := map[Engine]bool{}
 	for _, engine := range engines {
 		dir, err := s.engineSkillsDir(engine)
 		if err != nil {
@@ -72,12 +82,16 @@ func (s *Service) undeploySkillEnginesLocked(skill *SharedSkill, engines []Engin
 			errs = append(errs, fmt.Errorf("%s: 删除 %s: %w", engine, target, err))
 			continue
 		}
+		recycled[engine] = true
 	}
 	next := make([]Engine, 0, len(skill.Deployed))
 	for _, e := range skill.Deployed {
-		if !containsEngine(engines, e) {
-			next = append(next, e)
+		// M1：仅实际回收成功的引擎移出 Deployed；失败的保留以便后续重试
+		//（否则残留项永久脱离回收依据）。
+		if recycled[e] {
+			continue
 		}
+		next = append(next, e)
 	}
 	skill.Deployed = next
 	return joinErrors(errs)
@@ -228,8 +242,10 @@ func (s *Service) deployMCPLocked(server *SharedMCPServer, engines []Engine) err
 }
 
 // undeployMCPLocked 从 engines 各目标配置移除 server；Deployed 同步收缩。
+// M1：仅实际移除成功的引擎移出 Deployed（失败者保留以便重试）。
 func (s *Service) undeployMCPLocked(server *SharedMCPServer, engines []Engine) error {
 	var errs []error
+	removed := map[Engine]bool{}
 	for _, engine := range engines {
 		target, err := s.engineMCPTarget(engine)
 		if err != nil {
@@ -240,12 +256,14 @@ func (s *Service) undeployMCPLocked(server *SharedMCPServer, engines []Engine) e
 			errs = append(errs, fmt.Errorf("%s: %w", engine, err))
 			continue
 		}
+		removed[engine] = true
 	}
 	next := make([]Engine, 0, len(server.Deployed))
 	for _, e := range server.Deployed {
-		if !containsEngine(engines, e) {
-			next = append(next, e)
+		if removed[e] {
+			continue
 		}
+		next = append(next, e)
 	}
 	server.Deployed = next
 	return joinErrors(errs)
@@ -254,7 +272,13 @@ func (s *Service) undeployMCPLocked(server *SharedMCPServer, engines []Engine) e
 // writeMCPServer 把单个 server 写入目标配置文件（幂等，键不存在创建）。
 func (s *Service) writeMCPServer(target mcpTarget, name string, def map[string]any) error {
 	if target.Style == "toml" {
-		data, _ := os.ReadFile(target.Path)
+		data, err := os.ReadFile(target.Path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			// C1：读失败（权限/文件锁等）不得按空文件处理——否则整个
+			// config.toml 会被仅含 MCP 段的新内容静默覆盖（ErrNotExist
+			// 才视为新建空文件）。
+			return fmt.Errorf("读取 %s: %w", target.Path, err)
+		}
 		if len(data) > 0 {
 			if existing, ok := tomlSectionValue(data, name); ok && !mcpDefEqual(existing, def) {
 				s.warn("目标已有同名 MCP server 且内容与仓库记录不一致，按 CodeBox 管理覆盖",
@@ -274,6 +298,11 @@ func (s *Service) writeMCPServer(target mcpTarget, name string, def map[string]a
 			return fmt.Errorf("读取 %s: %w", target.Path, err)
 		}
 		data = []byte("{}")
+	}
+	// m1：目标文件存在但不是合法 JSON（用户手改坏）→ 拒绝写入，防止
+	// sjson 在非法输入上产出垃圾字节覆盖原文件（备份之前先拦住）。
+	if !json.Valid(data) {
+		return fmt.Errorf("目标配置 %s 不是合法 JSON，拒绝写入（请先修复该文件）", target.Path)
 	}
 	// 冲突检测：目标已有同名 key 且内容与 registry 记录不一致 → 覆盖但 warn。
 	if existing := gjsonGetServer(data, target.Key, name); existing != nil {
@@ -320,6 +349,11 @@ func (s *Service) removeMCPServer(target mcpTarget, name string) error {
 			return nil
 		}
 		return fmt.Errorf("读取 %s: %w", target.Path, err)
+	}
+	// m1：非法 JSON（用户手改坏）拒绝编辑——无法可靠判定键是否存在，
+	// 不能假装回收成功，也防止 gjson 宽容命中后写垃圾字节。
+	if !json.Valid(data) {
+		return fmt.Errorf("目标配置 %s 不是合法 JSON，拒绝编辑（请先修复该文件）", target.Path)
 	}
 	if gjsonGetServer(data, target.Key, name) == nil {
 		return nil
@@ -378,17 +412,31 @@ func pruneBackups(dir, base string) error {
 	return nil
 }
 
-// writeFileAtomic 临时文件 + rename 原子写入。
+// writeFileAtomic 临时文件 + rename 原子写入（m3：随机后缀临时文件，
+// 消除固定名 <path>.tmp-sharedext 的跨进程竞态窗口）。
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("创建目录: %w", err)
 	}
-	tmp := path + ".tmp-sharedext"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-sharedext-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // rename 成功后目标已改名，Remove 空报错忽略
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("写临时文件: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("设置临时文件权限: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		// rename 失败（如 Windows 目标被占用）回退直接覆盖；临时文件由 defer 清理。
 		if werr := os.WriteFile(path, data, perm); werr != nil {
 			return fmt.Errorf("替换 %s: %w", path, err)
 		}

@@ -2,9 +2,9 @@
 
 本文档列出前端可调用的全部 Wails 绑定方法。方法清单**以当前代码为准**，生成依据：
 
-- 绑定清单：`bind_list.go` 的 `buildWailsBindList`（共 21 个绑定 = `App` + 20 个服务）
+- 绑定清单：`bind_list.go` 的 `buildWailsBindList`（共 22 个绑定 = `App` + 21 个服务）
 - 方法签名：`app.go`、`headroom_facade.go`、`app_remoteclient.go` 中 `func (a *App) [A-Z]…`，以及 `internal/` 下各服务结构体的导出方法
-- 校对日期：2026-08-22（对应版本 1.3.50）
+- 校对日期：2026-11-20（对应版本 1.3.145；新增共用中心 SharedExt 绑定）
 
 ## 调用方式
 
@@ -24,6 +24,7 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 | OpenCodePlugins | `opencodeplugin.Service` | `internal/opencodeplugin` |
 | PiPlugins | `piplugin.Service` | `internal/piplugin` |
 | OmpPlugins | `ompplugin.Service` | `internal/ompplugin` |
+| SharedExt | `sharedext.Service` | `internal/sharedext`（共用中心：公共 skill/MCP） |
 | OpenCodeConfig | `opencodeconfig.Service` | `internal/opencodeconfig` |
 | PiConfig | `piconfig.Service` | `internal/piconfig` |
 | OmpConfig | `ompconfig.Service` | `internal/ompconfig` |
@@ -59,6 +60,7 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - [OpenCodePlugins（OpenCode 插件）](#opencodepluginsopencode-插件)
 - [PiPlugins（Pi 扩展包）](#pipluginspi-扩展包)
 - [OmpPlugins（omp 插件）](#omppluginsomp-插件)
+- [SharedExt（共用中心：公共 skill/MCP）](#sharedext共用中心公共-skillmcp)
 - [OpenCodeConfig / PiConfig / OmpConfig（各 CLI 配置文件）](#opencodeconfig--piconfig--ompconfig各-cli-配置文件)
 - [AgentProfiles（Agent 配置档）](#agentprofilesagent-配置档)
 - [EnvCheck（环境检测与安装）](#envcheck环境检测与安装)
@@ -382,6 +384,7 @@ legacy 配置面（过渡方案）：
 - `ListAvailablePlugins() ([]CodexAvailablePlugin, error)` — 可安装聚合。
 - `RefreshPlugins() (*CodexPluginsData, error)` — 刷新并返回全量数据。
 - `InstallPlugin(selector PluginSelector)` / `UninstallPlugin(selector PluginSelector)` / `SetPluginEnabled(selector PluginSelector, enabled bool)` → `(*CommandResult, error)` — 安装/卸载/启停。
+- `UpdatePlugin(selector PluginSelector) (*CommandResult, error)` — 单插件更新（模拟实现：市场刷新 → 卸载重装 → 恢复 enabled 状态；CLI 0.169 无原生 update 子命令）。
 - `SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, enabled bool) error` — 子项开关（当前实现仅记日志，见 `app.go` SetPluginSubItemEnabled 注释）。
 
 ## OpenCodePlugins（OpenCode 插件）
@@ -398,6 +401,8 @@ legacy 配置面（过渡方案）：
 - `ListInstalledPackages() ([]Package, error)` / `RefreshPackages() (*PackagesData, error)` / `GetPackageDetails(source string) (*PackageDetail, error)` — 列表/刷新/详情。
 - `InstallPackage(source string)` / `RemovePackage(source string)` / `UpdatePackage(source string)` → `(*CommandResult, error)` — 安装/移除/更新（pinned 精确版本或 git ref 不会被 update 移动）。
 - `SwitchPackageSource(oldSource, newSource string) (*CommandResult, error)` — 原子切换包来源（如 git 发布版 ↔ 本地工作区路径）：校验 old 已登记 → remove（实体保留）→ install new → 失败回滚重装 old；同源为 no-op 成功。
+- `SetPackageEnabled(source string, enabled bool) (*CommandResult, error)` — 包级启停（模拟：pi 无原生 disable，用原生 `!**` 四键全排除过滤标记，与 `pi config` TUI 语义互通，完全可逆）。
+- `SetPackageSkillEnabled(source, skillName string, enabled bool) (*CommandResult, error)` — 单 skill 启停（原生：packages 条目 `skills[]` 过滤数组写 `±rel` 模式，算法与 `pi config` TUI togglePackageResource 对齐）。
 
 ## OmpPlugins（omp 插件）
 
@@ -405,6 +410,18 @@ legacy 配置面（过渡方案）：
 
 - `ListPlugins() ([]Plugin, error)` / `RefreshPlugins() (*PluginsData, error)` — 列表/刷新。
 - `InstallPlugin(spec string)` / `UninstallPlugin(name string)` / `SetPluginEnabled(name string, enabled bool)` / `UpgradePlugin(name string)` → `(*CommandResult, error)` — 安装/卸载/启停/升级。
+- `InspectPlugin(plugin Plugin) *PluginDetail` — 零 CLI fork 的本地扫描详情（含 skills，供聚合批量取用）；`GetPluginDetails(name string) (*PluginDetail, error)` — CLI 定位+扫描详情。
+
+## SharedExt（共用中心：公共 skill/MCP）
+
+`sharedext.Service`（`internal/sharedext/`），管理跨 CLI 共享的公共 skill（单一事实源 `~/.amagi-codebox/shared/skills/`，复制分发+清单回收）与公共 MCP（`~/.amagi-codebox/shared/registry.json`，写入各 CLI 原生 MCP 配置）。状态存储 `~/.amagi-codebox/shared/registry.json`。前端入口在扩展管理页「共用」tab。
+
+- 公共 skill：`ListSharedSkills()` / `ImportSkillFromZip(zipPath)` / `ImportSkillFromDir(dirPath)` / `DeleteSharedSkill(name)` / `SetSharedSkillEnabled(name, enabled)` / `SetSharedSkillTargets(name, targets []Engine)` — 导入（zip 含穿越/炸弹/symlink 防护）、删除（仅手动导入条目，插件来源由插件卸载统一管理）、启停（启用=复制分发到勾选目标 CLI 目录，禁用=按清单回收）、目标按需勾选。
+- 公共 MCP：`ListSharedMCPServers()` / `ImportMCPServers(servers)` / `DeleteSharedMCPServer(name)` / `SetSharedMCPServerEnabled(name, enabled)` / `SetSharedMCPServerTargets(name, targets []Engine)` — 写入目标：Claude `~/.claude.json` mcpServers、Codex `config.toml [mcp_servers.*]`（TOML 保真编辑）、OpenCode `opencode.json` mcp、Pi/OMP `<agentDir>/mcp.json`；JSON 大文件 sjson 原位编辑+备份轮转。
+- `ParseMCPJSON(text)` — 纯预览解析（兼容 `{"mcpServers":{}}` / 裸对象 / 单条三种格式）。
+- `GetAggregatedSkills(providers, force)` — 聚合视图：手动条目（managed=true 可删可启停）+ 插件来源条目（managed=false，来源标记，删除归插件）；30s TTL 缓存，force 旁路。
+
+App 门面（`app.go` Shared Extensions 段）：上述能力的 `main.App` 包装（`GetSharedSkills`、`ImportSharedSkillFromZip/Dir`、`DeleteSharedSkill`、`SetSharedSkillEnabled/Targets`、`GetSharedMCPServers`、`PreviewSharedMCPJSON`、`ImportSharedMCPServers`（返回 `ImportSharedMCPResult{Imported, Skipped}` 信封）、`GetAllSharedSkillsAggregated(force)`、`InvalidateSharedExtCache`）+ 文件选择对话框（`PickSharedSkillZipFile` / `PickSharedSkillDir` / `PickMCPJSONFile` / `ReadTextFile`，1MB 上限）。插件更新/卸载/启停成功后自动失效聚合缓存（四引擎 OnChange 注入）。
 
 ## OpenCodeConfig / PiConfig / OmpConfig（各 CLI 配置文件）
 

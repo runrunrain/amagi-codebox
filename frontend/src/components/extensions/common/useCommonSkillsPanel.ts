@@ -12,7 +12,7 @@ import { useSharedExtStore } from '../../../stores/sharedExt';
 import { usePluginStore } from '../../../stores/plugin';
 import { useToast } from '../../../composables/useToast';
 import { pickSkillDir, pickSkillZip, SHARED_EXT_ENGINES } from '../../../api/sharedExt';
-import type { SharedExtEngine } from '../../../api/sharedExt';
+import type { ImportSharedSkillResult, SharedExtEngine } from '../../../api/sharedExt';
 import { nextTargets, skillRowModel } from './commonCenterModel';
 import type { SkillRowModel } from './commonCenterModel';
 
@@ -66,14 +66,22 @@ export function useCommonSkillsPanel() {
     await initialLoad();
   }
 
+  /** 导入后统一反馈：成功 toast + skipped 非空时 warn 单独透出（M3，与
+   * MCP 导入对话框的双 toast 约定一致）。 */
+  function reportImportResult(result: ImportSharedSkillResult): void {
+    toast.showSuccess(`已导入 ${result.imported.length} 个技能`);
+    if (result.skipped.length > 0) {
+      toast.showWarn(`已跳过: ${result.skipped.join('、')}`);
+    }
+  }
+
   async function handleImportZip(): Promise<void> {
     if (importingZip.value) return;
     const path = await pickSkillZip();
     if (!path) return; // 用户取消
     importingZip.value = true;
     try {
-      const imported = await store.importSkillFromZip(path);
-      toast.showSuccess(`已导入 ${imported.length} 个技能`);
+      reportImportResult(await store.importSkillFromZip(path));
       await store.loadAggregated(); // registry 写路径已内建失效服务端 30s TTL 缓存
     } catch (e) {
       console.error('[CommonSkillsPanel] import zip failed:', e);
@@ -89,8 +97,7 @@ export function useCommonSkillsPanel() {
     if (!path) return; // 用户取消
     importingDir.value = true;
     try {
-      const imported = await store.importSkillFromDir(path);
-      toast.showSuccess(`已导入 ${imported.length} 个技能`);
+      reportImportResult(await store.importSkillFromDir(path));
       await store.loadAggregated();
     } catch (e) {
       console.error('[CommonSkillsPanel] import dir failed:', e);

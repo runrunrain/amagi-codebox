@@ -5,19 +5,17 @@
  *  - 简单 CRUD / 纯预览解析 → wailsjs/go/sharedext/Service（服务本体绑定，
  *    与其余 20 个已绑定服务同风格）；
  *  - 需要 App 上下文的入口 → wailsjs/go/main/App：选择对话框（需 Wails ctx）、
- *    聚合视图（五引擎 provider 组装）、MCP 导入信封、缓存失效挂点。
+ *    聚合视图（五引擎 provider 组装）、skill/MCP 导入信封、缓存失效挂点。
  *
- * 注意：**不要**使用 sharedext/Service.ImportMCPServers——服务层是
- * (imported, skipped, error) 三返回值，Wails v2 生成器只保留了第一个返回值
- * （skipped 被静默丢弃）；导入统一走 App.ImportSharedMCPServers 的
- * ImportSharedMCPResult 单值信封。
+ * 注意：**不要**使用 sharedext/Service 的 ImportSkillFromZip/ImportSkillFromDir
+ * 与 ImportMCPServers——服务层是多返回值（含部分成功信息），Wails v2 生成器
+ * 只保留第一个返回值（部分明细被静默丢弃）；导入统一走 App 级
+ * ImportSharedSkillFromZip/Dir 与 ImportSharedMCPServers 的单值信封。
  */
 
 import {
   DeleteSharedMCPServer,
   DeleteSharedSkill,
-  ImportSkillFromDir,
-  ImportSkillFromZip,
   ListSharedMCPServers,
   ListSharedSkills,
   SetSharedMCPServerEnabled,
@@ -28,6 +26,8 @@ import {
 import {
   GetAllSharedSkillsAggregated,
   ImportSharedMCPServers,
+  ImportSharedSkillFromDir,
+  ImportSharedSkillFromZip,
   InvalidateSharedExtCache,
   PickMCPJSONFile,
   PickSharedSkillDir,
@@ -42,6 +42,8 @@ export type SharedMCPServer = sharedext.SharedMCPServer;
 export type AggregatedSkill = sharedext.AggregatedSkill;
 /** MCP 批量导入结果信封（App 级单值返回；skipped 非空 = 部分成功）。 */
 export type ImportSharedMCPResult = main.ImportSharedMCPResult;
+/** skill 导入结果信封（App 级单值返回；skipped 非空 = 部分成功，M3）。 */
+export type ImportSharedSkillResult = main.ImportSharedSkillResult;
 
 /**
  * 目标引擎标识（后端 sharedext.Engine 的取值域；wire 形态为 string，
@@ -62,16 +64,21 @@ export async function getSharedSkills(): Promise<SharedSkill[]> {
 }
 
 /**
- * 从 zip 压缩包导入（可含多个 skill）。同名跳过项聚合进 error 文本
- * （部分成功不阻断；Wails 绑定下 error 时返回列表不可达，跳过明细读错误消息）。
+ * 从 zip 压缩包导入（可含多个 skill）。App 级单值信封（M3）：部分成功
+ *（同名跳过）不报错，明细在 result.skipped；仅整体失败才 reject。
  */
-export async function importSkillFromZip(path: string): Promise<SharedSkill[]> {
-  return (await ImportSkillFromZip(path)) ?? [];
+export async function importSkillFromZip(path: string): Promise<ImportSharedSkillResult> {
+  const result = await ImportSharedSkillFromZip(path);
+  return result ?? { imported: [], skipped: [] };
 }
 
-/** 从文件夹导入（自身含 SKILL.md 视为单个，否则扫描一层子目录）。 */
-export async function importSkillFromDir(path: string): Promise<SharedSkill[]> {
-  return (await ImportSkillFromDir(path)) ?? [];
+/**
+ * 从文件夹导入（自身含 SKILL.md 视为单个，否则扫描一层子目录）。
+ * 部分成功语义同 importSkillFromZip（信封返回）。
+ */
+export async function importSkillFromDir(path: string): Promise<ImportSharedSkillResult> {
+  const result = await ImportSharedSkillFromDir(path);
+  return result ?? { imported: [], skipped: [] };
 }
 
 /** 删除公共 skill（先按 Deployed 回收各目标引擎，再删仓库与 registry 条目）。 */

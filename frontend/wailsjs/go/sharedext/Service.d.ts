@@ -6,7 +6,7 @@ export function DeleteSharedMCPServer(arg1:string):Promise<void>;
 
 export function DeleteSharedSkill(arg1:string):Promise<void>;
 
-export function GetAggregatedSkills(arg1:Array<sharedext.PluginSkillsProvider>,arg2:boolean):Promise<Array<sharedext.AggregatedSkill>>;
+export function GetAggregatedSkills(arg1:any,arg2:boolean):Promise<Array<sharedext.AggregatedSkill>>;
 
 export function ImportMCPServers(arg1:Array<sharedext.SharedMCPServer>):Promise<Array<sharedext.SharedMCPServer>>;
 
