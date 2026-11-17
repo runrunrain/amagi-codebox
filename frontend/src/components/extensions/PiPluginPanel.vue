@@ -75,6 +75,14 @@
               </div>
             </div>
             <div class="detail-actions">
+              <div class="enable-toggle" :title="activePackage.enabled ? '已启用：包内资源正常加载' : '已停用：已停止加载该包全部资源（重新启用可恢复）'">
+                <span class="enable-label">{{ activePackage.enabled ? '已启用' : '已停用' }}</span>
+                <Switch
+                  :model-value="activePackage.enabled"
+                  :disabled="mutating"
+                  @update:model-value="handleToggleEnabled"
+                />
+              </div>
               <AppButton
                 variant="ghost"
                 size="small"
@@ -194,10 +202,32 @@
               </div>
             </div>
 
-            <div v-if="resourceNames.length" class="resource-list">
+            <div v-if="skillResources.length" class="resource-list">
+              <h4>Skills（可单独启停）</h4>
+              <div class="skill-rows">
+                <div
+                  v-for="skill in skillResources"
+                  :key="skill.name"
+                  :class="['skill-row', { disabled: skill.disabled }]"
+                >
+                  <div class="skill-main">
+                    <span class="skill-name">{{ skill.name }}</span>
+                    <span class="skill-path">{{ skill.filePath }}</span>
+                  </div>
+                  <Switch
+                    :model-value="!skill.disabled"
+                    :disabled="mutating || !activePackage.enabled"
+                    @update:model-value="(val) => handleToggleSkill(skill, val)"
+                  />
+                </div>
+              </div>
+              <p v-if="!activePackage.enabled" class="skill-note">包已停用：先重新启用包，再单独调整 skill。</p>
+            </div>
+
+            <div v-if="otherResourceNames.length" class="resource-list">
               <h4>包含资源</h4>
               <div class="resource-chips">
-                <code v-for="item in resourceNames" :key="item">{{ item }}</code>
+                <code v-for="item in otherResourceNames" :key="item">{{ item }}</code>
               </div>
             </div>
           </template>
@@ -280,6 +310,7 @@ import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import Segmented from '../ui/Segmented.vue';
+import Switch from '../ui/Switch.vue';
 import PiPluginWSLSection from './PiPluginWSLSection.vue';
 import { useToast } from '../../composables/useToast';
 import { SwitchPackageSource } from '../../../wailsjs/go/piplugin/Service';
@@ -465,13 +496,51 @@ async function handleSwitchSource(): Promise<void> {
   }
 }
 
-const resourceNames = computed(() => {
+// skill 资源（带启停态）与其余资源（仅展示）拆分（P4）。
+const skillResources = computed(() => {
+  const pkg = activePackage.value;
+  if (!pkg || !isDetail(pkg)) return [];
+  return pkg.resources.filter(item => item.type === 'skill');
+});
+
+const otherResourceNames = computed(() => {
   const pkg = activePackage.value;
   if (!pkg || !isDetail(pkg)) return [];
   return pkg.resources
+    .filter(item => item.type !== 'skill')
     .map(item => `${item.type}:${item.name}`)
     .slice(0, 30);
 });
+
+// 包级启停（P4）：写入 Windows 侧 settings.json（!**×4 标记，pi 原生过滤语义）。
+async function handleToggleEnabled(enabled: boolean) {
+  const pkg = activePackage.value;
+  if (!pkg || mutating.value) return;
+  mutating.value = true;
+  try {
+    const result = await store.setEnabled(pkg.source, enabled);
+    showSuccess(result.output || (enabled ? 'Pi 包已启用' : 'Pi 包已停用（资源不再加载）'));
+  } catch (error) {
+    showError(`${enabled ? '启用' : '停用'}失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    mutating.value = false;
+  }
+}
+
+// skill 级启停（P4）：pi 原生 skills[] 过滤模式（与 pi config TUI 同形态互通）。
+async function handleToggleSkill(skill: { name: string }, enabled: boolean) {
+  const pkg = activePackage.value;
+  if (!pkg || mutating.value) return;
+  mutating.value = true;
+  try {
+    const result = await store.setSkillEnabled(pkg.source, skill.name, enabled);
+    showSuccess(result.output || `skill ${skill.name} 已${enabled ? '启用' : '停用'}`);
+  } catch (error) {
+    showError(`skill 启停失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    mutating.value = false;
+  }
+}
 
 function isDetail(pkg: PiPackage | PiPackageDetail): pkg is PiPackageDetail {
   return Array.isArray((pkg as PiPackageDetail).resources);
@@ -821,6 +890,69 @@ onMounted(loadPackages);
   background: var(--control);
   color: var(--secondary);
   font-size: 10px;
+}
+
+/* P4：包级启停开关 + skill 级启停行 */
+.enable-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.enable-label {
+  font-size: 11px;
+  color: var(--secondary);
+  white-space: nowrap;
+}
+
+.skill-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  padding: 8px 12px;
+  transition: opacity 0.15s;
+}
+
+.skill-row.disabled {
+  opacity: 0.6;
+}
+
+.skill-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--label);
+}
+
+.skill-path {
+  font-size: 10px;
+  color: var(--tertiary);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--warning);
 }
 
 .detail-empty {

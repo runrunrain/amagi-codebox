@@ -1001,3 +1001,28 @@ func TestInstallPluginFallbackReturnsCLIErrWhenConfigWriteFails(t *testing.T) {
 		t.Fatalf("配置写失败时 opencode.json 应保持目录原状: info=%v err=%v", info, statErr)
 	}
 }
+
+// P4：成功的写操作触发插件面变更通知（共用中心聚合失效联动）。
+func TestUninstallNotifiesChange(t *testing.T) {
+	configDir := t.TempDir()
+	cacheDir := t.TempDir()
+	writeTestConfig(t, configDir, []any{"keep-plugin", "drop-plugin"})
+	svc := NewServiceWithDeps(configDir, cacheDir, nil, testResolver{}, &testRunner{})
+	notified := 0
+	svc.OnChange = func() { notified++ }
+
+	if _, err := svc.UninstallPlugin("drop-plugin"); err != nil {
+		t.Fatalf("UninstallPlugin: %v", err)
+	}
+	if notified != 1 {
+		t.Fatalf("expected exactly 1 notification, got %d", notified)
+	}
+
+	// 失败路径（未登记插件）不触发通知。
+	if _, err := svc.UninstallPlugin("ghost"); err == nil {
+		t.Fatal("expected error for unknown plugin")
+	}
+	if notified != 1 {
+		t.Fatalf("failed op must not notify, got %d", notified)
+	}
+}

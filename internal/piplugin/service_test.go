@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 // 测试桩：CLI 解析器与进程执行器（复刻 opencodeplugin/service_test.go 的模式）。
@@ -501,5 +503,233 @@ func TestGetDetailsAndRemoveAcceptAbsoluteForm(t *testing.T) {
 	}
 	if want := []string{"remove", "../../maorun-workpace/amagi-pi"}; !reflect.DeepEqual(runner2.specs[0].Args, want) {
 		t.Fatalf("remove args should use settings raw form: got %#v", runner2.specs[0].Args)
+	}
+}
+
+// ============================================================================
+// P4：包级启停（!**×4 标记）与 skill 级过滤启停（pi config TUI 对齐）
+// ============================================================================
+
+// writeTestSkillEntity 写一个带 skills 目录的 npm 实体：
+// <agentDir>/npm/node_modules/<name>/skills/<skill>/SKILL.md。
+func writeTestSkillEntity(t *testing.T, agentDir, name string, skills ...string) string {
+	t.Helper()
+	root := writeTestNpmEntity(t, agentDir, name, map[string]any{"name": name, "version": "1.0.0"})
+	for _, skill := range skills {
+		writeTestFile(t, filepath.Join(root, "skills", skill, "SKILL.md"),
+			"---\nname: "+skill+"\ndescription: test skill\n---\n# "+skill)
+	}
+	return root
+}
+
+func readPackagesRaw(t *testing.T, agentDir string) []gjson.Result {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(agentDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gjson.GetBytes(data, "packages").Array()
+}
+
+func TestSetPackageEnabledRoundTripCollapsesToString(t *testing.T) {
+	agentDir := t.TempDir()
+	source := "npm:demo-pkg"
+	writeTestSettings(t, agentDir, []any{source})
+	writeTestSkillEntity(t, agentDir, "demo-pkg", "alpha")
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+
+	if _, err := svc.SetPackageEnabled(source, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	packages, err := svc.ListInstalledPackages()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(packages) != 1 || packages[0].Enabled {
+		t.Fatalf("expected disabled package, got %+v", packages)
+	}
+	entry := readPackagesRaw(t, agentDir)[0]
+	for _, key := range []string{"extensions", "skills", "prompts", "themes"} {
+		got := entry.Get(key).Array()
+		if len(got) != 1 || got[0].String() != "!**" {
+			t.Fatalf("disable marker wrong for %s: %s", key, entry.Raw)
+		}
+	}
+
+	if _, err := svc.SetPackageEnabled(source, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	// 四键全空 → 条目折叠回纯字符串（pi config TUI 同款规则）。
+	if got := readPackagesRaw(t, agentDir)[0]; got.Type != gjson.String || got.String() != source {
+		t.Fatalf("expected collapse back to string, got %s", got.Raw)
+	}
+	packages, err = svc.ListInstalledPackages()
+	if err != nil {
+		t.Fatalf("list after enable: %v", err)
+	}
+	if len(packages) != 1 || !packages[0].Enabled {
+		t.Fatalf("expected enabled package, got %+v", packages)
+	}
+}
+
+func TestSetPackageEnabledPreservesUserFilters(t *testing.T) {
+	agentDir := t.TempDir()
+	source := "npm:filtered"
+	writeTestSettings(t, agentDir, []any{map[string]any{
+		"source": source,
+		"skills": []string{"only-this"},
+	}})
+	writeTestSkillEntity(t, agentDir, "filtered", "only-this", "other")
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+
+	if _, err := svc.SetPackageEnabled(source, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	entry := readPackagesRaw(t, agentDir)[0]
+	skills := entry.Get("skills").Array()
+	if len(skills) != 2 || skills[0].String() != "only-this" || skills[1].String() != "!**" {
+		t.Fatalf("user filter must be preserved with !** appended: %s", entry.Raw)
+	}
+	if _, err := svc.SetPackageEnabled(source, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	entry = readPackagesRaw(t, agentDir)[0]
+	skills = entry.Get("skills").Array()
+	if len(skills) != 1 || skills[0].String() != "only-this" {
+		t.Fatalf("enable must restore original filter: %s", entry.Raw)
+	}
+	if entry.Get("extensions").Exists() || entry.Get("prompts").Exists() || entry.Get("themes").Exists() {
+		t.Fatalf("keys absent before disable must stay absent: %s", entry.Raw)
+	}
+}
+
+func TestSetPackageSkillEnabledWritesTUIParityPatterns(t *testing.T) {
+	agentDir := t.TempDir()
+	source := "npm:skilled"
+	writeTestSettings(t, agentDir, []any{source})
+	writeTestSkillEntity(t, agentDir, "skilled", "alpha", "beta")
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+
+	if _, err := svc.SetPackageSkillEnabled(source, "alpha", false); err != nil {
+		t.Fatalf("disable skill: %v", err)
+	}
+	skills := readPackagesRaw(t, agentDir)[0].Get("skills").Array()
+	if len(skills) != 1 || skills[0].String() != "-skills/alpha/SKILL.md" {
+		t.Fatalf("expected TUI-parity -pattern, got %v", skills)
+	}
+
+	// 详情视图按过滤语义标记 alpha 停用、beta 保持启用。
+	detail, err := svc.GetPackageDetails(source)
+	if err != nil {
+		t.Fatalf("details: %v", err)
+	}
+	states := map[string]bool{}
+	for _, res := range detail.Resources {
+		if res.Type == "skill" {
+			states[res.Name] = !res.Disabled
+		}
+	}
+	if states["alpha"] || !states["beta"] {
+		t.Fatalf("skill states wrong: %+v (resources: %+v)", states, detail.Resources)
+	}
+
+	if _, err := svc.SetPackageSkillEnabled(source, "alpha", true); err != nil {
+		t.Fatalf("enable skill: %v", err)
+	}
+	skills = readPackagesRaw(t, agentDir)[0].Get("skills").Array()
+	if len(skills) != 1 || skills[0].String() != "+skills/alpha/SKILL.md" {
+		t.Fatalf("expected TUI-parity +pattern, got %v", skills)
+	}
+}
+
+func TestSetPackageSkillEnabledRejectsUnknownSkill(t *testing.T) {
+	agentDir := t.TempDir()
+	source := "npm:skilled"
+	writeTestSettings(t, agentDir, []any{source})
+	writeTestSkillEntity(t, agentDir, "skilled", "alpha")
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+
+	if _, err := svc.SetPackageSkillEnabled(source, "nope", false); err == nil {
+		t.Fatal("expected error for unknown skill")
+	}
+	if _, err := svc.SetPackageSkillEnabled("npm:missing", "alpha", false); err == nil {
+		t.Fatal("expected error for unregistered source")
+	}
+}
+
+func TestSetPackageEnabledLocalSourceAbsoluteForm(t *testing.T) {
+	agentDir := t.TempDir()
+	abs := filepath.Join(agentDir, "local-pkg")
+	// settings 存相对 agentDir 形态（pi install 规范化）；面板回传绝对形态。
+	writeTestSettings(t, agentDir, []any{"./local-pkg"})
+	writeTestFile(t, filepath.Join(abs, "package.json"), `{"name":"local-pkg","version":"0.0.1"}`)
+	writeTestFile(t, filepath.Join(abs, "skills", "one", "SKILL.md"), "---\nname: one\n---\n# one")
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+
+	// 面板回传绝对形态（inspectPackage 对 local 源输出绝对路径）——归一化匹配。
+	if _, err := svc.SetPackageEnabled(abs, false); err != nil {
+		t.Fatalf("disable via absolute form: %v", err)
+	}
+	packages, err := svc.ListInstalledPackages()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(packages) != 1 || packages[0].Enabled {
+		t.Fatalf("expected disabled local package, got %+v", packages)
+	}
+}
+
+func TestSkillEnabledByFiltersSemantics(t *testing.T) {
+	baseDir := "/pkg"
+	fileA := "/pkg/skills/alpha/SKILL.md"
+	fileB := "/pkg/skills/beta.md"
+
+	cases := []struct {
+		name     string
+		file     string
+		patterns []string
+		want     bool
+	}{
+		{"nil loads all", fileA, nil, true},
+		{"empty declared loads none", fileA, []string{}, false},
+		{"whitelist match", fileA, []string{"skills/alpha"}, true},
+		{"whitelist miss", fileA, []string{"skills/beta.md"}, false},
+		{"glob exclude all", fileA, []string{"!**"}, false},
+		{"glob exclude subtree", fileA, []string{"!skills/alpha/*"}, false},
+		{"glob exclude misses sibling", fileB, []string{"!skills/alpha/*"}, true},
+		{"exact force exclude by file", fileA, []string{"-skills/alpha/SKILL.md"}, false},
+		{"exact force exclude by parent dir", fileA, []string{"-skills/alpha"}, false},
+		{"exact force exclude misses sibling", fileB, []string{"-skills/alpha"}, true},
+		{"force include overrides exclude", fileA, []string{"!skills/*", "+skills/alpha/SKILL.md"}, true},
+		{"force exclude overrides include", fileA, []string{"skills/alpha", "-skills/alpha/SKILL.md"}, false},
+	}
+	for _, tc := range cases {
+		if got := skillEnabledByFilters(baseDir, tc.file, tc.patterns); got != tc.want {
+			t.Errorf("%s: skillEnabledByFilters(%q, %v) = %v, want %v", tc.name, tc.file, tc.patterns, got, tc.want)
+		}
+	}
+}
+
+func TestSetPackageEnabledNotifiesChange(t *testing.T) {
+	agentDir := t.TempDir()
+	source := "npm:watched"
+	writeTestSettings(t, agentDir, []any{source})
+	writeTestSkillEntity(t, agentDir, "watched", "alpha")
+	svc := NewServiceWithDeps(agentDir, nil, testResolver{}, &testRunner{})
+	notified := 0
+	svc.OnChange = func() { notified++ }
+
+	if _, err := svc.SetPackageEnabled(source, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := svc.SetPackageSkillEnabled(source, "alpha", false); err != nil {
+		t.Fatalf("skill disable: %v", err)
+	}
+	// CLI 写路径（fake runner 成功）也应触发通知。
+	if _, err := svc.InstallPackage("npm:another"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if notified != 3 {
+		t.Fatalf("expected 3 notifications, got %d", notified)
 	}
 }

@@ -25,10 +25,14 @@ func (codexPluginTestResolver) ResolveExecutable(command string, args []string, 
 type codexPluginTestRunner struct {
 	calls            []platform.CommandSpec
 	pluginListOutput string
+	run              func(platform.CommandSpec) (*platform.ProcessResult, error)
 }
 
 func (r *codexPluginTestRunner) Run(_ context.Context, spec platform.CommandSpec) (*platform.ProcessResult, error) {
 	r.calls = append(r.calls, spec)
+	if r.run != nil {
+		return r.run(spec)
+	}
 	joinedArgs := strings.Join(spec.Args, " ")
 	switch {
 	case strings.HasPrefix(joinedArgs, "plugin add "):
@@ -349,4 +353,130 @@ func runnerCalled(calls []platform.CommandSpec, args ...string) bool {
 		}
 	}
 	return false
+}
+
+// ============================================================================
+// P4：单插件更新（市场刷新 + 重装 + 状态恢复）与变更通知
+// ============================================================================
+
+// writeCodexUpdateFixture 建一个可被 plugin list 命中的已装插件（config.toml
+// 登记 + cache 实体），返回实体根目录。
+func writeCodexUpdateFixture(t *testing.T, codexDir string, enabled bool) string {
+	t.Helper()
+	pluginRoot := filepath.Join(codexDir, "plugins", "cache", "market", "amagi", "1.10.0")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0755); err != nil {
+		t.Fatalf("mkdir plugin manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"), []byte(`{"name":"amagi","version":"1.10.0"}`), 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	enabledText := "true"
+	if !enabled {
+		enabledText = "false"
+	}
+	config := "[plugins.\"amagi@market\"]\nenabled = " + enabledText + "\n"
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(config), 0600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	return pluginRoot
+}
+
+func TestUpdatePluginReinstallsAndRestoresDisabledState(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := writeCodexUpdateFixture(t, codexDir, false)
+	runner := &codexPluginTestRunner{pluginListOutput: "amagi@market installed enabled 1.10.0 " + pluginRoot}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+
+	result, err := s.UpdatePlugin(PluginSelector{PluginID: "amagi@market"})
+	if err != nil {
+		t.Fatalf("UpdatePlugin: %v result=%+v", err, result)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got %+v", result)
+	}
+	// 序列：市场刷新 → 卸载 → 重装 → 安装后校验 list。
+	wantSequence := [][]string{
+		{"plugin", "marketplace", "upgrade", "market"},
+		{"plugin", "remove", "amagi@market"},
+		{"plugin", "add", "amagi@market"},
+		{"plugin", "list"},
+	}
+	for _, want := range wantSequence {
+		if !runnerCalled(runner.calls, want...) {
+			t.Fatalf("expected call %v in sequence, got %+v", want, runner.calls)
+		}
+	}
+	// 重装会把 enabled 重置为 true，UpdatePlugin 必须恢复旧禁用状态。
+	states, err := s.readPluginStates()
+	if err != nil {
+		t.Fatalf("readPluginStates: %v", err)
+	}
+	if states["amagi@market"] {
+		t.Fatalf("expected plugin to stay disabled after update: %+v", states)
+	}
+	if !strings.Contains(result.Output, "已更新插件 amagi@market") {
+		t.Fatalf("expected update summary in output, got %q", result.Output)
+	}
+}
+
+func TestUpdatePluginKeepsEnabledStateAndNotifies(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := writeCodexUpdateFixture(t, codexDir, true)
+	runner := &codexPluginTestRunner{pluginListOutput: "amagi@market installed enabled 1.10.0 " + pluginRoot}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+	notified := 0
+	s.OnChange = func() { notified++ }
+
+	if _, err := s.UpdatePlugin(PluginSelector{PluginID: "amagi@market"}); err != nil {
+		t.Fatalf("UpdatePlugin: %v", err)
+	}
+	states, err := s.readPluginStates()
+	if err != nil {
+		t.Fatalf("readPluginStates: %v", err)
+	}
+	if !states["amagi@market"] {
+		t.Fatalf("expected plugin to stay enabled: %+v", states)
+	}
+	// UpdatePlugin = 卸载通知 + 安装通知 + 自身通知，至少一次即可证明挂钩存在。
+	if notified == 0 {
+		t.Fatal("expected change notifier to fire on update")
+	}
+
+	if _, err := s.SetPluginEnabled(PluginSelector{PluginID: "amagi@market"}, false); err != nil {
+		t.Fatalf("SetPluginEnabled: %v", err)
+	}
+	if _, err := s.UninstallPlugin(PluginSelector{PluginID: "amagi@market"}); err != nil {
+		t.Fatalf("UninstallPlugin: %v", err)
+	}
+	// 卸载触发（1）+ setEnabled 触发（1）+ 更新链触发（≥1）。
+	if notified < 3 {
+		t.Fatalf("expected notifier on every successful write op, got %d", notified)
+	}
+}
+
+func TestUpdatePluginInstallFailureKeepsErrorHonest(t *testing.T) {
+	codexDir := t.TempDir()
+	pluginRoot := writeCodexUpdateFixture(t, codexDir, true)
+	runner := &codexPluginTestRunner{
+		pluginListOutput: "amagi@market installed enabled 1.10.0 " + pluginRoot,
+		run: func(spec platform.CommandSpec) (*platform.ProcessResult, error) {
+			joined := strings.Join(spec.Args, " ")
+			if strings.HasPrefix(joined, "plugin add ") {
+				return &platform.ProcessResult{Stderr: "marketplace fetch failed"}, fmt.Errorf("exit status 1")
+			}
+			return &platform.ProcessResult{Stdout: "ok"}, nil
+		},
+	}
+	s := NewServiceWithDeps(codexDir, nil, codexPluginTestResolver{}, runner)
+
+	result, err := s.UpdatePlugin(PluginSelector{PluginID: "amagi@market"})
+	if err == nil {
+		t.Fatal("expected error when reinstall fails")
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result, got %+v", result)
+	}
+	if !strings.Contains(result.Error, "重装最新版失败") {
+		t.Fatalf("error should be honest about the uninstalled state: %q", result.Error)
+	}
 }

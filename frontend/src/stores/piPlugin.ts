@@ -94,6 +94,27 @@ export const usePiPluginStore = defineStore('piPlugin', () => {
     return result;
   }
 
+  // 包级启停（P4）：禁用=四键 !** 全排除标记；启用=移除标记恢复原过滤形态。
+  // 成功后刷新列表与当前详情（Enabled 与资源态都变化）。
+  async function setEnabled(source: string, enabled: boolean) {
+    const result = await api.setPiPackageEnabled(source, enabled);
+    loadedAt.value = null;
+    await refresh(true);
+    if (activeSource.value && installed.value.some(pkg => pkg.source === activeSource.value)) {
+      await selectPackage(activeSource.value);
+    }
+    return result;
+  }
+
+  // skill 级启停（P4）：只重拉当前详情（skills[] 过滤态变化，列表面不变）。
+  async function setSkillEnabled(source: string, skillName: string, enabled: boolean) {
+    const result = await api.setPiPackageSkillEnabled(source, skillName, enabled);
+    if (activeSource.value === source) {
+      await selectPackage(source);
+    }
+    return result;
+  }
+
   return {
     installed,
     warnings,
@@ -107,6 +128,8 @@ export const usePiPluginStore = defineStore('piPlugin', () => {
     install,
     update,
     remove,
+    setEnabled,
+    setSkillEnabled,
   };
 });
 

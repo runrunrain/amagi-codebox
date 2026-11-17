@@ -26,9 +26,22 @@ type Service struct {
 	log      *logging.Service
 	resolver platform.CLIResolver
 	runner   platform.ProcessRunner
+	// OnChange 在成功变更已装插件面后调用一次（P4：供上层失效共用中心聚合
+	// 缓存）。导出字段而非方法：避免进入 Wails 绑定面；装配期注入，运行中只读。
+	OnChange func()
+	// pluginsRoot 是 omp 插件根（~/.omp/plugins）；空 = defaultOmpPluginsRoot()。
+	// 仅测试注入用（白盒字段），生产路径恒走默认值。
+	pluginsRoot string
 	// mu 串行化写操作（install/uninstall/enable/disable/upgrade），
 	// 避免并发 CLI 写互相踩踏 omp 的注册表/实体目录。
 	mu sync.Mutex
+}
+
+// notifyChanged 在成功变更已装插件面后调用；回调异常不阻断主流程。
+func (s *Service) notifyChanged() {
+	if s.OnChange != nil {
+		s.OnChange()
+	}
 }
 
 // NewService creates an omp plugin service.
@@ -112,7 +125,11 @@ func (s *Service) InstallPlugin(spec string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", spec)
+	res, err := s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", spec)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }
 
 // UninstallPlugin 通过 omp CLI 卸载插件（npm 与 marketplace 由 CLI 自动路由）。
@@ -123,7 +140,11 @@ func (s *Service) UninstallPlugin(name string) (*CommandResult, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executeOmpCommand(context.TODO(), ompPluginWriteTimeout, "plugin", "uninstall", name)
+	res, err := s.executeOmpCommand(context.TODO(), ompPluginWriteTimeout, "plugin", "uninstall", name)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }
 
 // SetPluginEnabled 启用/禁用插件（omp plugin enable|disable <name>）。
@@ -138,7 +159,11 @@ func (s *Service) SetPluginEnabled(name string, enabled bool) (*CommandResult, e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.executeOmpCommand(context.TODO(), ompPluginWriteTimeout, "plugin", action, name)
+	res, err := s.executeOmpCommand(context.TODO(), ompPluginWriteTimeout, "plugin", action, name)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }
 
 // UpgradePlugin 升级单个插件：
@@ -157,12 +182,21 @@ func (s *Service) UpgradePlugin(name string) (*CommandResult, error) {
 		for i := range plugins {
 			if plugins[i].ID == name || plugins[i].Name == name {
 				if plugins[i].Kind == pluginKindMarketplace {
-					return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "plugin", "upgrade", plugins[i].ID)
+					return s.upgradeAndNotify("plugin", "upgrade", plugins[i].ID)
 				}
-				return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", name, "--force")
+				return s.upgradeAndNotify("install", name, "--force")
 			}
 		}
 	}
 	// 未在列表命中（含旧版 omp 降级为空列表）：按 npm 重装即升级兜底。
-	return s.executeOmpCommand(context.TODO(), ompInstallTimeout, "install", name, "--force")
+	return s.upgradeAndNotify("install", name, "--force")
+}
+
+// upgradeAndNotify 执行升级命令（ompInstallTimeout 档位）并在成功后通知插件面变更。
+func (s *Service) upgradeAndNotify(args ...string) (*CommandResult, error) {
+	res, err := s.executeOmpCommand(context.TODO(), ompInstallTimeout, args...)
+	if err == nil {
+		s.notifyChanged()
+	}
+	return res, err
 }

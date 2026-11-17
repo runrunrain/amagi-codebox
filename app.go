@@ -51,6 +51,7 @@ import (
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
+	"amagi-codebox/internal/sharedext"
 	"amagi-codebox/internal/skins"
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
@@ -256,6 +257,16 @@ type App struct {
 	// GitAssist 是 AI 辅助 Git 提交/推送服务（终端会话工作区的分支切换/提交/
 	// 推送 + 内置模型生成提交信息）。apiKeyResolver 由 Secrets 适配注入。
 	GitAssist *gitassist.Service
+	// sharedExt 是公共扩展中心服务（扩展管理页「共用」：公共 skill / 公共 MCP
+	// 仓库、按需分发与聚合视图，internal/sharedext）。bind_list 直接绑定服务
+	// 本体供简单 CRUD；需要 App 上下文的门面（选择对话框 / provider 聚合 /
+	// MCP 导入信封）集中在文件尾 Shared Extensions 段。
+	sharedExt *sharedext.Service
+	// sharedExtAggForce 聚合视图强制刷新标记：InvalidateSharedExtCache 置位，
+	// 下一次 GetAllSharedSkillsAggregated 消费并旁路 sharedext 的 30s TTL
+	// 缓存（P4 在插件更新/卸载后调用——插件侧变化不经过 registry 写路径，
+	// 不会触发 sharedext 内建的缓存失效）。
+	sharedExtAggForce atomic.Bool
 	// modalityProbeInFlight 多模态探测在飞去重（key: provider/model）。
 	modalityProbeInFlight sync.Map
 	// quotaProbeFlights 额度探测单飞表（key: provider 名）。与 modality 的
@@ -498,7 +509,19 @@ func NewApp(mobileAssets embed.FS) *App {
 		compensationDebts:   launchplan.NewCompensationDebtRegistry(),
 		WSLSetup:            wslsetup.NewService(log),
 		DockerWSL:           dockerwsl.NewService(log),
+		// 公共扩展中心：仓库根 = <configDir>/shared（与 Config/Skins 等同根）。
+		sharedExt: sharedext.NewService(configDir, log),
 	}
+	// P4 插件生命周期联动：四引擎插件服务在成功的写操作（install/uninstall/
+	// update/启停）后回调，置位共用中心聚合的强制刷新标记——下次聚合拉取
+	// （App.GetAllSharedSkillsAggregated）旁路 30s TTL 重建。Claude 引擎的
+	// internal/plugin 不在 P4 写面内：其插件变更依赖 30s TTL + 面板切 tab 重挂
+	// 时重新拉取兜底（ExtensionsView 各 pane 为 v-if，切换即重载）。
+	invalidateShared := app.InvalidateSharedExtCache
+	codexPluginsSvc.OnChange = invalidateShared
+	openCodePluginsSvc.OnChange = invalidateShared
+	piPluginsSvc.OnChange = invalidateShared
+	ompPluginsSvc.OnChange = invalidateShared
 	// P3-S1：WSL 供给协调器携带托管面适配器（pi/managed-models + 共享小文件）；
 	// 业务快照源闭包引用 app，在字面量之后装配。
 	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
@@ -6799,4 +6822,488 @@ func (a *App) RemoveSavedWorkDir(path string) ([]settings.WorkDirEntry, error) {
 		return nil, err
 	}
 	return a.Settings.GetSavedWorkDirs(), nil
+}
+
+// ===== Shared Extensions (共用中心) =====
+// 扩展管理页「共用」中心的 App 级门面。简单 CRUD 直接透传 internal/sharedext
+//（服务本体另经 bind_list 绑定，与既有 20 个服务同风格）；本段集中需要
+// App 上下文的入口：系统选择对话框（需 Wails ctx）、五引擎 provider 组装的
+// 聚合视图、Wails v2 单值返回信封，以及 P4 插件更新/卸载后的缓存失效挂点。
+// 错误原样透传，不在门面层吞掉或降级（聚合的 provider 组装除外：单引擎失败
+// 降级为空并记日志，不让整个聚合失败）。
+
+// ImportSharedMCPResult 是 ImportSharedMCPServers 的单值返回信封。
+// Wails v2 绑定对 (value, value, error) 多返回值支持有限，服务层
+// ImportMCPServers 的三返回值 (imported, skipped, error) 在此折叠为结构体；
+// skipped 非空属于部分成功，前端应同时展示两者而不是仅报错。
+type ImportSharedMCPResult struct {
+	Imported []sharedext.SharedMCPServer `json:"imported"`
+	Skipped  []string                    `json:"skipped"`
+}
+
+// readTextFileMaxBytes 限制 ReadTextFile 单次读取大小（预览 MCP JSON 用）。
+const readTextFileMaxBytes = 1 << 20 // 1MB
+
+// GetSharedSkills 返回公共 skill 仓库清单（含 Missing 失联标记）。
+// 签名无 error（任务契约）：仅 registry 磁盘异常才会失败，此时记日志返回空。
+func (a *App) GetSharedSkills() []sharedext.SharedSkill {
+	skills, err := a.sharedExt.ListSharedSkills()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取公共 skill 清单失败", err.Error())
+		return nil
+	}
+	return skills
+}
+
+// ImportSharedSkillResult 是 ImportSharedSkillFromZip/Dir 的单值返回信封
+//（M3，语义同 ImportSharedMCPResult）：部分成功（同名/非法名跳过）不返回
+// error，跳过明细折叠进 Skipped 供前端双 toast；仅整体失败（一个都没导入）
+// 才返回 error。
+type ImportSharedSkillResult struct {
+	Imported []sharedext.SharedSkill `json:"imported"`
+	Skipped  []string                `json:"skipped"`
+}
+
+// partialSkillImportPrefix 是 internal/sharedext 部分成功错误的固定前缀，
+// App 层据此把「已导入 + 部分跳过」折叠为信封（内部方法契约不变）。
+const partialSkillImportPrefix = "部分 skill 未导入: "
+
+// wrapSkillImport 把服务层 (imported, error) 双返回值折叠为信封：
+// error 为 nil → 信封；部分成功（imported 非空 + 错误）→ 跳过明细从固定
+// 前缀后的错误文本提取，信封返回不报错；全失败（imported 空 + 错误）→
+// 原错误透传（Wails 契约下前端只拿到 error，此时才应如此）。
+func wrapSkillImport(skills []sharedext.SharedSkill, err error) (ImportSharedSkillResult, error) {
+	if err == nil {
+		return ImportSharedSkillResult{Imported: skills, Skipped: []string{}}, nil
+	}
+	if len(skills) == 0 {
+		return ImportSharedSkillResult{}, err
+	}
+	detail := strings.TrimPrefix(err.Error(), partialSkillImportPrefix)
+	return ImportSharedSkillResult{Imported: skills, Skipped: []string{detail}}, nil
+}
+
+// ImportSharedSkillFromZip 从 zip 压缩包导入公共 skill（可含多个）。
+// 部分成功不报错：已导入项在 Imported，跳过明细在 Skipped。
+func (a *App) ImportSharedSkillFromZip(zipPath string) (ImportSharedSkillResult, error) {
+	skills, err := a.sharedExt.ImportSkillFromZip(zipPath)
+	return wrapSkillImport(skills, err)
+}
+
+// ImportSharedSkillFromDir 从文件夹导入公共 skill（自身含 SKILL.md 视为单个，
+// 否则扫描一层子目录）。部分成功语义同 ImportSharedSkillFromZip。
+func (a *App) ImportSharedSkillFromDir(dirPath string) (ImportSharedSkillResult, error) {
+	skills, err := a.sharedExt.ImportSkillFromDir(dirPath)
+	return wrapSkillImport(skills, err)
+}
+
+// DeleteSharedSkill 删除公共 skill（先按 Deployed 清单回收各目标引擎，再删
+// 仓库目录与 registry 条目）。Missing 条目的清理入口也是它。
+func (a *App) DeleteSharedSkill(name string) error {
+	return a.sharedExt.DeleteSharedSkill(name)
+}
+
+// SetSharedSkillEnabled 启用/禁用公共 skill：true→分发到全部 Targets，
+// false→回收全部 Deployed；幂等。
+func (a *App) SetSharedSkillEnabled(name string, enabled bool) error {
+	return a.sharedExt.SetSharedSkillEnabled(name, enabled)
+}
+
+// SetSharedSkillTargets 设置公共 skill 的目标引擎（diff 分发/回收；
+// Enabled=false 时只存不分发）。
+func (a *App) SetSharedSkillTargets(name string, targets []sharedext.Engine) error {
+	return a.sharedExt.SetSharedSkillTargets(name, targets)
+}
+
+// GetSharedMCPServers 返回公共 MCP server 清单。签名无 error（任务契约）：
+// 失败时记日志返回空。
+func (a *App) GetSharedMCPServers() []sharedext.SharedMCPServer {
+	servers, err := a.sharedExt.ListSharedMCPServers()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取公共 MCP 清单失败", err.Error())
+		return nil
+	}
+	return servers
+}
+
+// PreviewSharedMCPJSON 纯解析预览 MCP JSON（不落库），供「粘贴 → 预览 → 勾选
+// → ImportSharedMCPServers」两步交互的第一步。
+func (a *App) PreviewSharedMCPJSON(text string) ([]sharedext.SharedMCPServer, error) {
+	return sharedext.ParseMCPJSON(text)
+}
+
+// ImportSharedMCPServers 批量落库公共 MCP server；同名/非法条目进 skipped
+// （部分成功不报错），仅 registry 写入失败才返回 error。
+func (a *App) ImportSharedMCPServers(servers []sharedext.SharedMCPServer) (ImportSharedMCPResult, error) {
+	imported, skipped, err := a.sharedExt.ImportMCPServers(servers)
+	if err != nil {
+		return ImportSharedMCPResult{}, err
+	}
+	return ImportSharedMCPResult{Imported: imported, Skipped: skipped}, nil
+}
+
+// DeleteSharedMCPServer 删除公共 MCP server（先回收各目标引擎写入点）。
+func (a *App) DeleteSharedMCPServer(name string) error {
+	return a.sharedExt.DeleteSharedMCPServer(name)
+}
+
+// SetSharedMCPServerEnabled 启用/禁用公共 MCP server（启停同步分发/回收）。
+func (a *App) SetSharedMCPServerEnabled(name string, enabled bool) error {
+	return a.sharedExt.SetSharedMCPServerEnabled(name, enabled)
+}
+
+// SetSharedMCPServerTargets 设置公共 MCP server 的目标引擎。
+func (a *App) SetSharedMCPServerTargets(name string, targets []sharedext.Engine) error {
+	return a.sharedExt.SetSharedMCPServerTargets(name, targets)
+}
+
+// GetAllSharedSkillsAggregated 返回聚合 skill 视图（仓库手动条目 + 五引擎
+// 插件来源动态合并）。force=true 旁路 sharedext 的 30s TTL 缓存；
+// InvalidateSharedExtCache 置位的强制刷新标记在此消费。
+func (a *App) GetAllSharedSkillsAggregated(force bool) ([]sharedext.AggregatedSkill, error) {
+	if a.sharedExtAggForce.Swap(false) {
+		force = true
+	}
+	// m2：providers 组装（含 codex CLI fork 与五引擎扫描）以惰性构建器
+	// 传入，缓存命中时不再执行——原无条件组装使 30s TTL 缓存几乎无收益。
+	return a.sharedExt.GetAggregatedSkills(a.buildSharedSkillProviders, force)
+}
+
+// InvalidateSharedExtCache 使聚合视图缓存失效（下一次聚合强制重建）。
+// P4 在插件更新/卸载路径调用：插件来源 skill 的变化不经过 sharedext 的
+// registry 写路径，不会触发其内建缓存失效，需要外部挂点。
+func (a *App) InvalidateSharedExtCache() {
+	a.sharedExtAggForce.Store(true)
+}
+
+// PickSharedSkillZipFile 弹出系统文件选择对话框选择 skill zip 压缩包。
+// 用户取消返回空串（无错误）。
+func (a *App) PickSharedSkillZipFile() (string, error) {
+	path, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "选择 skill 压缩包",
+		Filters: []wailsRuntime.FileFilter{
+			{DisplayName: "ZIP 压缩包 (*.zip)", Pattern: "*.zip"},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("open file dialog: %w", err)
+	}
+	return path, nil
+}
+
+// PickSharedSkillDir 弹出系统目录选择对话框选择 skill 文件夹。
+// 用户取消返回空串（无错误）。
+func (a *App) PickSharedSkillDir() (string, error) {
+	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "选择 skill 文件夹",
+	})
+	if err != nil {
+		return "", fmt.Errorf("open directory dialog: %w", err)
+	}
+	return dir, nil
+}
+
+// PickMCPJSONFile 弹出系统文件选择对话框选择 MCP JSON 文件。
+// 用户取消返回空串（无错误）。
+func (a *App) PickMCPJSONFile() (string, error) {
+	path, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "选择 MCP JSON 文件",
+		Filters: []wailsRuntime.FileFilter{
+			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("open file dialog: %w", err)
+	}
+	return path, nil
+}
+
+// ReadTextFile 读取所选 JSON 文件的文本内容给前端预览（限制 1MB，防止
+// 误选超大文件拖垮 webview）。
+func (a *App) ReadTextFile(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("文件路径为空")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("读取文件信息失败: %w", err)
+	}
+	if info.IsDir() {
+		return "", errors.New("所选路径是目录")
+	}
+	if info.Size() > readTextFileMaxBytes {
+		return "", fmt.Errorf("文件过大（%d 字节，超出 1MB 上限）", info.Size())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("读取文件失败: %w", err)
+	}
+	return string(data), nil
+}
+
+// buildSharedSkillProviders 组装五个引擎的插件 skill providers 供聚合视图
+// 使用。任一引擎失败只降级为空并记日志，不让整个聚合失败（CLI 不可用、
+// 配置读取失败等都是可容忍的降级场景）。
+//
+// 覆盖现状（P4 后）：
+//   - claude：skills + 子项禁用（GetPluginDetail 已把 plugin-subitems.json
+//     合并进 detail.SubItems）；插件级 Enabled 不映射（claude settings
+//     enabledPlugins 缺省语义不确定，避免误标，交内建 TTL/刷新）；
+//   - codex：skills + 插件级禁用映射（config.toml enabled=false → 全部
+//     skill 标记停用）；子项级禁用无存储（CLI/配置均无该机制，探测证据
+//     见 P4 报告）→ 空；
+//   - opencode：skills 可取（ResourceInfo 无描述字段）；无子项/插件级启停
+//     机制（opencode.json plugin 数组仅成员语义，1.19.3 无 enable 字段）→ 空；
+//   - pi：skills + skill 级禁用（packages 条目 skills[] 过滤语义评估）+
+//     包级禁用（!**×4 标记 → 全部标记停用）；
+//   - omp：skills（npm 实体路径扫描；marketplace 回退 installed_plugins.json）
+//   - 插件级禁用映射（omp plugin disable → 全部标记停用）；无 skill 级机制。
+func (a *App) buildSharedSkillProviders() []sharedext.PluginSkillsProvider {
+	providers := make([]sharedext.PluginSkillsProvider, 0, 16)
+	providers = append(providers, a.sharedSkillProvidersClaude()...)
+	providers = append(providers, a.sharedSkillProvidersCodex()...)
+	providers = append(providers, a.sharedSkillProvidersOpenCode()...)
+	providers = append(providers, a.sharedSkillProvidersPi()...)
+	providers = append(providers, a.sharedSkillProvidersOmp()...)
+	return providers
+}
+
+// sharedSkillProvidersClaude 收集 Claude Code 已装插件的 skills。
+// GetPluginDetail 是本地文件扫描（manifest + skills/agents/commands/hooks
+// 目录），逐插件失败只跳过该插件并记日志。
+func (a *App) sharedSkillProvidersClaude() []sharedext.PluginSkillsProvider {
+	installed, err := a.Plugins.GetInstalledPlugins()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取 Claude 已装插件失败，聚合降级为空", err.Error())
+		return nil
+	}
+	out := make([]sharedext.PluginSkillsProvider, 0, len(installed))
+	for _, p := range installed {
+		detail, err := a.Plugins.GetPluginDetail(p.ID)
+		if err != nil {
+			a.Log.Warn("sharedext", "读取 Claude 插件详情失败，跳过该插件", "plugin="+p.ID, "err="+err.Error())
+			continue
+		}
+		provider := claudePluginSkillsProvider(p, detail)
+		if len(provider.Skills) > 0 {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+// claudePluginSkillsProvider 把 Claude 插件详情映射为聚合 provider（纯函数）。
+// detail.SubItems 的 skill 子项 Enabled=false 即用户级禁用
+// （plugin-subitems.json 记录，GetPluginDetail 已合并），转换为 sharedext
+// 约定的 "skill/<name>" 键。
+func claudePluginSkillsProvider(installed plugin.InstalledPlugin, detail *plugin.PluginDetail) sharedext.PluginSkillsProvider {
+	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
+	for _, sk := range detail.Skills {
+		skills = append(skills, sharedext.PluginSkill{Name: sk.Name, Description: sk.Description})
+	}
+	disabled := make(map[string]bool)
+	for _, item := range detail.SubItems {
+		if item.Type == plugin.SubItemTypeSkill && !item.Enabled {
+			disabled["skill/"+item.Name] = true
+		}
+	}
+	return sharedext.PluginSkillsProvider{
+		Engine:           sharedext.EngineClaude,
+		PluginID:         installed.ID,
+		PluginName:       installed.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
+	}
+}
+
+// sharedSkillProvidersCodex 收集 Codex 已装插件的 skills。listPlugins 优先
+// 走 codex CLI（失败回退 config.toml）；GetPluginDetails 内部会再次列装，
+// 单插件详情失败只跳过该插件并记日志。
+func (a *App) sharedSkillProvidersCodex() []sharedext.PluginSkillsProvider {
+	plugins, err := a.CodexPlugins.ListPlugins("")
+	if err != nil {
+		a.Log.Warn("sharedext", "读取 Codex 已装插件失败，聚合降级为空", err.Error())
+		return nil
+	}
+	out := make([]sharedext.PluginSkillsProvider, 0, len(plugins))
+	for _, p := range plugins {
+		detail, err := a.CodexPlugins.GetPluginDetails(codexplugin.PluginSelector{PluginID: p.ID})
+		if err != nil {
+			a.Log.Warn("sharedext", "读取 Codex 插件详情失败，跳过该插件", "plugin="+p.ID, "err="+err.Error())
+			continue
+		}
+		provider := codexPluginSkillsProvider(p, detail)
+		if len(provider.Skills) > 0 {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+// codexPluginSkillsProvider 把 Codex 插件详情映射为聚合 provider（纯函数）。
+// Codex 无子项级禁用机制（SetPluginSubItemEnabled 为兼容占位，config.toml
+// 仅插件级 enabled）——子项禁用表恒空；插件级禁用（Enabled=false）映射为
+// 全部 skill 停用（插件不加载，其 skill 均不可用）。
+func codexPluginSkillsProvider(installed codexplugin.CodexPlugin, detail *codexplugin.CodexPluginDetail) sharedext.PluginSkillsProvider {
+	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
+	for _, sk := range detail.Skills {
+		skills = append(skills, sharedext.PluginSkill{Name: sk.Name, Description: sk.Description})
+	}
+	var disabled map[string]bool
+	if !installed.Enabled {
+		disabled = make(map[string]bool, len(skills))
+		for _, sk := range skills {
+			disabled["skill/"+sk.Name] = true
+		}
+	}
+	return sharedext.PluginSkillsProvider{
+		Engine:           sharedext.EngineCodex,
+		PluginID:         installed.ID,
+		PluginName:       installed.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
+	}
+}
+
+// sharedSkillProvidersOpenCode 收集 OpenCode 已装插件的 skills。
+// ListInstalledPlugins/GetPluginDetails 均为本地配置与目录扫描，无 CLI 调用。
+func (a *App) sharedSkillProvidersOpenCode() []sharedext.PluginSkillsProvider {
+	plugins, err := a.OpenCodePlugins.ListInstalledPlugins()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取 OpenCode 已装插件失败，聚合降级为空", err.Error())
+		return nil
+	}
+	out := make([]sharedext.PluginSkillsProvider, 0, len(plugins))
+	for _, p := range plugins {
+		detail, err := a.OpenCodePlugins.GetPluginDetails(p.Spec)
+		if err != nil {
+			a.Log.Warn("sharedext", "读取 OpenCode 插件详情失败，跳过该插件", "plugin="+p.ID, "err="+err.Error())
+			continue
+		}
+		provider := openCodePluginSkillsProvider(p, detail)
+		if len(provider.Skills) > 0 {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+// openCodePluginSkillsProvider 把 OpenCode 插件详情映射为聚合 provider
+// （纯函数）。ResourceInfo 只有 Name/FilePath，无描述字段；PluginID 取
+// Plugin.ID（与 Spec 同值，P3 跳插件详情可直接用）。OpenCode 无子项级启停
+// 机制（P4 探测：opencode.json plugin 数组仅成员语义，1.19.3 CLI 无 enable
+// 子命令；新 schema 的 plugins "-id" 指令作用于插件 ID 而非 skill）——
+// SubItemsDisabled 恒空，前端 opengine 条目不提供单 skill 开关（不造假开关）。
+func openCodePluginSkillsProvider(installed opencodeplugin.Plugin, detail *opencodeplugin.PluginDetail) sharedext.PluginSkillsProvider {
+	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
+	for _, sk := range detail.Skills {
+		skills = append(skills, sharedext.PluginSkill{Name: sk.Name})
+	}
+	return sharedext.PluginSkillsProvider{
+		Engine:     sharedext.EngineOpenCode,
+		PluginID:   installed.ID,
+		PluginName: installed.Name,
+		Skills:     skills,
+	}
+}
+
+// sharedSkillProvidersPi 收集 pi 已装包的 skills（包资源里 type=skill 条目）。
+// ListInstalledPackages/GetPackageDetails 均为本地配置与实体目录扫描。
+func (a *App) sharedSkillProvidersPi() []sharedext.PluginSkillsProvider {
+	packages, err := a.PiPlugins.ListInstalledPackages()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取 pi 已装包失败，聚合降级为空", err.Error())
+		return nil
+	}
+	out := make([]sharedext.PluginSkillsProvider, 0, len(packages))
+	for _, pkg := range packages {
+		detail, err := a.PiPlugins.GetPackageDetails(pkg.Source)
+		if err != nil {
+			a.Log.Warn("sharedext", "读取 pi 包详情失败，跳过该包", "pkg="+pkg.Source, "err="+err.Error())
+			continue
+		}
+		provider := piPackageSkillsProvider(pkg, detail)
+		if len(provider.Skills) > 0 {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+// piPackageSkillsProvider 把 pi 包详情映射为聚合 provider（纯函数）。
+// 资源类型字面量 "skill" 对应 piplugin.ResourceInfo.Type 的取值域
+// （extension/skill/prompt/theme；piplugin 的类型常量为包私有）。
+// 子项禁用（P4）：ResourceInfo.Disabled 按包条目 skills[] 过滤语义评估
+// （pi 原生 "-path" 精确排除 / 白名单未命中）；包级禁用（四键 !** 全排除
+// 标记，Enabled=false）→ 全部 skill 标记停用。
+func piPackageSkillsProvider(pkg piplugin.Package, detail *piplugin.PackageDetail) sharedext.PluginSkillsProvider {
+	skills := make([]sharedext.PluginSkill, 0)
+	var disabled map[string]bool
+	for _, res := range detail.Resources {
+		if res.Type != "skill" {
+			continue
+		}
+		skills = append(skills, sharedext.PluginSkill{Name: res.Name})
+		if res.Disabled || !pkg.Enabled {
+			if disabled == nil {
+				disabled = make(map[string]bool)
+			}
+			disabled["skill/"+res.Name] = true
+		}
+	}
+	return sharedext.PluginSkillsProvider{
+		Engine:           sharedext.EnginePi,
+		PluginID:         pkg.ID,
+		PluginName:       pkg.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
+	}
+}
+
+// sharedSkillProvidersOmp 收集 omp 已装插件的 skills（P4 补齐）。
+// 一次 CLI list 后对每个插件做本地目录扫描（InspectPlugin 不再 fork CLI），
+// 避免 N+1 次 CLI 调用；CLI 不可用时该引擎降级为空。
+func (a *App) sharedSkillProvidersOmp() []sharedext.PluginSkillsProvider {
+	plugins, err := a.OmpPlugins.ListPlugins()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取 omp 已装插件失败，聚合降级为空", err.Error())
+		return nil
+	}
+	out := make([]sharedext.PluginSkillsProvider, 0, len(plugins))
+	for _, p := range plugins {
+		detail := a.OmpPlugins.InspectPlugin(p)
+		if detail == nil {
+			continue
+		}
+		provider := ompPluginSkillsProvider(p, detail)
+		if len(provider.Skills) > 0 {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+// ompPluginSkillsProvider 把 omp 插件详情映射为聚合 provider（纯函数）。
+// omp 无 skill 级启停机制（P4 探测：omp plugin enable/disable 为插件级，
+// features 是包可选特性而非 skill）——子项禁用表恒空；插件级禁用
+// （Enabled=false，omp plugin disable）映射为全部 skill 停用。
+func ompPluginSkillsProvider(installed ompplugin.Plugin, detail *ompplugin.PluginDetail) sharedext.PluginSkillsProvider {
+	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
+	for _, sk := range detail.Skills {
+		skills = append(skills, sharedext.PluginSkill{Name: sk.Name})
+	}
+	var disabled map[string]bool
+	if !installed.Enabled {
+		disabled = make(map[string]bool, len(skills))
+		for _, sk := range skills {
+			disabled["skill/"+sk.Name] = true
+		}
+	}
+	return sharedext.PluginSkillsProvider{
+		Engine:           sharedext.EngineOmp,
+		PluginID:         installed.ID,
+		PluginName:       installed.Name,
+		Skills:           skills,
+		SubItemsDisabled: disabled,
+	}
 }

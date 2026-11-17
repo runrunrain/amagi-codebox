@@ -74,6 +74,11 @@
         </div>
       </div>
 
+      <!-- Common tab（共用中心：公共 skill / 公共 MCP） -->
+      <div v-else-if="extMainTab === 'common'" class="tab-pane">
+        <CommonCenterPanel />
+      </div>
+
       <!-- Environment variables tab -->
       <div v-else-if="extMainTab === 'env'" class="tab-pane">
         <EnvVarsPanel />
@@ -135,6 +140,7 @@ import OpenCodePluginPanel from '../components/extensions/OpenCodePluginPanel.vu
 import PiPluginPanel from '../components/extensions/PiPluginPanel.vue';
 import OmpPluginPanel from '../components/extensions/OmpPluginPanel.vue';
 import WSLPluginTargetPlaceholder from '../components/extensions/WSLPluginTargetPlaceholder.vue';
+import CommonCenterPanel from '../components/extensions/common/CommonCenterPanel.vue';
 import EnvVarsPanel from '../components/extensions/EnvVarsPanel.vue';
 import OtherToolsPanel from '../components/extensions/OtherToolsPanel.vue';
 import Dialog from '../components/ui/Dialog.vue';
@@ -153,6 +159,7 @@ const {
 // Main tab options
 const mainTabOptions = ref([
   { value: 'plugins', label: '插件管理' },
+  { value: 'common', label: '共用' },
   { value: 'env', label: '环境变量' },
   { value: 'tools', label: '其他工具' },
 ]);

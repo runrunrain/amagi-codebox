@@ -46,6 +46,10 @@ export function UninstallPlugin(arg1) {
   return window['go']['codexplugin']['Service']['UninstallPlugin'](arg1);
 }
 
+export function UpdatePlugin(arg1) {
+  return window['go']['codexplugin']['Service']['UpdatePlugin'](arg1);
+}
+
 export function UpgradeMarketplace(arg1) {
   return window['go']['codexplugin']['Service']['UpgradeMarketplace'](arg1);
 }

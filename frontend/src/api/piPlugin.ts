@@ -11,6 +11,8 @@ import {
   InstallPackage,
   RefreshPackages,
   RemovePackage,
+  SetPackageEnabled,
+  SetPackageSkillEnabled,
   UpdatePackage,
 } from '../../wailsjs/go/piplugin/Service';
 
@@ -39,6 +41,8 @@ export interface PiResourceInfo {
   name: string;
   filePath: string;
   type: 'extension' | 'skill' | 'prompt' | 'theme';
+  /** P4：仅 skill 填充——按 packages 条目 skills[] 过滤语义评估该资源当前不会加载 */
+  disabled?: boolean;
 }
 
 export interface PiPackageDetail extends PiPackage {
@@ -75,6 +79,17 @@ export async function updatePiPackage(source: string): Promise<PiCommandResult> 
 
 export async function removePiPackage(source: string): Promise<PiCommandResult> {
   return await RemovePackage(source) as PiCommandResult;
+}
+
+/** 包级启停（P4）：禁用=四键 !** 全排除标记（pi 原生过滤语义，pi config TUI 互通）；
+ * 实体与登记保留，重新启用即恢复。 */
+export async function setPiPackageEnabled(source: string, enabled: boolean): Promise<PiCommandResult> {
+  return await SetPackageEnabled(source, enabled) as PiCommandResult;
+}
+
+/** skill 级启停（P4）：写入 pi 原生 skills[] 过滤模式（与 pi config TUI 同形态）。 */
+export async function setPiPackageSkillEnabled(source: string, skillName: string, enabled: boolean): Promise<PiCommandResult> {
+  return await SetPackageSkillEnabled(source, skillName, enabled) as PiCommandResult;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,252 @@
+package sharedext
+
+// 谛听取证测试（diting full 审核）：仅以 go test -overlay 注入运行，
+// 不进入项目树。每条 Test 对应报告中一个 finding 的可复现证据。
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/tidwall/sjson"
+)
+
+// D1: MCP server 名含 TOML bare key 不允许的字符（空格/中文/=/@等）时，
+// serializeTOMLSection 输出未加引号的段头 → 非法 TOML。
+func TestDitingD1BareKeyName(t *testing.T) {
+	for _, name := range []string{"my server", "搜索服务", "a=b", "a@b"} {
+		out, err := SetMCPServerSection(nil, name, map[string]any{"command": "x"})
+		if err != nil {
+			t.Fatalf("name=%q 写入意外报错: %v", name, err)
+		}
+		t.Logf("name=%q -> 输出:\n%s", name, string(out))
+		if !strings.Contains(string(out), "[mcp_servers."+name+"]") {
+			t.Fatalf("name=%q 未生成预期段头", name)
+		}
+	}
+	// 读回歧义：splitTOMLKeyPath 吞空格 → "my server" 读回为 "myserver"。
+	doc, err := parseTOMLDoc([]byte("[mcp_servers.my server]\ncommand = \"x\"\n"))
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	t.Logf("读回段名集合: %v (期望键为 my server，实际含 myserver=%v)",
+		doc.sectionRanges, doc.sectionRanges["mcp_servers.myserver"] != nil)
+	// 二次写入同名 → 追加新段（旧段名读不回）→ 重复段
+	out2, _ := SetMCPServerSection([]byte("[mcp_servers.my server]\ncommand = \"x\"\n"), "my server", map[string]any{"command": "y"})
+	t.Logf("二次写入输出:\n%s", string(out2))
+	if strings.Count(string(out2), "[mcp_servers.") != 2 {
+		t.Fatalf("预期产生重复段，实际 %d 段", strings.Count(string(out2), "[mcp_servers."))
+	}
+}
+
+// D2: 多行字符串内嵌受管段头 → RemoveMCPServerSection 删掉字符串内部行，
+// 留下未闭合的 """，文件损坏。
+func TestDitingD2MultilineStringPhantom(t *testing.T) {
+	input := "[profile]\ntext = \"\"\"\n[mcp_servers.x]\ncommand = \"evil\"\n\"\"\"\nkey = 1\n"
+	out, err := RemoveMCPServerSection([]byte(input), "x")
+	if err != nil {
+		t.Fatalf("remove err: %v", err)
+	}
+	t.Logf("输入:\n%s\n输出:\n%s", input, string(out))
+	if strings.Contains(string(out), "command = \"evil\"") {
+		t.Fatalf("预期字符串内部的段内容被误删")
+	}
+	// 闭合的 """ 行被删 → text 字符串未闭合 → 非法 TOML
+	if strings.Count(string(out), `"""`) != 1 {
+		t.Fatalf("预期只剩一个未闭合的 \"\"\"（输出损坏），实际: %q", string(out))
+	}
+	// Set 同样命中：写入会把字符串内部行当段替换
+	out2, _ := SetMCPServerSection([]byte(input), "x", map[string]any{"command": "new"})
+	if !strings.Contains(string(out2), "[mcp_servers.x]\ncommand = \"new\"") || strings.Count(string(out2), `"""`) != 1 {
+		t.Logf("Set 输出:\n%s", string(out2))
+	}
+}
+
+// D3: 受管段内多行字符串跨行（含 [fake] 形态行）→ 段范围被截断，
+// SetMCPServerSection 替换后留下孤立 """，文件损坏。
+func TestDitingD3MultilineStringTruncatesSection(t *testing.T) {
+	input := "[mcp_servers.x]\ncommand = \"npx\"\nnote = \"\"\"\n[whatever]\n\"\"\"\nother = 1\n"
+	out, err := SetMCPServerSection([]byte(input), "x", map[string]any{"command": "npx", "args": []string{"a"}})
+	if err != nil {
+		t.Fatalf("set err: %v", err)
+	}
+	t.Logf("输入:\n%s\n输出:\n%s", input, string(out))
+	if strings.Count(string(out), `"""`) != 2 {
+		t.Fatalf("预期输出含孤立多行字符串定界符（非法 TOML），实际: %q", string(out))
+	}
+}
+
+// D4: sjson 对非法 JSON（用户手改坏的 ~/.claude.json）的行为。
+func TestDitingD4SjsonOnBrokenJSON(t *testing.T) {
+	broken := []byte(`{"broken":`)
+	updated, err := sjson.SetBytes(broken, "mcpServers.foo", map[string]any{"command": "x"})
+	t.Logf("broken input -> out=%q err=%v", string(updated), err)
+	broken2 := []byte(`{not json`)
+	updated2, err2 := sjson.SetBytes(broken2, "mcpServers.foo", map[string]any{"command": "x"})
+	t.Logf("broken2 input -> out=%q err=%v", string(updated2), err2)
+}
+
+// D5: skill 分发部分失败 → 已成功引擎的 Deployed 不落 registry（漂移）。
+func TestDitingD5PartialDeployDrift(t *testing.T) {
+	base := t.TempDir()
+	// skill 源目录
+	src := filepath.Join(base, "src-skill")
+	_ = os.MkdirAll(src, 0o755)
+	_ = os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("---\nname: foo\ndescription: d\n---\nbody"), 0o644)
+
+	// claude 正常可写；codex base 是一个已存在文件 → MkdirAll skills 失败
+	okHome := filepath.Join(base, "home-ok")
+	_ = os.MkdirAll(okHome, 0o755)
+	blocker := filepath.Join(base, "blocker")
+	_ = os.WriteFile(blocker, []byte("x"), 0o644)
+
+	svc := NewService(filepath.Join(base, "amagi"), nil)
+	svc.SetEngineBaseDir(EngineClaude, okHome)
+	svc.SetEngineBaseDir(EngineCodex, blocker)
+
+	if _, err := svc.ImportSkillFromDir(src); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if err := svc.SetSharedSkillTargets("foo", []Engine{EngineClaude, EngineCodex}); err != nil {
+		t.Fatalf("targets: %v", err)
+	}
+	err := svc.SetSharedSkillEnabled("foo", true)
+	t.Logf("enable 返回错误: %v", err)
+	if err == nil {
+		t.Fatalf("预期 codex 部署失败")
+	}
+	// 磁盘实况：claude 已部署
+	deployedFile := filepath.Join(okHome, ".claude", "skills", "foo", "SKILL.md")
+	if _, statErr := os.Stat(deployedFile); statErr != nil {
+		t.Fatalf("claude 目标应有 skill 文件: %v", statErr)
+	}
+	// registry 实况：Deployed 为空
+	skills, _ := svc.ListSharedSkills()
+	for _, sk := range skills {
+		if sk.Name == "foo" {
+			t.Logf("registry: enabled=%v deployed=%v (磁盘 claude 已有文件 → 漂移)", sk.Enabled, sk.Deployed)
+			if len(sk.Deployed) != 0 || sk.Enabled {
+				t.Fatalf("预期 registry 未记录")
+			}
+		}
+	}
+	// 后续禁用也回收不掉
+	if err := svc.SetSharedSkillEnabled("foo", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, statErr := os.Stat(deployedFile); statErr == nil {
+		t.Logf("禁用后 claude 目标文件仍在（Deployed 空不回收）→ 永久残留: %s", deployedFile)
+	}
+}
+
+// D6: MCP 分发部分失败（codex config.toml 含数组表头被拒绝）→ claude 已写入
+// 但 registry Deployed/Enabled 未记录。
+func TestDitingD6MCPPartialFailureDrift(t *testing.T) {
+	base := t.TempDir()
+	okHome := filepath.Join(base, "home-ok")
+	_ = os.MkdirAll(filepath.Join(okHome, ".claude"), 0o755)
+	codexDir := filepath.Join(base, "codex")
+	_ = os.MkdirAll(codexDir, 0o755)
+	// codex config.toml 含受管作用域不支持形态（数组表头）→ SetMCPServerSection 报错
+	_ = os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte("[[mcp_servers.x]]\ncommand = \"a\"\n"), 0o644)
+
+	svc := NewService(filepath.Join(base, "amagi"), nil)
+	svc.SetEngineBaseDir(EngineClaude, okHome)
+	svc.SetEngineBaseDir(EngineCodex, codexDir)
+
+	servers, err := ParseMCPJSON(`{"mcpServers": {"foo": {"command": "npx", "args": ["x"]}}}`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, _, err := svc.ImportMCPServers(servers); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if err := svc.SetSharedMCPServerTargets("foo", []Engine{EngineClaude, EngineCodex}); err != nil {
+		t.Fatalf("targets: %v", err)
+	}
+	err = svc.SetSharedMCPServerEnabled("foo", true)
+	t.Logf("enable 返回错误: %v", err)
+	if err == nil {
+		t.Fatalf("预期 codex TOML 拒绝导致部分失败")
+	}
+	claudeJSON, _ := os.ReadFile(filepath.Join(okHome, ".claude.json"))
+	t.Logf("~/.claude.json 实际内容: %s", string(claudeJSON))
+	if !strings.Contains(string(claudeJSON), `"foo"`) {
+		t.Fatalf("claude 应已写入 foo")
+	}
+	list, _ := svc.ListSharedMCPServers()
+	for _, sv := range list {
+		if sv.Name == "foo" {
+			t.Logf("registry: enabled=%v deployed=%v → 实际已写 claude 但未记录", sv.Enabled, sv.Deployed)
+		}
+	}
+	// 删除也回收不掉 claude 的写入
+	if err := svc.DeleteSharedMCPServer("foo"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	claudeJSON2, _ := os.ReadFile(filepath.Join(okHome, ".claude.json"))
+	if strings.Contains(string(claudeJSON2), `"foo"`) {
+		t.Logf("删除后 ~/.claude.json 中 foo 残留: %s", string(claudeJSON2))
+	}
+}
+
+// D7: writeMCPServer TOML 分支吞 ReadFile 错误：config.toml 不可读时
+// 被整体替换为仅含 MCP 段的新内容（用户配置全丢）。
+func TestDitingD7TOMLSwallowReadError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 用户 chmod 000 无法触发 permission denied")
+	}
+	base := t.TempDir()
+	codexDir := filepath.Join(base, "codex")
+	_ = os.MkdirAll(codexDir, 0o755)
+	cfgPath := filepath.Join(codexDir, "config.toml")
+	original := "model = \"gpt-5\"\nprofile = \"work\"\n[profiles.work]\nfoo = 1\n"
+	_ = os.WriteFile(cfgPath, []byte(original), 0o644)
+	_ = os.Chmod(cfgPath, 0o000) // 不可读
+
+	svc := NewService(filepath.Join(base, "amagi"), nil)
+	svc.SetEngineBaseDir(EngineCodex, codexDir)
+
+	servers, err := ParseMCPJSON(`{"mcpServers": {"foo": {"command": "npx"}}}`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, _, err := svc.ImportMCPServers(servers); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if err := svc.SetSharedMCPServerTargets("foo", []Engine{EngineCodex}); err != nil {
+		t.Fatalf("targets: %v", err)
+	}
+	err = svc.SetSharedMCPServerEnabled("foo", true)
+	t.Logf("enable err: %v", err)
+	_ = os.Chmod(cfgPath, 0o644)
+	after, _ := os.ReadFile(cfgPath)
+	t.Logf("config.toml 之前:\n%s\n之后:\n%s", original, string(after))
+	if strings.Contains(string(after), "model =") {
+		t.Fatalf("预期原内容丢失（吞读错误后按空文件覆盖）")
+	}
+	if strings.Contains(string(after), "[mcp_servers.foo]") && !strings.Contains(string(after), "model") {
+		t.Logf("确认：原用户配置全部丢失，文件只剩 MCP 段")
+	}
+}
+
+// D8: MCP 名含空格 → claude JSON 路径 OK，但 escapeJSONKey 后键形态验证。
+func TestDitingD8EscapedKeyRoundtrip(t *testing.T) {
+	data := []byte(`{"mcpServers": {"a.b": {"command": "x"}}}`)
+	updated, err := sjson.SetBytes(data, "mcpServers."+escapeJSONKey("a.b"), map[string]any{"command": "y"})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(updated, &m)
+	t.Logf("写入含点号名后 JSON: %s", string(updated))
+	servers, _ := ParseMCPJSON(string(updated))
+	for _, sv := range servers {
+		t.Logf("读回 server 名: %q", sv.Name)
+	}
+	if len(servers) != 1 || servers[0].Name != "a.b" {
+		t.Fatalf("读回名字漂移: %+v", servers)
+	}
+}

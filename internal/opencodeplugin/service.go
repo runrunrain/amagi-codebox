@@ -38,7 +38,10 @@ type Service struct {
 	resolver  platform.CLIResolver
 	runner    platform.ProcessRunner
 	http      httpDoer
-	mu        sync.Mutex
+	// OnChange 在成功变更已装插件面后调用一次（P4：供上层失效共用中心聚合
+	// 缓存）。导出字段而非方法：避免进入 Wails 绑定面；装配期注入，运行中只读。
+	OnChange func()
+	mu       sync.Mutex
 }
 
 func NewService(configDir string, cacheDir string, log *logging.Service) *Service {
@@ -97,6 +100,12 @@ func defaultOpenCodeCacheDir() string {
 		return filepath.Join(".", ".cache", "opencode")
 	}
 	return filepath.Join(home, ".cache", "opencode")
+}
+
+func (s *Service) notifyChanged() {
+	if s.OnChange != nil {
+		s.OnChange()
+	}
 }
 
 func (s *Service) configFilePath() string {
@@ -207,6 +216,7 @@ func (s *Service) InstallPlugin(spec string) (*CommandResult, error) {
 					if cfgErr := s.ensurePluginSpecInConfig("", spec); cfgErr != nil {
 						return result, err
 					}
+					s.notifyChanged()
 					return &CommandResult{
 						Success: true,
 						Output:  fmt.Sprintf("OpenCode CLI 安装报错，但缓存已就绪（版本 %s 匹配最新 tag %s），已通过本地兜底将 %s 写入全局配置（CLI 错误: %s）", cached.Version, target.Version, spec, result.Error),
@@ -216,9 +226,9 @@ func (s *Service) InstallPlugin(spec string) (*CommandResult, error) {
 		}
 		return result, err
 	}
+	s.notifyChanged()
 	return result, nil
 }
-
 func (s *Service) UpdatePlugin(spec string) (*CommandResult, error) {
 	spec, err := validatePluginSpec(spec)
 	if err != nil {
@@ -263,6 +273,7 @@ func (s *Service) UpdatePlugin(spec string) (*CommandResult, error) {
 					}
 					return result, err
 				}
+				s.notifyChanged()
 				return &CommandResult{
 					Success: true,
 					Output:  fmt.Sprintf("OpenCode CLI 更新报错，但缓存已就绪，已通过本地兜底将 %s 切换为 %s（版本 %s）；CLI 错误: %s", spec, target.Spec, target.Version, result.Error),
@@ -277,6 +288,7 @@ func (s *Service) UpdatePlugin(spec string) (*CommandResult, error) {
 		return result, err
 	}
 	result.Output = fmt.Sprintf("已将 %s 更新为 %s（版本 %s）", spec, target.Spec, target.Version)
+	s.notifyChanged()
 	return result, nil
 }
 
@@ -336,6 +348,7 @@ func (s *Service) UninstallPlugin(spec string) (*CommandResult, error) {
 	if s.log != nil {
 		s.log.Info("opencodeplugin", "已从 OpenCode 全局配置移除插件", spec)
 	}
+	s.notifyChanged()
 	return &CommandResult{
 		Success: true,
 		Output:  fmt.Sprintf("已从 %s 移除 %s；OpenCode 缓存保留以供后续重装", path, spec),

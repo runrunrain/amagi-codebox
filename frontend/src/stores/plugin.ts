@@ -41,8 +41,8 @@ interface ResourceFilter {
 
 export const usePluginStore = defineStore('plugin', () => {
   // Extension main tab state
-  // 'tools' = 其他工具（Headroom 全局压缩等），与 plugins/env 平级
-  const extMainTab = ref<'plugins' | 'env' | 'tools'>('plugins');
+  // 'common' = 共用中心（公共 skill / 公共 MCP），'tools' = 其他工具（Headroom 全局压缩等），与 plugins/env 平级
+  const extMainTab = ref<'plugins' | 'common' | 'env' | 'tools'>('plugins');
 
   // Plugin engine selection
   const pluginEngine = ref<'claude' | 'opencode' | 'codex' | 'pi' | 'omp'>('claude');
@@ -228,7 +228,7 @@ export const usePluginStore = defineStore('plugin', () => {
   });
 
   // Actions
-  function setExtMainTab(tab: 'plugins' | 'env' | 'tools') {
+  function setExtMainTab(tab: 'plugins' | 'common' | 'env' | 'tools') {
     extMainTab.value = tab;
   }
 
@@ -606,6 +606,21 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  // Update a single Codex plugin（P4：市场刷新 + 卸载重装 + 恢复启用状态，
+  // 后端 codexplugin.UpdatePlugin）；成功后强制刷新列表。
+  async function updateCxPlugin(pluginId: string, marketplace?: string) {
+    try {
+      const selector = { pluginId, marketplace };
+      const result = await codexPluginApi.updateCodexPlugin(selector);
+      // Refresh after update (force bypass cache)
+      await loadCxPlugins(true);
+      return result;
+    } catch (error) {
+      console.error('[plugin.store.updateCxPlugin]', error);
+      throw error;
+    }
+  }
+
   // Add Codex marketplace
   async function addCxMarketplace(source: string) {
     try {
@@ -749,6 +764,7 @@ export const usePluginStore = defineStore('plugin', () => {
     toggleCxPlugin,
     installCxPlugin,
     uninstallCxPlugin,
+    updateCxPlugin,
     addCxMarketplace,
     removeCxMarketplace,
     upgradeCxMarketplace,

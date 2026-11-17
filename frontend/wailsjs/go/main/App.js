@@ -46,6 +46,10 @@ export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
 
+export function CheckPiPluginWSLStatus() {
+  return window['go']['main']['App']['CheckPiPluginWSLStatus']();
+}
+
 export function CheckTool(arg1) {
   return window['go']['main']['App']['CheckTool'](arg1);
 }
@@ -98,6 +102,14 @@ export function DeleteProvider(arg1) {
   return window['go']['main']['App']['DeleteProvider'](arg1);
 }
 
+export function DeleteSharedMCPServer(arg1) {
+  return window['go']['main']['App']['DeleteSharedMCPServer'](arg1);
+}
+
+export function DeleteSharedSkill(arg1) {
+  return window['go']['main']['App']['DeleteSharedSkill'](arg1);
+}
+
 export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
 }
@@ -134,6 +146,10 @@ export function GetAIProxyState() {
   return window['go']['main']['App']['GetAIProxyState']();
 }
 
+export function GetAllSharedSkillsAggregated(arg1) {
+  return window['go']['main']['App']['GetAllSharedSkillsAggregated'](arg1);
+}
+
 export function GetAmagiConfig() {
   return window['go']['main']['App']['GetAmagiConfig']();
 }
@@ -156,6 +172,10 @@ export function GetConfigService() {
 
 export function GetDockerWSLHealth() {
   return window['go']['main']['App']['GetDockerWSLHealth']();
+}
+
+export function GetDrvFSAdvisories() {
+  return window['go']['main']['App']['GetDrvFSAdvisories']();
 }
 
 export function GetEnvCheckOperationState() {
@@ -282,6 +302,10 @@ export function GetPiModelsConfigPath() {
   return window['go']['main']['App']['GetPiModelsConfigPath']();
 }
 
+export function GetPiPluginWSLStatus() {
+  return window['go']['main']['App']['GetPiPluginWSLStatus']();
+}
+
 export function GetPlatformCapabilities() {
   return window['go']['main']['App']['GetPlatformCapabilities']();
 }
@@ -346,6 +370,14 @@ export function GetSettingsService() {
   return window['go']['main']['App']['GetSettingsService']();
 }
 
+export function GetSharedMCPServers() {
+  return window['go']['main']['App']['GetSharedMCPServers']();
+}
+
+export function GetSharedSkills() {
+  return window['go']['main']['App']['GetSharedSkills']();
+}
+
 export function GetStartupWarnings() {
   return window['go']['main']['App']['GetStartupWarnings']();
 }
@@ -378,6 +410,10 @@ export function GetWSLOpenCodeMCPPreview() {
   return window['go']['main']['App']['GetWSLOpenCodeMCPPreview']();
 }
 
+export function GetWSLPluginTargetSupport() {
+  return window['go']['main']['App']['GetWSLPluginTargetSupport']();
+}
+
 export function GetWSLSkillsSupplyStatus() {
   return window['go']['main']['App']['GetWSLSkillsSupplyStatus']();
 }
@@ -406,10 +442,6 @@ export function HeadroomStop() {
   return window['go']['main']['App']['HeadroomStop']();
 }
 
-export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
-}
-
 export function ImportAIProxySubscription(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportAIProxySubscription'](arg1, arg2, arg3);
 }
@@ -426,6 +458,22 @@ export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
 }
 
+export function ImportSharedMCPServers(arg1) {
+  return window['go']['main']['App']['ImportSharedMCPServers'](arg1);
+}
+
+export function ImportSharedSkillFromDir(arg1) {
+  return window['go']['main']['App']['ImportSharedSkillFromDir'](arg1);
+}
+
+export function ImportSharedSkillFromZip(arg1) {
+  return window['go']['main']['App']['ImportSharedSkillFromZip'](arg1);
+}
+
+export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
+}
+
 export function InstallCLIToWSL(arg1) {
   return window['go']['main']['App']['InstallCLIToWSL'](arg1);
 }
@@ -434,8 +482,16 @@ export function InstallClaudeWithMethod(arg1) {
   return window['go']['main']['App']['InstallClaudeWithMethod'](arg1);
 }
 
+export function InstallPiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['InstallPiPackageTargeted'](arg1, arg2);
+}
+
 export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
+}
+
+export function InvalidateSharedExtCache() {
+  return window['go']['main']['App']['InvalidateSharedExtCache']();
 }
 
 export function KeepWSLCliConfigUnitLocal(arg1, arg2) {
@@ -502,6 +558,22 @@ export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
 }
 
+export function PickMCPJSONFile() {
+  return window['go']['main']['App']['PickMCPJSONFile']();
+}
+
+export function PickSharedSkillDir() {
+  return window['go']['main']['App']['PickSharedSkillDir']();
+}
+
+export function PickSharedSkillZipFile() {
+  return window['go']['main']['App']['PickSharedSkillZipFile']();
+}
+
+export function PreviewSharedMCPJSON(arg1) {
+  return window['go']['main']['App']['PreviewSharedMCPJSON'](arg1);
+}
+
 export function PreviewWSLCliConfigSupply(arg1) {
   return window['go']['main']['App']['PreviewWSLCliConfigSupply'](arg1);
 }
@@ -548,6 +620,10 @@ export function PtyWriteLarge(arg1, arg2) {
 
 export function QuickLaunch(arg1, arg2, arg3) {
   return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
+}
+
+export function ReadTextFile(arg1) {
+  return window['go']['main']['App']['ReadTextFile'](arg1);
 }
 
 export function RefreshAIProxySubscription(arg1) {
@@ -674,6 +750,10 @@ export function RemoteClientUpdateHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientUpdateHost'](arg1, arg2);
 }
 
+export function RemovePiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['RemovePiPackageTargeted'](arg1, arg2);
+}
+
 export function RemoveSavedWorkDir(arg1) {
   return window['go']['main']['App']['RemoveSavedWorkDir'](arg1);
 }
@@ -766,14 +846,12 @@ export function SetEnvVar(arg1, arg2) {
   return window['go']['main']['App']['SetEnvVar'](arg1, arg2);
 }
 
-export function SetEnvVarsGlobalSyncEnabled(arg1) {
-  return window['go']['main']['App']['SetEnvVarsGlobalSyncEnabled'](arg1);
-}
-
-// P4-A2（2026-10-17）：路径值 per-key 放行门（本机无 wails CLI 期手工补齐，
-// 原生类型即原生 boolean 参数；下次 wails generate 再生时自动归一）。
 export function SetEnvVarPathAllow(arg1, arg2) {
   return window['go']['main']['App']['SetEnvVarPathAllow'](arg1, arg2);
+}
+
+export function SetEnvVarsGlobalSyncEnabled(arg1) {
+  return window['go']['main']['App']['SetEnvVarsGlobalSyncEnabled'](arg1);
 }
 
 export function SetGitHubToken(arg1) {
@@ -794,6 +872,22 @@ export function SetRemoteHost(arg1) {
 
 export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
+}
+
+export function SetSharedMCPServerEnabled(arg1, arg2) {
+  return window['go']['main']['App']['SetSharedMCPServerEnabled'](arg1, arg2);
+}
+
+export function SetSharedMCPServerTargets(arg1, arg2) {
+  return window['go']['main']['App']['SetSharedMCPServerTargets'](arg1, arg2);
+}
+
+export function SetSharedSkillEnabled(arg1, arg2) {
+  return window['go']['main']['App']['SetSharedSkillEnabled'](arg1, arg2);
+}
+
+export function SetSharedSkillTargets(arg1, arg2) {
+  return window['go']['main']['App']['SetSharedSkillTargets'](arg1, arg2);
 }
 
 export function SetSystemProxyEnabled(arg1) {
@@ -856,38 +950,14 @@ export function UninstallClaudeCode(arg1) {
   return window['go']['main']['App']['UninstallClaudeCode'](arg1);
 }
 
+export function UpdatePiPackageTargeted(arg1, arg2) {
+  return window['go']['main']['App']['UpdatePiPackageTargeted'](arg1, arg2);
+}
+
 export function UpdateProvider(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateProvider'](arg1, arg2, arg3);
 }
 
 export function UpdateTool(arg1) {
   return window['go']['main']['App']['UpdateTool'](arg1);
-}
-
-export function GetWSLPluginTargetSupport() {
-  return window['go']['main']['App']['GetWSLPluginTargetSupport']();
-}
-
-export function InstallPiPackageTargeted(arg1, arg2) {
-  return window['go']['main']['App']['InstallPiPackageTargeted'](arg1, arg2);
-}
-
-export function UpdatePiPackageTargeted(arg1, arg2) {
-  return window['go']['main']['App']['UpdatePiPackageTargeted'](arg1, arg2);
-}
-
-export function RemovePiPackageTargeted(arg1, arg2) {
-  return window['go']['main']['App']['RemovePiPackageTargeted'](arg1, arg2);
-}
-
-export function GetPiPluginWSLStatus() {
-  return window['go']['main']['App']['GetPiPluginWSLStatus']();
-}
-
-export function CheckPiPluginWSLStatus() {
-  return window['go']['main']['App']['CheckPiPluginWSLStatus']();
-}
-
-export function GetDrvFSAdvisories() {
-  return window['go']['main']['App']['GetDrvFSAdvisories']();
 }

@@ -157,6 +157,27 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 
 前端推荐使用 `frontend/src/api/plugin.ts` 中的 `setPluginSubItemEnabled`（带 `Plugin` 中缀的统一入口），而不是 `setSubItemEnabled`（后者直接调 `plugin.Service`，仅适用于 Claude）。
 
+## 共用中心（公共 skill / 公共 MCP）
+
+扩展管理页的「共用」tab 管理跨 CLI 共享的两类资源：
+
+- **公共 skill**：从 zip 压缩包或本地文件夹导入（单一事实源 `~/.amagi-codebox/shared/skills/`）。每个 skill 可按需勾选分发目标 CLI（Claude/Codex/OpenCode/Pi/OMP），启用时复制分发到对应 CLI 的 skills 目录，禁用/删除时按部署清单回收。导入有安全防护（路径穿越/超大文件/符号链接拒绝）。
+- **公共 MCP**：从 JSON 导入（支持粘贴或选文件，兼容 `{"mcpServers":{}}`/裸对象/单条三种格式，导入前有解析预览）。启用时写入各 CLI 原生 MCP 配置（Claude `~/.claude.json`、Codex `config.toml` 的 `[mcp_servers.*]` TOML 保真编辑、OpenCode `opencode.json` 的 `mcp` 键、Pi/OMP `<agentDir>/mcp.json`），禁用/删除时移除。写入前自动备份（保留最近 3 份）。
+
+公共技能页同时聚合展示**插件来源的 skill**（标有「插件·名」徽章）：这类条目不可单独删除，卸载/更新统一在插件管理页的对应插件处操作；启停也走插件自身的子项开关。插件更新、卸载、启停成功后聚合视图自动失效刷新。
+
+各引擎子项/skill 级启停能力（如实对齐 CLI 实际能力）：
+
+| 引擎 | 插件级启停 | skill 级启停 |
+|---|---|---|
+| Claude | ✅ 原生 | ✅ 原生（plugin-subitems.json） |
+| Codex | ✅ 原生 | ❌ CLI 无机制（不提供假开关） |
+| OpenCode | ❌ 无原生 disable | ❌ 无子项概念（降级为只读展示） |
+| Pi | 模拟（`!**` 四键全排除过滤标记，与 `pi config` TUI 互通可逆） | ✅ 原生（packages `skills[]` 过滤，与 TUI 算法对齐） |
+| OMP | ✅ 原生 | ❌ 无子项机制（只读展示） |
+
+单插件更新：Claude/OpenCode/Pi/OMP 用各自 CLI 原生命令；Codex CLI 无原生 update，采用「市场刷新 → 卸载重装 → 恢复启用状态」的模拟实现（重装失败会如实提示旧版已卸载需手动重装）。
+
 ---
 
 ## 配置文件汇总
@@ -170,6 +191,9 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 | `~/.codex/` 下的状态与缓存（待核实：具体文件名） | `codex` CLI | Codex 插件状态 |
 | `~/.pi/agent/settings.json` 的 `packages[]` | `pi` CLI | Pi 已登记包（真相源） |
 | `~/.omp/agent/` 下的插件状态 | `omp` CLI | OMP 已安装插件 |
+| `~/.amagi-codebox/shared/skills/` | Amagi CodeBox（`internal/sharedext`） | 共用中心公共 skill 单一事实源 |
+| `~/.amagi-codebox/shared/registry.json` | Amagi CodeBox（`internal/sharedext`） | 公共 skill/MCP 状态与部署清单（启停/目标/已部署引擎） |
+| `~/.pi/agent/mcp.json`、`~/.omp/agent/mcp.json` | Pi/OMP CLI；共用中心 MCP 分发时由 CodeBox 编辑 | Pi/OMP 的 MCP server 配置（mcpServers 对象） |
 
 > 这些文件建议通过应用 UI 维护，不要手工编辑。手工编辑可能破坏 `tmp + rename` 原子写入约定或不同插件引擎的 ID 对齐。
 
@@ -177,7 +201,9 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 
 ## 已知限制与注意事项
 
-- **Codex 子项禁用不可用**：当前是 no-op，UI 上展示的子项开关对 Codex 引擎实际不生效。
+- **Codex 子项禁用不可用**：CLI 无子项机制，UI 不提供假开关（插件级启停可用）。
+- **OpenCode 无子项/启停**：CLI 无 disable/子项概念，共用中心对 OpenCode 来源 skill 只读展示。
+- **Codex 单插件更新为模拟实现**：市场刷新+卸载重装；重装失败时旧版已移除，需手动重装（UI 会如实提示）。
 - **OpenCode JSONC 卸载需手工处理**：列表读取支持 JSONC，但自动卸载只修改严格 JSON，防止注释和原有格式丢失。
 - **子项启停分派依赖 Claude 注册表**：注册表读取失败时按 Codex 分派，Claude 插件开关会静默不生效；需要看日志定位。
 - **`--scope user` 固定**：Claude 插件安装/卸载强制使用 user scope，不支持 project / local scope 的管理 UI。
