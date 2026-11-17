@@ -154,22 +154,6 @@ func (s *stateStore) loadIntents() (map[string]OperationIntent, error) {
 	return out, nil
 }
 
-// readIntent 读回单个 intent（存在性/可读性判断用）。
-func (s *stateStore) readIntent(opID string) (OperationIntent, bool, error) {
-	data, err := os.ReadFile(pendingIntentPath(s.configDir, opID))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return OperationIntent{}, false, nil
-		}
-		return OperationIntent{}, false, err
-	}
-	var op OperationIntent
-	if jerr := json.Unmarshal(data, &op); jerr != nil {
-		return OperationIntent{}, true, fmt.Errorf("parse intent %s: %w", opID, jerr)
-	}
-	return op, true, nil
-}
-
 // deleteIntent 删除一个已终结的 intent 文件（清理顺序的靠后步骤）。
 func (s *stateStore) deleteIntent(opID string) error {
 	if err := os.Remove(pendingIntentPath(s.configDir, opID)); err != nil && !errors.Is(err, os.ErrNotExist) {

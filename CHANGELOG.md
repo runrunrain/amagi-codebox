@@ -10,6 +10,20 @@
 
 - **WSL 启动的 pi 会话 Web 视图永不出现（探测窗口耗尽后停探，服务晚就绪无人再探）**：WSL+DrvFS 目标下 pi 扩展的 webui server 就绪耗时可达 3m42s+（2026-11-17 会话 b5415434 实测：11:35:03 启动、11:38:45 就绪，超出 3min WSL 探测窗口 42s），后端落 unavailable 后前端把该态当终态永久停探——服务真正就绪（端口仍在监听）后无人再探测，Web 视图入口永不出现。修复三面：桌面前端（`stores/session.ts`）unavailable 非终态，转 10s 低频复活探测（后端状态机本就允许 unavailable → available，一轮探测即恢复）；mobile `useSessionWebUI` 同口径（网络瞬断亦自愈）；remote v1 启动链（`launch_executor.go`）WSL 目标补齐桌面同款的 `DefaultWSLProbingWindow` 分窗口注册（原默认 45s，同族缺口）。连带根治 `internal/webui` 测试在 Windows 上因日志句柄未关导致的 TempDir 清理文件锁失败（`newTestService` 等两处轻 `t.Cleanup` 关闭日志句柄）。
 
+## [1.3.141] - 2026-11-17
+
+### Removed
+
+- **后端与测试代码深扫（code-sweep 第二轮：deadcode 可达性 × unused(tests:false) 交叉，净删约 1590 行）**：
+  - **测试替身移出产品编译**：`control_h123_test_helpers.go` 整文件（fakeCausalPort/recordingLifecycleHook 等 19 符号）改名 `_test.go`；resetWSL*CacheForTest 系列钩子、waitForWSLSupplyPushIdleForTest、recordCount、newServiceWithRunner、readIntent、tryAcquire、writeServerEventSync、noopSessionRawPort/noopFencer/serverMsg、sharedServiceFingerprint、boolPtr、commitFaults.add、submitFileCtx、VolatileSecurityEventSink 簇、newSecurityOptions、noopSessionOperationJournal 簇、SessionStateAdapter 整文件——凡「仅测试消费的观察口/构造口/替身」一律归位 `_test.go`（Go 同包加方法合法，调用点零改动），产品二进制不再携带测试基建。
+  - **退役特性孤儿及其守护测试删除**（deadcode 判 main 不可达 + unused 判仅测试引用双确认，全平台词界复核剔除 darwin/Linux/e2e 在用 17 项）：App 补偿债查询/重试、getProviderAPIKeyForFormat、stopAllSessionsForShutdown、syncCodexConfig* 子系统 ×4、envcheck codex stale-NPM 清理子系统 ×13、claude 二进制健康自愈 ×2、NPM 候选枚举 ×3、RunEventSinkFunc、ShutdownCleanupPermit 死字段等；连带删除 28 个「博物馆测试」（测的是已从产品摘除的子系统）与 10 项孤儿测试基建。
+  - **有意保留豁免（设计锚）**：productionRemoteLaunchResolver 簇（app.go fail-closed 注释明示五 planners 实现前不注入）、resolvePiLoginPreset（毗邻活的统一登录分类器）、realRunnerOnInit（init 接线快照）、procFSProcessIdentity/encodePoolEnvelope/verifySavedPool/syncFeedAndAttachCausal（Linux/darwin keychain/e2e harness 平台在用——Windows 侧扫描的平台盲区）。
+  - 工具沉淀：新增 `go run` 形式的 deadcode/unused(tests:false) 交叉流程与 AST 声明级删除脚本经验，纳入 code-sweep skill 后续演进素材。
+
+### Notes
+
+- 已验证：go build/vet/golangci-lint（0 issues，含 --tests=false 复扫仅剩 8 项已豁免平台盲区）/gofmt 全空；受影响包与全量 Windows 测试失败集与清扫前基线逐族一致（Pairing/MigrationGate 翻转项经基线代码单跑复验为 Windows 预存文件锁/时序 flake 族）；macOS CI 全量为权威门；setTestUserHome 因唯一消费者为 windows-only 测试文件在 darwin 编译集成 lint 孤儿，已随消费者归位（GOOS=darwin lint 预扫复核干净）。
+
 ## [1.3.140] - 2026-11-17
 
 ### Fixed

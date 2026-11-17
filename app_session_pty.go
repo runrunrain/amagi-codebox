@@ -620,25 +620,6 @@ func (a *App) startTitleTracker(amagiSessionID, workDir string) {
 	go session.TrackTitle(a.ctx, a.Sessions, amagiSessionID, homeDir, workDir, a.Log)
 }
 
-// stopAllSessionsForShutdown is the unexported shutdown cleanup helper (design
-// §10.3). It is called ONLY from App.Shutdown and never appears in the Wails
-// Bind manifest. The authoritative shutdown fence is
-// ControlRuntime.CloseForShutdown (called from Shutdown).
-func (a *App) stopAllSessionsForShutdown() {
-	ids := a.Sessions.GetRunning()
-	external := a.externalSessionLauncher()
-	for _, id := range ids {
-		if external != nil {
-			if err := external.Stop(id); err != nil || external.IsRunning(id) {
-				continue // terminal owner/lease remains until monitor or reaper receipt
-			}
-		}
-		a.completeExternalCleanupForSession(id)
-		a.Sessions.MarkStopped(id)
-		a.releaseSharedLeases(id)
-	}
-}
-
 // GetSessions 获取所有会话列表
 func (a *App) GetSessions() []session.SessionInfo {
 	return a.Sessions.List()

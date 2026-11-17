@@ -7,6 +7,7 @@ package wslsupply
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -414,4 +415,27 @@ func timeNow() time.Time { return time.Now() }
 // platformUserIdentityFixture 返回目录测试用的固定身份。
 func platformUserIdentityFixture() platform.WSLUserIdentity {
 	return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "fixture", OK: true}
+}
+
+// readIntent 读回单个 intent（存在性/可读性判断用，测试观察口）。
+func (s *stateStore) readIntent(opID string) (OperationIntent, bool, error) {
+	data, err := os.ReadFile(pendingIntentPath(s.configDir, opID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return OperationIntent{}, false, nil
+		}
+		return OperationIntent{}, false, err
+	}
+	var op OperationIntent
+	if jerr := json.Unmarshal(data, &op); jerr != nil {
+		return OperationIntent{}, true, fmt.Errorf("parse intent %s: %w", opID, jerr)
+	}
+	return op, true, nil
+}
+
+// add 注入一个故障（测试故障注入通道；生产恒空表）。
+func (f *commitFaults) add(stage string, times int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults = append(f.faults, commitFault{stage: stage, times: times, err: err})
 }

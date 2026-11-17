@@ -1,7 +1,6 @@
 package envcheck
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -125,24 +124,5 @@ func TestOmpVersionOutputSample(t *testing.T) {
 	got := parseOmpVersion("omp/17.2.10")
 	if got != "17.2.10" {
 		t.Fatalf("parseOmpVersion(omp/17.2.10) = %q, want 17.2.10", got)
-	}
-}
-
-// TestOmpNPMGlobalExecutableCandidates ensures omp npm candidates are derived
-// from the omp command name and package name.
-func TestOmpNPMGlobalExecutableCandidates_ValidPrefix(t *testing.T) {
-	got := ompNPMGlobalExecutableCandidates("/usr/local")
-	if len(got) == 0 {
-		t.Fatal("expected candidates for valid prefix")
-	}
-	found := false
-	for _, c := range got {
-		if strings.Contains(c, "omp") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("no candidate contains omp command name: %v", got)
 	}
 }

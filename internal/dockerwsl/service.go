@@ -149,11 +149,6 @@ func NewService(log *logging.Service) *Service {
 	return &Service{log: log, r: newRealRunner()}
 }
 
-// newServiceWithRunner 供测试注入假件。
-func newServiceWithRunner(log *logging.Service, r runner) *Service {
-	return &Service{log: log, r: r}
-}
-
 func (s *Service) logInfo(scope, msg, detail string) {
 	if s.log != nil {
 		s.log.Info(scope, msg, detail)

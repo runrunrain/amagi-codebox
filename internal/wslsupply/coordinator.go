@@ -1462,48 +1462,6 @@ func (c *Coordinator) GrantUnitConsent(ctx context.Context, distro string, cli C
 // 提交原语（design §七「状态落点与提交」全段）
 // ---------------------------------------------------------------------------
 
-// submitFile 经目标内提交原语提交一个文件，返回可条件撤销记录（普通文件
-// 写入专用）。字节走 UNC，不进 wsl.exe 命令行。
-//
-// 敏感单元（内嵌密钥，SA-06/07）：
-//  1. 先在 distro 内建立目标根下的 .amagi-staging 私有目录，distro 内
-//     chmod 700 并经 StatMode 探测验证真实权限位（UNC/宿主 stat 的 9P 翻译
-//     不可信）——验证失败时在任何秘密字节落盘前失败；
-//  2. 秘密字节只写入 staging 内唯一临时名，distro 内 chmod 600 并验证后才
-//     rename 到最终路径——最终目录即使 0755，文件也从未以宽权限可见；
-//  3. 任何阶段失败都发生在 rename 之前：原有混合配置（含用户自有内容）
-//     原样保留，绝不以删整文件充当回滚（SA-07）；rename 后的读回校验失败
-//     则先安全恢复前像，恢复也失败才移除并明确报告两种结果。
-//
-// 普通单元沿用 M2 语义：同目录唯一临时名 → 宿主 chmod 0600 → rename →
-// distro 内 chmod 600 补偿；补偿失败优先恢复前像（用户旧配置保持可读）。
-// submitFileCtx 是旧签名兼容入口（保留同壳面：既有测试桩/少量调用方）；
-// 生产路径（applyProjection/TakeOver/资源/插件）一律直接构造 CommitRequest 走
-// commitFile——完整生命周期（intent/备份/no-replace/恢复）在 commit.go。
-func (c *Coordinator) submitFileCtx(ctx context.Context, target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
-	// 旧壳面保留旧「最后写者胜」语义：publish 冲突（并发写同一路径）时以
-	// 当前目标为新前像有界重试一次（最多 2 次尝试，不递归）。
-	for attempt := 0; attempt < 2; attempt++ {
-		rcpt := c.commitFile(ctx, CommitRequest{
-			Target: target, RelPath: relPath, Candidate: content, Sensitive: sensitive, Kind: OpKindWrite,
-		})
-		if rcpt.Err == nil {
-			return rcpt.UndoLease, nil
-		}
-		if rcpt.ErrDetail == "publish-conflict" || rcpt.ErrDetail == "target-changed-since-planning" {
-			continue
-		}
-		return nil, rcpt.Err
-	}
-	return nil, errors.New("submit file lost a bounded race with concurrent writers; retry")
-}
-
-// submitFile 是无 ctx 接线的兼容入口（保留同壳面：测试桩/未来调用方使用；
-// 生产路径一律用 commitFile——取消保护由 ctx 检查承担）。
-func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
-	return c.submitFileCtx(context.Background(), target, relPath, content, sensitive)
-}
-
 // ensureSensitiveTargetPerms 验证并（必要时）收紧敏感单元既有副本的目标
 // 权限（PR02）：健康 0600 → 零字节重写保持；未知（探测不可用）或非 0600
 // → 先 chmod 600 再复验，仍不可证 → 返回错误（调用方以失败上报，启动闸门

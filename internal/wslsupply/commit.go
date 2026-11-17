@@ -54,13 +54,6 @@ func newCommitFaults() *commitFaults {
 	return &commitFaults{hits: map[string]int{}}
 }
 
-// add 注入一个故障。
-func (f *commitFaults) add(stage string, times int, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.faults = append(f.faults, commitFault{stage: stage, times: times, err: err})
-}
-
 // fail 返回该阶段应注入的错误（nil = 放行）。
 func (f *commitFaults) fail(stage string) error {
 	f.mu.Lock()

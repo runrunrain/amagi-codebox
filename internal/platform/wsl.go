@@ -139,15 +139,6 @@ func parseWSLVerboseListLine(line string) (name, state string, version int, ok b
 	return name, state, version, true
 }
 
-// resetWSLDistroVersionCacheForTest clears the version-probe cache.
-func resetWSLDistroVersionCacheForTest() {
-	wslDistroVersionCacheMu.Lock()
-	defer wslDistroVersionCacheMu.Unlock()
-	wslDistroVersionCacheDone = false
-	wslDistroVersionCache = nil
-	wslDistroStateCache = nil
-}
-
 // availableWSLDistros returns the usable (non-reserved) WSL distributions, cached
 // after the first successful probe. A probe error yields an empty list (treated
 // as "no usable distro" so callers fall back to pwsh/cmd).
@@ -199,15 +190,6 @@ func DefaultWSLDistro(env []string) string {
 		return ""
 	}
 	return distros[0]
-}
-
-// resetWSLDistroCacheForTest clears the probe cache so tests can re-run with a
-// different injected lister.
-func resetWSLDistroCacheForTest() {
-	wslDistroCacheMu.Lock()
-	defer wslDistroCacheMu.Unlock()
-	wslDistroCacheDone = false
-	wslDistroCache = nil
 }
 
 // --- WSL2 网络模式探测（.wslconfig，只读） ---

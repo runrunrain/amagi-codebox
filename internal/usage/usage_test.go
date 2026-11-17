@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -1150,3 +1151,13 @@ func TestLoadMergesNewBuiltinWithoutOverwritingUserRows(t *testing.T) {
 
 // 防止 filepath 在测试中被报告为 unused（部分测试可能未直接使用）。
 var _ = filepath.Join
+
+// recordCount 返回 usage_records 总行数（测试断言用）。
+func recordCount(ctx context.Context, db *sql.DB) (int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var n int64
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_records`).Scan(&n)
+	return n, err
+}

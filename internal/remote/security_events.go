@@ -12,105 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 const (
-	// MaxVolatileSecurityEvents bounds the number of accepted events.
-	MaxVolatileSecurityEvents = 256
 	// MaxSecurityEventCanonicalBytes bounds a single canonical event line.
 	MaxSecurityEventCanonicalBytes = 1 << 10
-	// MaxVolatileSecurityEventBytes bounds the aggregate accepted payload.
-	MaxVolatileSecurityEventBytes = 256 << 10
 )
-
-// acceptedVolatileEvent is one accepted buffer entry. It stores the canonical
-// bytes (for integrity re-check) and the accept time.
-type acceptedVolatileEvent struct {
-	id         SecurityEventID
-	canonical  []byte
-	acceptedAt time.Time
-}
-
-// VolatileSecurityEventSink is the M1-A bounded in-memory sink (used by tests;
-// M1-B production uses the durable sink).
-type VolatileSecurityEventSink struct {
-	mu        sync.Mutex
-	events    []acceptedVolatileEvent
-	byID      map[SecurityEventID]int
-	usedBytes int
-}
-
-// NewVolatileSecurityEventSink returns a ready volatile sink.
-func NewVolatileSecurityEventSink() *VolatileSecurityEventSink {
-	return &VolatileSecurityEventSink{
-		events: make([]acceptedVolatileEvent, 0, MaxVolatileSecurityEvents),
-		byID:   make(map[SecurityEventID]int, MaxVolatileSecurityEvents),
-	}
-}
-
-// Durability reports EventSinkVolatile.
-func (s *VolatileSecurityEventSink) Durability() EventSinkDurability { return EventSinkVolatile }
-
-// AppendSecurityEvent implements the closed append protocol.
-func (s *VolatileSecurityEventSink) AppendSecurityEvent(e SecurityEvent) (EventAppendResult, error) {
-	canonical, err := canonicalizeSecurityEvent(e)
-	if err != nil {
-		return EventAppendResult{State: EventPreAcceptFailed, Failure: EventFailureInvalid}, errPreAcceptFailed
-	}
-	if len(canonical) > MaxSecurityEventCanonicalBytes {
-		return EventAppendResult{State: EventPreAcceptFailed, Failure: EventFailureInvalid}, errPreAcceptFailed
-	}
-	id := e.EventIDOf()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Duplicate-before-cap: an already-accepted same-ID entry is consulted
-	// BEFORE any new-entry capacity check.
-	if idx, ok := s.byID[id]; ok {
-		if equalCanonical(s.events[idx].canonical, canonical) {
-			return EventAppendResult{State: EventDuplicateAcceptedBySink}, nil
-		}
-		// Same ID, different canonical payload: integrity failure.
-		return EventAppendResult{State: EventPreAcceptFailed, Failure: EventFailureIntegrity}, errIntegrityFailed
-	}
-
-	// New event: entry + byte capacity gate. No drop-oldest; on failure the map
-	// is NOT touched and no payload is retained.
-	if len(s.events) >= MaxVolatileSecurityEvents {
-		return EventAppendResult{State: EventPreAcceptFailed, Failure: EventFailureCapacity}, errPreAcceptFailed
-	}
-	if s.usedBytes+len(canonical) > MaxVolatileSecurityEventBytes {
-		return EventAppendResult{State: EventPreAcceptFailed, Failure: EventFailureCapacity}, errPreAcceptFailed
-	}
-
-	cp := make([]byte, len(canonical))
-	copy(cp, canonical)
-	s.events = append(s.events, acceptedVolatileEvent{
-		id:         id,
-		canonical:  cp,
-		acceptedAt: e.OccurredAtOf(),
-	})
-	s.byID[id] = len(s.events) - 1
-	s.usedBytes += len(cp)
-	return EventAppendResult{State: EventAcceptedBySink}, nil
-}
-
-// AcceptedCount returns the number of accepted entries (test/diagnostic only).
-func (s *VolatileSecurityEventSink) AcceptedCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.events)
-}
-
-// UsedBytes returns the aggregate accepted canonical bytes (test/diagnostic).
-func (s *VolatileSecurityEventSink) UsedBytes() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.usedBytes
-}
 
 var (
 	errPreAcceptFailed = fmt.Errorf("security event pre-accept failed")

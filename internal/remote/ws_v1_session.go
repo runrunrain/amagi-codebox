@@ -1615,14 +1615,6 @@ func (c *wsV1Connection) writeServerEvent(ev contract.KnownServerEvent) bool {
 	return err == nil
 }
 
-func (c *wsV1Connection) writeServerEventSync(ev contract.KnownServerEvent) error {
-	completion, err := c.enqueueServerEvent(ev, true)
-	if err != nil {
-		return err
-	}
-	return <-completion
-}
-
 func (c *wsV1Connection) writeBootstrapPayloadSync(payload []byte, bootstrap *attachmentBootstrap) error {
 	c.ensureOutboundWriter()
 	completion, err := c.outbound.enqueueWithBootstrap(wsOutboundAttached, payload, true, bootstrap)

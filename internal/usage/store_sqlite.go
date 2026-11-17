@@ -272,16 +272,6 @@ func upsertRecord(ctx context.Context, db *sql.DB, r UsageRecord) (bool, error) 
 	return isNew, nil
 }
 
-// recordCount 返回 usage_records 总行数（测试与状态展示用）。
-func recordCount(ctx context.Context, db *sql.DB) (int64, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var n int64
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_records`).Scan(&n)
-	return n, err
-}
-
 // SyncState 读写 ------------------------------------------------------------
 
 // getSyncState 读取指定源的同步游标（不存在返回零值 SyncState）。

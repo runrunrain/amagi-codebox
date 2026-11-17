@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"amagi-codebox/internal/structured"
-
 	"github.com/gorilla/websocket"
 )
 
@@ -17,20 +15,6 @@ type clientMsg struct {
 	Data string `json:"data"` // base64（input 类型）
 	Cols int    `json:"cols"` // resize 类型
 	Rows int    `json:"rows"` // resize 类型
-}
-
-// serverMsg 服务端→客户端帧格式（legacy 兼容；M-003 后 /ws/terminal 不再产生
-// output/structured-part/exit/dimensions 帧，但类型保留供 v1/测试与序列化兼容）。
-type serverMsg struct {
-	Type               string           `json:"type"`                         // "output" | "structured-part" | "exit" | "dimensions"
-	Data               string           `json:"data,omitempty"`               // base64（output 类型）
-	Seq                uint64           `json:"seq,omitempty"`                // output / structured-part 关联序号
-	History            bool             `json:"history,omitempty"`            // output 是否为连接建立时的历史快照
-	StructuredExpected bool             `json:"structuredExpected,omitempty"` // 新客户端用于延迟 raw fallback
-	Part               *structured.Part `json:"part,omitempty"`               // structured-part 类型
-	ExitCode           int              `json:"exitCode,omitempty"`           // exit 类型
-	Cols               int              `json:"cols,omitempty"`               // dimensions 类型
-	Rows               int              `json:"rows,omitempty"`               // dimensions 类型
 }
 
 // PtyBridge is the narrow INPUT-ONLY surface the legacy /ws/terminal handler

@@ -788,26 +788,6 @@ func (a claudeWebUILogAdapter) Warn(scope, msg, detail string) {
 	}
 }
 
-// getLaunchCompensationDebts returns the conservative, secret-free projection
-// of config compensation that could not be confirmed.
-func (a *App) getLaunchCompensationDebts() []launchplan.CompensationDebt {
-	if a.compensationDebts == nil {
-		return nil
-	}
-	return a.compensationDebts.List()
-}
-
-// retryLaunchCompensationDebt retries one exact receipt/key owner.
-func (a *App) retryLaunchCompensationDebt(owner string) error {
-	if a.compensationDebts == nil {
-		return fmt.Errorf("compensation debt registry is unavailable")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := a.compensationDebts.Retry(ctx, owner)
-	return err
-}
-
 func (a *App) wailsContext() context.Context { return a.ctx }
 
 func (a *App) setPersistentLoadState(state persistentLoadState) {

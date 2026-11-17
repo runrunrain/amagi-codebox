@@ -3059,3 +3059,7 @@ func TestOmpPresetSeedingKeepsUserEntry(t *testing.T) {
 		t.Fatalf("expected only the user preset, got %d: %#v", len(presets), presets)
 	}
 }
+
+// boolPtr remains a small helper used by configuration tests constructing
+// optional boolean fields.
+func boolPtr(value bool) *bool { return &value }

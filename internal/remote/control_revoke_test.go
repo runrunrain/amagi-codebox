@@ -314,9 +314,6 @@ func TestShutdown_CloseForShutdown(t *testing.T) {
 	if permit == nil {
 		t.Fatal("expected non-nil shutdown permit")
 	}
-	if permit.used.Load() {
-		t.Fatal("permit should not be used yet")
-	}
 	if arb.IsReady() {
 		t.Fatal("arbiter should not be ready after shutdown")
 	}

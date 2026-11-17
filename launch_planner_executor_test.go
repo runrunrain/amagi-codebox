@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -883,100 +884,6 @@ func TestConfigMutationCASOmpAndCodexModeRestore(t *testing.T) {
 	}
 }
 
-func TestConfigCompensationUnavailableProjectionAndRetry(t *testing.T) {
-	isolatedHome(t)
-	path := filepath.Join(defaultPiAgentDir(), "models.json")
-	original := []byte(`{"original":"unavailable"}`)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	debts := launchplan.NewCompensationDebtRegistry()
-	effect := &configMutationEffect{
-		target: launchplan.ConfigPi, content: []byte(`{"providers":{"replacement":{}}}`),
-		preimage: sha256.Sum256(original), owner: "session-18/4/config/pi", debts: debts,
-	}
-	if _, err := effect.Apply(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	outcome := effect.compensate(canceled)
-	if outcome.Disposition != launchplan.CompensationUnavailable {
-		t.Fatalf("canceled compensation = %#v", outcome)
-	}
-	app := &App{compensationDebts: debts}
-	listed := app.getLaunchCompensationDebts()
-	if len(listed) != 1 || listed[0].Disposition != launchplan.CompensationUnavailable {
-		t.Fatalf("unavailable debt projection = %#v", listed)
-	}
-	if err := app.retryLaunchCompensationDebt(effect.owner); err != nil {
-		t.Fatal(err)
-	}
-	if len(app.getLaunchCompensationDebts()) != 0 {
-		t.Fatal("confirmed unavailable retry retained debt")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != string(original) {
-		t.Fatalf("unavailable retry restored %q, err=%v", data, err)
-	}
-}
-
-func TestConfigCompensationDebtQueryAndExactRetry(t *testing.T) {
-	isolatedHome(t)
-	path := filepath.Join(defaultPiAgentDir(), "models.json")
-	original := []byte(`{"original":true}`)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, original, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	debts := launchplan.NewCompensationDebtRegistry()
-	writeCalls := 0
-	injectDurabilityFailure := true
-	effect := &configMutationEffect{
-		target: launchplan.ConfigPi, content: []byte(`{"providers":{"amagi-test":{}}}`),
-		preimage: sha256.Sum256(original), owner: "session-17/2/config/pi", debts: debts,
-	}
-	effect.atomicWrite = func(path string, content []byte, mode, dirMode os.FileMode) (atomicConfigWriteResult, error) {
-		writeCalls++
-		result, err := writeAtomicConfig(path, content, mode, dirMode)
-		if err == nil && injectDurabilityFailure && writeCalls <= 2 {
-			return result, &configIOError{step: "sync-directory", err: errors.New("injected durability uncertainty")}
-		}
-		return result, err
-	}
-	if _, err := effect.Apply(context.Background()); err == nil {
-		t.Fatal("post-rename durability failure was presented as success")
-	}
-	app := &App{compensationDebts: debts}
-	listed := app.getLaunchCompensationDebts()
-	if len(listed) != 1 || listed[0].Owner != effect.owner || listed[0].Disposition != launchplan.CompensationIndeterminate {
-		t.Fatalf("debt projection = %#v", listed)
-	}
-	injectDurabilityFailure = false
-	if err := app.retryLaunchCompensationDebt(effect.owner); err != nil {
-		t.Fatalf("retryLaunchCompensationDebt: %v", err)
-	}
-	if remaining := app.getLaunchCompensationDebts(); len(remaining) != 0 {
-		t.Fatalf("resolved debt retained: %#v", remaining)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != string(original) {
-		t.Fatalf("retry restored content = %q, err=%v", data, err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat retry-restored config: %v", err)
-	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("retry restored mode = %v", info.Mode().Perm())
-	}
-}
-
 // --- Derived: DisposeSecrets zeroes env copies ---
 
 func TestDisposeSecretsZeroesConfigCandidate(t *testing.T) {
@@ -1216,4 +1123,20 @@ func TestBuildPlanAllWorkdirsInvalidFails(t *testing.T) {
 	if failure == nil || failure.Kind != launchplan.FailureWorkdir {
 		t.Fatalf("expected FailureWorkdir, got %v", failure)
 	}
+}
+
+// sharedServiceFingerprint computes SHA-256 over the exact service, upstream,
+// and listen-port tuple (测试断言用：与 planner/executor 的指纹构成语义对齐)。
+func sharedServiceFingerprint(service, upstreamURL string, port int) [32]byte {
+	payload := make([]byte, 0, 16+len(service)+len(upstreamURL)+8)
+	var scalar [8]byte
+	binary.BigEndian.PutUint64(scalar[:], uint64(len(service)))
+	payload = append(payload, scalar[:]...)
+	payload = append(payload, service...)
+	binary.BigEndian.PutUint64(scalar[:], uint64(len(upstreamURL)))
+	payload = append(payload, scalar[:]...)
+	payload = append(payload, upstreamURL...)
+	binary.BigEndian.PutUint64(scalar[:], uint64(int64(port)))
+	payload = append(payload, scalar[:]...)
+	return sha256.Sum256(payload)
 }

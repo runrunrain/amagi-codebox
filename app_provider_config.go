@@ -101,13 +101,6 @@ func (a *App) getProviderAPIKey(providerName string, provider config.Provider) (
 	return a.getProviderAPIKeyWithLegacyCandidates(providerName, legacyProviderAPIKeyCandidates(provider))
 }
 
-// getProviderAPIKeyForFormat 读取指定格式下可用的统一 API key。
-// 新模型优先读取 providerName；若缺失，再兼容旧命名 providerName:format。
-// 若指定格式的 legacy key 不存在，会继续尝试另一种 legacy key，确保旧数据可读。
-func (a *App) getProviderAPIKeyForFormat(providerName, format string) (string, string) {
-	return a.getProviderAPIKeyWithLegacyCandidates(providerName, legacyProviderAPIKeyCandidatesForFormat(format))
-}
-
 func buildProviderFromExportProvider(ep config.ExportProvider) config.Provider {
 	return ep.ToProvider()
 }

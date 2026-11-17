@@ -111,17 +111,8 @@ func (s *Service) checkOpenCodeFromNPMGlobalPrefix() (*CheckStatus, []string, er
 	return nil, candidates, fmt.Errorf("OpenCode executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }
 
-func openCodeNPMGlobalExecutableCandidates(prefix string) []string {
-	return openCodeNPMGlobalExecutableCandidatesWithRoot(prefix, "")
-}
-
 func openCodeNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot string) []string {
 	return npmGlobalCommandCandidates(prefix, npmRoot, openCodeCommandName, "opencode-ai")
-}
-
-func (s *Service) openCodeVersion(executablePath string) (string, error) {
-	version, _, err := s.openCodeVersionWithDiagnostics(executablePath)
-	return version, err
 }
 
 func (s *Service) openCodeVersionWithDiagnostics(executablePath string) (string, []CheckIssue, error) {
