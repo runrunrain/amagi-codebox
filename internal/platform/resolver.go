@@ -65,6 +65,11 @@ type ResolvedLaunchSpec struct {
 	PTYRows        int                 `json:"ptyRows"`
 	ProcessPolicy  ProcessPolicy       `json:"processPolicy"`
 	Diagnostics    LaunchDiagnostics   `json:"diagnostics"`
+	// WSLWorkDirPreflightResolved 表示 WorkDir 已由启动预检融合探测
+	//（WSLLaunchPreflightProbe）定谳为 distro 内绝对物理路径——单次启动 RPC
+	// 作用域内传递（App 层预检成功后置位），pty 启动据此跳过重复的目录定谳
+	// 探测。false（remote/restart/旧调用）保持原探测路径不变。
+	WSLWorkDirPreflightResolved bool `json:"wslWorkDirPreflightResolved,omitempty"`
 }
 
 type ResolveRequest struct {

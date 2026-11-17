@@ -29,12 +29,35 @@
  *   }
  */
 
-import type { Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import type { Router } from 'vue-router'
 import * as sessionApi from '../api/session'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 import type { useDashboardState } from './useDashboardState'
 import type { usePlatformCapabilities } from './usePlatformCapabilities'
 import type { useSessionStore } from '../stores/session'
+
+/**
+ * WSL 启动进度阶段（稳定枚举）。
+ * 与后端 control_wiring.go launch:progress 负载的 stage 枚举一一对应，两端同步修改。
+ */
+export type LaunchProgressStage = 'preflight' | 'supply' | 'pty'
+
+/**
+ * 阶段 → 启动按钮文案映射。未知/缺事件阶段不映射（调用方维持现状文案）。
+ */
+export const LAUNCH_STAGE_TEXT: Record<LaunchProgressStage, string> = {
+  preflight: '正在唤醒 WSL 发行版…',
+  supply: '正在准备共享配置…',
+  pty: '正在启动终端…',
+}
+
+/** launch:progress 事件负载形状（后端 emitLaunchProgress：{stage, message, appType}） */
+interface LaunchProgressPayload {
+  stage?: unknown
+  message?: unknown
+  appType?: unknown
+}
 
 /** 仪表盘 state 类型（从 useDashboardState 推导，避免重复定义） */
 type DashState = ReturnType<typeof useDashboardState>['state']
@@ -66,6 +89,33 @@ export interface LaunchOptions {
 }
 
 export function useSessionLaunch() {
+  /**
+   * 当前启动阶段文案（响应式）。null = 无事件/非 WSL 启动 → 调用方维持现状文案。
+   * 每次启动开始时重置，启动结束（成功/失败/异常）在 finally 一并清空。
+   */
+  const launchStageText = ref<string | null>(null)
+
+  /**
+   * 订阅后端 launch:progress 事件（best-effort）：非 Wails/单测环境 EventsOn
+   * 不可用时降级为不订阅（文案恒为 null），不影响启动流程。
+   * 返回注销函数（EventsOn 的 dispose fn）。
+   */
+  function subscribeLaunchProgress(): () => void {
+    launchStageText.value = null
+    try {
+      return EventsOn('launch:progress', (payload: unknown) => {
+        const p = payload as LaunchProgressPayload | null
+        if (!p || typeof p.stage !== 'string') return
+        const text = LAUNCH_STAGE_TEXT[p.stage as LaunchProgressStage]
+        if (text) launchStageText.value = text
+      })
+    } catch (err) {
+      // 非 Wails 环境（单测）：进度桥不可用，维持现状文案。
+      console.error('[useSessionLaunch] launch progress bridge unavailable:', err)
+      return () => {}
+    }
+  }
+
   /**
    * 宽松启动前置校验：仅检查字段非空，不校验 preset 是否实际存在于后端列表。
    * 用于侧栏"新建会话"按钮做"直接启动 vs 跳设置页补全"决策。
@@ -159,6 +209,8 @@ export function useSessionLaunch() {
     }
 
     if (launchingRef) launchingRef.value = true
+    // launching 期间订阅启动进度事件；finally 所有路径（成功/失败/异常）注销，不泄漏。
+    const unsubscribeLaunchProgress = subscribeLaunchProgress()
     try {
       let sessionId = ''
       if (dashState.engine === 'claudecode') {
@@ -243,6 +295,8 @@ export function useSessionLaunch() {
       console.error('Launch failed:', err)
       showError('启动失败: ' + err)
     } finally {
+      unsubscribeLaunchProgress()
+      launchStageText.value = null
       if (launchingRef) launchingRef.value = false
     }
   }
@@ -251,5 +305,6 @@ export function useSessionLaunch() {
     canLaunchFromSettings,
     launchFromSettings,
     resolveShellPath,
+    launchStageText,
   }
 }
