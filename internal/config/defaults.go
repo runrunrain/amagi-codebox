@@ -1,9 +1,5 @@
 package config
 
-// boolPtr remains a small package helper used by configuration tests and
-// callers constructing optional boolean fields.
-func boolPtr(value bool) *bool { return &value }
-
 // DefaultConfig returns a deliberately clean first-run configuration.
 //
 // Provider/model presets used to be seeded here (Anthropic, OpenAI, GLM,

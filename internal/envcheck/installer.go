@@ -2,7 +2,6 @@ package envcheck
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -450,174 +449,6 @@ func (s *Service) verifyNPMGlobalCandidateDoesNotConflictWithEffectiveEntry(
 	return status, npmGlobalVerificationDetailWithEffectiveEntry(detail(status, candidates, nil), status, effectiveAfter), nil
 }
 
-func (s *Service) tryCleanupCodexStaleNPMEntryAfterFallback(operation installOperation, beforeVersion string, effectiveAfter *CheckStatus, npmCandidate *CheckStatus) (*CheckStatus, string, error) {
-	if npmCandidate == nil {
-		return nil, "", nil
-	}
-	if err := validateHealthyCodexNPMCandidateForCleanup(operation, beforeVersion, npmCandidate); err != nil {
-		return nil, fmt.Sprintf("Codex stale Homebrew npm cleanup skipped: npm candidate is not safe for cleanup: %s", sanitizeInstallerOutput(err.Error())), err
-	}
-
-	stale, staleErr := validateCodexStaleNPMEntry(effectiveAfter, npmCandidate)
-	if staleErr != nil {
-		return nil, fmt.Sprintf("Codex stale Homebrew npm cleanup skipped: %s", sanitizeInstallerOutput(staleErr.Error())), staleErr
-	}
-
-	cleanupOutput, cleanupErr := s.runCodexStaleNPMCleanup(stale.prefix)
-	cleanupCommand := fmt.Sprintf("npm uninstall -g %s --prefix %s", codexNPMPackageName, stale.prefix)
-	if cleanupErr != nil {
-		err := fmt.Errorf("%s failed: %s", cleanupCommand, sanitizeInstallerOutput(cleanupErr.Error()))
-		detail := fmt.Sprintf("Codex stale Homebrew npm cleanup failed: stale=%s version=%s; stale package root=%s; package.json=%s; npm candidate=%s version=%s; %s; output=%s", stale.path, stale.version, stale.packageRoot, stale.manifestPath, strings.TrimSpace(npmCandidate.ExecutablePath), strings.TrimSpace(npmCandidate.Version), err.Error(), sanitizeInstallerOutput(cleanupOutput))
-		return nil, detail, err
-	}
-
-	post, recheckDetail, recheckErr := s.recheckCodexAfterStaleNPMCleanup(npmCandidate, stale.path, stale.version)
-	baseDetail := fmt.Sprintf("stale=%s version=%s; stale package root=%s; package.json=%s; npm candidate=%s version=%s; %s; cleanup output=%s; %s", stale.path, stale.version, stale.packageRoot, stale.manifestPath, strings.TrimSpace(npmCandidate.ExecutablePath), strings.TrimSpace(npmCandidate.Version), cleanupCommand, sanitizeInstallerOutput(cleanupOutput), recheckDetail)
-	if recheckErr != nil {
-		return nil, "Codex stale Homebrew npm cleanup recheck failed: " + baseDetail, recheckErr
-	}
-	return post, baseDetail, nil
-}
-
-func validateHealthyCodexNPMCandidateForCleanup(operation installOperation, beforeVersion string, status *CheckStatus) error {
-	if status == nil || !status.Installed || !status.PATHOk || strings.TrimSpace(status.Error) != "" {
-		return fmt.Errorf("npm global candidate not healthy: %s", verificationErrorMessage(status))
-	}
-	if strings.TrimSpace(status.ExecutablePath) == "" || strings.TrimSpace(status.Version) == "" {
-		return fmt.Errorf("npm global candidate missing executable path or version")
-	}
-	if status.InstallMethod != InstallMethodNPM {
-		return fmt.Errorf("candidate install method is %s, want npm", status.InstallMethod)
-	}
-	if operation == installOperationUpdate && strings.TrimSpace(beforeVersion) != "" && strings.TrimSpace(status.Version) == strings.TrimSpace(beforeVersion) {
-		return fmt.Errorf("npm global candidate version unchanged at %s", beforeVersion)
-	}
-	return nil
-}
-
-type codexStaleNPMEntry struct {
-	path         string
-	version      string
-	prefix       string
-	packageRoot  string
-	manifestPath string
-}
-
-func validateCodexStaleNPMEntry(effectiveAfter *CheckStatus, npmCandidate *CheckStatus) (codexStaleNPMEntry, error) {
-	if effectiveAfter == nil || !effectiveAfter.Installed || strings.TrimSpace(effectiveAfter.ExecutablePath) == "" {
-		return codexStaleNPMEntry{}, fmt.Errorf("default/effective Codex entry is missing; nothing to clean")
-	}
-	stalePath := strings.TrimSpace(effectiveAfter.ExecutablePath)
-	candidatePath := strings.TrimSpace(npmCandidate.ExecutablePath)
-	if sameNormalizedPath(stalePath, candidatePath) {
-		return codexStaleNPMEntry{}, fmt.Errorf("default/effective Codex entry already matches npm candidate path")
-	}
-	staleVersion := strings.TrimSpace(effectiveAfter.Version)
-	candidateVersion := strings.TrimSpace(npmCandidate.Version)
-	if staleVersion != "" && candidateVersion != "" && staleVersion == candidateVersion {
-		return codexStaleNPMEntry{}, fmt.Errorf("default/effective Codex entry version %s already matches npm candidate", staleVersion)
-	}
-
-	packageRoot, stalePrefix, rootErr := codexStaleNPMPackageRootAndPrefix(stalePath)
-	if rootErr != nil {
-		return codexStaleNPMEntry{}, rootErr
-	}
-	if !isHomebrewNPMGlobalPrefix(stalePrefix) {
-		return codexStaleNPMEntry{}, fmt.Errorf("stale Codex prefix %s is not recognized as a Homebrew npm global prefix; refusing automatic cleanup", stalePrefix)
-	}
-	if !openCodeHomebrewPathUnderPrefix(stalePath, stalePrefix) {
-		return codexStaleNPMEntry{}, fmt.Errorf("stale Codex path %s is not under inferred Homebrew prefix %s; refusing automatic cleanup", stalePath, stalePrefix)
-	}
-
-	manifestPath := filepath.Join(packageRoot, "package.json")
-	manifestVersion, manifestErr := readCodexPackageJSONVersion(manifestPath)
-	if manifestErr != nil {
-		return codexStaleNPMEntry{}, fmt.Errorf("package.json guard failed for %s: %w", manifestPath, manifestErr)
-	}
-	if staleVersion == "" {
-		staleVersion = manifestVersion
-	}
-	return codexStaleNPMEntry{
-		path:         stalePath,
-		version:      staleVersion,
-		prefix:       stalePrefix,
-		packageRoot:  packageRoot,
-		manifestPath: manifestPath,
-	}, nil
-}
-
-func codexStaleNPMPackageRootAndPrefix(stalePath string) (string, string, error) {
-	path := strings.TrimSpace(stalePath)
-	if path == "" {
-		return "", "", fmt.Errorf("empty stale Codex path")
-	}
-	slashPath := filepath.ToSlash(filepath.Clean(path))
-	normalized := strings.ToLower(slashPath)
-	needle := "/node_modules/@openai/codex"
-	idx := strings.Index(normalized, needle)
-	if idx < 0 {
-		return "", "", fmt.Errorf("stale Codex path %s does not point to node_modules/@openai/codex", stalePath)
-	}
-	packageRoot := filepath.Clean(slashPath[:idx+len(needle)])
-	prefix := slashPath[:idx]
-	if strings.HasSuffix(strings.ToLower(prefix), "/lib") {
-		prefix = prefix[:len(prefix)-len("/lib")]
-	}
-	prefix = filepath.Clean(prefix)
-	if prefix == "." || strings.TrimSpace(prefix) == "" {
-		return "", "", fmt.Errorf("could not infer npm prefix from stale Codex path %s", stalePath)
-	}
-	return packageRoot, prefix, nil
-}
-
-func isHomebrewNPMGlobalPrefix(prefix string) bool {
-	normalized := normalizeCodexPath(prefix)
-	if normalized == "/opt/homebrew" || normalized == "/usr/local" {
-		return true
-	}
-	segments := strings.Split(strings.Trim(normalized, "/"), "/")
-	for _, segment := range segments {
-		if segment == "homebrew" {
-			return true
-		}
-	}
-	return false
-}
-
-func readCodexPackageJSONVersion(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	var manifest struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(manifest.Name) != codexNPMPackageName {
-		return "", fmt.Errorf("package manifest name is %q, want %q", strings.TrimSpace(manifest.Name), codexNPMPackageName)
-	}
-	version := parseCodexVersion(manifest.Version)
-	if version == "" {
-		return "", fmt.Errorf("package manifest %s did not contain a valid Codex version", path)
-	}
-	return version, nil
-}
-
-func (s *Service) runCodexStaleNPMCleanup(stalePrefix string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), installCommandTimeout)
-	defer cancel()
-	result, err := s.processRunner.Run(ctx, platform.CommandSpec{
-		Path:   s.resolveNPMPath(),
-		Args:   []string{"uninstall", "-g", codexNPMPackageName, "--prefix", stalePrefix},
-		Env:    s.buildEnhancedEnv(),
-		Policy: platform.DefaultProcessPolicy(),
-	})
-	return resultText(result), err
-}
-
 func (s *Service) resolveBrewPath() (string, error) {
 	if path, err := exec.LookPath("brew"); err == nil && strings.TrimSpace(path) != "" {
 		if abs, absErr := filepath.Abs(path); absErr == nil && filepath.IsAbs(abs) {
@@ -637,21 +468,6 @@ func (s *Service) resolveBrewPath() (string, error) {
 		return "", fmt.Errorf("brew executable not found: %w", err)
 	}
 	return "", fmt.Errorf("brew executable not found")
-}
-
-func openCodeHomebrewPathUnderPrefix(path string, prefix string) bool {
-	for _, normalizedPath := range normalizedPathVariants(path) {
-		for _, normalizedPrefix := range normalizedPathVariants(prefix) {
-			normalizedPrefix = strings.TrimRight(normalizedPrefix, "/")
-			if normalizedPath == "" || normalizedPrefix == "" {
-				continue
-			}
-			if normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/") {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func normalizedPathVariants(path string) []string {
@@ -679,52 +495,6 @@ func normalizedPathVariants(path string) []string {
 		out = append(out, variant)
 	}
 	return out
-}
-
-func (s *Service) recheckCodexAfterStaleNPMCleanup(npmCandidate *CheckStatus, stalePath string, staleVersion string) (*CheckStatus, string, error) {
-	wantVersion := strings.TrimSpace(npmCandidate.Version)
-	var lastDetail string
-	for attempt := 1; attempt <= boundedInstallRecheckAttempts(); attempt++ {
-		if attempt > 1 {
-			time.Sleep(installRecheckDelay)
-		}
-		post, err := s.CheckOne(ToolCodex)
-		lastDetail = codexCleanupRecheckDetail(attempt, post, err)
-		if err != nil || post == nil || !post.Installed || !post.PATHOk || strings.TrimSpace(post.Error) != "" {
-			continue
-		}
-		postPath := strings.TrimSpace(post.ExecutablePath)
-		postVersion := strings.TrimSpace(post.Version)
-		if sameNormalizedPath(postPath, stalePath) || codexPathsSharePackageRoot(postPath, stalePath) {
-			lastDetail = fmt.Sprintf("recheck attempt %d/%d still resolves stale Homebrew npm Codex path=%s version=%s", attempt, boundedInstallRecheckAttempts(), postPath, postVersion)
-			continue
-		}
-		if postVersion != wantVersion {
-			lastDetail = fmt.Sprintf("recheck attempt %d/%d resolved path=%s version=%s, want npm candidate version=%s", attempt, boundedInstallRecheckAttempts(), postPath, postVersion, wantVersion)
-			continue
-		}
-		return post, fmt.Sprintf("recheck attempt %d/%d path=%s version=%s; stale Homebrew npm Codex path no longer effective", attempt, boundedInstallRecheckAttempts(), postPath, postVersion), nil
-	}
-	return nil, lastDetail, fmt.Errorf("cleanup completed but recheck did not confirm default/effective Codex entry moved from stale Homebrew npm %s version %s to npm candidate version %s", stalePath, staleVersion, wantVersion)
-}
-
-func codexPathsSharePackageRoot(pathA string, pathB string) bool {
-	rootA, _, errA := codexStaleNPMPackageRootAndPrefix(pathA)
-	rootB, _, errB := codexStaleNPMPackageRootAndPrefix(pathB)
-	if errA != nil || errB != nil {
-		return false
-	}
-	return sameNormalizedPath(rootA, rootB)
-}
-
-func codexCleanupRecheckDetail(attempt int, status *CheckStatus, err error) string {
-	if err != nil {
-		return fmt.Sprintf("recheck attempt %d/%d failed: %s", attempt, boundedInstallRecheckAttempts(), sanitizeInstallerOutput(err.Error()))
-	}
-	if status == nil {
-		return fmt.Sprintf("recheck attempt %d/%d returned empty status", attempt, boundedInstallRecheckAttempts())
-	}
-	return fmt.Sprintf("recheck attempt %d/%d path=%s version=%s installed=%v pathOk=%v error=%s", attempt, boundedInstallRecheckAttempts(), strings.TrimSpace(status.ExecutablePath), strings.TrimSpace(status.Version), status.Installed, status.PATHOk, sanitizeInstallerOutput(status.Error))
 }
 
 func npmGlobalCandidateConflictWithEffectiveEntry(toolDisplayName string, npmCandidate *CheckStatus, effectiveAfter *CheckStatus) error {
@@ -2156,11 +1926,6 @@ func (s *Service) resolveNPMPath() string {
 	}
 	// Final fallback: bare name, let OS resolve.
 	return "npm"
-}
-
-func (s *Service) runInstallCommand(command installCommand) error {
-	_, err := s.runInstallCommandResult(command)
-	return err
 }
 
 func (s *Service) runInstallCommandResult(command installCommand) (*platform.ProcessResult, error) {

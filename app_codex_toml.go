@@ -41,60 +41,6 @@ type codexConfigSyncOptions struct {
 	CleanupManagedConfig bool
 }
 
-// syncCodexConfigModel updates the top-level model in an existing Codex config.toml
-// and removes amagi-managed provider state so official Codex login can recover.
-func syncCodexConfigModel(model string) error {
-	codexHome, err := platform.CodexHomeDir(os.Environ())
-	if err != nil {
-		return fmt.Errorf("get Codex home: %w", err)
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-	return syncCodexConfigFile(configPath, codexConfigSyncOptions{Model: model, CleanupManagedConfig: true})
-}
-
-func syncCodexCustomProviderConfig(model, baseURL, wireAPI string) error {
-	codexHome, err := platform.CodexHomeDir(os.Environ())
-	if err != nil {
-		return fmt.Errorf("get Codex home: %w", err)
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-	return syncCodexCustomProviderConfigFile(configPath, model, baseURL, wireAPI)
-}
-
-func syncCodexCustomProviderConfigFile(configPath, model, baseURL, wireAPI string) error {
-	if strings.TrimSpace(model) == "" {
-		return fmt.Errorf("codex model is empty")
-	}
-	if strings.TrimSpace(baseURL) == "" {
-		return fmt.Errorf("codex provider base_url is empty")
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("create codex config dir: %w", err)
-	}
-	return syncCodexConfigFile(configPath, codexConfigSyncOptions{
-		Model:                model,
-		ModelProvider:        codexModelProviderName,
-		ProviderBaseURL:      baseURL,
-		WireAPI:              wireAPI,
-		EnsureCustomProvider: true,
-		ForceAPILogin:        true,
-	})
-}
-
-func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) || !opts.EnsureCustomProvider {
-			return fmt.Errorf("read config.toml: %w", err)
-		}
-	}
-	rendered, err := renderCodexConfig(data, configPath, opts)
-	if err != nil {
-		return err
-	}
-	return fsutil.WritePrivateFile(configPath, rendered)
-}
-
 // renderCodexConfig is the pure Codex TOML transform shared by desktop writes
 // and the transactional remote executor. The caller owns durable file I/O.
 func renderCodexConfig(data []byte, configPath string, opts codexConfigSyncOptions) ([]byte, error) {

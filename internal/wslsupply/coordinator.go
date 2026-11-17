@@ -1498,12 +1498,6 @@ func (c *Coordinator) submitFileCtx(ctx context.Context, target TargetRef, relPa
 	return nil, errors.New("submit file lost a bounded race with concurrent writers; retry")
 }
 
-// submitFile 是无 ctx 接线的兼容入口（保留同壳面：测试桩/未来调用方使用；
-// 生产路径一律用 commitFile——取消保护由 ctx 检查承担）。
-func (c *Coordinator) submitFile(target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
-	return c.submitFileCtx(context.Background(), target, relPath, content, sensitive)
-}
-
 // ensureSensitiveTargetPerms 验证并（必要时）收紧敏感单元既有副本的目标
 // 权限（PR02）：健康 0600 → 零字节重写保持；未知（探测不可用）或非 0600
 // → 先 chmod 600 再复验，仍不可证 → 返回错误（调用方以失败上报，启动闸门

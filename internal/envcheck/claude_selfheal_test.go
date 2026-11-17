@@ -555,59 +555,9 @@ func TestIsClaudeSIGKILLSignal(t *testing.T) {
 // P0-3: healthyClaudeBinaryCandidates filters out corrupted shards
 // ---------------------------------------------------------------------------
 
-func TestHealthyClaudeBinaryCandidates_FiltersShards(t *testing.T) {
-	withSimulatedGOOS(t, "linux")
-	withIntegrityThreshold(t, 100*1024*1024)
-
-	dir := t.TempDir()
-	healthy := filepath.Join(dir, "healthy")
-	shard := filepath.Join(dir, "shard")
-	missing := filepath.Join(dir, "missing")
-	writeFixture(t, healthy, make([]byte, 150*1024*1024)) // above threshold
-	writeFixture(t, shard, make([]byte, 1*1024))          // below threshold
-
-	got := healthyClaudeBinaryCandidates([]string{healthy, shard, missing})
-	if len(got) != 1 {
-		t.Fatalf("expected 1 healthy candidate, got %d: %v", len(got), got)
-	}
-	if filepath.Clean(got[0]) != filepath.Clean(healthy) {
-		t.Fatalf("kept %q, want %q", got[0], healthy)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // P0-3: ensureClaudeBinaryHealthy
 // ---------------------------------------------------------------------------
-
-func TestEnsureClaudeBinaryHealthy_HealthyReturnsNil(t *testing.T) {
-	withSimulatedGOOS(t, "linux")
-	withIntegrityThreshold(t, 1)
-
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "claude")
-	writeFixture(t, bin, []byte("ok"))
-	if err := ensureClaudeBinaryHealthy(bin); err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-}
-
-func TestEnsureClaudeBinaryHealthy_CorruptedReturnsError(t *testing.T) {
-	withSimulatedGOOS(t, "linux")
-	withIntegrityThreshold(t, 100*1024*1024)
-
-	dir := t.TempDir()
-	shard := filepath.Join(dir, "claude")
-	writeFixture(t, shard, []byte("tiny"))
-	if err := ensureClaudeBinaryHealthy(shard); err == nil {
-		t.Fatal("expected error for corrupted binary")
-	}
-}
-
-func TestEnsureClaudeBinaryHealthy_EmptyPathReturnsError(t *testing.T) {
-	if err := ensureClaudeBinaryHealthy(""); err == nil {
-		t.Fatal("expected error for empty path")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // P0-3: claudeBinaryCandidateLooksHealthy gates the fallback list

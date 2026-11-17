@@ -215,7 +215,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if _, err := c.submitFile(target, rel, []byte(content), false); err != nil {
+				if _, err := c.submitFileCtx(context.Background(), target, rel, []byte(content), false); err != nil {
 					errs <- err
 				}
 			}()
@@ -255,7 +255,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if _, err := c.submitFile(target, "prefs.json", []byte(content), false); err != nil {
+				if _, err := c.submitFileCtx(context.Background(), target, "prefs.json", []byte(content), false); err != nil {
 					errs <- err
 				}
 			}()
@@ -302,7 +302,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				_, _ = c.submitFile(target, "prefs.json", []byte(content), false)
+				_, _ = c.submitFileCtx(context.Background(), target, "prefs.json", []byte(content), false)
 			}()
 		}
 		close(start)

@@ -751,30 +751,6 @@ func comparePrereleaseIdentifier(current string, latest string) int {
 	return 0
 }
 
-func versionParts(version string) []int {
-	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
-	if idx := strings.IndexAny(version, "-+"); idx >= 0 {
-		version = version[:idx]
-	}
-	if version == "" {
-		return nil
-	}
-	parts := strings.Split(version, ".")
-	numbers := make([]int, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			numbers = append(numbers, 0)
-			continue
-		}
-		number, err := strconv.Atoi(part)
-		if err != nil {
-			break
-		}
-		numbers = append(numbers, number)
-	}
-	return numbers
-}
-
 // ---------------------------------------------------------------------------
 // Async operation management
 // ---------------------------------------------------------------------------

@@ -535,3 +535,13 @@ func waitR4003OutboundPending(t *testing.T, conn *wsV1Connection, want int) {
 	conn.outbound.mu.Unlock()
 	t.Fatalf("outbound pending = %d, want %d", got, want)
 }
+
+// writeServerEventSync 同步写一条服务端事件并等待落盘完成（测试模拟器入口：
+// 产品路径一律走异步 writeServerEvent，同步形态仅供测试确定性断言）。
+func (c *wsV1Connection) writeServerEventSync(ev contract.KnownServerEvent) error {
+	completion, err := c.enqueueServerEvent(ev, true)
+	if err != nil {
+		return err
+	}
+	return <-completion
+}

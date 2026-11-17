@@ -201,3 +201,13 @@ func holderGen(arb *ControlArbiter, sid contract.SessionID) HolderGeneration {
 	defer entry.stateMu.Unlock()
 	return entry.holderGeneration
 }
+
+// tryAcquire attempts to grab the slot without waiting. Returns true on success.
+func (l *boundedOperationLane) tryAcquire() bool {
+	select {
+	case <-l.token:
+		return true
+	default:
+		return false
+	}
+}

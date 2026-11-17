@@ -117,10 +117,6 @@ func (s *Service) checkOmpFromNPMGlobalPrefix() (*CheckStatus, []string, error) 
 	return nil, candidates, fmt.Errorf("omp executable not found under npm global prefix candidates: %s", strings.Join(candidates, ", "))
 }
 
-func ompNPMGlobalExecutableCandidates(prefix string) []string {
-	return ompNPMGlobalExecutableCandidatesWithRoot(prefix, "")
-}
-
 func ompNPMGlobalExecutableCandidatesWithRoot(prefix, npmRoot string) []string {
 	return npmGlobalCommandCandidates(prefix, npmRoot, ompCommandName, ompNPMPackageName)
 }

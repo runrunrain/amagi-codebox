@@ -114,13 +114,3 @@ func (l *boundedOperationLane) release() {
 		// Slot already free (double release in error path — safe idempotent).
 	}
 }
-
-// tryAcquire attempts to grab the slot without waiting. Returns true on success.
-func (l *boundedOperationLane) tryAcquire() bool {
-	select {
-	case <-l.token:
-		return true
-	default:
-		return false
-	}
-}

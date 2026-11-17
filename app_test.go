@@ -224,12 +224,6 @@ func TestClearStoppedSessionsWithoutCodexHomeIsolation(t *testing.T) {
 	}
 }
 
-func TestStopAllSessionsWithoutCodexHomeIsolation(t *testing.T) {
-	app := newTestApp(t)
-	_ = app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
-	app.stopAllSessionsForShutdown()
-}
-
 // --- Model name normalization ---
 
 func TestNormalizeCodexModelName(t *testing.T) {
@@ -376,30 +370,6 @@ func TestBuildEnv_NoCODEXHOMEInOverrides(t *testing.T) {
 }
 
 // --- Cross-platform provider/key tests ---
-
-func TestGetProviderAPIKeyForFormat_LegacyFallback(t *testing.T) {
-	app := newTestApp(t)
-
-	const providerID = "legacy-provider"
-	provider := config.Provider{
-		Anthropic: &config.AnthropicFormat{Enabled: true},
-		OpenAI:    &config.OpenAIFormat{Enabled: true},
-	}
-	if err := app.Config.SaveProvider(providerID, provider); err != nil {
-		t.Fatalf("SaveProvider: %v", err)
-	}
-	if err := app.Secrets.SetAPIKey(providerID+":openai", "sk-legacy-openai"); err != nil {
-		t.Fatalf("SetAPIKey legacy: %v", err)
-	}
-
-	key, source := app.getProviderAPIKeyForFormat(providerID, "anthropic")
-	if key != "sk-legacy-openai" {
-		t.Fatalf("key = %q, want sk-legacy-openai", key)
-	}
-	if source != "legacy:openai" {
-		t.Fatalf("source = %q, want legacy:openai", source)
-	}
-}
 
 func TestGetProviderExportJSON_UsesSingleProviderAPIKey(t *testing.T) {
 	app := newTestApp(t)

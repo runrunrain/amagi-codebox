@@ -1,6 +1,7 @@
 package dockerwsl
 
 import (
+	"amagi-codebox/internal/logging"
 	"context"
 	"errors"
 	"strings"
@@ -327,4 +328,9 @@ func TestBuildIssuesAndShouldSelfHealPure(t *testing.T) {
 	if len(issues) != 1 || !strings.Contains(issues[0], "/usr/bin/docker") {
 		t.Fatalf("issues = %v", issues)
 	}
+}
+
+// newServiceWithRunner 供测试注入假件。
+func newServiceWithRunner(log *logging.Service, r runner) *Service {
+	return &Service{log: log, r: r}
 }

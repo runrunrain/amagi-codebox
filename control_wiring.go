@@ -9,8 +9,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -421,21 +419,4 @@ func isControlUnknownSession(err error) bool {
 		return ge.Kind == remote.DenySessionNotFound
 	}
 	return false
-}
-
-// sharedServiceFingerprint computes SHA-256 over the exact service, upstream,
-// and listen-port tuple. The same tuple is used by planner, executor
-// verification, mutation guards, and lease promotion.
-func sharedServiceFingerprint(service, upstreamURL string, port int) [32]byte {
-	payload := make([]byte, 0, 16+len(service)+len(upstreamURL)+8)
-	var scalar [8]byte
-	binary.BigEndian.PutUint64(scalar[:], uint64(len(service)))
-	payload = append(payload, scalar[:]...)
-	payload = append(payload, service...)
-	binary.BigEndian.PutUint64(scalar[:], uint64(len(upstreamURL)))
-	payload = append(payload, scalar[:]...)
-	payload = append(payload, upstreamURL...)
-	binary.BigEndian.PutUint64(scalar[:], uint64(int64(port)))
-	payload = append(payload, scalar[:]...)
-	return sha256.Sum256(payload)
 }
