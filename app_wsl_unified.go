@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/wslsupply"
 )
 
@@ -608,7 +609,9 @@ func (a *App) logWSLUnifiedRunWarn(res wslsupply.RunResult, err error, scope str
 // 纳入），再对「同代已同意且非 detached」的单元跑一轮 ReasonLaunch。没有
 // 授权就不调 RunUnits（不写 awaiting-consent 状态）；结果只告警不阻断——
 // 预期态（冻结/未托管/detached）不是启动告警面（可选偏好单元口径一致）。
-func runWSLCliConfigAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, appType string) {
+// preflight 非 nil 时经 runWSLSupplyUnitsAtLaunch 走免重探的
+// RunUnitsWithTarget（CLIClaude/CLICodex 作用域用预检身份分别构造目标）。
+func runWSLCliConfigAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, appType string, preflight *platform.WSLLaunchPreflight) {
 	cli, ok := wslCliForLaunch(appType)
 	if !ok || runner == nil || strings.TrimSpace(distro) == "" {
 		return
@@ -640,7 +643,7 @@ func runWSLCliConfigAtLaunch(ctx context.Context, runner wslsupply.Runner, distr
 	if len(runnable) == 0 {
 		return
 	}
-	res, err := runner.RunUnits(ctx, distro, cli, wslsupply.ReasonLaunch, runnable)
+	res, err := runWSLSupplyUnitsAtLaunch(ctx, runner, distro, cli, wslsupply.ReasonLaunch, runnable, preflight)
 	if err != nil {
 		if appLogHook != nil {
 			appLogHook("wslsupply", "WSL CLI 用户配置启动补漏失败（会话继续，按既有回退语义）", err.Error())

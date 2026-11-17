@@ -371,7 +371,7 @@ func TestWSLUnifiedSupplyEndToEnd(t *testing.T) {
 		t.Fatal("unified must default to false")
 	}
 	spec := platform.ResolvedLaunchSpec{BootstrapMode: platform.BootstrapWSL, AppType: "claudecode"}
-	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec); err != nil {
+	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec, nil); err != nil {
 		t.Fatalf("launch before consent: %v", err)
 	}
 	if f.coord.hasCall("claude|") {
@@ -426,7 +426,7 @@ func TestWSLUnifiedSupplyEndToEnd(t *testing.T) {
 	}
 
 	// 会话启动供给（lazy）：已授权单元随启动重跑（Fresh 幂等）。
-	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec); err != nil {
+	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec, nil); err != nil {
 		t.Fatalf("launch after consent: %v", err)
 	}
 	waitUntil(t, func() bool { return f.coord.hasCall("claude|launch|") }, "claude units must run at launch")
@@ -553,7 +553,7 @@ func TestWSLCliConfigAtLaunchRequiresConsent(t *testing.T) {
 	f := newUnifiedFixture(t)
 	// 未启用统一管理、无授权：codex 启动不写 awaiting-consent、不调 RunUnits。
 	spec := platform.ResolvedLaunchSpec{BootstrapMode: platform.BootstrapWSL, AppType: "codex"}
-	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec); err != nil {
+	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec, nil); err != nil {
 		t.Fatalf("launch: %v", err)
 	}
 	if f.coord.hasCall("codex|") {
@@ -564,13 +564,13 @@ func TestWSLCliConfigAtLaunchRequiresConsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool { return f.coord.hasCall("codex|save|") }, "enable push must cover codex units")
-	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec); err != nil {
+	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, spec, nil); err != nil {
 		t.Fatalf("launch after enable: %v", err)
 	}
 	waitUntil(t, func() bool { return f.coord.hasCall("codex|launch|") }, "codex units must run at launch after consent")
 	// 非 claude/codex appType（pi）：统一启动补漏不越面。
 	piSpec := platform.ResolvedLaunchSpec{BootstrapMode: platform.BootstrapWSL, AppType: "pi"}
-	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, piSpec); err != nil {
+	if err := runWSLSharedFilesForSpec(context.Background(), f.coord, piSpec, nil); err != nil {
 		t.Fatalf("pi launch: %v", err)
 	}
 	if f.coord.hasCall("pi|launch|") {

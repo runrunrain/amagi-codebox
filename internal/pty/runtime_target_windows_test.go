@@ -37,6 +37,40 @@ func TestWSLStartupUsesTheExactResolvedDirectory(t *testing.T) {
 	}
 }
 
+// TestPrepareWSLStartupSpecSkipsPreflightResolved 预检置位时跳过重复目录探测：
+// WSLWorkDirPreflightResolved=true（App 层融合预检成功后置位）则
+// resolveWSLStartupDirectory seam 不得被调用，WorkDir 原样保留（已是定谳
+// 绝对路径）；false（remote/restart/旧调用）保持原探测路径。
+func TestPrepareWSLStartupSpecSkipsPreflightResolved(t *testing.T) {
+	previous := resolveWSLStartupDirectory
+	t.Cleanup(func() { resolveWSLStartupDirectory = previous })
+	called := false
+	resolveWSLStartupDirectory = func(context.Context, string, string) (string, error) {
+		called = true
+		return "/home/probed", nil
+	}
+	spec, err := prepareWSLStartupSpec(platform.ResolvedLaunchSpec{
+		BootstrapMode: platform.BootstrapWSL, WorkDir: "/home/u/proj/preflight",
+		WSLWorkDirPreflightResolved: true,
+	}, "Captured")
+	if err != nil {
+		t.Fatalf("preflight-resolved spec must not fail: %v", err)
+	}
+	if called {
+		t.Fatal("resolveWSLStartupDirectory must not run when preflight already resolved the directory")
+	}
+	if spec.WorkDir != "/home/u/proj/preflight" {
+		t.Fatalf("preflight-resolved WorkDir must be kept, got %q", spec.WorkDir)
+	}
+	// 对照：未置位时仍走探测 seam（既有路径不变）。
+	spec, err = prepareWSLStartupSpec(platform.ResolvedLaunchSpec{
+		BootstrapMode: platform.BootstrapWSL, WorkDir: "~/proj",
+	}, "Captured")
+	if err != nil || spec.WorkDir != "/home/probed" || !called {
+		t.Fatalf("non-preflight path must probe: spec=%+v called=%v err=%v", spec, called, err)
+	}
+}
+
 func TestSessionWSLTargetUsesCapturedProcess(t *testing.T) {
 	service := &Service{sessions: map[string]*PtySession{
 		"wsl":            {bootstrapMode: platform.BootstrapWSL, wslDistro: "Ubuntu-recorded"},
