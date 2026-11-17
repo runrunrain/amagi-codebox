@@ -65,4 +65,4 @@
 - P4 回流（commit f61b39c6，truncated 但产物完整已验收）：四引擎能力调研有实测证据；OpenCode 如实降级不造假开关。Leader 复现并直修 P1 遗留 TestConcurrentRegistryAccess 竞态（前置导入未前置）→10 次重跑+race 全绿；全仓 48 包 RC=0。
 - P5：diting full 审核（首轮 provider 凭据 401 失败→换模 amagi-glm/glm-5.3 续接完成）VERDICT: FIX：3C/3M/3m 全带取证；修复批次（712b12c7）C1-C3/M1-M3 全修+m1-m3，取证复跑损坏不再发生；Leader 复跑全仓 RC=0。文档（api.md 22 绑定+SharedExt 章节、plugins.md 共用中心）+版本 1.3.145 bump。commit 82b477b1。
 - P6：推送时发现远端 master 已进 1.3.144（主上另一环境：共用插件市场 sharedmarket→~/.agents + 子项启停重构为 stash 物理机制）——保留合并现场派 luban（fork）完成语义整合（99ddcdf3）：ExtensionsView 融为 9 子页签（共用中心为第 9 子页）、Claude stash 机制下聚合自洽、market 部署 skill 纳入聚合来源+禁删、版本统一 1.3.145+CHANGELOG。merge commit fc47ed9f。已知欠账：根包 TestSessionJSONLPathInRoot_WSLUNCRootAndLinuxWorkDir 为远端 1.3.144 darwin 既有失败（基线实证，非本批引入，release 不跑测试不阻塞，CI 会挂待主上环境修复）；codex CLI 实机冒烟未做（本机无独立 codex）。
-- 推送完成：master eceed0e6..fc47ed9f、feature 快进、tag v1.3.145 → Release run 44165151967 构建中。
+- 推送完成：master eceed0e6..fc47ed9f、feature 快进、tag v1.3.145 → Release run 44165151967 构建成功，资产 darwin-arm64 + windows-amd64 已发布。远端 .gitignore 新增 agent-outputs/ 忽略（主上决策，已跟踪文件继续更新，新产物不强推）。P6 附加 commit e856123e（workflow 收口）。全部 Phase 完成。
