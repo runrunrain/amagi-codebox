@@ -17,6 +17,14 @@ const WEBUI_PROBE_INTERVAL_MS = 800;
  * sessionId/端口演进（老扩展端口漂移场景经 url 字段传导）。 */
 const WEBUI_KEEPALIVE_INTERVAL_MS = 3000;
 
+/** unavailable 后的复活探测节奏。窗口耗尽只证明「此刻未就绪」，不是会话的
+ * 永久属性：WSL+DrvFS 目标下 pi 扩展的 webui server 就绪实测可达 3m42s+
+ * （2026-11-17 会话 b5415434，超出 3min WSL 探测窗口），若把 unavailable
+ * 当终态停探，服务晚就绪后无人再探测，Web 视图入口永不出现。低频维持
+ * 复活通路：后端状态机本就允许 unavailable → available（探测成功即采纳），
+ * 每轮成本仅一次回环探测（拒连即返，可忽略）；未装插件的会话同理无害。 */
+const WEBUI_RESURRECT_INTERVAL_MS = 10000;
+
 export const useSessionStore = defineStore('session', () => {
   // All sessions
   const sessions = ref<SessionInfo[]>([]);
@@ -38,8 +46,9 @@ export const useSessionStore = defineStore('session', () => {
   const webuiProbeGen = new Map<string, number>();
 
   /**
-   * 启动（幂等）某 pi 会话的 webui 探测轮询；unavailable/ended 终态后自动
-   * 停止，available 后转低频保活（跟随会话切换导致的 url 演进）。
+   * 启动（幂等）某 pi 会话的 webui 探测轮询；ended 终态后自动停止，
+   * available 后转低频保活（跟随会话切换导致的 url 演进），unavailable
+   * 后转低频复活探测（WSL 慢启动实测晚于窗口就绪，非永久终态）。
    */
   function ensureWebUIProbe(sessionId: string) {
     if (webuiProbeTimers.has(sessionId)) return;
@@ -55,8 +64,12 @@ export const useSessionStore = defineStore('session', () => {
         // Minor6：轮询已停止/重试换代（含会话被 removeSession）→ 丢弃迟到结果。
         if (!isCurrent()) return;
         webuiStatus.value = { ...webuiStatus.value, [sessionId]: st };
-        if (st.state === 'unavailable' || st.state === 'ended') {
+        if (st.state === 'ended') {
           terminal = true;
+        } else if (st.state === 'unavailable') {
+          // 窗口耗尽非终态（复活语义）：转低频复活探测，服务晚就绪后一轮
+          // 探测即恢复 available，Web 视图入口重新出现。
+          nextDelay = WEBUI_RESURRECT_INTERVAL_MS;
         } else if (st.state === 'available') {
           // available 非终态：转低频保活，跟随 /resume 等会话切换
           //（sessionId 演进/端口漂移经 webuiStatus.url 传导）。

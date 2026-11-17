@@ -7,6 +7,7 @@ import {
   useSessionWebUI,
   PROBING_INTERVAL_MS,
   MONITORING_INTERVAL_MS,
+  RESURRECT_INTERVAL_MS,
 } from '../../composables/useSessionWebUI';
 import * as api from '../../lib/api';
 
@@ -86,10 +87,12 @@ describe('useSessionWebUI composable', () => {
     expect(getSessionWebUISpy).toHaveBeenCalledTimes(4);
   });
 
-  it('状态变为 unavailable 时停止高频轮询', async () => {
+  it('状态变为 unavailable 时停止高频轮询，转低频复活探测（晚就绪自愈）', async () => {
     const getSessionWebUISpy = vi.spyOn(api, 'getSessionWebUI')
       .mockResolvedValueOnce({ state: 'probing' })
-      .mockResolvedValueOnce({ state: 'unavailable' });
+      .mockResolvedValueOnce({ state: 'unavailable' })
+      // 复活轮次：服务晚就绪（WSL 慢启动实测可超 3min 窗口）后恢复
+      .mockResolvedValueOnce({ state: 'available', url: '/webui/sess-1/#/t=tok' });
 
     const sessionId = ref('sess-1');
     const enabled = ref(true);
@@ -102,9 +105,13 @@ describe('useSessionWebUI composable', () => {
     await vi.advanceTimersByTimeAsync(PROBING_INTERVAL_MS);
     expect(state.value).toBe('unavailable');
 
-    // 不再自动高频触发
+    // 不再高频轮询（复活前无额外请求）
     await vi.advanceTimersByTimeAsync(PROBING_INTERVAL_MS * 5);
     expect(getSessionWebUISpy).toHaveBeenCalledTimes(2);
+
+    // 复活节奏 10s 后再探一轮：恢复 available
+    await vi.advanceTimersByTimeAsync(RESURRECT_INTERVAL_MS);
+    expect(state.value).toBe('available');
   });
 
   it('会话 ID 切换时重置状态并针对新 ID 重新探测', async () => {

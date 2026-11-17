@@ -19,12 +19,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"amagi-codebox/internal/claudewebui"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/remote/contract"
+	"amagi-codebox/internal/webui"
 )
 
 // --- 测试替身 ---
@@ -34,9 +36,10 @@ type webuiRegistration struct {
 	pid       int
 	port      int
 	token     string
+	window    time.Duration
 }
 
-// webuiPlaneSpy 记录 PrepareEnv 分配与 RegisterSession 调用。
+// webuiPlaneSpy 记录 PrepareEnv 分配与 RegisterSessionWithWindow 调用。
 type webuiPlaneSpy struct {
 	mu            sync.Mutex
 	prepareCalls  int
@@ -54,11 +57,11 @@ func (s *webuiPlaneSpy) PrepareEnv() (int, string) {
 	return s.preparePort, s.prepareToken
 }
 
-func (s *webuiPlaneSpy) RegisterSession(sessionID string, pid, port int, token string) {
+func (s *webuiPlaneSpy) RegisterSessionWithWindow(sessionID string, pid, port int, token string, window time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registrations = append(s.registrations, webuiRegistration{
-		sessionID: sessionID, pid: pid, port: port, token: token,
+		sessionID: sessionID, pid: pid, port: port, token: token, window: window,
 	})
 }
 
@@ -251,6 +254,43 @@ func TestExecutorPiWebUIPlaneInjectedAndRegistered(t *testing.T) {
 	if regs[0].sessionID != "webui-pi-s1" || regs[0].pid != wantPID ||
 		regs[0].port != port || regs[0].token != token {
 		t.Fatalf("注册参数 = %+v, want {webui-pi-s1 %d %d %s}", regs[0], wantPID, port, token)
+	}
+}
+
+// TestExecutorPiWebUIPlaneWSLWindow：WSL 目标的 pi 会话 tracker 注册必须携带
+// DefaultWSLProbingWindow（对齐桌面 app_session_pty.go 的分窗口注册），原生
+// 目标窗口保持 0（服务默认 45s）。回归背景（2026-11-17 会话 b5415434）：
+// WSL+DrvFS 下 pi 扩展 webui server 就绪实测 3m42s，默认 45s 窗口耗尽误判
+// unavailable 后前端停探，Web 视图入口永不出现——remote 链路不得重蹈。
+func TestExecutorPiWebUIPlaneWSLWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bootstrap  platform.LaunchBootstrapMode
+		wantWindow time.Duration
+	}{
+		{"native", platform.BootstrapShellAttach, 0},
+		{"wsl", platform.BootstrapWSL, webui.DefaultWSLProbingWindow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &webuiPlaneSpy{}
+			eff := &ptyStartEffect{
+				deps:       launchExecutorDeps{webui: spy},
+				sessionID:  "window-pi",
+				spec:       platform.ResolvedLaunchSpec{AppType: "pi", BootstrapMode: tc.bootstrap},
+				webuiPlane: true,
+				webuiPort:  47001,
+				webuiToken: "tok",
+				start:      processcap.StartEvidence{PID: 3001},
+			}
+			eff.commitWebUIPlane()
+			_, _, _, regs := spy.snapshot()
+			if len(regs) != 1 {
+				t.Fatalf("tracker 注册次数 = %d, want 1（got %+v）", len(regs), regs)
+			}
+			if regs[0].window != tc.wantWindow {
+				t.Fatalf("%s：window = %v, want %v", tc.name, regs[0].window, tc.wantWindow)
+			}
+		})
 	}
 }
 

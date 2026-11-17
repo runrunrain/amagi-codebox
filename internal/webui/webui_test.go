@@ -19,9 +19,14 @@ import (
 )
 
 // newTestService 构造测试服务：注册表目录指向临时目录，探测窗口缩短。
+// 日志句柄轻 t.Cleanup 关闭——logging.Service 会保持日志文件打开，不关
+// 则 Windows 上 TempDir RemoveAll 清理被文件锁卡住（既有平台性失败基线
+// 的成因之一，本包 2026-11 复活回归新增用例时一并根治）。
 func newTestService(t *testing.T, probingWindow time.Duration) *Service {
 	t.Helper()
-	s := NewService(logging.NewService(t.TempDir()), t.TempDir())
+	log := logging.NewService(t.TempDir())
+	t.Cleanup(log.Close)
+	s := NewService(log, t.TempDir())
 	s.probingWindow = probingWindow
 	return s
 }
@@ -139,6 +144,44 @@ func TestProbe_RefusedThenUnavailable(t *testing.T) {
 	}
 	if st.URL != "" {
 		t.Fatalf("unavailable 不应带 url: %q", st.URL)
+	}
+}
+
+func TestProbe_UnavailableThenLateReadyRecovers(t *testing.T) {
+	// 复活回归（2026-11-17 实测）：WSL pi 会话（b5415434）的 webui server
+	// 就绪耗时 3m42s，超出 3min WSL 探测窗口；窗口耗尽落 unavailable 后，
+	// 前端以低频复活探测继续调用 ProbeWebUI——本测试钉死该路径依赖的后端
+	// 不变量：unavailable 非终态，后续探测成功即恢复 available（adoptLocked
+	// 不检查前态），否则“晚就绪”会话的 Web 视图入口永不出现。
+	s := newTestService(t, time.Nanosecond)
+	var port int
+	port = startStubInfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, infoJSON("pi-late", 4321, port))
+	})
+	// 注：stub 已在监听，用死端口模拟“服务未就绪”阶段耗尽窗口。
+	deadPort, err := AllocateFreePort()
+	if err != nil {
+		t.Fatalf("AllocateFreePort: %v", err)
+	}
+	s.RegisterSession("late", 4321, deadPort, "")
+
+	time.Sleep(time.Millisecond)
+	if st := s.ProbeWebUI("late"); st.State != StateUnavailable {
+		t.Fatalf("窗口耗尽应 unavailable，got %s", st.State)
+	}
+
+	// 晚就绪：端口后来才真正监听（模拟 pi 扩展 server 起完）。注册表携带
+	// 真实端口（token 未注入场景的发现通道），复活探测应采纳并恢复。
+	writeRegistryEntry(t, s.registryDir, 4321, RegistryEntry{
+		V: 1, PID: 4321, Host: "127.0.0.1", Port: port, SessionID: "pi-late", Ready: true,
+	})
+	st := s.ProbeWebUI("late")
+	if st.State != StateAvailable {
+		t.Fatalf("晚就绪后复活探测应恢复 available，got %s", st.State)
+	}
+	if want := fmt.Sprintf("http://127.0.0.1:%d/", port); st.URL != want {
+		t.Fatalf("url = %q, want %q", st.URL, want)
 	}
 }
 
@@ -379,7 +422,9 @@ func TestProbe_ProbingWindowExhaustionIgnoresAlivePID(t *testing.T) {
 // TestAliveFnDefaultsToPlatformProcessAlive：生产默认接线 + 自身进程真实存活
 // 正例（不依赖注入）。
 func TestAliveFnDefaultsToPlatformProcessAlive(t *testing.T) {
-	s := NewService(logging.NewService(t.TempDir()), t.TempDir())
+	log := logging.NewService(t.TempDir())
+	t.Cleanup(log.Close) // 否则 Windows 上 TempDir 清理被日志文件锁卡住
+	s := NewService(log, t.TempDir())
 	if s.aliveFn == nil {
 		t.Fatal("aliveFn 应默认注入")
 	}

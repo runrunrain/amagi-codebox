@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"amagi-codebox/internal/appmeta/claude"
 	"amagi-codebox/internal/claudewebui"
@@ -73,10 +74,12 @@ type launchExecutorDeps struct {
 // webuiLaunchPlane 是 remote 启动链与 internal/webui 的窄接口切片：
 // PrepareEnv 分配 AMAGI_WEBUI_PORT / AMAGI_WEBUI_TOKEN 注入材料（失败返回
 // 零值不阻断启动——扩展自选端口写注册表，探测侧走注册表回退发现）；
-// RegisterSession 在启动 commit 后发布 per-session 探测 tracker。
+// RegisterSessionWithWindow 在启动 commit 后发布 per-session 探测 tracker
+// （window<=0 取服务默认窗口；WSL 目标应传 webui.DefaultWSLProbingWindow，
+// 对齐桌面 LaunchPiSession 的分窗口注册）。
 type webuiLaunchPlane interface {
 	PrepareEnv() (port int, token string)
-	RegisterSession(sessionID string, pid, port int, token string)
+	RegisterSessionWithWindow(sessionID string, pid, port int, token string, window time.Duration)
 }
 
 // claudeWebUILaunchPlane 是 remote 启动链与 claude Web 平面（进程内数据面
@@ -1049,7 +1052,15 @@ func (e *ptyStartEffect) commitWebUIPlane() {
 	if !e.webuiPlane || e.deps.webui == nil || e.start.PID <= 0 {
 		return
 	}
-	e.deps.webui.RegisterSession(e.sessionID, e.start.PID, e.webuiPort, e.webuiToken)
+	// WSL 目标放宽探测窗口（对齐桌面 app_session_pty.go 的分窗口注册）：
+	// WSL+DrvFS 下 pi 扩展的 webui server 就绪实测 30s~3m42s+（jiti 模块
+	// 加载落在 /mnt 慢路径），默认 45s 窗口会在服务就绪前耗尽误判
+	// unavailable；与桌面同一 DefaultWSLProbingWindow 口径。
+	window := time.Duration(0)
+	if e.spec.BootstrapMode == platform.BootstrapWSL {
+		window = webui.DefaultWSLProbingWindow
+	}
+	e.deps.webui.RegisterSessionWithWindow(e.sessionID, e.start.PID, e.webuiPort, e.webuiToken, window)
 }
 
 // overrideWebUIEnv 以覆盖语义写入 AMAGI_WEBUI_* env 条目：宿主进程自身若
