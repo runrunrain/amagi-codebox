@@ -32,7 +32,6 @@ type StableLaunchRefs struct {
 	PresetRef   string `json:"presetRef,omitempty"`
 	ModelRef    string `json:"modelRef,omitempty"`
 	ShellRef    string `json:"shellRef,omitempty"`
-	UseHeadroom *bool  `json:"useHeadroom,omitempty"`
 }
 
 type StableRecipe struct {
@@ -42,7 +41,6 @@ type StableRecipe struct {
 	PresetRef   string           `json:"presetRef,omitempty"`
 	ModelRef    string           `json:"modelRef,omitempty"`
 	ShellRef    string           `json:"shellRef,omitempty"`
-	UseHeadroom bool             `json:"useHeadroom,omitempty"`
 }
 
 type BuildRequest struct {
@@ -56,8 +54,11 @@ type BuildRequest struct {
 type SharedServiceKind uint8
 
 const (
-	SharedClaudeHeadroom SharedServiceKind = iota + 1
-	SharedCodexHeadroom
+	// SharedClaudeCredentials 对应 remote.SharedServiceClaudeCredentials：
+	// canonical Claude/Pi 凭据槽位组合的共享 admission（design §6.3）。
+	// 数值显式固定为 3：kind 1/2 是已退役的共享压缩代理服务，历史持久化
+	// 记录（cleanupstore journal 等）中仍可能以数字形态出现，不得复用。
+	SharedClaudeCredentials SharedServiceKind = 3
 )
 
 type ConfigTarget uint8
@@ -72,8 +73,7 @@ const (
 type EffectKind uint8
 
 const (
-	EffectHeadroomStart EffectKind = iota + 1
-	EffectConfigMutation
+	EffectConfigMutation EffectKind = iota + 1
 	EffectPTYStart
 	EffectExternalProcessStart
 	EffectBootstrapWrite
@@ -91,7 +91,7 @@ type SharedStartSpec struct {
 	Service           SharedServiceKind
 	ConfigFingerprint [32]byte
 	UpstreamURL       string // non-secret real backend URL the shared service forwards to
-	ListenPort        int    // canonical Headroom listen port (8787 Claude / 8788 Codex)
+	ListenPort        int    // canonical listen port of the shared service
 }
 
 type ConfigMutationSpec struct {
@@ -104,6 +104,20 @@ type ProcessStartSpec struct {
 	Mode             Mode
 	Resolved         platform.ResolvedLaunchSpec
 	RequireRunHandle bool
+	// WebUIPlane 是 claudecode 平面计划材料（claude-webui design §5.4）：
+	// 非 nil 时执行器在该 PTY commit 后启动进程内 Web 数据面并注册探测
+	// tracker；nil = 无平面（WSL 目标 / 非 claudecode 计划）。由 planner 在
+	// 构建 --session-id 注入时一并携带，执行器以此为门控（R8：字段缺位
+	// 即不起平面，不注册 tracker）。
+	WebUIPlane *WebUIPlaneSpec
+}
+
+// WebUIPlaneSpec 描述 claudecode 进程的 Web 平面计划材料（design §5.4）。
+// ClaudeSessionID 是 planner 生成的 --session-id 注入值（uuid，纯内存无
+// 副作用），既是转录 jsonl 的锁定文件名，也是 commit 后落 session.Manager
+// 的 claude 会话映射值。
+type WebUIPlaneSpec struct {
+	ClaudeSessionID string
 }
 
 type BootstrapWriteSpec struct {
@@ -111,20 +125,18 @@ type BootstrapWriteSpec struct {
 	StartupCommand string // canonical startup command (e.g. "claude", "codex")
 }
 
-// WSLConfigSupplySpec 描述一次 WSL 配置供给（P3-S0）：计划只携带待供给描述，
+// WSLConfigSupplySpec 描述一次 WSL 配置供给：计划只携带待供给描述，
 // 不含候选正文与副作用；实际 Inspect/Plan/Apply 在执行器的 Apply 阶段经
 // wslsupply 协调器执行，顺序在 PTY 之前。Distro 为空表示 Apply 时解析默认
-// distro（与 PTY 构建同源），保证计划纯读零 spawn。Units 为 wslsupply 单元 id
-// （S0 生产仅 "pi/a2-auth"）。
+// distro（与 PTY 构建同源），保证计划纯读零 spawn。现役生产形态是
+// OpenCodeLayer（Pi 的供给单元已随「WSL 内 Pi 共享 Windows agent 根」退役；
+// shared 小文件与 claude/codex 键级单元的启动补漏在 PTY effect 内执行）。
 type WSLConfigSupplySpec struct {
 	Distro string
-	CLI    string
-	Reason string
-	Units  []string
-	// OpenCodeLayer（P3-S2）：非空时本 effect 额外在目标 distro 准备 OpenCode
+	// OpenCodeLayer（P3-S2）：非空时本 effect 在目标 distro 准备 OpenCode
 	// 附加层（MCP 形态检查 + 写入 ~/.config/opencode/amagi-codebox.json +
 	// OPENCODE_CONFIG 重锄到后续 PTY effect 的 env）。层内容含 apiKey，经计划
-	// 的 SecretBuffer 生命周期管理；Units 为层专属时可空（层即供给描述）。
+	// 的 SecretBuffer 生命周期管理。
 	OpenCodeLayer *OpenCodeLayerSpec
 }
 
@@ -262,8 +274,6 @@ func (p *Plan) Validate() error {
 
 func effectMatchesUnion(effect EffectSpec) bool {
 	switch effect.Kind {
-	case EffectHeadroomStart:
-		return effect.Shared != nil
 	case EffectConfigMutation:
 		return effect.Config != nil
 	case EffectPTYStart, EffectExternalProcessStart:
@@ -279,8 +289,6 @@ func effectMatchesUnion(effect EffectSpec) bool {
 
 func CanonicalEffectRank(effect EffectSpec) int {
 	switch effect.Kind {
-	case EffectHeadroomStart:
-		return 0
 	case EffectConfigMutation:
 		return 1 + int(effect.Config.Target)
 	case EffectWSLConfigSupply:

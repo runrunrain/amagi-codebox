@@ -42,6 +42,10 @@ func TestPiLoginBrowserBridge(t *testing.T) {
 	app.WebUI = webui.NewService(app.Log, t.TempDir())
 	app.PiConfig = piconfig.NewService()
 	_, key, auth := piLoginFixture(t, app.Config)
+	// Model metadata for exercising the maximum-output button without user files.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(auth), "models-store.json"), []byte(`{"openai-codex":{"models":[{"id":"native-model","name":"Fixture model","maxTokens":65536}]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.Config.DeletePiLoginPreset(key); err != nil {
 		t.Fatal(err)
 	}

@@ -39,13 +39,13 @@ const (
 // 过渡方案）的投影标记：仅表示 Keychain 条目
 // codebox-remoteclient/<DeviceID>/legacy 曾写入，token 本体永不入簿。
 type HostEntry struct {
-	ID          string      `json:"id"`
-	DisplayName string      `json:"displayName"`
-	HostPort    string      `json:"hostPort"`
-	DeviceID    string      `json:"deviceId"`
-	Health      HealthState `json:"health"`
-	LastSeen    time.Time   `json:"lastSeen"`
-	HasLegacyToken bool     `json:"hasLegacyToken"`
+	ID             string      `json:"id"`
+	DisplayName    string      `json:"displayName"`
+	HostPort       string      `json:"hostPort"`
+	DeviceID       string      `json:"deviceId"`
+	Health         HealthState `json:"health"`
+	LastSeen       time.Time   `json:"lastSeen"`
+	HasLegacyToken bool        `json:"hasLegacyToken"`
 }
 
 // entryIDPrefix 是登记簿条目 ID 前缀（本机随机生成，与远端无关）。

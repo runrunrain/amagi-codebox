@@ -601,6 +601,56 @@ func (r *ControlRuntime) DesktopPasteChunk(ctx context.Context, sessionID contra
 	return nil
 }
 
+// DevicePlaneInput writes one device-originated Web-plane input through the
+// DEVICE-PLANE control lane (no-take). It is the remote counterpart of
+// DesktopInput for /webui plane requests the reverse proxy forwarded on behalf
+// of a control-holding device: the gate re-validates that deviceID is the
+// CURRENT holder (connected or grace — the same snapshot projection as the
+// proxy write-face gate) at write time and NEVER takes control, so consecutive
+// device inputs cannot revoke the device's own control (the take-first desktop
+// lane would: first input preempts the device, second input 403s). Non-holder,
+// revoked device, non-accepting server, or unwired gate/raw port → error.
+func (r *ControlRuntime) DevicePlaneInput(ctx context.Context, sessionID contract.SessionID, deviceID contract.DeviceID, data []byte) error {
+	if r.gate == nil || r.ptyRaw == nil {
+		return ErrControlNotReady
+	}
+	return r.gate.DoDevicePlanePTY(ctx, deviceID, sessionID, PTYInput, func(ctx context.Context, permit *operationPermit) error {
+		if err := permit.Checkpoint(ctx, 1); err != nil {
+			return err
+		}
+		return r.ptyRaw.WriteRaw(ctx, string(sessionID), data)
+	})
+}
+
+// DevicePlanePasteChunk writes a device-originated paste as independent
+// per-chunk operations (device-plane lane, no-take). Mirrors DesktopPasteChunk:
+// 1KiB chunks, each its own gate operation with its own permit and Checkpoint,
+// so a takeover/revoke fence between chunks stops the remaining chunks with
+// zero replay (the holder is re-validated for EVERY chunk).
+func (r *ControlRuntime) DevicePlanePasteChunk(ctx context.Context, sessionID contract.SessionID, deviceID contract.DeviceID, data []byte) error {
+	if r.gate == nil || r.ptyRaw == nil {
+		return ErrControlNotReady
+	}
+	const chunkSize = 1024
+	for offset := 0; offset < len(data); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		chunk := data[offset:end]
+		step := uint32(offset/chunkSize + 1)
+		if err := r.gate.DoDevicePlanePTY(ctx, deviceID, sessionID, PTYPasteChunk, func(ctx context.Context, permit *operationPermit) error {
+			if err := permit.Checkpoint(ctx, step); err != nil {
+				return err
+			}
+			return r.ptyRaw.WriteRaw(ctx, string(sessionID), chunk)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DesktopPassiveResize resizes the PTY without taking desktop control (design
 // §6.2 R-06: allowed only when holder is none/desktop; a device holder blocks).
 func (r *ControlRuntime) DesktopPassiveResize(ctx context.Context, sessionID contract.SessionID, cols, rows int) error {

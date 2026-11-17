@@ -22,26 +22,25 @@
 import { ref, watch } from 'vue';
 
 interface Props {
-  modelValue: any;
+  modelValue?: unknown;
   placeholder?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  modelValue: null,
   placeholder: '请输入合法 JSON',
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: any];
+  'update:modelValue': [value: unknown];
 }>();
 
 const text = ref<string>('');
 const valid = ref<boolean>(true);
 const error = ref<string>('');
 
-function serialize(value: any): string {
+function serialize(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(value === undefined ? null : value, null, 2);
   } catch {
     return '';
   }

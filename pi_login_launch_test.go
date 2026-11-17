@@ -137,7 +137,7 @@ func TestPiLoginDesktopRejectsForeignCLIsAndStaleSelection(t *testing.T) {
 	preset, key, auth := piLoginFixture(t, app.Config)
 	source := config.PiLoginProviderID(preset.Provider)
 	calls := []func() (string, error){
-		func() (string, error) { return app.LaunchSession(source, key, "embedded", "", false, "") },
+		func() (string, error) { return app.LaunchSession(source, key, "embedded", "", "") },
 		func() (string, error) { return app.LaunchCodexSession(key, source, "embedded", "", "") },
 		func() (string, error) { return app.LaunchOpenCode(source, key, "embedded", "", "") },
 		func() (string, error) { return app.LaunchOmpSession(key, source, "embedded", "", "") },

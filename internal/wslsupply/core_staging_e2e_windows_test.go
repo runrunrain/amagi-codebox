@@ -20,7 +20,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,27 +41,20 @@ func TestManualRealWSLStagingIsolation(t *testing.T) {
 
 	probes := e2eIsolatedProbes(distro)
 	c := NewCoordinator(t.TempDir(), nil, probes)
-	spec := PiManagedModelsSpec{
-		Providers: map[string]any{"providers": map[string]any{
-			"amagi-e2e": map[string]any{"baseUrl": "https://e2e.example", "apiKey": "sk-e2e-fake"},
-		}},
-	}
-	c.RegisterProjection(NewPiManagedModelsAdapter(stubE2EPiSource{spec: spec}))
+	// 敏感桩投影（sensitive=true）驱动同一 SA-06 staging 提交原语
+	//（Pi managed-models 已退役；秘密字节为合成桩）。
+	content := []byte(`{"secret":"sk-e2e-fake"}`)
+	stub := &stubProjection{unit: "pi/e2e-stub", rel: "e2e-stub.json", source: func() []byte { return content }, sensitive: true}
+	c.RegisterProjection(stub)
 
 	target, err := c.ResolveTarget(context.Background(), distro, CLIPi)
 	if err != nil {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
-	// 预置混合配置（用户自有 provider + 用户字段）——SA-07 的前像。
-	mixed := `{"providers":{"user-own":{"baseUrl":"https://user.example"}},"userSetting":true}`
 	if err := os.MkdirAll(target.UNCRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(target.UNCRoot, "models.json"), []byte(mixed), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if res, err := c.RunUnits(context.Background(), distro, CLIPi, ReasonLaunch, []UnitID{UnitPiManagedModels}); err != nil ||
+	if res, err := c.RunUnits(context.Background(), distro, CLIPi, ReasonLaunch, []UnitID{"pi/e2e-stub"}); err != nil ||
 		len(res.Results) != 1 || res.Results[0].Outcome != UnitApplied {
 		t.Fatalf("supply run: err=%v results=%+v", err, res.Results)
 	}
@@ -70,7 +62,7 @@ func TestManualRealWSLStagingIsolation(t *testing.T) {
 	if mode := e2eStatMode(t, distro, target.LinuxRoot+"/.amagi-staging"); mode != "700" {
 		t.Fatalf("staging dir mode = %q, want 700 (distro-side stat)", mode)
 	}
-	if mode := e2eStatMode(t, distro, target.LinuxRoot+"/models.json"); mode != "600" {
+	if mode := e2eStatMode(t, distro, target.LinuxRoot+"/e2e-stub.json"); mode != "600" {
 		t.Fatalf("final file mode = %q, want 600 (distro-side stat)", mode)
 	}
 
@@ -83,20 +75,14 @@ func TestManualRealWSLStagingIsolation(t *testing.T) {
 			return platform.WSLFileMode(distro, linuxPath)
 		},
 	})
-	c2.RegisterProjection(NewPiManagedModelsAdapter(stubE2EPiSource{spec: PiManagedModelsSpec{
-		Providers: map[string]any{"providers": map[string]any{
-			"amagi-e2e2": map[string]any{"baseUrl": "https://e2e2.example", "apiKey": "sk-e2e-fake"},
-		}},
-	}}))
-	res, err := c2.RunUnits(context.Background(), distro, CLIPi, ReasonLaunch, []UnitID{UnitPiManagedModels})
+	c2.RegisterProjection(&stubProjection{unit: "pi/e2e-stub", rel: "e2e-stub.json",
+		source: func() []byte { return []byte(`{"secret":"sk-e2e-fake-2"}`) }, sensitive: true})
+	res, err := c2.RunUnits(context.Background(), distro, CLIPi, ReasonLaunch, []UnitID{"pi/e2e-stub"})
 	if err != nil || len(res.Results) != 1 || res.Results[0].Outcome != UnitFailed {
 		t.Fatalf("chmod failure must fail the unit: err=%v results=%+v", err, res.Results)
 	}
-	got := e2eCat(t, distro, target.LinuxRoot+"/models.json")
-	if !strings.Contains(got, "user-own") || !strings.Contains(got, "userSetting") {
-		t.Fatalf("pre-existing user content must be preserved on chmod failure:\n%s", got)
-	}
-	if strings.Contains(got, "amagi-e2e2") {
-		t.Fatalf("new secret content must NOT be committed when chmod fails:\n%s", got)
+	got := e2eCat(t, distro, target.LinuxRoot+"/e2e-stub.json")
+	if !strings.Contains(got, "sk-e2e-fake") || strings.Contains(got, "sk-e2e-fake-2") {
+		t.Fatalf("committed secret must be preserved verbatim and new content must NOT land on chmod failure:\n%s", got)
 	}
 }

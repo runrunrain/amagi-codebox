@@ -18,7 +18,7 @@
 import { NATIVE_PLUGIN_PENDING_DETAIL, currentGate } from './capability'
 
 /** 原生扫码不可用时的类型化原因。`native-pending-shell` = native 壳插件接线待 M4-C。 */
-export type BarcodeUnavailableReason = 'not-native' | 'native-pending-shell'
+type BarcodeUnavailableReason = 'not-native' | 'native-pending-shell'
 
 /** 扫码能力探测结果（判别联合 on `available`）。 */
 export type BarcodeCapability =
@@ -31,13 +31,13 @@ export type BarcodeCapability =
     }
 
 /** 扫码成功。 */
-export interface BarcodeScanSuccess {
+interface BarcodeScanSuccess {
   ok: true
   value: string
 }
 
 /** 扫码回落：原生不可用，调用方应引导手动输入。 */
-export interface BarcodeScanFallback {
+interface BarcodeScanFallback {
   ok: false
   capability: BarcodeCapability
 }

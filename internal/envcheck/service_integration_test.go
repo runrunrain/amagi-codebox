@@ -275,7 +275,6 @@ func TestGetCachedStatus_MultipleCheckOneCallsPreservesAllItems(t *testing.T) {
 	svc.CheckOne(ToolCodex)
 	svc.CheckOne(ToolPi)
 	svc.CheckOne(ToolOmp)
-	svc.CheckOne(ToolHeadroom)
 
 	// Assert: all three tools present in cache
 	cached := svc.GetCachedStatus()

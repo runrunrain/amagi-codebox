@@ -39,7 +39,7 @@ const emit = defineEmits<{
   switchToTimeline: [];
 }>();
 
-export type WebPlanePhase = 'loading' | 'loaded' | 'error';
+type WebPlanePhase = 'loading' | 'loaded' | 'error';
 
 const phase = ref<WebPlanePhase>('loading');
 // 浅色嵌入变体：移动端是浅色应用（iframe 背后铺 --VT-canvas 浅底），向 pi webui

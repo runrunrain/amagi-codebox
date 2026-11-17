@@ -195,13 +195,13 @@ describe('useCommonSkillsPanel：导入 / 删除 / 启停 / 跳转', () => {
     expect(fns.getAggregatedSkills).toHaveBeenCalledTimes(1)
   })
 
-  it('「查看插件」跳转：切到插件管理 tab + 对应引擎 + 尽力选中 pluginId', async () => {
+  it('「查看插件」跳转：切到对应引擎子页 + 尽力选中 pluginId', async () => {
     const panel = await freshPanel()
     const pluginStore = usePluginStore()
-    pluginStore.setExtMainTab('common')
+    pluginStore.setExtSubPage('common-center')
 
     panel.viewPlugin(panel.rows.value[1]) // codex 插件行
-    expect(pluginStore.extMainTab).toBe('plugins')
+    expect(pluginStore.extSubPage).toBe('codex')
     expect(pluginStore.pluginEngine).toBe('codex')
     expect(pluginStore.activePluginId).toBe('codex-pid')
 

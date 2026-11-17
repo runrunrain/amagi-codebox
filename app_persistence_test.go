@@ -91,7 +91,7 @@ func TestSaveAllConfigSkipsFailedStartupLoads(t *testing.T) {
 		settingsLoaded: false,
 	})
 
-	err := app.SaveAllConfig()
+	err := app.saveAllConfig()
 	if err == nil {
 		t.Fatal("expected skipped saves to be reported")
 	}
@@ -101,7 +101,7 @@ func TestSaveAllConfigSkipsFailedStartupLoads(t *testing.T) {
 		"settings.json",
 	} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("SaveAllConfig error should mention %q, got %v", want, err)
+			t.Fatalf("saveAllConfig error should mention %q, got %v", want, err)
 		}
 	}
 	if secretStore.saveCalled {

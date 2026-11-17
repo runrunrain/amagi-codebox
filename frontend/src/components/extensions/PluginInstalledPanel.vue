@@ -1,301 +1,253 @@
+<!-- 契约 §6.1（Claude）/§6.2（Codex）双引擎插件管理面板，四段式布局：
+     ① DiagnosticBanner（有错误/警告才出现）→ ② CountTabs（资源计数标签 + 搜索）→
+     ③ ListToolbar（「已安装 N」+ 刷新/浏览插件市场/添加▾）→ ④ 内容区
+     （列表态：全宽按市场分组 PluginRow，描述完整多行显示；详情态：activePluginId
+      语义升级为「详情页态」——点击行替换内容区为居中窄单列二级详情页，返回清空
+      active 回列表；MCP 态：Claude 独有资源页；市场态：PluginMarketPanel；
+      空态：EmptyStateCard）。
+     事件契约（§9 显式变更 ①④）：emit 恒为 'add_market'（ExtensionsView 监听 @add_market
+     编译为 prop onAdd_market，camelCase 不命中）；市场视图转发监听同为 @add_market。
+     首屏 Loading/Error 门控为 store 派生（契约 §8：SSR 测试不执行 onMounted）。 -->
 <template>
   <div class="plugin-installed-panel">
-    <!-- Initial loading state -->
-    <LoadingState v-if="initialLoading" message="加载插件中..." />
+    <LoadingState v-if="showInitialLoading" message="加载插件中..." />
 
-    <!-- Initial error state (致命错误：完全无数据且无法降级，仅 Claude 多源全失败时触发) -->
     <ErrorState
-      v-else-if="initialError"
-      :message="initialError"
+      v-else-if="showInitialError"
+      :message="loadError"
       :on-retry="handleRetry"
     />
 
-    <!-- Main content -->
     <template v-else>
-    <!-- Codex CLI 错误降级 banner：loadCxPlugins 失败时不吞整页，仅展示顶部错误提示 + 重试 -->
-    <div v-if="loadErrorMessage" class="status-banner error">
-      <span class="sb-text">{{ loadErrorMessage }}</span>
-      <button class="sb-btn" @click="handleRetry">重试</button>
-    </div>
+      <!-- ① 诊断横幅：errors=引擎加载错误（有数据后的降级形态）；warnings=Codex 诊断/Claude MCP 惰性加载失败 -->
+      <DiagnosticBanner :errors="diagnosticErrors" :warnings="diagnosticWarnings" />
 
-    <!-- Top segmented control: Installed | Market -->
-    <div class="view-segmented">
-      <button
-        :class="['seg-btn', { active: localView === 'installed' }]"
-        @click="setView('installed')"
-      >
-        已安装插件 <span class="res-count">{{ installedCount }}</span>
-      </button>
-      <button
-        :class="['seg-btn', { active: localView === 'market' }]"
-        @click="setView('market')"
-      >
-        市场可安装插件 <span class="res-count">{{ marketCount }}</span>
-      </button>
-    </div>
+      <!-- ② 资源计数标签（Claude：插件|MCP|市场；Codex：插件|市场）+ 当前标签搜索框。
+           市场态不渲染：市场视图内与引擎页签、面包屑构成三层冗余导航，改以面包屑为唯一层级指示 -->
+      <CountTabs
+        v-if="!isMarketView"
+        :tabs="countTabs"
+        :model-value="activeTabKey"
+        :search-placeholder="searchPlaceholder"
+        :search-value="searchText"
+        @update:model-value="selectTab"
+        @update:search-value="onSearch"
+      />
 
-    <!-- Installed view -->
-    <div v-if="localView === 'installed'" class="installed-view">
-      <!-- Codex-specific status banner -->
-      <div v-if="engine === 'codex' && hasWarnings" class="status-banner warning">
-        <span class="sb-text">{{ warningMessage }}</span>
-        <button class="sb-btn" @click="handleRetry">重试</button>
-      </div>
+      <!-- 市场态：PluginMarketPanel（添加市场经 @add_market 转发，§9 显式变更 ④） -->
+      <PluginMarketPanel
+        v-if="isMarketView"
+        :engine="engine"
+        @add_market="handleAddMarket"
+        @back="backToInstalled"
+      />
 
-      <!-- Codex statistics -->
-      <div v-if="engine === 'codex'" class="stat-bar">
-        <div class="stat-cell">
-          <div class="sv">{{ cxInstalledCount }}</div>
-          <div class="sl">已安装</div>
-        </div>
-        <div class="stat-cell">
-          <div class="sv">{{ cxEnabledCount }}</div>
-          <div class="sl">已启用</div>
-        </div>
-        <div class="stat-cell">
-          <div class="sv">{{ cxMarketCount }}</div>
-          <div class="sl">市场源</div>
-        </div>
-      </div>
-
-      <!-- Codex duplicate diagnostic -->
-      <div v-if="engine === 'codex' && hasDuplicates" class="dup-card">
-        <p>检测到 {{ duplicateCount }} 组重复插件：{{ duplicateNames }}。建议清理冗余市场源以避免子项级开关冲突。</p>
-      </div>
-
-      <!-- Header: title + resource filter -->
-      <div class="panel-header">
-        <div class="header-title">
-          <h2>已安装</h2>
-          <span class="count-badge">{{ filteredPlugins.length }}</span>
-        </div>
-        <div class="res-filter-bar">
-          <span class="rf-label">筛选:</span>
-          <button
-            v-for="filter in resourceFilters"
-            :key="filter.value"
-            :class="['res-chip', { active: resFilter === filter.value }]"
-            @click="setResFilter(filter.value)"
-          >
-            {{ filter.label }}
-            <span v-if="filter.value !== 'all'" class="res-count">{{ filter.count }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Split view: list + detail -->
-      <div v-if="filteredPlugins.length > 0" class="ex-split">
-        <!-- Plugin list (grouped by marketplace) -->
-        <div class="plugin-list">
-          <template v-for="group in groupedPlugins" :key="group.marketplace">
-            <!-- Group header -->
-            <div class="plg-group-header">
-              <span class="gh-market">{{ group.marketplace }}</span>
-              <div class="gh-actions">
-                <AppButton
-                  v-if="group.marketplace && group.marketplace !== 'Unknown'"
-                  variant="ghost"
-                  size="small"
-                  :disabled="isMarketUpdating(group.marketplace)"
-                  @click.stop="handleUpdateMarket(group.marketplace)"
-                >
-                  {{ isMarketUpdating(group.marketplace) ? '更新中…' : '更新市场' }}
-                </AppButton>
-                <span class="gh-count">{{ group.plugins.length }}</span>
-              </div>
-            </div>
-            <!-- Plugins in this group -->
-            <div
-              v-for="plugin in group.plugins"
-              :key="(plugin as any).id || (plugin as any).pluginId"
-              :class="['plg-item', { active: activePluginId === ((plugin as any).id || (plugin as any).pluginId) }]"
-              @click="selectPlugin(plugin)"
+      <template v-else>
+        <!-- ③ 工具栏 -->
+        <ListToolbar :title="toolbarTitle" :count="toolbarCount" :loading="isRefreshing">
+          <template #actions>
+            <AppButton
+              variant="ghost"
+              size="small"
+              :disabled="isRefreshing"
+              @click="handleRefresh"
             >
-              <div class="plg-item-main">
-                <div class="plg-name-row">
-                  <span class="plg-name">{{ plugin.name }}</span>
-                  <Switch
-                    :model-value="plugin.enabled"
-                    @update:model-value="(val) => handleToggle(plugin, val)"
-                  />
+              {{ isRefreshing ? '刷新中…' : '刷新' }}
+            </AppButton>
+            <AppButton
+              variant="outline"
+              size="small"
+              @click="browseMarket"
+            >
+              浏览插件市场
+            </AppButton>
+            <ActionMenu
+              trigger-text="添加"
+              :items="addActionItems"
+              @select="handleAddSelect"
+            />
+          </template>
+        </ListToolbar>
+
+        <!-- ④ MCP 资源页（Claude 独有，§6.1.1） -->
+        <div v-if="isMcpView" class="mcp-view">
+          <!-- 与「公共 → 共用 MCP」子页的区分说明（跨面板一致性）：本页只读展示插件自带 MCP，用户级登记/分发走共用 MCP -->
+          <p class="mcp-view-hint">
+            只读展示已启用 Claude 插件自带的 MCP 服务器；用户级登记与跨引擎分发请在「公共 → 共用 MCP」子页管理。
+          </p>
+          <EmptyStateCard
+            v-if="mcpGroups.length === 0"
+            title="未发现 MCP 服务器"
+            description="已启用插件中没有可展示的 MCP 服务器"
+          />
+          <template v-else>
+            <div v-for="group in mcpGroups" :key="group.pluginId" class="mcp-group">
+              <div class="mcp-group-click" @click="openPluginDetail(group.pluginId)">
+                <GroupHeader :title="group.name" :count="group.servers.length" />
+              </div>
+              <div v-for="server in group.servers" :key="`${group.pluginId}:${server}`" class="mcp-row">
+                <PluginIcon :name="server" size="sm" />
+                <div class="mcp-main">
+                  <span class="mcp-name">{{ server }}</span>
+                  <span class="mcp-desc">Model Context Protocol 服务器</span>
                 </div>
-                <div class="plg-meta-row">
-                  <Badge type="type" :text="pluginTypeLabel(plugin)" :color="pluginTypeColor(plugin)" />
-                  <Badge v-if="plugin.version" type="ver" :text="'v' + plugin.version" />
-                  <Badge v-if="engine === 'claude' && (plugin as any).scope" type="scope" :text="(plugin as any).scope === 'global' ? '全局' : '项目'" />
-                  <!-- Codex source badge -->
-                  <Badge v-if="engine === 'codex' && (plugin as any).source" type="source" :text="(plugin as any).source" variant="muted" />
-                  <!-- Codex duplicate warning badge -->
-                  <Badge v-if="engine === 'codex' && hasDuplicateWarning(plugin)" type="warning" text="重复诊断" color="warning" />
-                </div>
-                <p v-if="(plugin as any).description" class="plg-desc">{{ truncate((plugin as any).description, 80) }}</p>
+                <span
+                  :class="['mcp-dot', group.enabled ? 'on' : 'off']"
+                  :title="group.enabled ? '所属插件已启用' : '所属插件已禁用'"
+                />
               </div>
             </div>
           </template>
         </div>
 
-        <!-- Plugin detail -->
-        <div v-if="activePlugin" class="plg-detail">
-          <div class="plg-detail-head">
-            <div>
-              <h3>{{ activePlugin.name }}</h3>
-              <div class="plg-row">
-                <Badge type="type" :text="pluginTypeLabel(activePlugin)" :color="pluginTypeColor(activePlugin)" />
-                <Badge v-if="activePlugin.version" type="ver" :text="'v' + activePlugin.version" />
-                <Badge v-if="engine === 'claude' && (activePlugin as any).scope" type="scope" :text="(activePlugin as any).scope === 'global' ? '全局' : '项目'" />
-                <!-- Codex source badge -->
-                <Badge v-if="engine === 'codex' && (activePlugin as any).source" type="source" :text="(activePlugin as any).source" variant="muted" />
-                <!-- Codex duplicate warning badge -->
-                <Badge v-if="engine === 'codex' && hasDuplicateWarning(activePlugin)" type="warning" text="重复诊断" color="warning" />
-                <!-- Codex pluginId badge -->
-                <Badge v-if="engine === 'codex' && (activePlugin as any).pluginId" type="pid" :text="'PID: ' + shortId((activePlugin as any).pluginId)" variant="mono" />
-              </div>
-            </div>
-            <div class="plg-detail-actions">
-              <AppButton variant="ghost" size="small" :disabled="updating" @click="handleUpdate">
-                {{ updating ? '更新中…' : '更新' }}
-              </AppButton>
-              <AppButton variant="danger" size="small" :disabled="updating" @click="handleUninstall">
-                卸载
-              </AppButton>
-            </div>
-          </div>
-
-          <!-- Codex duplicate diagnostic detail -->
-          <div v-if="engine === 'codex' && hasDuplicateWarning(activePlugin)" class="duplicate-diagnostic-card">
-            <strong>重复诊断</strong>
-            <p>{{ getDuplicateWarning(activePlugin) }}</p>
-          </div>
-
-          <div v-if="activePlugin.description" class="plg-detail-section">
-            <p>{{ activePlugin.description }}</p>
-          </div>
-
-          <!-- Meta info -->
-          <div class="plg-detail-meta">
-            <div v-if="activePlugin.marketplace" class="meta-row">
-              <span class="meta-label">来源:</span>
-              <span class="meta-value">{{ activePlugin.marketplace }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">安装路径:</span>
-              <span class="meta-value mono">{{ (activePlugin as any).installPath || (activePlugin as any).manifestPath }}</span>
-            </div>
-            <div v-if="(activePlugin as any).installedAt" class="meta-row">
-              <span class="meta-label">安装时间:</span>
-              <span class="meta-value">{{ formatDate((activePlugin as any).installedAt) }}</span>
-            </div>
-            <div v-if="(activePlugin as any).lastUpdated" class="meta-row">
-              <span class="meta-label">最后更新:</span>
-              <span class="meta-value">{{ formatDate((activePlugin as any).lastUpdated) }}</span>
-            </div>
-            <!-- Codex pluginId -->
-            <div v-if="engine === 'codex' && (activePlugin as any).pluginId" class="meta-row">
-              <span class="meta-label">Plugin ID:</span>
-              <span class="meta-value mono">{{ (activePlugin as any).pluginId }}</span>
-            </div>
-          </div>
-
-          <!-- Codex capabilities overview -->
-          <div v-if="engine === 'codex'" class="plg-detail-resources">
-            <h4>能力</h4>
-            <div class="res-grid">
-              <div v-if="hasSkills" class="res-item">
-                <Badge type="type" text="Skill" color="skill" />
-                <span class="res-count">{{ skillsCount }}</span>
-              </div>
-              <div v-if="hasAgents" class="res-item">
-                <Badge type="type" text="Agent" color="agent" />
-                <span class="res-count">{{ agentsCount }}</span>
-              </div>
-              <div v-if="hasCommands" class="res-item">
-                <Badge type="type" text="Command" color="command" />
-                <span class="res-count">{{ commandsCount }}</span>
-              </div>
-              <div v-if="hasHooks" class="res-item">
-                <Badge type="type" text="Hook" color="hook" />
-                <span class="res-count">{{ hooksCount }}</span>
-              </div>
-              <div v-if="hasMcp" class="res-item">
-                <Badge type="type" text="MCP" color="mcp" />
-                <span class="res-count">1</span>
-              </div>
-              <template v-if="activeCxDetail?.manifest?.interface?.capabilities">
-                <div
-                  v-for="cap in activeCxDetail.manifest.interface.capabilities"
-                  :key="cap"
-                  class="res-item"
+        <!-- ④ 详情页态：activePluginId 语义升级为「详情页态」——替换内容区为居中窄单列
+             （挂在 MCP 视图的 v-else-if 链上：MCP 资源页与详情页互斥，与旧分栏语义一致） -->
+        <div v-else-if="currentActivePlugin" class="plg-detail-page">
+          <div class="plg-detail-column">
+            <button type="button" class="plg-back" @click="clearActive">← 返回列表</button>
+            <DetailHeader
+              :breadcrumb="[
+                { label: engineLabel, clickable: true },
+                { label: currentActivePlugin.name },
+              ]"
+              :title="detailTitle"
+              :badges="detailBadges"
+              @back="clearActive"
+            >
+              <template #actions>
+                <!-- 主操作语义按数据实情（§5.4）：禁用→「启用」；启用→「更新」 -->
+                <AppButton
+                  v-if="!currentActivePlugin.enabled"
+                  variant="primary"
+                  size="small"
+                  :disabled="updating"
+                  @click="handleToggle(currentActivePlugin, true)"
                 >
-                  <Badge type="type" :text="cap" color="capability" />
-                </div>
+                  启用
+                </AppButton>
+                <AppButton
+                  v-else
+                  variant="primary"
+                  size="small"
+                  :disabled="updating || updateDisabled"
+                  :title="updateDisabled ? '该插件缺少市场来源信息，无法更新' : undefined"
+                  @click="handleUpdate"
+                >
+                  {{ updating ? '更新中…' : '更新' }}
+                </AppButton>
+                <AppButton variant="danger" size="small" :disabled="updating" @click="handleUninstall">
+                  卸载
+                </AppButton>
               </template>
-            </div>
-          </div>
+            </DetailHeader>
 
-          <!-- Claude resource overview -->
-          <div v-else class="plg-detail-resources">
-            <h4>资源</h4>
-            <div class="res-grid">
-              <div v-if="hasSkills" class="res-item">
-                <Badge type="type" text="Skill" color="skill" />
-                <span class="res-count">{{ skillsCount }}</span>
-              </div>
-              <div v-if="hasAgents" class="res-item">
-                <Badge type="type" text="Agent" color="agent" />
-                <span class="res-count">{{ agentsCount }}</span>
-              </div>
-              <div v-if="hasCommands" class="res-item">
-                <Badge type="type" text="Command" color="command" />
-                <span class="res-count">{{ commandsCount }}</span>
-              </div>
-              <div v-if="hasHooks" class="res-item">
-                <Badge type="type" text="Hook" color="hook" />
-                <span class="res-count">{{ hooksCount }}</span>
-              </div>
-              <div v-if="hasMcp" class="res-item">
-                <Badge type="type" text="MCP" color="mcp" />
-                <span class="res-count">1</span>
-              </div>
-            </div>
-          </div>
+            <p v-if="detailDescription" class="detail-desc">{{ detailDescription }}</p>
 
-          <!-- Sub-items panel with tabbed list -->
-          <div v-if="hasManageableSubItems" class="plg-detail-subitems">
+            <!-- Codex 重复诊断详情（§6.2） -->
+            <div
+              v-if="engine === 'codex' && hasDuplicateWarning(currentActivePlugin)"
+              class="duplicate-diagnostic-card"
+            >
+              <strong>重复诊断</strong>
+              <p>{{ getDuplicateWarning(currentActivePlugin) }}</p>
+            </div>
+
+            <!-- 子项列表（全宽使用；Claude 可切换 / Codex 只读，§5.3） -->
             <PluginSubItemsPanel
+              v-if="hasManageableSubItems"
               :engine="engine"
-              :plugin-detail="activeCxDetail || activePlugin"
-              :disabled-sub-items="disabledSubItems"
+              :plugin-detail="subItemsDetail"
               @toggle-sub-item="handleToggleSubItem"
             />
+
+            <!-- 元信息（§5.2） -->
+            <MetaGrid v-if="metaItems.length > 0" :items="metaItems" />
           </div>
         </div>
 
-        <!-- Empty detail when nothing selected -->
-        <div v-else class="plg-detail-empty">
-          <EmptyState icon="◇" title="选择插件" description="点击左侧插件查看详细信息" />
+        <!-- ④ 列表态：全宽行式列表（描述完整多行显示，不截断） -->
+        <template v-else>
+          <EmptyStateCard v-if="listedPlugins.length === 0" :title="emptyTitle" :description="emptyDesc">
+            <template #primary>
+              <AppButton variant="primary" size="small" @click="browseMarket">
+                浏览插件市场
+              </AppButton>
+            </template>
+            <template #secondary>
+              <AppButton variant="ghost" size="small" @click="handleAddMarket">
+                添加市场
+              </AppButton>
+            </template>
+          </EmptyStateCard>
+
+          <div v-else class="plugin-list">
+            <template v-for="group in groupedPlugins" :key="group.marketplace">
+              <GroupHeader :title="group.marketplace" :count="group.plugins.length">
+                <template #actions>
+                  <AppButton
+                    v-if="group.marketplace !== 'Unknown'"
+                    variant="ghost"
+                    size="small"
+                    :disabled="isMarketUpdating(group.marketplace)"
+                    @click.stop="handleUpdateMarket(group.marketplace)"
+                  >
+                    {{ isMarketUpdating(group.marketplace) ? '更新中…' : '更新市场' }}
+                  </AppButton>
+                </template>
+              </GroupHeader>
+              <PluginRow
+                v-for="plugin in group.plugins"
+                :key="plugin.id"
+                :name="plugin.name"
+                :description="plugin.description"
+                :badges="rowBadges(plugin)"
+                :enabled="plugin.enabled"
+                switch-visible
+                @click="selectPlugin(plugin)"
+                @toggle="(value) => handleToggle(plugin, value)"
+              />
+            </template>
+          </div>
+        </template>
+      </template>
+
+      <!-- 卸载确认 -->
+      <ConfirmDialog
+        v-model:open="showUninstallDialog"
+        title="确认卸载"
+        :message="pluginToUninstall ? `确定要卸载插件「${pluginToUninstall.name}」吗？此操作不可恢复。` : ''"
+        danger
+        confirm-text="卸载"
+        @confirm="confirmUninstall"
+      />
+
+      <!-- 手动安装（按名称/ID） -->
+      <Dialog v-model:open="showManualInstall" :title="manualInstallTitle" :description="manualInstallDesc">
+        <div class="manual-install-form">
+          <div class="form-field">
+            <label>{{ engine === 'claude' ? '插件名称' : 'Plugin ID' }}</label>
+            <TextInput
+              v-model="manualPluginKey"
+              :placeholder="engine === 'claude' ? '例：superplugin' : '例：name@marketplace'"
+              mono
+            />
+          </div>
+          <div v-if="engine === 'codex'" class="form-field">
+            <label>市场名（可选）</label>
+            <TextInput v-model="manualMarketName" placeholder="缺省时由后端解析" />
+          </div>
         </div>
-      </div>
-
-      <!-- Empty state when no plugins -->
-      <EmptyState v-else icon="⊘" :title="emptyTitle" :description="emptyDesc" />
-    </div>
-
-    <!-- Market view (embedded PluginMarketPanel) -->
-    <PluginMarketPanel
-      v-else
-      :engine="engine"
-      @add-market="handleAddMarket"
-    />
-
-    <!-- Uninstall Confirmation Dialog -->
-    <ConfirmDialog
-      v-model:open="showUninstallDialog"
-      title="确认卸载"
-      :message="pluginToUninstall ? `确定要卸载插件「${pluginToUninstall.name}」吗？此操作不可恢复。` : ''"
-      danger
-      confirm-text="卸载"
-      @confirm="confirmUninstall"
-    />
+        <template #footer>
+          <AppButton variant="ghost" @click="showManualInstall = false">取消</AppButton>
+          <AppButton
+            variant="primary"
+            :disabled="!manualPluginKey.trim() || manualInstalling"
+            @click="submitManualInstall"
+          >
+            {{ manualInstalling ? '安装中…' : '安装' }}
+          </AppButton>
+        </template>
+      </Dialog>
     </template>
   </div>
 </template>
@@ -304,17 +256,33 @@
 import { ref, computed, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { usePluginStore } from '../../stores/plugin';
-import Switch from '../ui/Switch.vue';
-import Badge from '../ui/Badge.vue';
 import AppButton from '../ui/AppButton.vue';
-import EmptyState from '../ui/EmptyState.vue';
-import LoadingState from '../ui/LoadingState.vue';
-import ErrorState from '../ui/ErrorState.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
+import Dialog from '../ui/Dialog.vue';
+import ErrorState from '../ui/ErrorState.vue';
+import LoadingState from '../ui/LoadingState.vue';
+import TextInput from '../ui/TextInput.vue';
+import ActionMenu from './ui/ActionMenu.vue';
+import CountTabs from './ui/CountTabs.vue';
+import DetailHeader from './ui/DetailHeader.vue';
+import DiagnosticBanner from './ui/DiagnosticBanner.vue';
+import EmptyStateCard from './ui/EmptyStateCard.vue';
+import GroupHeader from './ui/GroupHeader.vue';
+import ListToolbar from './ui/ListToolbar.vue';
+import MetaGrid from './ui/MetaGrid.vue';
+import PluginIcon from './ui/PluginIcon.vue';
+import PluginRow from './ui/PluginRow.vue';
 import PluginMarketPanel from './PluginMarketPanel.vue';
 import PluginSubItemsPanel from './PluginSubItemsPanel.vue';
-import { truncate } from '../../utils/format';
 import { useToast } from '../../composables/useToast';
+import type {
+  ActionMenuItem,
+  CountTabItem,
+  InstalledPluginView,
+  MetaItemView,
+  PluginBadgeDescriptor,
+  PluginDetailView,
+} from './pluginViewTypes';
 
 interface Props {
   engine?: 'claude' | 'codex';
@@ -324,308 +292,318 @@ const props = withDefaults(defineProps<Props>(), {
   engine: 'claude',
 });
 
+// 事件名必须带下划线（契约 §0/§9 显式变更 ①）：ExtensionsView 监听 @add_market
+// 编译为 prop onAdd_market，仅 emit('add_market') 命中，camelCase 为断链死事件
 const emit = defineEmits<{
-  (e: 'addMarket', engine: 'claude' | 'codex'): void;
+  (e: 'add_market', engine: 'claude' | 'codex'): void;
 }>();
 
 const pluginStore = usePluginStore();
 const {
-  filteredCcPlugins,
-  activePluginId,
-  activePlugin,
-  activeCxPlugin,
-  activeCxPluginDetail,
-  resFilter,
-  resourceFilters,
+  ccInstalled,
+  ccMarkets,
+  ccInstalledCount,
+  ccMcpPluginCount,
+  ccLoadError,
+  loadingCC,
+  ccActivePluginDetail,
+  activePlugin: storeActivePlugin,
   cxInstalled,
+  cxMarkets,
+  cxInstalledCount,
   cxWarnings,
   cxDuplicates,
-  ccInstalledCount,
-  cxInstalledCount,
-  cxEnabledCount,
-  ccMarketCount,
-  cxMarketCount,
+  cxLoadError,
+  loadingCX,
+  activeCxPlugin,
+  activeCxPluginDetail,
   pluginView,
 } = storeToRefs(pluginStore);
 
 const {
   setActivePlugin,
-  setResFilter,
   togglePlugin,
   uninstallPlugin,
   updatePlugin,
-  upgradeCxMarketplace,
   updateCcMarketplace,
+  refreshCc,
   loadCcAllData,
+  loadPluginDetail,
   loadCxPlugins,
+  loadCxPluginDetail,
   toggleCxPlugin,
   uninstallCxPlugin,
   updateCxPlugin,
-  loadCxPluginDetail,
-  loadPluginDetail,
+  upgradeCxMarketplace,
+  installCcPlugin,
+  installCxPlugin,
   setPluginSubItemEnabled,
   setPluginView,
 } = pluginStore;
 
-// Toast for user feedback
 const { showSuccess, showError, showInfo } = useToast();
 
-// Local view state (synced with store)
-const localView = ref<'installed' | 'market'>(props.engine === 'claude' ? 'installed' : 'installed');
+// 详情页面包屑引擎前缀（列表↔详情分页化：「Claude Code › github」/「Codex › name@mk」）
+const engineLabel = computed(() => (props.engine === 'claude' ? 'Claude Code' : 'Codex'));
 
-// Initial loading and error states
-const initialLoading = ref(true);
-const initialError = ref('');
-
-// 降级错误信息：Codex CLI 调用失败时不吞整页，仅在此 banner 中显示
-const loadErrorMessage = ref('');
-
-// Uninstall confirmation
+// --- 本地面板状态（视图机/对话框/mutating，契约 §6.1：门控类状态一律 store 派生） ---
+// MCP 资源页为面板本地态（契约 §2：pluginView 值域保持 'installed'|'market' 不变）
+const resourceTab = ref<'plugins' | 'mcp'>('plugins');
+const searchText = ref('');
 const showUninstallDialog = ref(false);
-const pluginToUninstall = ref<any>(null);
-
-// Update loading state (for visual feedback on update button)
+const pluginToUninstall = ref<InstalledPluginView | null>(null);
 const updating = ref(false);
-
-// 市场分组头部「更新市场」按钮的 per-market loading 状态
-// 按市场名隔离，避免一个市场更新时禁用所有分组的按钮
+const manualInstalling = ref(false);
+const showManualInstall = ref(false);
+const manualPluginKey = ref('');
+const manualMarketName = ref('');
+// MCP 惰性加载失败的单项警告（契约 §6.1.1/风险 3：静默跳过并计入诊断 warnings）
+const mcpLoadWarnings = ref<string[]>([]);
+// 市场分组头部「更新市场」的 per-market loading
 const updatingMarkets = ref<Record<string, boolean>>({});
 
-function isMarketUpdating(market: string): boolean {
-  return !!updatingMarkets.value[market];
+// 引擎切换时重置面板本地资源页（契约 §2）
+watch(
+  () => props.engine,
+  () => {
+    resourceTab.value = 'plugins';
+    searchText.value = '';
+  },
+);
+
+// --- 首屏门控（store 派生，契约 §6.1：SSR 测试不执行 onMounted） ---
+const installedList = computed<InstalledPluginView[]>(() =>
+  props.engine === 'claude' ? ccInstalled.value : cxInstalled.value
+);
+
+const loadError = computed(() =>
+  props.engine === 'claude' ? ccLoadError.value : cxLoadError.value
+);
+
+const isLoading = computed(() =>
+  props.engine === 'claude' ? loadingCC.value : loadingCX.value
+);
+
+const showInitialLoading = computed(
+  () => isLoading.value && installedList.value.length === 0 && !loadError.value
+);
+
+const showInitialError = computed(() => !!loadError.value && installedList.value.length === 0);
+
+// --- ① 诊断横幅数据源 ---
+const diagnosticErrors = computed(() => (loadError.value ? [loadError.value] : []));
+
+// Codex：cxWarnings 逐条 + 重复诊断摘要（§6.2）；Claude：恒空 + MCP 惰性加载失败
+const diagnosticWarnings = computed(() => {
+  if (props.engine === 'claude') {
+    return mcpLoadWarnings.value;
+  }
+  const warnings = [...cxWarnings.value];
+  if (cxDuplicates.value.length > 0) {
+    const names = cxDuplicates.value
+      .map((group) => group[0]?.name)
+      .filter(Boolean)
+      .join('、');
+    warnings.push(`检测到 ${cxDuplicates.value.length} 组重复插件：${names}`);
+  }
+  return warnings;
+});
+
+// --- ② 资源计数标签 ---
+const countTabs = computed<CountTabItem[]>(() => {
+  if (props.engine === 'claude') {
+    return [
+      { key: 'plugins', label: '插件', count: ccInstalledCount.value },
+      { key: 'mcp', label: 'MCP', count: ccMcpPluginCount.value },
+      { key: 'market', label: '市场', count: ccMarkets.value.length },
+    ];
+  }
+  return [
+    { key: 'plugins', label: '插件', count: cxInstalledCount.value },
+    { key: 'market', label: '市场', count: cxMarkets.value.length },
+  ];
+});
+
+const isMarketView = computed(() => pluginView.value === 'market');
+const isMcpView = computed(() => props.engine === 'claude' && resourceTab.value === 'mcp');
+
+// CountTabs 市场态不渲染（见模板注释），modelValue 只会取 plugins/mcp
+const activeTabKey = computed(() => (isMcpView.value ? 'mcp' : 'plugins'));
+
+// 搜索框（市场态由 PluginMarketPanel 自带搜索）
+const searchPlaceholder = computed(() =>
+  isMcpView.value ? '搜索服务器或所属插件' : '搜索插件名称或描述'
+);
+
+function selectTab(key: string) {
+  if (key === 'market') {
+    // 面板切到市场标签时同步 setPluginView('market')（契约 §2：保持既有 store 兼容）
+    setPluginView('market');
+    searchText.value = '';
+    return;
+  }
+  setPluginView('installed');
+  if (props.engine === 'claude') {
+    resourceTab.value = key === 'mcp' ? 'mcp' : 'plugins';
+    if (resourceTab.value === 'mcp') {
+      void loadMcpDetails();
+    }
+  }
+  searchText.value = '';
 }
 
-// Retry function for ErrorState / 降级 banner
-const handleRetry = async () => {
-  initialLoading.value = true
-  initialError.value = ''
-  loadErrorMessage.value = ''
+function onSearch(value: string) {
+  searchText.value = value;
+}
+
+function browseMarket() {
+  setPluginView('market');
+}
+
+function backToInstalled() {
+  setPluginView('installed');
+}
+
+// --- ③ 工具栏 ---
+const addActionItems = computed<ActionMenuItem[]>(() => [
+  { key: 'add-market', label: '添加市场' },
+  { key: 'manual-install', label: '手动安装' },
+]);
+
+function handleAddSelect(key: string) {
+  if (key === 'add-market') {
+    handleAddMarket();
+  } else if (key === 'manual-install') {
+    openManualInstall();
+  }
+}
+
+const isRefreshing = computed(() => isLoading.value);
+
+async function handleRefresh() {
+  if (isRefreshing.value) return;
   try {
     if (props.engine === 'claude') {
-      await loadCcAllData()
+      await refreshCc();
     } else {
-      await loadCxPlugins()
+      await loadCxPlugins(true);
     }
-  } catch (err) {
-    // Codex: 不吞整页，降级为顶部 banner，保留主框架（已安装/市场/warnings 区仍可见）
-    if (props.engine === 'codex') {
-      loadErrorMessage.value = `Codex 插件加载失败：${err instanceof Error ? err.message : String(err)}。可查看下方已有的安装/市场信息，或点击重试。`
-    } else {
-      // Claude: loadCcAllData 已对子任务容错；此处仅致命异常才走整页错误态
-      initialError.value = String(err)
-    }
-  } finally {
-    initialLoading.value = false
+  } catch (error) {
+    // 失败信息已由 store 写入 ccLoadError/cxLoadError，由横幅/ErrorState 呈现
+    console.error('[PluginInstalledPanel] Refresh failed:', error);
   }
 }
 
-// Sync with store
-watch(pluginView, (val) => {
-  localView.value = val;
-});
-
-watch(localView, (val) => {
-  setPluginView(val);
-});
-
-function setView(view: 'installed' | 'market') {
-  localView.value = view;
-  setPluginView(view);
-}
-
-// Computed counts
-const installedCount = computed(() => {
-  return props.engine === 'claude' ? ccInstalledCount.value : cxInstalledCount.value;
-});
-
-const marketCount = computed(() => {
-  return props.engine === 'claude' ? ccMarketCount.value : cxMarketCount.value;
-});
-
-// Filtered plugins based on engine
-const filteredPlugins = computed(() => {
+async function handleRetry() {
   if (props.engine === 'claude') {
-    return filteredCcPlugins.value;
+    await loadCcAllData();
+  } else {
+    await loadCxPlugins(true);
   }
-  // Codex: filter by resource type
-  if (resFilter.value === 'all') return cxInstalled.value;
+}
 
-  return cxInstalled.value.filter(() => {
-    // Would need to check detail for resource types
-    // For now, return all
-    return true;
-  });
+// --- ④ 列表态：搜索过滤 + 按市场分组 ---
+const listedPlugins = computed<InstalledPluginView[]>(() => {
+  const query = searchText.value.trim().toLowerCase();
+  if (!query) return installedList.value;
+  return installedList.value.filter(
+    (p) =>
+      p.name.toLowerCase().includes(query) ||
+      // CodexPlugin 无 description（§5.1），可选链兜底即可覆盖两引擎
+      (p.description?.toLowerCase().includes(query) ?? false)
+  );
 });
 
-// Grouped plugins by marketplace
 const groupedPlugins = computed(() => {
-  const plugins = filteredPlugins.value;
-  const groups = new Map<string, any[]>();
-
-  plugins.forEach((plugin: any) => {
+  const groups = new Map<string, InstalledPluginView[]>();
+  listedPlugins.value.forEach((plugin) => {
     const marketplace = plugin.marketplace || 'Unknown';
     if (!groups.has(marketplace)) {
       groups.set(marketplace, []);
     }
     groups.get(marketplace)!.push(plugin);
   });
-
-  // Convert to array and sort by marketplace name
   return Array.from(groups.entries())
     .map(([marketplace, plugins]) => ({ marketplace, plugins }))
     .sort((a, b) => a.marketplace.localeCompare(b.marketplace));
 });
 
-// Current active plugin (engine-aware)
-const currentActivePlugin = computed(() => {
-  return props.engine === 'codex' ? activeCxPlugin.value : activePlugin.value;
+const toolbarTitle = computed(() => (isMcpView.value ? 'MCP 服务器' : '已安装'));
+const toolbarCount = computed(() =>
+  isMcpView.value ? mcpGroups.value.reduce((sum, g) => sum + g.servers.length, 0) : listedPlugins.value.length
+);
+
+// --- ④ MCP 资源页（§6.1.1） ---
+interface McpGroup {
+  pluginId: string;
+  name: string;
+  enabled: boolean;
+  servers: string[];
+}
+
+const mcpCandidates = computed(() =>
+  ccInstalled.value.filter((p) => p.enabled && (p.pluginType === 'mcp' || p.hasMcp))
+);
+
+const mcpGroups = computed<McpGroup[]>(() => {
+  const query = searchText.value.trim().toLowerCase();
+  return mcpCandidates.value
+    .map((p) => {
+      const detail = ccActivePluginDetail.value[p.id];
+      const servers = Object.keys(detail?.mcpServers || {});
+      return { pluginId: p.id, name: p.name, enabled: p.enabled, servers };
+    })
+    .filter((group) => group.servers.length > 0)
+    .map((group) => {
+      if (!query) return group;
+      const servers = group.servers.filter(
+        (s) => s.toLowerCase().includes(query) || group.name.toLowerCase().includes(query)
+      );
+      return { ...group, servers };
+    })
+    .filter((group) => group.servers.length > 0);
 });
 
-const activeCxDetail = computed(() => {
-  if (!activePluginId.value || props.engine !== 'codex') return null;
-  // activeCxPluginDetail（store computed）在 pluginId 未加载详情时为 null，解引用前必须防护
-  const detail = activeCxPluginDetail.value as Record<string, any> | null;
-  if (!detail) return null;
-  return detail[activePluginId.value] || null;
-});
-
-// Codex warnings
-const hasWarnings = computed(() => cxWarnings.value && cxWarnings.value.length > 0);
-const warningMessage = computed(() => {
-  if (!cxWarnings.value || cxWarnings.value.length === 0) return '';
-  return cxWarnings.value.join('; ');
-});
-
-// Codex duplicates
-const hasDuplicates = computed(() => cxDuplicates.value && cxDuplicates.value.length > 0);
-const duplicateCount = computed(() => cxDuplicates.value?.length || 0);
-const duplicateNames = computed(() => {
-  if (!cxDuplicates.value) return '';
-  return cxDuplicates.value.map(group => group[0]?.name).filter(Boolean).join('、');
-});
-
-// Resource counts for active plugin
-const hasSkills = computed(() => {
-  const p = currentActivePlugin.value;
-  if (!p) return false;
-  if (props.engine === 'codex') {
-    const detail = activeCxDetail.value;
-    return detail?.skills?.length > 0;
+// 进入 MCP 页时对无缓存详情的候选并发加载（纯本地读；失败单项静默跳过并计入 warnings）
+async function loadMcpDetails() {
+  const missing = mcpCandidates.value.filter((p) => !ccActivePluginDetail.value[p.id]);
+  if (missing.length === 0) return;
+  const results = await Promise.allSettled(
+    missing.map((p) => loadPluginDetail(p.id))
+  );
+  const failures: string[] = [];
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const err = result.reason;
+      failures.push(
+        `MCP 详情加载失败（${missing[index].name}）：${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  });
+  if (failures.length > 0) {
+    mcpLoadWarnings.value = [...mcpLoadWarnings.value, ...failures];
   }
-  const type = (p as any).pluginType || '';
-  return type === 'skill' || type === 'hybrid' || type === 'integration';
-});
+}
 
-const hasAgents = computed(() => {
-  const p = currentActivePlugin.value;
-  if (!p) return false;
-  if (props.engine === 'codex') {
-    const detail = activeCxDetail.value;
-    return detail?.agents?.length > 0;
-  }
-  const type = (p as any).pluginType || '';
-  return type === 'agent' || type === 'hybrid' || type === 'integration';
-});
+function openPluginDetail(pluginId: string) {
+  resourceTab.value = 'plugins';
+  setActivePlugin(pluginId);
+  void loadPluginDetail(pluginId);
+}
 
-const hasCommands = computed(() => {
-  const p = currentActivePlugin.value;
-  if (!p) return false;
-  if (props.engine === 'codex') {
-    const detail = activeCxDetail.value;
-    return detail?.commands?.length > 0;
-  }
-  const type = (p as any).pluginType || '';
-  return type === 'command' || type === 'hybrid' || type === 'integration';
-});
+// --- 空态文案（§6.1/§6.2） ---
+const emptyTitle = computed(() =>
+  props.engine === 'claude' ? '暂无已安装插件' : '暂无已安装 Codex 插件'
+);
 
-const hasHooks = computed(() => {
-  const p = currentActivePlugin.value;
-  if (!p) return false;
-  if (props.engine === 'codex') {
-    const detail = activeCxDetail.value;
-    return detail?.hooks?.length > 0;
-  }
-  const type = (p as any).pluginType || '';
-  return type === 'hook' || type === 'hybrid' || type === 'integration';
-});
-
-const hasMcp = computed(() => {
-  const p = currentActivePlugin.value;
-  if (!p) return false;
-  if (props.engine === 'codex') {
-    const detail = activeCxDetail.value;
-    return detail?.hasMcp === true;
-  }
-  return (p as any).hasMcp === true;
-});
-
-// Counts from detail (Codex)
-const skillsCount = computed(() => {
-  if (props.engine === 'codex') {
-    return activeCxDetail.value?.skills?.length || 0;
-  }
-  return hasSkills.value ? 1 : 0;
-});
-
-const agentsCount = computed(() => {
-  if (props.engine === 'codex') {
-    return activeCxDetail.value?.agents?.length || 0;
-  }
-  return hasAgents.value ? 1 : 0;
-});
-
-const commandsCount = computed(() => {
-  if (props.engine === 'codex') {
-    return activeCxDetail.value?.commands?.length || 0;
-  }
-  return hasCommands.value ? 1 : 0;
-});
-
-const hooksCount = computed(() => {
-  if (props.engine === 'codex') {
-    return activeCxDetail.value?.hooks?.length || 0;
-  }
-  return hasHooks.value ? 1 : 0;
-});
-
-// 当前选中插件是否含有可管理的子项（用于隐藏无意义子项面板，消除误导 UI）
-// - Codex: detail 的 skills/agents/commands/hooks 任一非空，或 hasMcp 为真
-// - Claude: 插件本身的 subItems（大写字段，与 disabledSubItems 取值方式一致）为非空数组
-const hasManageableSubItems = computed(() => {
-  if (props.engine === 'codex') {
-    const detail = activeCxDetail.value;
-    if (!detail) return false;
-    return (
-      (detail.skills?.length || 0) > 0 ||
-      (detail.agents?.length || 0) > 0 ||
-      (detail.commands?.length || 0) > 0 ||
-      (detail.hooks?.length || 0) > 0 ||
-      detail.hasMcp === true
-    );
-  }
-  // Claude 引擎：插件后端返回的子项数组
-  const subItems = (currentActivePlugin.value as any)?.subItems;
-  return Array.isArray(subItems) && subItems.length > 0;
-});
-
-// Empty state texts
-const emptyTitle = computed(() => {
-  return props.engine === 'claude' ? '暂无已安装插件' : '暂无已安装 Codex 插件';
-});
-
-const emptyDesc = computed(() => {
-  return props.engine === 'claude'
+const emptyDesc = computed(() =>
+  props.engine === 'claude'
     ? '从插件市场安装 Claude 插件后将显示在此处'
-    : '从插件市场安装 Codex 插件后将显示在此处';
-});
+    : '从插件市场安装 Codex 插件后将显示在此处'
+);
 
-// Plugin type helpers
-function pluginTypeLabel(plugin: any): string {
-  if (props.engine === 'codex') {
-    // Codex plugins don't have pluginType in the base struct
-    // Use capabilities or default to 'Plugin'
-    return 'Plugin';
-  }
+// --- 行字段映射（§5.1） ---
+function pluginTypeLabel(plugin: InstalledPluginView): string {
   const type = plugin.pluginType || 'unknown';
   const labels: Record<string, string> = {
     integration: '集成',
@@ -639,34 +617,111 @@ function pluginTypeLabel(plugin: any): string {
   return labels[type] || type;
 }
 
-function pluginTypeColor(plugin: any): string {
-  if (props.engine === 'codex') return 'plugin';
-  const type = plugin.pluginType || 'unknown';
-  return type;
+function rowBadges(plugin: InstalledPluginView): PluginBadgeDescriptor[] {
+  const badges: PluginBadgeDescriptor[] = [];
+  if (props.engine === 'claude') {
+    badges.push({ text: pluginTypeLabel(plugin), type: 'type', color: plugin.pluginType || 'unknown' });
+    if (plugin.marketplace) {
+      badges.push({ text: plugin.marketplace, type: 'source', variant: 'muted' });
+    }
+  } else {
+    if (plugin.source) {
+      badges.push({ text: plugin.source, type: 'source', variant: 'muted' });
+    }
+    if (hasDuplicateWarning(plugin)) {
+      badges.push({ text: '重复诊断', type: 'warning', color: 'warning' });
+    }
+  }
+  if (plugin.version) {
+    badges.push({ text: `v${plugin.version}`, type: 'ver' });
+  }
+  return badges;
 }
 
-// Duplicate warning helpers
-function hasDuplicateWarning(plugin: any): boolean {
-  return !!(plugin as any).warning || !!(plugin as any).duplicateOf;
-}
+// --- 详情态（§5.2） ---
+const currentActivePlugin = computed<InstalledPluginView | null>(() =>
+  props.engine === 'codex' ? activeCxPlugin.value : storeActivePlugin.value
+);
 
-function getDuplicateWarning(plugin: any): string {
-  const raw = (plugin as any).warning || (plugin as any).duplicateOf || '';
-  if (!raw) return '';
-  const mergedText = /归并|duplicate|重复/i.test(raw) ? raw : `检测到重复安装记录：${raw}`;
-  return mergedText;
-}
+const activeCxDetail = computed<PluginDetailView | null>(() =>
+  props.engine === 'codex' ? (activeCxPluginDetail.value as unknown as PluginDetailView | null) : null
+);
 
-function shortId(id: string): string {
-  if (!id) return '';
-  if (id.length > 12) return id.slice(0, 12) + '...';
-  return id;
-}
+const detailTitle = computed(() => {
+  if (props.engine === 'codex') {
+    return activeCxDetail.value?.displayName || currentActivePlugin.value?.name || '';
+  }
+  return currentActivePlugin.value?.name || '';
+});
 
-// Format date
-function formatDate(dateStr: string): string {
+const detailDescription = computed(() => {
+  if (props.engine === 'codex') {
+    const detail = activeCxDetail.value;
+    return (
+      detail?.longDescription ||
+      detail?.shortDescription ||
+      detail?.manifest?.description ||
+      ''
+    );
+  }
+  return currentActivePlugin.value?.description || '';
+});
+
+const detailBadges = computed<PluginBadgeDescriptor[]>(() => {
+  const plugin = currentActivePlugin.value;
+  if (!plugin) return [];
+  const badges: PluginBadgeDescriptor[] = [];
+  if (props.engine === 'claude') {
+    badges.push({ text: pluginTypeLabel(plugin), type: 'type', color: plugin.pluginType || 'unknown' });
+  } else {
+    if (plugin.source) {
+      badges.push({ text: plugin.source, type: 'source', variant: 'muted' });
+    }
+    if (hasDuplicateWarning(plugin)) {
+      badges.push({ text: '重复诊断', type: 'warning', color: 'warning' });
+    }
+  }
+  if (plugin.version) {
+    badges.push({ text: `v${plugin.version}`, type: 'ver' });
+  }
+  if (props.engine === 'claude' && plugin.scope) {
+    badges.push({
+      text: plugin.scope === 'global' ? '全局' : plugin.scope === 'project' ? '项目' : plugin.scope,
+      type: 'scope',
+    });
+  }
+  // Codex capabilities 徽章区并入 DetailHeader badges（§6.2）
+  if (props.engine === 'codex') {
+    (activeCxDetail.value?.manifest?.interface?.capabilities || []).forEach((cap) => {
+      badges.push({ text: cap, type: 'type', color: 'capability' });
+    });
+  }
+  return badges;
+});
+
+// --- 子项数据源（§5.3） ---
+const subItemsDetail = computed<PluginDetailView | null>(() =>
+  props.engine === 'codex' ? activeCxDetail.value : (storeActivePlugin.value as unknown as PluginDetailView | null)
+);
+
+const hasManageableSubItems = computed(() => {
+  const detail = subItemsDetail.value;
+  if (!detail) return false;
+  return (
+    (detail.subItems?.length || 0) > 0 ||
+    (detail.skills?.length || 0) > 0 ||
+    (detail.agents?.length || 0) > 0 ||
+    (detail.commands?.length || 0) > 0 ||
+    (detail.hooks?.length || 0) > 0 ||
+    detail.hasMcp === true
+  );
+});
+
+// --- MetaGrid（§5.2） ---
+function formatDate(dateStr?: string): string {
   if (!dateStr) return '';
   const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleDateString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
@@ -674,68 +729,89 @@ function formatDate(dateStr: string): string {
   });
 }
 
-// Actions
-async function selectPlugin(plugin: any) {
-  const id = plugin.id || plugin.pluginId;
-  setActivePlugin(id);
-  // Load Codex detail if needed
-  if (props.engine === 'codex' && plugin.marketplace) {
-    await loadCxPluginDetail(plugin.pluginId || id, plugin.marketplace);
+const metaItems = computed<MetaItemView[]>(() => {
+  const plugin = currentActivePlugin.value;
+  if (!plugin) return [];
+  const items: MetaItemView[] = [];
+  if (props.engine === 'codex') {
+    items.push({ label: '状态', value: plugin.enabled ? '已启用' : '已禁用' });
   }
-  // Load Claude detail if needed
-  if (props.engine === 'claude') {
+  if (plugin.marketplace) {
+    items.push({ label: '来源市场', value: plugin.marketplace });
+  }
+  if (plugin.version) {
+    items.push({ label: '版本', value: plugin.version });
+  }
+  if (props.engine === 'claude' && plugin.scope) {
+    items.push({ label: '作用域', value: plugin.scope });
+  }
+  const installedAt = formatDate(plugin.installedAt);
+  if (installedAt) {
+    items.push({ label: '安装时间', value: installedAt });
+  }
+  const lastUpdated = formatDate(plugin.lastUpdated);
+  if (lastUpdated) {
+    items.push({ label: '最后更新', value: lastUpdated });
+  }
+  if (props.engine === 'claude' && plugin.gitCommitSha) {
+    items.push({ label: '提交', value: plugin.gitCommitSha.slice(0, 8), mono: true });
+  }
+  if (props.engine === 'codex' && plugin.id) {
+    items.push({ label: 'Plugin ID', value: plugin.id, mono: true });
+  }
+  return items;
+});
+
+// --- 重复诊断 helpers（§5.1/§6.2） ---
+function hasDuplicateWarning(plugin: InstalledPluginView): boolean {
+  return !!plugin.warning || !!plugin.duplicateOf;
+}
+
+function getDuplicateWarning(plugin: InstalledPluginView): string {
+  const raw = plugin.warning || plugin.duplicateOf || '';
+  if (!raw) return '';
+  return /归并|duplicate|重复/i.test(raw) ? raw : `检测到重复安装记录：${raw}`;
+}
+
+// --- 动作 ---
+// 点击列表行 → 进入二级详情页（activePluginId 语义升级为「详情页态」），并预取详情
+async function selectPlugin(plugin: InstalledPluginView) {
+  const id = plugin.id || '';
+  setActivePlugin(id);
+  if (props.engine === 'codex') {
+    if (plugin.marketplace) {
+      await loadCxPluginDetail(id, plugin.marketplace);
+    }
+  } else {
     await loadPluginDetail(id);
   }
 }
 
-async function handleToggle(plugin: any, value: boolean) {
-  if (props.engine === 'codex') {
-    try {
-      await toggleCxPlugin(plugin.pluginId || plugin.id, !value);
-    } catch (error) {
-      console.error('Toggle Codex plugin failed:', error);
-    }
-  } else {
-    try {
+// 「← 返回列表」/ 面包屑引擎段点击：清空 active 插件回列表
+function clearActive() {
+  setActivePlugin(null);
+}
+
+// 开关语义警示（§5.4）：togglePlugin 第二参=「当前态」（true→disable），
+// toggleCxPlugin 第二参=「目标态」——value 为 Switch 发出的目标态
+async function handleToggle(plugin: InstalledPluginView, value: boolean) {
+  try {
+    if (props.engine === 'codex') {
+      await toggleCxPlugin(plugin.id, value);
+    } else {
       await togglePlugin(plugin.id, !value);
-    } catch (error) {
-      console.error('Toggle plugin failed:', error);
     }
+  } catch (error) {
+    console.error('[PluginInstalledPanel] Toggle plugin failed:', error);
+    showError(`状态切换失败：${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-async function handleUninstall() {
-  const plugin = currentActivePlugin.value;
-  if (!plugin) return;
-  pluginToUninstall.value = plugin;
-  showUninstallDialog.value = true;
-}
-
-async function confirmUninstall() {
-  const plugin = pluginToUninstall.value;
-  if (!plugin) return;
-
-  if (props.engine === 'codex') {
-    try {
-      await uninstallCxPlugin((plugin as any).pluginId || (plugin as any).id, (plugin as any).marketplace);
-    } catch (error) {
-      console.error('Uninstall Codex plugin failed:', error);
-    }
-  } else {
-    try {
-      await uninstallPlugin((plugin as any).id);
-    } catch (error) {
-      console.error('Uninstall plugin failed:', error);
-    }
-  }
-  showUninstallDialog.value = false;
-  pluginToUninstall.value = null;
-}
+const updateDisabled = computed(() => props.engine === 'codex' && !currentActivePlugin.value?.marketplace);
 
 async function handleUpdate() {
   const plugin = currentActivePlugin.value;
-  if (!plugin) return;
-  if (updating.value) return;
+  if (!plugin || updating.value) return;
 
   updating.value = true;
   try {
@@ -758,7 +834,6 @@ async function handleUpdate() {
     } else {
       showInfo(`正在更新插件「${plugin.name}」…`);
       await updatePlugin(plugin.id);
-      // updatePlugin 内部已 loadCcInstalled，再补一次 detail 以刷新子项
       await loadPluginDetail(plugin.id);
       showSuccess(`插件「${plugin.name}」更新成功`);
     }
@@ -772,8 +847,32 @@ async function handleUpdate() {
 
 // 更新整个市场源（市场分组头部「更新市场」入口）
 // - Codex: 市场级入口（市场分组头部）；单插件更新走 handleUpdate（P4 UpdatePlugin）
-// - Claude: 调 plugin.Service.UpdateMarketplace 拉取指定市场源最新内容
-// store action 内部已 force reload，UI 会随 ccInstalled/cxInstalled 响应式刷新
+function handleUninstall() {
+  const plugin = currentActivePlugin.value;
+  if (!plugin) return;
+  pluginToUninstall.value = plugin;
+  showUninstallDialog.value = true;
+}
+
+async function confirmUninstall() {
+  const plugin = pluginToUninstall.value;
+  if (!plugin) return;
+
+  try {
+    if (props.engine === 'codex') {
+      await uninstallCxPlugin(plugin.id, plugin.marketplace);
+    } else {
+      await uninstallPlugin(plugin.id);
+    }
+  } catch (error) {
+    console.error('[PluginInstalledPanel] Uninstall plugin failed:', error);
+    showError(`卸载失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    showUninstallDialog.value = false;
+    pluginToUninstall.value = null;
+  }
+}
+
 async function handleUpdateMarket(market: string) {
   if (!market || market === 'Unknown') return;
   if (isMarketUpdating(market)) return;
@@ -795,81 +894,103 @@ async function handleUpdateMarket(market: string) {
   }
 }
 
-// Disabled sub-items for the active plugin
-// disabledSubItems: "type/name" 字符串数组（type 单数，与后端 SubItemType 一致）
-// 字段访问统一为小写（enabled/type/name），与 wailsjs/go/models.ts 中 plugin.SubItem 的 JSON tag 一致
-const disabledSubItems = computed(() => {
-  const plugin = currentActivePlugin.value;
-  if (!plugin) return [];
-  // Codex: activeCxDetail 为 CodexPluginDetail（当前未携带 subItems 字段，此分支保持兜底兼容）
-  if (props.engine === 'codex' && activeCxDetail.value?.subItems) {
-    return activeCxDetail.value.subItems
-      .filter((s: any) => !s.enabled)
-      .map((s: any) => `${s.type}/${s.name}`);
-  }
-  // Claude: 插件详情中的 subItems（后端聚合好，含 enabled 标记）
-  if (props.engine === 'claude' && (plugin as any).subItems) {
-    return (plugin as any).subItems
-      .filter((s: any) => !s.enabled)
-      .map((s: any) => `${s.type}/${s.name}`);
-  }
-  return [];
-});
+function isMarketUpdating(market: string): boolean {
+  return !!updatingMarkets.value[market];
+}
 
-// 子项开关切换：统一走 store action（内部调 main.App 统一入口，按 pluginId 自动分派 Codex/Claude）
-// - itemType 为后端 SubItemType 单数（skill/agent/command/hook/mcp），由 PluginSubItemsPanel 保证
-// - 切换成功后 reload 详情以即时反映新状态；失败时通过 toast 反馈
+// 子项开关（仅 Claude 真正落盘，§5.3）：统一走 store action 后回刷详情
 async function handleToggleSubItem(itemType: string, itemId: string, enabled: boolean) {
   const plugin = currentActivePlugin.value;
   if (!plugin) return;
 
-  const pid = (plugin as any).pluginId || plugin.id;
   try {
-    await setPluginSubItemEnabled(pid, itemType, itemId, enabled);
-    // 切换成功后 reload 详情以反映新状态
+    await setPluginSubItemEnabled(plugin.id, itemType, itemId, enabled);
     if (props.engine === 'codex' && plugin.marketplace) {
-      await loadCxPluginDetail((plugin as any).pluginId || plugin.id, plugin.marketplace);
+      await loadCxPluginDetail(plugin.id, plugin.marketplace);
     } else if (props.engine === 'claude') {
       await loadPluginDetail(plugin.id);
     }
   } catch (error) {
     console.error('[PluginInstalledPanel] Toggle sub-item failed:', error);
-    showError(
-      `子项状态切换失败：${error instanceof Error ? error.message : String(error)}`
-    );
+    showError(`子项状态切换失败：${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-function handleAddMarket(engine: 'claude' | 'codex') {
-  emit('addMarket', engine);
+// 添加市场：单一入口，经 emit('add_market') 走 ExtensionsView 内联 Dialog（§6.6）
+function handleAddMarket() {
+  emit('add_market', props.engine);
 }
 
-// Load plugins on mount
-onMounted(async () => {
-  initialLoading.value = true;
-  initialError.value = '';
-  loadErrorMessage.value = '';
+// --- 手动安装对话框 ---
+const manualInstallTitle = computed(() =>
+  props.engine === 'claude' ? '安装 Claude 插件' : '安装 Codex 插件'
+);
+
+const manualInstallDesc = computed(() =>
+  props.engine === 'claude'
+    ? '输入插件名称，从默认市场安装'
+    : '输入 Plugin ID（name@marketplace），可选指定市场名'
+);
+
+function openManualInstall() {
+  manualPluginKey.value = '';
+  manualMarketName.value = '';
+  showManualInstall.value = true;
+}
+
+async function submitManualInstall() {
+  const key = manualPluginKey.value.trim();
+  if (!key || manualInstalling.value) return;
+
+  manualInstalling.value = true;
   try {
     if (props.engine === 'claude') {
-      // Load all Claude data (installed + markets + available) in parallel with cache
+      await installCcPlugin(key);
+    } else {
+      await installCxPlugin(key, manualMarketName.value.trim() || undefined);
+    }
+    showSuccess(`插件「${key}」安装成功`);
+    showManualInstall.value = false;
+  } catch (error) {
+    console.error('[PluginInstalledPanel] Manual install failed:', error);
+    showError(`安装失败：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    manualInstalling.value = false;
+  }
+}
+
+// 装载（onMounted 在 SSR 测试中不执行；门控已 store 派生）。
+// ExtensionsView 的 Claude/Codex 挂载点带 key（claude/codex）：Claude⇄Codex 切换
+// 经 key 强制重建面板实例，本 onMounted 随新实例执行 → 按引擎装载并重置到列表态（契约 §2）
+onMounted(async () => {
+  setPluginView('installed');
+  try {
+    if (props.engine === 'claude') {
       await loadCcAllData();
     } else {
-      // Codex loads all data in one call with cache check
       await loadCxPlugins();
     }
-  } catch (err) {
-    // Codex: CLI 错误不应吞掉整页主内容（主框架已安装/市场 tab/warnings 区仍可访问）。
-    // 降级为"空列表 + 顶部 error banner + 重试按钮"，避免用户看到整页 ErrorState。
-    if (props.engine === 'codex') {
-      loadErrorMessage.value = `Codex 插件加载失败：${err instanceof Error ? err.message : String(err)}。可查看下方已有的安装/市场信息，或点击重试。`
-    } else {
-      // Claude: loadCcAllData 已对 installed/markets/available 子任务分别容错，
-      // 走到这里说明发生非预期致命异常，整页错误态仍合理。
-      initialError.value = String(err);
-    }
-  } finally {
-    initialLoading.value = false;
+  } catch (error) {
+    // 失败信息已由 store 写入 ccLoadError/cxLoadError，由门控/横幅呈现
+    console.error('[PluginInstalledPanel] Load failed:', error);
   }
+});
+
+// 测试契约（§8）：expose 触发器
+defineExpose({
+  handleToggle,
+  handleAddMarket,
+  handleUpdate,
+  handleUninstall,
+  confirmUninstall,
+  handleUpdateMarket,
+  selectPlugin,
+  selectTab,
+  handleRefresh,
+  openManualInstall,
+  submitManualInstall,
+  openPluginDetail,
+  clearActive,
 });
 </script>
 
@@ -880,498 +1001,174 @@ onMounted(async () => {
   gap: 14px;
 }
 
-/* Segmented control at top */
-.view-segmented {
-  display: flex;
-  gap: 6px;
-  background: var(--control);
-  padding: 4px;
-  border-radius: 10px;
-  width: fit-content;
-}
-
-.seg-btn {
-  font-size: 12px;
-  padding: 5px 14px;
-  border: none;
-  background: transparent;
-  color: var(--secondary);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.15s;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.seg-btn:hover {
-  color: var(--label);
-}
-
-.seg-btn.active {
-  background: var(--label);
-  color: #fff;
-}
-
-.res-count {
-  font-size: 10px;
-  opacity: 0.7;
-}
-
-/* Codex status banner */
-.status-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-
-.status-banner.warning {
-  background: rgba(255, 149, 0, 0.08);
-  border: 1px solid rgba(255, 149, 0, 0.3);
-  color: #9a6200;
-}
-
-/* 降级错误 banner：CLI 失败时显示，复用 warning 布局，仅色调改为红色 */
-.status-banner.error {
-  background: rgba(255, 59, 48, 0.08);
-  border: 1px solid rgba(255, 59, 48, 0.3);
-  color: #a82820;
-}
-
-.sb-text {
-  flex: 1;
-  line-height: 1.5;
-}
-
-.sb-btn {
-  font-size: 11px;
-  color: var(--accent);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-decoration: underline;
-  font-family: inherit;
-}
-
-/* Codex stat bar */
-.stat-bar {
-  display: flex;
-  gap: 20px;
-  padding: 14px 16px;
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 10px;
-  margin-bottom: 12px;
-}
-
-.stat-cell {
+/* 列表态：全宽行式列表 */
+.plugin-list {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 2px;
 }
 
-.sv {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--label);
+/* 描述完整多行显示（不截断、不加省略号）。ui/PluginRow 不可改（并行白名单），
+   在面板 scoped 内 :deep 覆盖单行省略样式；图标与行尾开关随多行描述顶对齐 */
+.plugin-list :deep(.plugin-row) {
+  align-items: flex-start;
 }
 
-.sl {
-  font-size: 11px;
-  color: var(--tertiary);
+.plugin-list :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
-/* Codex duplicate diagnostic card */
-.dup-card {
-  background: rgba(255, 149, 0, 0.04);
-  border: 1px solid rgba(255, 149, 0, 0.2);
-  border-radius: 10px;
-  padding: 12px 14px;
-  margin-bottom: 12px;
+/* 详情页态：居中窄单列（约 720px，左右留白） */
+.plg-detail-page {
+  display: flex;
+  flex-direction: column;
 }
 
-.dup-card p {
-  font-size: 12px;
-  color: #9a6200;
-  line-height: 1.5;
+.plg-detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.plg-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.plg-back:hover {
+  text-decoration: underline;
+}
+
+.detail-desc {
   margin: 0;
+  font-size: 13px;
+  color: var(--secondary);
+  line-height: 1.6;
 }
 
-/* Duplicate diagnostic in detail */
+/* Codex 重复诊断详情卡 */
 .duplicate-diagnostic-card {
   background: rgba(255, 149, 0, 0.04);
   border: 1px solid rgba(255, 149, 0, 0.2);
   border-radius: 8px;
   padding: 10px 12px;
-  margin-bottom: 12px;
 }
 
 .duplicate-diagnostic-card strong {
   display: block;
   font-size: 12px;
-  color: #9a6200;
+  color: var(--warning-strong);
   margin-bottom: 4px;
 }
 
 .duplicate-diagnostic-card p {
   font-size: 11px;
-  color: #9a6200;
+  color: var(--warning-strong);
   line-height: 1.5;
   margin: 0;
 }
 
-.installed-view {
+/* MCP 资源页 */
+.mcp-view {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.header-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.header-title h2 {
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0;
-}
-
-.count-badge {
+/* 与共用 MCP 子页的区分副标题（跨面板一致性） */
+.mcp-view-hint {
+  margin: 0 0 10px;
   font-size: 12px;
   color: var(--secondary);
-  background: var(--control);
-  padding: 2px 8px;
-  border-radius: 10px;
+  line-height: 1.6;
 }
 
-.res-filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+.mcp-group + .mcp-group {
+  margin-top: 4px;
 }
 
-.rf-label {
-  font-size: 11px;
-  color: var(--tertiary);
-  margin-right: 2px;
-}
-
-.res-chip {
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: var(--control);
-  color: var(--secondary);
-  border: none;
+.mcp-group-click {
   cursor: pointer;
-  transition: all 0.12s;
+}
+
+.mcp-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
 }
 
-.res-chip:hover {
-  background: var(--controlHover);
-}
-
-.res-chip.active {
-  background: var(--label);
-  color: #fff;
-}
-
-.res-count {
-  font-size: 10px;
-  opacity: 0.7;
-}
-
-.ex-split {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
-.plugin-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
-}
-
-.plg-group-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 13px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  position: sticky;
-  top: 0;
-  background: var(--background);
-  z-index: 1;
-  margin-top: 8px;
-}
-
-.plg-group-header:first-child {
-  margin-top: 0;
-}
-
-.gh-market {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--tertiary);
-}
-
-.gh-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* 分组头部更新按钮：缩小内边距以匹配紧凑的分组标题行高。
-   提升特异性（.plg-group-header 前缀 + button 元素选择器）避免被 AppButton
-   内部 scoped 的 .btn-sm 反向覆盖；重置 letter-spacing 避免继承
-   .plg-group-header 的 0.5px 导致按钮文字字间距异常 */
-.plg-group-header .gh-actions :deep(button.btn-sm) {
-  padding: 2px 8px;
-  font-size: 11px;
-  letter-spacing: normal;
-}
-
-.gh-count {
-  font-size: 10px;
-  color: var(--tertiary);
-  opacity: 0.7;
+.mcp-row:hover {
   background: var(--control);
-  padding: 2px 6px;
-  border-radius: 10px;
 }
 
-.plg-item {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 10px;
-  padding: 11px 13px;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.12s;
-}
-
-.plg-item:hover {
-  border-color: #c5c5cc;
-}
-
-.plg-item.active {
-  border-color: var(--accent);
-  background: rgba(0, 122, 255, 0.04);
-}
-
-.plg-item-main {
+.mcp-main {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
   gap: 8px;
 }
 
-.plg-name-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.plg-name {
+.mcp-name {
   font-size: 13px;
   font-weight: 500;
   color: var(--label);
-  flex: 1;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.plg-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.plg-desc {
+.mcp-desc {
   font-size: 12px;
-  color: var(--secondary);
-  line-height: 1.4;
-  margin: 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  color: var(--tertiary);
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.plg-detail {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 16px 18px;
-  max-height: calc(100vh - 320px);
-  overflow-y: auto;
+/* 状态点：如实映射所属插件启用态（非连接状态，§6.1.1） */
+.mcp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
-.plg-detail-empty {
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  min-height: 200px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.mcp-dot.on {
+  background: var(--success);
 }
 
-.plg-detail-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--separator);
+.mcp-dot.off {
+  background: var(--separator);
 }
 
-.plg-detail-head h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0 0 6px 0;
-}
-
-.plg-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.plg-detail-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.plg-detail-section {
-  margin-bottom: 16px;
-}
-
-.plg-detail-section p {
-  font-size: 13px;
-  color: var(--secondary);
-  line-height: 1.5;
-  margin: 0;
-}
-
-.plg-detail-meta {
+/* 手动安装对话框 */
+.manual-install-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding: 12px;
-  background: var(--control);
-  border-radius: 8px;
+  gap: 14px;
 }
 
-.meta-row {
+.form-field {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.meta-label {
-  color: var(--tertiary);
-  min-width: 70px;
-}
-
-.meta-value {
-  color: var(--secondary);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.meta-value.mono {
-  font-family: var(--mono);
-}
-
-.plg-detail-resources {
-  margin-top: 16px;
-}
-
-.plg-detail-resources h4 {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--label);
-  margin: 0 0 10px 0;
-}
-
-.res-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.res-item {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
 }
 
-.res-item .res-count {
-  font-size: 12px;
-  color: var(--secondary);
-}
-
-.plg-detail-subitems {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--separator);
-}
-
-/* Scrollbar styling */
-.plugin-list::-webkit-scrollbar,
-.plg-detail::-webkit-scrollbar {
-  width: 8px;
-}
-
-.plugin-list::-webkit-scrollbar-track,
-.plg-detail::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.plugin-list::-webkit-scrollbar-thumb,
-.plg-detail::-webkit-scrollbar-thumb {
-  background: var(--separator);
-  border-radius: 4px;
-}
-
-.plugin-list::-webkit-scrollbar-thumb:hover,
-.plg-detail::-webkit-scrollbar-thumb:hover {
-  background: var(--tertiary);
+.form-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--label);
 }
 </style>

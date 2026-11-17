@@ -385,16 +385,12 @@ const showWildcardIpTip = computed(
 
 async function loadDiagnostics() {
   try {
-    const tasks: [Promise<any>, Promise<any> | null] = [
+    const hasWebUIStatus =
+      typeof (window as Partial<Window>).go?.main?.App?.GetRemoteWebUIStatus === 'function';
+    const [warnsRes, webRes] = await Promise.allSettled([
       getStartupWarnings(),
-      typeof (window as any)?.go?.main?.App?.GetRemoteWebUIStatus === 'function'
-        ? getRemoteWebUIStatus()
-        : null,
-    ];
-
-    const [warnsRes, webRes] = await Promise.allSettled(
-      tasks.map((t) => (t ? t : Promise.resolve(null))),
-    );
+      hasWebUIStatus ? getRemoteWebUIStatus() : Promise.resolve(null),
+    ]);
 
     if (warnsRes.status === 'fulfilled' && Array.isArray(warnsRes.value)) {
       allStartupWarnings.value = warnsRes.value.filter((w) => typeof w === 'string' && w);

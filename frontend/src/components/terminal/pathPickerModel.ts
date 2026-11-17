@@ -16,6 +16,28 @@ import type { DirectoryEntry, ListDirectoriesResult } from '../../api/paths'
 /** 目录加载器（组件注入 api/paths.listDirectories；测试注入桩）。 */
 export type PathLoader = (root: string) => Promise<ListDirectoriesResult>
 
+/** 会话感知加载器所需的两个后端入口（注入以便纯逻辑单测）。 */
+export interface SessionAwareLoaders {
+  /** 原生入口（空 sessionId 时的回退，与既有行为一致）。 */
+  listDirectories: PathLoader
+  /** 会话 facade：WSL 内嵌会话 → 目标 distro 目录树；空 root = distro $HOME。 */
+  sessionListDirectories: (sessionId: string, root: string) => Promise<ListDirectoriesResult>
+}
+
+/**
+ * 会话感知的目录加载器工厂：sessionId 非空时固定携带会话 ID 走
+ * sessionListDirectories facade（后端按会话权威启动上下文分派 WSL/原生），
+ * 空/缺省 sessionId 回退纯 listDirectories（独立使用场景的既有行为）。
+ */
+export function createSessionPathLoader(
+  sessionId: string | undefined,
+  loaders: SessionAwareLoaders,
+): PathLoader {
+  const id = (sessionId ?? '').trim()
+  if (!id) return loaders.listDirectories
+  return (root) => loaders.sessionListDirectories(id, root)
+}
+
 /** 展平后的行：目录行 / 子层加载中 / 子层加载失败（行内重试）。 */
 export type PathPickerRow =
   | { kind: 'dir'; name: string; path: string; depth: number; expanded: boolean }
@@ -30,7 +52,9 @@ function errText(err: unknown): string {
  * 后端 Linux 形态错误消息的稳定标记（与 internal/paths 的
  * LinuxStylePathMarker 成对维护，改动需同步）。
  */
-export const LINUX_FORM_PATH_MARKER = 'WSL/Linux 路径形态'
+const LINUX_FORM_PATH_MARKER = 'WSL/Linux 路径形态'
+/** App facade marker: never silently replace an unavailable session tree. */
+const SESSION_DIRECTORY_ERROR_MARKER = '会话目录不可用'
 
 /**
  * workDir 的父目录（兼容 / 与 \ 分隔、容忍尾部重复分隔符）。
@@ -101,6 +125,10 @@ export class PathPickerModel {
   private readonly pending = new Set<string>()
   /** 初始加载的 home 兜底是否已用过（每次打开重置）。 */
   private fallbackTried = false
+  /** Retry the requested tree even when listing was cleared after an error. */
+  private currentRoot = ''
+  private rootRequest = 0
+  private generation = 0
   /** 当前失败是否为 Linux 路径形态声明（WSL 会话工作目录，Windows 目录树不可用）。
  * 形态声明绝不走 home 兜底（静默降级曾是 E8 的错位目录树）。 */
   linuxForm = false
@@ -182,14 +210,16 @@ export class PathPickerModel {
 
   private async loadChildren(path: string): Promise<void> {
     if (this.cache.has(path) || this.pending.has(path)) return
+    const generation = this.generation
     this.pending.add(path)
     this.errors.delete(path)
     try {
-      this.cache.set(path, await this.load(path))
+      const result = await this.load(path)
+      if (generation === this.generation) this.cache.set(path, result)
     } catch (err) {
-      this.errors.set(path, errText(err))
+      if (generation === this.generation) this.errors.set(path, errText(err))
     } finally {
-      this.pending.delete(path)
+      if (generation === this.generation) this.pending.delete(path)
     }
   }
 
@@ -208,14 +238,12 @@ export class PathPickerModel {
     if (parent) this.navigate(parent)
   }
 
-  /** 错误态重试：重载当前 root（listing 已丢时优先重试 Linux 形态 root，
- * 否则按初始 root 的 home 兜底）。 */
+  /** 错误态重试：始终重试上次请求的目录，不因 listing 清空而换到主目录。 */
   retry(): void {
-    void this.loadRoot(this.listing?.root || this.linuxFormRoot || '', false)
+    void this.loadRoot(this.currentRoot, false)
   }
 
-  /** 错误态切回 Windows 盘符树：空 root = 后端 home 兜底（Linux 形态
- * 错误态无导航入口的补齐，qreview m-1）。 */
+  /** 显式从目标主目录开始：原生会话是宿主 home，WSL 会话是捕获发行版的 home。 */
   goHome(): void {
     this.navigate('')
   }
@@ -225,6 +253,7 @@ export class PathPickerModel {
   /** 打开选择器：重置全部状态并加载初始 root（失败降级空串重试一次；
  * Linux 形态声明除外——不降级，展示形态提示）。 */
   async resetAndLoad(workDir: string): Promise<void> {
+    this.generation++
     this.listing = null
     this.errorMsg = ''
     this.linuxForm = false
@@ -240,13 +269,17 @@ export class PathPickerModel {
   }
 
   private async loadRoot(root: string, allowFallback: boolean): Promise<void> {
+    const request = ++this.rootRequest
+    this.currentRoot = root
     this.loading = true
     this.errorMsg = ''
     this.linuxForm = false
     this.linuxFormRoot = ''
     try {
-      this.listing = await this.load(root)
+      const result = await this.load(root)
+      if (request === this.rootRequest) this.listing = result
     } catch (err) {
+      if (request !== this.rootRequest) return
       // Linux 路径形态声明（后端 *LinuxStylePathError 透传）：显式展示形态
       // 提示，绝不触发 home 兜底（静默降级曾是 E8 的错位目录树）。
       const text = errText(err)
@@ -257,6 +290,11 @@ export class PathPickerModel {
         this.errorMsg = text
         return
       }
+      if (text.includes(SESSION_DIRECTORY_ERROR_MARKER)) {
+        this.listing = null
+        this.errorMsg = `读取目录失败：${text}`
+        return
+      }
       if (allowFallback && !this.fallbackTried) {
         this.fallbackTried = true
         await this.loadRoot('', false)
@@ -265,7 +303,7 @@ export class PathPickerModel {
       this.listing = null
       this.errorMsg = `读取目录失败：${text}`
     } finally {
-      this.loading = false
+      if (request === this.rootRequest) this.loading = false
     }
   }
 }

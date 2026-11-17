@@ -6,7 +6,6 @@
 
 import {
   PickSkinImage,
-  ImportSkinImage,
   ListSkins,
   RemoveSkin,
   GetSkinSettings,
@@ -23,11 +22,6 @@ export type SkinSettings = settings.SkinSettings;
 export async function pickSkinImage(): Promise<Skin | null> {
   const skin = await callApi('[api.skins.pickSkinImage]', () => PickSkinImage());
   return skin && skin.id ? skin : null;
-}
-
-/** 从给定路径导入图片（不经对话框）。 */
-export function importSkinImage(path: string): Promise<Skin> {
-  return callApi('[api.skins.importSkinImage]', () => ImportSkinImage(path));
 }
 
 /** 列出皮肤库中全部已导入皮肤。 */

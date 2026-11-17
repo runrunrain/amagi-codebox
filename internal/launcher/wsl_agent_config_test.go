@@ -81,87 +81,6 @@ func (ft *fakeWSLTarget) assertStagedChmodCalls(t *testing.T, agentDir, fileName
 	}
 }
 
-func TestWriteWSLPiAgentConfigMergeAndChmod(t *testing.T) {
-	ft := installFakeWSLTarget(t)
-
-	// 预置 WSL 侧已有配置：保留既有 provider（含其它 amagi-*）与顶层字段。
-	existing := map[string]any{
-		"providers": map[string]any{
-			"user-custom": map[string]any{"baseUrl": "https://existing.example", "api": "anthropic-messages"},
-			"amagi-old":   map[string]any{"baseUrl": "https://old.example", "api": "openai-completions"},
-		},
-		"equivalence": map[string]any{"note": "keep-me"},
-	}
-	existingBytes, _ := json.Marshal(existing)
-	if err := os.MkdirAll(ft.uncPath("/home/wslu/.pi/agent"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(ft.uncPath("/home/wslu/.pi/agent/models.json"), existingBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	provider := config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"}}
-	cfg, err := BuildPiModelsConfig("glm", provider, "glm-5.3", "sk-test", config.Parameters{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	linuxDir, err := WriteWSLPiAgentConfig("Ubuntu", cfg)
-	if err != nil {
-		t.Fatalf("WriteWSLPiAgentConfig: %v", err)
-	}
-	if linuxDir != "/home/wslu/.pi/agent" {
-		t.Fatalf("linuxDir = %q, want /home/wslu/.pi/agent", linuxDir)
-	}
-
-	// 合并语义：既有 provider / 顶层字段保留，当次 amagi-glm 条目生效。
-	data, err := os.ReadFile(ft.uncPath("/home/wslu/.pi/agent/models.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	providers, _ := got["providers"].(map[string]any)
-	if _, ok := providers["user-custom"]; !ok {
-		t.Fatalf("existing provider dropped: %v", got)
-	}
-	if _, ok := providers["amagi-old"]; !ok {
-		t.Fatalf("sibling amagi provider dropped: %v", got)
-	}
-	if _, ok := providers["amagi-glm"]; !ok {
-		t.Fatalf("amagi-glm provider missing: %v", got)
-	}
-	if _, ok := got["equivalence"]; !ok {
-		t.Fatalf("top-level field dropped: %v", got)
-	}
-	entry, _ := providers["amagi-glm"].(map[string]any)
-	if entry["apiKey"] != "sk-test" || entry["baseUrl"] != "https://open.bigmodel.cn/api/coding/paas/v4" {
-		t.Fatalf("amagi-glm entry wrong: %v", entry)
-	}
-
-	// chmod 序列（SA-06）：agent 目录 0700 → staging 0700（验证）→ 秘密文件
-	// 0600 在 staging 内 rename 前收紧。
-	ft.assertStagedChmodCalls(t, "/home/wslu/.pi/agent", "models.json")
-}
-
-func TestWriteWSLPiAgentConfigFreshDistro(t *testing.T) {
-	ft := installFakeWSLTarget(t)
-	cfg := map[string]any{
-		"providers": map[string]any{
-			"amagi-glm": map[string]any{"baseUrl": "https://x.example", "api": "anthropic-messages", "apiKey": "k"},
-		},
-	}
-	linuxDir, err := WriteWSLPiAgentConfig("Ubuntu", cfg)
-	if err != nil {
-		t.Fatalf("WriteWSLPiAgentConfig on fresh distro: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(ft.uncPath(linuxDir), "models.json")); err != nil {
-		t.Fatalf("models.json not written: %v", err)
-	}
-}
-
 func TestWriteWSLOmpAgentConfigMergeAndChmod(t *testing.T) {
 	ft := installFakeWSLTarget(t)
 	provider := config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"}}
@@ -184,19 +103,6 @@ func TestWriteWSLOmpAgentConfigMergeAndChmod(t *testing.T) {
 		t.Fatalf("models.yml content wrong:\n%s", data)
 	}
 	ft.assertStagedChmodCalls(t, "/home/wslu/.omp/agent", "models.yml")
-}
-
-func TestWriteWSLPiAgentConfigChmodFailureFailsClosed(t *testing.T) {
-	_ = installFakeWSLTarget(t)
-	origChmod := wslChmodFn
-	wslChmodFn = func(context.Context, string, string, ...string) error {
-		return os.ErrPermission
-	}
-	t.Cleanup(func() { wslChmodFn = origChmod })
-	cfg := map[string]any{"providers": map[string]any{"amagi-glm": map[string]any{"baseUrl": "https://x.example"}}}
-	if _, err := WriteWSLPiAgentConfig("Ubuntu", cfg); err == nil {
-		t.Fatal("chmod failure must fail the WSL write (fail closed)")
-	}
 }
 
 func TestResolveWSLAgentTargetErrors(t *testing.T) {

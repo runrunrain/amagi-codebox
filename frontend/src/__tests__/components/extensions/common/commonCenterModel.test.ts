@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ENGINE_LABELS,
+  MARKET_DELETE_TITLE,
   PLUGIN_DELETE_TITLE,
   engineLabelOf,
   mcpConfigSummary,
@@ -72,6 +73,17 @@ describe('skillRowModel：聚合条目 → 列表行决策', () => {
     expect(row.sourceText).toBe('插件·demo@marketplace');
     const bare = skillRowModel(manualAgg('y'));
     expect(bare.targets).toEqual([]);
+  });
+
+  it('market 来源（P6 交汇点）：徽章「插件市场·名」、禁删文案指向共用市场子页、无引擎标识', () => {
+    const row = skillRowModel(pluginAgg('deployed-skill', { pluginEngine: 'market', pluginName: 'alpha', pluginId: 'alpha@fixture-market' }));
+    expect(row.managed).toBe(false);
+    expect(row.canDelete).toBe(false);
+    expect(row.deleteTitle).toBe(MARKET_DELETE_TITLE);
+    expect(MARKET_DELETE_TITLE).toContain('插件市场');
+    expect(row.sourceText).toBe('插件市场·alpha');
+    expect(row.engineLabel).toBe('');
+    expect(row.key).toBe('plugin:alpha@fixture-market:deployed-skill');
   });
 
   it('registry targets 中的非法引擎值被过滤（服务层校验前的不变式）', () => {

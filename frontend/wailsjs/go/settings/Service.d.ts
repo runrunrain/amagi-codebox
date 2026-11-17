@@ -6,7 +6,9 @@ export function AddSavedWorkDir(arg1:string,arg2:string):Promise<void>;
 
 export function AddShellPath(arg1:settings.ShellEntry):Promise<void>;
 
-export function GetCodexGlobalHeadroom():Promise<settings.CodexGlobalHeadroomState>;
+export function GetAgentCLIEnabled():Promise<boolean>;
+
+export function GetClaudeWebUIEnabled():Promise<boolean>;
 
 export function GetCommitSummaryPreset():Promise<string>;
 
@@ -50,7 +52,9 @@ export function ReplaceSettings(arg1:settings.AppSettings):Promise<void>;
 
 export function Save():Promise<void>;
 
-export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Promise<void>;
+export function SetAgentCLIEnabled(arg1:boolean):Promise<void>;
+
+export function SetClaudeWebUIEnabled(arg1:boolean):Promise<void>;
 
 export function SetCommitSummaryPreset(arg1:string):Promise<void>;
 

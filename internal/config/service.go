@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"amagi-codebox/internal/claudeaccounts"
 )
 
 // scrubProviderAPIKeys 清除 Provider 内嵌的双格式 APIKey 明文字段。
@@ -79,7 +81,7 @@ type ConfigService struct {
 	// 未注入时静默跳过；在写锁释放后触发（锁序见 changePiLoginPreset），回调
 	// 不得再调 ConfigService 写路径。
 	piLoginPresetListener func(saved, removed *PiLoginPreset)
-	mu             sync.RWMutex
+	mu                    sync.RWMutex
 }
 
 func NewConfigService(configDir string) *ConfigService {
@@ -306,6 +308,15 @@ func (s *ConfigService) Load() error {
 	}
 	if cfg.Models == nil {
 		cfg.Models = map[string]Provider{}
+	}
+	// Claude 订阅账号轮换（design §3.2）：存在即严格校验（未知 strategy/越
+	// 界区间拒绝，不默默回退默认）；零值视为关闭直接通过。损坏的
+	// claude_account_rotation 与 JSON 解析失败同级——返回错误由上层告警，
+	// 不把不可信值带进运行态。
+	if cfg.ClaudeAccountRotation != nil && !cfg.ClaudeAccountRotation.IsZero() {
+		if err := cfg.ClaudeAccountRotation.Validate(); err != nil {
+			return fmt.Errorf("validate claude_account_rotation: %w", err)
+		}
 	}
 
 	if migrateProviderTypes(cfg.Models) {
@@ -765,6 +776,16 @@ func (s *ConfigService) GetConfig() *AppConfig {
 		for k, v := range s.config.Models {
 			copy.Models[k] = v
 		}
+	}
+	// 深拷贝 ClaudeAccountRotation 指针（design §3.2：新指针必须显式复制，
+	// 不把内部可变状态透出；内层 AcknowledgedRiskVersion 指针同拷）。
+	if s.config.ClaudeAccountRotation != nil {
+		rotation := *s.config.ClaudeAccountRotation
+		if s.config.ClaudeAccountRotation.AcknowledgedRiskVersion != nil {
+			ack := *s.config.ClaudeAccountRotation.AcknowledgedRiskVersion
+			rotation.AcknowledgedRiskVersion = &ack
+		}
+		copy.ClaudeAccountRotation = &rotation
 	}
 	return &copy
 }
@@ -1418,23 +1439,6 @@ func (s *ConfigService) GetAllOpenCodePresets() map[string]OpenCodePreset {
 	return cloneOpenCodePresetsMap(s.config.OpenCodePresets)
 }
 
-// SetAllTerminalPresets 批量设置终端预设配置（用于导入）。
-// 采用 replace 策略：以传入快照整体替换当前 terminal_presets。
-func (s *ConfigService) SetAllTerminalPresets(tp *TerminalPresetsConfig) error {
-	if tp == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.config == nil {
-		return errors.New("config not loaded")
-	}
-	s.config.TerminalPresets = cloneTerminalPresetsConfig(tp)
-	migrateTerminalPresetsToOpenCodePresets(s.config)
-	MigrateTerminalPresetsToFormats(s.config)
-	return s.saveLocked()
-}
-
 func cloneTerminalPresetsConfig(src *TerminalPresetsConfig) *TerminalPresetsConfig {
 	if src == nil {
 		return nil
@@ -1557,6 +1561,41 @@ func (s *ConfigService) SetAgentTeams(config AgentTeamsConfig) error {
 		return errors.New("config not loaded")
 	}
 	s.config.AgentTeams = config
+	return s.saveLocked()
+}
+
+// GetClaudeAccountRotation 返回轮换配置的深拷贝（nil = 未配置 = 关闭；
+// design §3.2：旧配置无字段视为关闭）。
+func (s *ConfigService) GetClaudeAccountRotation() *claudeaccounts.ClaudeAccountRotationConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config == nil || s.config.ClaudeAccountRotation == nil {
+		return nil
+	}
+	copy := *s.config.ClaudeAccountRotation
+	if s.config.ClaudeAccountRotation.AcknowledgedRiskVersion != nil {
+		ack := *s.config.ClaudeAccountRotation.AcknowledgedRiskVersion
+		copy.AcknowledgedRiskVersion = &ack
+	}
+	return &copy
+}
+
+// SetClaudeAccountRotation 校验并保存轮换配置（design §3.2：未知 strategy
+// 拒绝不默默回退；区间校验由值对象 Validate 承担）。账号服务不自行写
+// models.json——facade 经本方法写入。
+func (s *ConfigService) SetClaudeAccountRotation(cfg *claudeaccounts.ClaudeAccountRotationConfig) error {
+	if cfg == nil {
+		return errors.New("claude account rotation config is nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return errors.New("config not loaded")
+	}
+	s.config.ClaudeAccountRotation = cfg
 	return s.saveLocked()
 }
 
@@ -1822,29 +1861,6 @@ func (s *ConfigService) SaveOpenCodePreset(key string, preset OpenCodePreset) er
 		s.config.OpenCodePresets = map[string]OpenCodePreset{}
 	}
 	s.config.OpenCodePresets[key] = preset
-	return s.saveLocked()
-}
-
-// DeleteOpenCodePreset 删除指定的 OpenCode 预设。
-func (s *ConfigService) DeleteOpenCodePreset(key string) error {
-	if key == "" {
-		return errors.New("opencode preset key is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.config == nil {
-		return errors.New("config not loaded")
-	}
-	if s.config.OpenCodePresets != nil {
-		delete(s.config.OpenCodePresets, key)
-	}
-	if s.config.TerminalPresets != nil {
-		legacy := s.config.TerminalPresets.GetMap(TerminalPresetOpenCode)
-		if legacy != nil {
-			delete(legacy, key)
-			s.config.TerminalPresets.SetMap(TerminalPresetOpenCode, legacy)
-		}
-	}
 	return s.saveLocked()
 }
 

@@ -17,6 +17,14 @@ type Service struct {
 	claudeDir string
 	log       *logging.Service
 
+	// configDir 是 CodeBox 应用配置目录（plugin-subitems.json 与 stash 根所在）。
+	// 空值惰性回退 ~/.amagi-codebox；测试经 NewServiceWithConfigDir 注入临时目录。
+	configDir string
+
+	// execCLI 是测试注入点：非 nil 时替代 executeClaudeCommand 执行只读 CLI
+	// 查询（生产为 nil，走真实 CLI）。仅读路径经 runCLI 分发，写操作不受影响。
+	execCLI func(args ...string) (*CommandResult, error)
+
 	// mu 串行化本地插件子项状态文件（plugin-subitems.json）的读-改-写，
 	// 与 codex/opencode/pi/omp 四个引擎的写锁语义对齐：Wails 绑定方法
 	// 并发触发时防止后写覆盖先写丢失开关状态。
@@ -39,6 +47,14 @@ func NewService(claudeDir string, log *logging.Service) *Service {
 	}
 }
 
+// NewServiceWithConfigDir 创建带注入配置目录的服务（测试隔离用：子项状态文件
+// 与 stash 落在注入目录，不碰真实 ~/.amagi-codebox）。configDir 传空等同 NewService。
+func NewServiceWithConfigDir(claudeDir, configDir string, log *logging.Service) *Service {
+	svc := NewService(claudeDir, log)
+	svc.configDir = configDir
+	return svc
+}
+
 func (s *Service) GetMarketplaces() ([]Marketplace, error) {
 	fileMarketplaces, fileErr := s.readMarketplacesFile()
 
@@ -47,7 +63,7 @@ func (s *Service) GetMarketplaces() ([]Marketplace, error) {
 		resultMap[marketplace.Name] = marketplace
 	}
 
-	commandResult, cmdErr := s.executeClaudeCommand("plugin", "marketplace", "list", "--json")
+	commandResult, cmdErr := s.runCLI("plugin", "marketplace", "list", "--json")
 	if cmdErr == nil {
 		var cliMarketplaces []Marketplace
 		if err := parseCommandJSON(commandResult, &cliMarketplaces); err != nil {
@@ -105,7 +121,7 @@ func (s *Service) GetMarketplaces() ([]Marketplace, error) {
 }
 
 func (s *Service) GetInstalledPlugins() ([]InstalledPlugin, error) {
-	commandResult, cmdErr := s.executeClaudeCommand("plugin", "list", "--json")
+	commandResult, cmdErr := s.runCLI("plugin", "list", "--json")
 	if cmdErr == nil {
 		plugins, err := parseInstalledPluginsOutput(commandResult)
 		if err == nil {
@@ -190,10 +206,6 @@ func (s *Service) GetPluginDetail(pluginID string) (*PluginDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	disabledRefs, err := s.readDisabledSubItems(pluginID)
-	if err != nil {
-		return nil, err
-	}
 
 	detail := &PluginDetail{
 		InstalledPlugin: *installed,
@@ -208,7 +220,9 @@ func (s *Service) GetPluginDetail(pluginID string) (*PluginDetail, error) {
 		ClaudeMdPath:    claudeMdPath,
 	}
 	detail.PluginType = analyzePluginType(detail)
-	detail.SubItems = buildSubItems(detail, disabledRefs)
+	// 子项状态以文件系统为真相：installPath 在位 = 启用，stash 在位 = 禁用
+	//（2026-11 重构：私有记录不再作为 Enabled 来源，避免与真实状态脱钩）
+	detail.SubItems = buildSubItems(detail, s.listStashedSubItems(installed.ID))
 
 	return detail, nil
 }
@@ -218,6 +232,10 @@ func (s *Service) InstallPlugin(pluginName string) (*CommandResult, error) {
 }
 
 func (s *Service) UninstallPlugin(pluginID string) (*CommandResult, error) {
+	// 与子项写操作互斥（F-04）：防止子项搬移与卸载交错后向已卸载路径恢复文件。
+	// 锁内跑 CLI（低频操作，可接受互斥等待）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.executeClaudeCommand("plugin", "uninstall", pluginID, "--scope", "user")
 }
 
@@ -230,6 +248,10 @@ func (s *Service) DisablePlugin(pluginID string) (*CommandResult, error) {
 }
 
 func (s *Service) UpdatePlugin(pluginID string) (*CommandResult, error) {
+	// 与子项写操作互斥（F-04）：update 会重写插件目录，须防止与子项搬移交错。
+	// 先取锁再刷新市场/更新插件（锁内跑 CLI，低频操作可接受）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, marketplace := splitPluginID(pluginID)
 	if marketplace != "" {
 		if s.log != nil {
@@ -257,26 +279,42 @@ func (s *Service) RemoveMarketplace(name string) (*CommandResult, error) {
 }
 
 func (s *Service) GetAvailablePlugins() ([]interface{}, error) {
-	commandResult, err := s.executeClaudeCommand("plugin", "list", "--json", "--available")
+	plugins, err := s.getAvailablePlugins()
 	if err != nil {
 		return nil, err
 	}
+	out := make([]interface{}, 0, len(plugins))
+	for _, plugin := range plugins {
+		out = append(out, plugin)
+	}
+	return out, nil
+}
 
-	var direct []interface{}
-	if err := parseCommandJSON(commandResult, &direct); err == nil {
-		return normalizeAvailablePlugins(direct), nil
+// getAvailablePlugins 返回市场目录条目（含已安装插件）。
+// 目录数据源策略见 catalog.go 头注释：本地市场 clone 直读为主，CLI --available
+// 仅作 installCount 合并与本地不可读时的降级（降级结果过滤为已注册市场条目）。
+func (s *Service) getAvailablePlugins() ([]AvailablePlugin, error) {
+	cliAvailable, cliErr := s.fetchCLIAvailablePlugins()
+	if cliErr != nil {
+		if s.log != nil {
+			s.log.Warn("plugin", "读取可安装插件 CLI 失败，改用本地市场目录", cliErr.Error())
+		}
 	}
 
-	var envelope availablePluginsEnvelope
-	if err := parseCommandJSON(commandResult, &envelope); err != nil {
-		return nil, err
+	entries, failedMarkets, catalogErr := s.readLocalMarketplaceCatalogs()
+	if catalogErr == nil {
+		mergeInstallCounts(entries, cliAvailable)
+		// 部分降级（F05）：本地不可读的市场不能直接丢条目——用 CLI available
+		//（未安装子集，经已注册市场过滤）补齐，避免比修复前亚能看到的更少
+		filtered := s.filterRegisteredMarketplaces(cliAvailable)
+		entries = mergeFailedMarketEntries(entries, failedMarkets, filtered)
+		return entries, nil
 	}
 
-	if envelope.Available == nil {
-		return []interface{}{}, nil
+	if cliErr != nil {
+		return nil, errors.Join(cliErr, catalogErr)
 	}
-
-	return normalizeAvailablePlugins(envelope.Available), nil
+	return s.filterRegisteredMarketplaces(cliAvailable), nil
 }
 
 func (s *Service) RefreshPlugins() error {
@@ -340,7 +378,7 @@ func parseCommandJSON(result *CommandResult, target interface{}) error {
 	return nil
 }
 
-func normalizeAvailablePlugins(raw []interface{}) []interface{} {
+func normalizeAvailablePlugins(raw []interface{}) []AvailablePlugin {
 	plugins := make([]AvailablePlugin, 0, len(raw))
 	for _, item := range raw {
 		plugin := normalizeAvailablePlugin(item)
@@ -354,11 +392,7 @@ func normalizeAvailablePlugins(raw []interface{}) []interface{} {
 		right := firstNonEmpty(plugins[j].PluginID, plugins[j].MarketplaceName+"/"+plugins[j].Name, plugins[j].Name)
 		return left < right
 	})
-	out := make([]interface{}, 0, len(plugins))
-	for _, plugin := range plugins {
-		out = append(out, plugin)
-	}
-	return out
+	return plugins
 }
 
 func normalizeAvailablePlugin(raw interface{}) AvailablePlugin {

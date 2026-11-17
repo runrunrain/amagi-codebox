@@ -152,7 +152,7 @@ func TestLauncherGuardRejectsClaudeAndCodexBeforeRawStart(t *testing.T) {
 	workDir := t.TempDir()
 	provider := config.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}
 
-	if _, err := svc.LaunchGuarded("guarded-claude", provider, "", "", config.AgentTeamsConfig{}, session.ModeTerminal, workDir, guard); !errors.Is(err, guardErr) {
+	if _, err := svc.LaunchGuarded("guarded-claude", provider, "", "", config.AgentTeamsConfig{}, session.ModeTerminal, workDir, guard, nil); !errors.Is(err, guardErr) {
 		t.Fatalf("Claude guarded launch error=%v", err)
 	}
 	if _, err := svc.LaunchCodexGuarded("guarded-codex", "", session.ModeTerminal, workDir, nil, guard); !errors.Is(err, guardErr) {

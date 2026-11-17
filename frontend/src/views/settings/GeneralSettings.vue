@@ -8,7 +8,7 @@
         <label>默认服务提供商</label>
         <select class="sel" v-model="defaults.provider">
           <option value="">（不指定）</option>
-          <option v-for="(p, name) in anthropicProviders" :key="name" :value="name">
+          <option v-for="(_p, name) in anthropicProviders" :key="name" :value="name">
             {{ name }}
           </option>
         </select>
@@ -135,7 +135,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { GetProviders, GetOpenCodePresets } from '../../../wailsjs/go/config/ConfigService'
 import { GetMergedTerminalPresets } from '../../../wailsjs/go/main/App'
-import { config } from '../../../wailsjs/go/models'
+import { config, settings } from '../../../wailsjs/go/models'
 import {
   getDashboardDefaults,
   setDashboardDefaults,
@@ -155,6 +155,7 @@ import Segmented from '../../components/ui/Segmented.vue'
 import AppButton from '../../components/ui/AppButton.vue'
 import Switch from '../../components/ui/Switch.vue'
 import TextInput from '../../components/ui/TextInput.vue'
+import { errorMessage } from '../../utils/format'
 
 const { showSuccess, showError } = useToast()
 const platformCaps = usePlatformCapabilities()
@@ -188,8 +189,8 @@ async function saveCommitSummaryPreset() {
   try {
     await setCommitSummaryPreset(commitSummaryPreset.value)
     showSuccess(commitSummaryPreset.value ? '提交总结模型已保存' : '已禁用 AI 生成提交信息')
-  } catch (err: any) {
-    showError('保存提交总结模型失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存提交总结模型失败: ' + errorMessage(err))
   } finally {
     savingPreset.value = false
   }
@@ -209,10 +210,9 @@ const defaults = reactive({
   piShell: '',
   ompMode: 'embedded',
   ompShell: '',
-  useHeadroom: false,
 })
 
-function isAnthropicCompatible(p: any): boolean {
+function isAnthropicCompatible(p: Provider): boolean {
   return !!(p?.anthropic?.enabled) || ((!p?.openai?.enabled) && (p?.type || 'anthropic') !== 'openai' && p?.auth_key !== 'OPENAI_API_KEY')
 }
 
@@ -236,12 +236,12 @@ const availablePresets = computed(() => {
 })
 
 const launchModeOptions = computed(() =>
-  platformCaps.launchModes.value.map((m: any) => ({ value: m.value, label: m.label })),
+  platformCaps.launchModes.value.map((m) => ({ value: m.value, label: m.label })),
 )
 
 const shellOptions = computed(() => [
   { value: '', label: '直接启动' },
-  ...platformCaps.builtinShellOptions.value.map((s: any) => ({ value: s.value, label: s.label })),
+  ...platformCaps.builtinShellOptions.value.map((s) => ({ value: s.value, label: s.label })),
 ])
 
 const { activeEngineTab, currentEngineMode, currentEngineShell } = useDefaultEngineSettings(defaults)
@@ -273,12 +273,11 @@ async function loadData() {
     const map = await GetOpenCodePresets()
     const list: OpenCodePresetSummary[] = []
     for (const [key, preset] of Object.entries(map || {})) {
-      const p = preset as any
       list.push({
         key,
-        name: p.name || key,
-        description: p.description || '',
-        bindingCount: p.bindings ? Object.keys(p.bindings).length : 0,
+        name: preset.name || key,
+        description: preset.description || '',
+        bindingCount: preset.bindings ? Object.keys(preset.bindings).length : 0,
       })
     }
     openCodePresetList.value = list
@@ -309,7 +308,6 @@ async function loadData() {
     defaults.piShell = d.piShell || d.shell || shellFallback
     defaults.ompMode = d.ompMode || 'embedded'
     defaults.ompShell = d.ompShell || d.shell || shellFallback
-    defaults.useHeadroom = d.useHeadroom || false
   } catch (err) {
     console.error('load defaults:', err)
   }
@@ -318,7 +316,7 @@ async function loadData() {
 async function saveDefaults() {
   saving.value = true
   try {
-    await setDashboardDefaults({
+    await setDashboardDefaults(settings.DashboardDefaults.createFrom({
       provider: defaults.provider,
       preset: defaults.preset,
       openCodePresetKey: defaults.openCodePresetKey,
@@ -334,11 +332,10 @@ async function saveDefaults() {
       piShell: defaults.piShell,
       ompMode: defaults.ompMode,
       ompShell: defaults.ompShell,
-      useHeadroom: defaults.useHeadroom,
-    } as any)
+    }))
     showSuccess('默认值已保存')
-  } catch (err: any) {
-    showError('保存失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存失败: ' + errorMessage(err))
   } finally {
     saving.value = false
   }
@@ -385,8 +382,8 @@ async function onToggleSystemProxy(enabled: boolean) {
     const status = await setSystemProxyEnabled(enabled)
     Object.assign(proxyStatus, status)
     showSuccess(enabled ? '系统代理已开启' : '系统代理已关闭')
-  } catch (err: any) {
-    showError('切换系统代理失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('切换系统代理失败: ' + errorMessage(err))
     // 失败时回读真实状态，避免开关停留在乐观值。
     void loadSystemProxy()
   } finally {
@@ -405,8 +402,8 @@ async function saveProxyEndpoint() {
     await setSystemProxyEndpoint(proxyHost.value.trim(), port)
     showSuccess('代理地址已保存')
     await loadSystemProxy()
-  } catch (err: any) {
-    showError('保存代理地址失败: ' + (err?.message || err))
+  } catch (err: unknown) {
+    showError('保存代理地址失败: ' + errorMessage(err))
   } finally {
     savingProxyEndpoint.value = false
   }

@@ -3,6 +3,8 @@
 package platform
 
 import (
+	"fmt"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -16,4 +18,11 @@ func moveNoReplaceOS(source, destination string) error {
 		return fmtMoveNoReplaceUnsupported(err)
 	}
 	return err
+}
+
+// fmtMoveNoReplaceUnsupported 把底层「无此原语」errno 包装为不支持错误
+// （保留原始 errno 供诊断）。仅 Linux 实现需要（darwin/windows 有原生原语），
+// 随本文件按平台持有，避免在未使用它的 GOOS 上成为死代码。
+func fmtMoveNoReplaceUnsupported(err error) error {
+	return fmt.Errorf("%w: %w", ErrMoveNoReplaceUnsupported, err)
 }

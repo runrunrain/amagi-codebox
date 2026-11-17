@@ -30,7 +30,7 @@ export interface OpenCodePlugin {
   targets: string[];
 }
 
-export interface OpenCodeResourceInfo {
+interface OpenCodeResourceInfo {
   name: string;
   filePath: string;
 }

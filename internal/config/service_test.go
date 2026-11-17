@@ -787,58 +787,6 @@ func TestSaveTerminalPreset_ConfigNotLoaded(t *testing.T) {
 	}
 }
 
-func TestSetAllTerminalPresets_Replace(t *testing.T) {
-	svc := newTestConfigService(t)
-
-	if err := svc.SaveTerminalPreset("claude_code", "existing", TerminalPreset{
-		Name: "Existing", Provider: "anthropic",
-	}); err != nil {
-		t.Fatalf("SaveTerminalPreset existing claude_code: %v", err)
-	}
-	if err := svc.SaveTerminalPreset("codex", "old-codex", TerminalPreset{
-		Name: "Old Codex", Provider: "openai",
-	}); err != nil {
-		t.Fatalf("SaveTerminalPreset old codex: %v", err)
-	}
-
-	if err := svc.SetAllTerminalPresets(&TerminalPresetsConfig{
-		ClaudeCode: map[string]TerminalPreset{
-			"imported": {Name: "Imported", Provider: "openai"},
-		},
-		OpenCode: map[string]TerminalPreset{
-			"oc-imported": {Name: "OC Imported", Provider: "glm"},
-		},
-	}); err != nil {
-		t.Fatalf("SetAllTerminalPresets: %v", err)
-	}
-
-	cc, _ := svc.GetTerminalPresets("claude_code")
-	oc := svc.GetOpenCodePresets()
-	codex, _ := svc.GetTerminalPresets("codex")
-
-	if _, ok := cc["existing"]; ok {
-		t.Fatal("existing preset should be removed after replace")
-	}
-	if _, ok := cc["imported"]; !ok {
-		t.Fatal("imported preset should be present")
-	}
-	if _, ok := oc["oc-imported"]; !ok {
-		t.Fatal("opencode imported preset should be present")
-	}
-	if len(codex) != 0 {
-		t.Fatalf("codex presets should be cleared on replace, got %d", len(codex))
-	}
-}
-
-func TestSetAllTerminalPresets_Nil(t *testing.T) {
-	svc := newTestConfigService(t)
-	// Should not error
-	err := svc.SetAllTerminalPresets(nil)
-	if err != nil {
-		t.Fatalf("SetAllTerminalPresets(nil): %v", err)
-	}
-}
-
 func TestReplaceImportedPresetSnapshots_ClearsMissingSnapshots(t *testing.T) {
 	svc := newTestConfigService(t)
 
@@ -2239,41 +2187,6 @@ func TestSaveOpenCodePreset_NormalizesConfig(t *testing.T) {
 	}
 }
 
-func TestDeleteOpenCodePreset(t *testing.T) {
-	svc := newTestConfigService(t)
-
-	preset := OpenCodePreset{Name: "To Delete", Config: json.RawMessage(`{}`)}
-	if err := svc.SaveOpenCodePreset("del-me", preset); err != nil {
-		t.Fatalf("SaveOpenCodePreset: %v", err)
-	}
-	if err := svc.SaveTerminalPreset("opencode", "del-me", TerminalPreset{Name: "Legacy To Delete", Provider: "openai", Model: "gpt-5"}); err != nil {
-		t.Fatalf("SaveTerminalPreset: %v", err)
-	}
-
-	if err := svc.DeleteOpenCodePreset("del-me"); err != nil {
-		t.Fatalf("DeleteOpenCodePreset: %v", err)
-	}
-
-	if _, err := svc.GetOpenCodePreset("del-me"); err == nil {
-		t.Fatal("expected error after delete, got nil")
-	}
-	legacy, err := svc.GetTerminalPresets("opencode")
-	if err != nil {
-		t.Fatalf("GetTerminalPresets: %v", err)
-	}
-	if _, ok := legacy["del-me"]; ok {
-		t.Fatal("legacy terminal preset should be deleted together with opencode preset")
-	}
-}
-
-func TestDeleteOpenCodePreset_NonExistent(t *testing.T) {
-	svc := newTestConfigService(t)
-	err := svc.DeleteOpenCodePreset("ghost")
-	if err != nil {
-		t.Fatalf("deleting non-existent should not error, got: %v", err)
-	}
-}
-
 func TestSaveOpenCodePreset_EmptyKey(t *testing.T) {
 	svc := newTestConfigService(t)
 	err := svc.SaveOpenCodePreset("", OpenCodePreset{})
@@ -3146,3 +3059,7 @@ func TestOmpPresetSeedingKeepsUserEntry(t *testing.T) {
 		t.Fatalf("expected only the user preset, got %d: %#v", len(presets), presets)
 	}
 }
+
+// boolPtr remains a small helper used by configuration tests constructing
+// optional boolean fields.
+func boolPtr(value bool) *bool { return &value }

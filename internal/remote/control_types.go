@@ -201,8 +201,9 @@ const (
 type LaunchEffectKind uint8
 
 const (
-	LaunchHeadroomStart LaunchEffectKind = iota + 1
-	LaunchConfigMutation
+	// 数值显式保留退役前的序号（首个 kind=1 是已退役的共享代理启动
+	// effect）：receipt/审计面若存在历史数字形态，不因缩编被误读。
+	LaunchConfigMutation LaunchEffectKind = iota + 2
 	LaunchPTYStart
 	LaunchProcessStart
 	LaunchBootstrapWrite
@@ -323,25 +324,6 @@ type RunEventSink interface {
 	OfferExit(ctx context.Context, permit *RunObservationPermit, obs ProcessExitObservation) error
 }
 
-// RunEventSinkFunc is a function adapter for RunEventSink (testing).
-type RunEventSinkFunc struct {
-	OutputFn func(ctx context.Context, permit *RunObservationPermit, data []byte) error
-	ExitFn   func(ctx context.Context, permit *RunObservationPermit, obs ProcessExitObservation) error
-}
-
-func (f RunEventSinkFunc) OfferOutput(ctx context.Context, p *RunObservationPermit, data []byte) error {
-	if f.OutputFn != nil {
-		return f.OutputFn(ctx, p, data)
-	}
-	return nil
-}
-func (f RunEventSinkFunc) OfferExit(ctx context.Context, p *RunObservationPermit, obs ProcessExitObservation) error {
-	if f.ExitFn != nil {
-		return f.ExitFn(ctx, p, obs)
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // ControlTransition — internal event record (design §8.1, §8.3)
 // ---------------------------------------------------------------------------
@@ -381,8 +363,13 @@ type controlTransition struct {
 type SharedServiceKind uint8
 
 const (
-	SharedServiceClaudeHeadroom SharedServiceKind = iota + 1
-	SharedServiceCodexHeadroom
+	// SharedServiceClaudeCredentials 是本机 canonical 认证槽位组合（CC
+	// Keychain OAuth 投影 + .claude.json 身份字段 + ~/.pi/agent/auth.json 的
+	// anthropic 键）的共享凭据 lease kind（design §6.3）。指纹由 canonical 路径
+	// 标识 + activeGeneration 生成，不含 token；活动 grant 刷新不改变指纹。
+	// 数值显式固定为 3：kind 1/2 是已退役的共享压缩代理 kind，历史持久化
+	// 记录（cleanupstore journal）里仍可能以数字形态出现，不得复用缩编。
+	SharedServiceClaudeCredentials SharedServiceKind = 3
 )
 
 // SharedLeaseOwnerKey is the exact shared singleton owner identity. Kind is
@@ -428,7 +415,6 @@ func (l *SharedDependencyLease) Promoted() bool {
 // input/resize/start. External code cannot construct it.
 type ShutdownCleanupPermit struct {
 	generation uint64
-	used       atomic.Bool
 }
 
 // ---------------------------------------------------------------------------

@@ -45,7 +45,3 @@ export function SwitchPackageSource(arg1, arg2) {
 export function UpdatePackage(arg1) {
   return window['go']['piplugin']['Service']['UpdatePackage'](arg1);
 }
-
-export function WindowsEntryFilters(arg1) {
-  return window['go']['piplugin']['Service']['WindowsEntryFilters'](arg1);
-}

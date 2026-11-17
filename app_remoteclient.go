@@ -436,10 +436,9 @@ func (a *App) RemoteClientGetRemoteSession(sessionID string) (contract.SessionDe
 }
 
 // RemoteClientLaunchRemoteSession 在宿主上启动新会话。可选参数空串表示不
-// 指定（交宿主默认解析）；useHeadroom 仅在 true 时显式传递（false 与省略
-// 语义等价，宿主缺省即 false）。cliType 五类白名单在域层先行校验（未知值
+// 指定（交宿主默认解析）。cliType 五类白名单在域层先行校验（未知值
 // 本地 bad_request，不出网）。
-func (a *App) RemoteClientLaunchRemoteSession(cliType, workdir, providerRef, presetRef, modelRef, shellRef string, useHeadroom bool) (contract.SessionDetail, error) {
+func (a *App) RemoteClientLaunchRemoteSession(cliType, workdir, providerRef, presetRef, modelRef, shellRef string) (contract.SessionDetail, error) {
 	c, err := a.rcSessions()
 	if err != nil {
 		return contract.SessionDetail{}, err
@@ -459,10 +458,6 @@ func (a *App) RemoteClientLaunchRemoteSession(cliType, workdir, providerRef, pre
 	}
 	if s := strings.TrimSpace(shellRef); s != "" {
 		req.ShellRef = &s
-	}
-	if useHeadroom {
-		v := true
-		req.UseHeadroom = &v
 	}
 	d, cerr := c.CreateSession(a.rcContext(), req)
 	if cerr != nil {

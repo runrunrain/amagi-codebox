@@ -119,10 +119,22 @@ func (s *Service) RunFixAction(req FixActionRequest) (*FixActionResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &FixActionResult{
+		fres := &FixActionResult{
 			Success: result.Success,
 			Message: result.Message,
-		}, nil
+		}
+		// 部分失败不漏报（direction §2.2）：Windows 成功而 WSL 同步失败时，
+		// Success 仍只表示 Windows 侧，但 WSL 错误必须写入 Error 并追加到
+		// Message，避免消费方把部分失败读成全成功。
+		if wsl := result.WSL; wsl != nil && wsl.Status == WSLSyncFailed {
+			distro := wsl.Distro
+			if distro == "" {
+				distro = "WSL"
+			}
+			fres.Error = fmt.Sprintf("Windows 侧成功，但 WSL（%s）同步失败: %s", distro, wsl.Error)
+			fres.Message = fmt.Sprintf("%s；%s", result.Message, fres.Error)
+		}
+		return fres, nil
 	case SolutionCleanClaudeInstall:
 		result, err := s.cleanClaudeCode(InstallMethod(req.Method))
 		if err != nil {
@@ -185,14 +197,14 @@ func (s *Service) runInstallWSLSearchTools() (*FixActionResult, error) {
 // pi/omp and starts it on the shared async operation slot. Per the shared
 // operation contract, FixActionResult.Success only means the operation was
 // ACCEPTED; the terminal outcome (kind=uninstall, succeeded/failed/timeout)
-// must be read from the operation snapshot. Claude Code and Headroom keep
-// their dedicated uninstall flows and are rejected here.
+// must be read from the operation snapshot. Claude Code keeps its dedicated
+// uninstall flow and is rejected here.
 func (s *Service) runUninstallTool(req FixActionRequest) (*FixActionResult, error) {
 	if !IsValidCLITool(req.Tool) {
 		return nil, fmt.Errorf("unsupported tool for uninstall: %s", req.Tool)
 	}
 	if !canUninstallTool(req.Tool) {
-		return nil, fmt.Errorf("%s 使用专用卸载链路（Claude Code 按来源卸载 / Headroom 租约保护卸载），不支持 uninstall_tool", req.Tool)
+		return nil, fmt.Errorf("%s 使用专用卸载链路（Claude Code 按来源卸载），不支持 uninstall_tool", req.Tool)
 	}
 	state, err := s.startUninstallTool(req.Tool)
 	if err != nil {
@@ -860,16 +872,6 @@ func (s *Service) buildEnhancedEnv() []string {
 
 	pathEntries := []string{}
 
-	// Prepend the CodeBox-managed headroom venv bin directory so that
-	// headroom subprocess invocations (runHeadroomVersion, post-install
-	// CheckOne verification) resolve the venv-installed headroom binary.
-	// This is independent of the headroom.HeadroomService PATH injection
-	// (platform.BuildEffectiveEnv), which covers the `headroom proxy` launch
-	// path; both must inject the venv bin or detection and launch diverge.
-	if venvBin := s.headroomVenvBinDir(); venvBin != "" {
-		pathEntries = append(pathEntries, venvBin)
-	}
-
 	// Try to find node and npm directories. Keep these ahead of the native
 	// Claude directory so the npm bootstrap command `claude install` still uses
 	// the freshly installed npm shim when both channels are present.
@@ -982,9 +984,8 @@ func applyPATHDirsToProcessEnv(dirs []string) {
 	_ = os.Setenv("PATH", merged)
 }
 
-// resetNPMCache allows re-probing npm availability. It also resets the python3
-// availability cache so that Headroom install eligibility is recomputed after
-// a PATH fix (python and node commonly live in directories that the fix adds).
+// resetNPMCache allows re-probing npm availability after a PATH fix (node
+// commonly lives in directories that the fix adds).
 // probeMu 同步并发检测路径对这些字段的读取（见 Service.probeMu 注释）。
 func (s *Service) resetNPMCache() {
 	s.probeMu.Lock()
@@ -992,12 +993,6 @@ func (s *Service) resetNPMCache() {
 	s.npmOnce = sync.Once{}
 	s.npmAvailable = false
 	s.npmResolvedErr = nil
-	s.pythonOnce = sync.Once{}
-	s.pythonAvailable = false
-	s.pythonPath = ""
-	s.pythonVersion = ""
-	s.pythonVersionUnsupported = false
-	s.pythonResolvedErr = nil
 }
 
 // atomicWriteFileWithPerm writes data to path atomically using a temp file

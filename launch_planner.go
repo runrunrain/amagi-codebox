@@ -23,7 +23,6 @@ import (
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/paths"
@@ -31,7 +30,7 @@ import (
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
-	"amagi-codebox/internal/wslsupply"
+	"github.com/google/uuid"
 )
 
 // launchConfigPort is the narrow read-only interface over config.ConfigService
@@ -85,6 +84,11 @@ type appLaunchPlanner struct {
 	// 桌面 resolveEmbeddedLaunchSpec 对应动作记 WARN/INFO，remote/restart
 	// 计划链经 App 装配注入同一日志面，不改变任何判定语义。
 	envObserver func(level, message, detail string)
+	// claudeCredentialAdmission 是凭据 admission 的纯读计划接缝（design
+	// §6.3）：返回计划应携带的 SharedAdmissionSpec（false = 不携带）；错误
+	// 表示池 blocked（needs-reconcile/未结事务）→ 计划构建失败，remote
+	// create/restart 受影响入口关闭。nil = 未接线（测试，不携带）。
+	claudeCredentialAdmission func() (launchplan.SharedAdmissionSpec, bool, error)
 }
 
 func newAppLaunchPlanner(
@@ -151,9 +155,6 @@ func (p *appLaunchPlanner) BuildPlan(_ context.Context, req launchplan.BuildRequ
 		}
 		if refs.ShellRef != "" {
 			recipe.ShellRef = refs.ShellRef
-		}
-		if refs.UseHeadroom != nil {
-			recipe.UseHeadroom = *refs.UseHeadroom
 		}
 	}
 	if req.CLIType != contract.CLITypePi {
@@ -299,49 +300,53 @@ func (p *appLaunchPlanner) buildClaudePlan(recipe launchplan.StableRecipe, req l
 	// Preset is resolved inside computeClaudeOverrides via provider.Presets.
 
 	// Compute env overrides without mutating the LauncherService routing port.
-	effectiveHeadroomPort := claudeEffectiveHeadroomPort(recipe.UseHeadroom)
-	overrides := computeClaudeOverrides(*provider, presetName, apiKey, p.config.GetAgentTeams(), effectiveHeadroomPort)
+	overrides := computeClaudeOverrides(*provider, presetName, apiKey, p.config.GetAgentTeams())
 	env := launcher.BuildEnv(p.envVars.MergeWithSystem(), overrides)
 
+	// 方案 R 的 remote 链补齐（claude-webui design §5.4，2026-11 WSL 扩展）：
+	// 生成 claude 会话 sid 并注入 --session-id（锁定转录 jsonl，消除同 workDir
+	// 串扰），同时经 ProcessStartSpec.WebUIPlane 携带平面材料——执行器以
+	// 字段非 nil 为门控才起平面（R8）。WSL 目标同样携带：转录根的跨界翻译
+	// （UNC）与可行性裁决在 executor Prepare 阶段完成，解析失败仅降级为无平面
+	// （会话照常）。CLIArgs 必须在解析前给定，而目标形态（spec.BootstrapMode）
+	// 解析后才知道：桌面链本就无条件注入 --session-id，remote 链现在同样
+	// 无条件注入（WSL 会话带锁定 sid 无害且是平面跟随的前提）。
+	claudePlane := &launchplan.WebUIPlaneSpec{ClaudeSessionID: uuid.NewString()}
+	claudeCLIArgs := []string{"--session-id", claudePlane.ClaudeSessionID}
 	// Resolve CLI/shell.
 	spec, err := p.resolveLaunch(platform.ResolveRequest{
 		AppType: string(session.AppTypeClaudeCode), LaunchMode: string(session.ModeEmbedded),
 		RequestedShellPath: recipe.ShellRef, WorkDir: recipe.Workdir, Env: env,
+		CLIArgs: claudeCLIArgs,
 		PTYCols: 120, PTYRows: 40,
 	})
 	if err != nil {
 		return fail(launchplan.FailureCapability)
 	}
 
-	// Build effects in canonical order: Headroom → PTY → Bootstrap.
+	// Build effects in canonical order: PTY → Bootstrap.
 	var admissions []launchplan.SharedAdmissionSpec
 	var effects []launchplan.EffectSpec
-	realBackend := strings.TrimRight(provider.EffectiveBaseURL("anthropic"), "/")
-	if recipe.UseHeadroom {
-		// D1（remote/restart 链，与桌面 LaunchSession 同一判定与文案）：
-		// Headroom 会话落 WSL 且 NAT/未知网络模式 → 计划构建即拒绝，防止
-		// HeadroomStart effect 先启动宿主侧 8787、而 distro 内
-		// ANTHROPIC_BASE_URL=localhost:8787 不可达的静默失败。mirrored 遵循现有
-		// 准入策略放行（不宣称连通）。v1 客户端收到既有 capability 失败文案
-		//（BuildFailure 无 message 字段，不扩公开契约）；判定细节见桌面链同款
-		// 中文指引（headroomWSLNetworkAdmission 文案）。
-		if err := headroomWSLNetworkAdmission(headroomSpecTargetsWSL(spec), spec.Env.Variables); err != nil {
-			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
+	// Claude 订阅账号轮换（design §6.3）：canonical 凭据 admission 描述。
+	// WSL 目标（distro 独立根）不携带；blocked 状态计划构建失败。
+	if spec.BootstrapMode != platform.BootstrapWSL {
+		if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+		} else if ok {
+			admissions = append(admissions, credSpec)
+			// F07（design §6.3 R3）：受管 OAuth 启动在最终 shell 后边界清除身份/
+			// 认证覆盖变量（与桌面 embedded 同一 managedClaudeIdentityBoundarySpec；
+			// remote create/restart 消费同一 spec，不能只修桌面路径）。
+			if provider.IsOAuthMode() {
+				spec = managedClaudeIdentityBoundarySpec(spec)
+			}
 		}
-		fp := sharedFingerprintForHeadroom("claude-headroom", realBackend, headroom.DefaultPort)
-		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fp})
-		effects = append(effects, launchplan.EffectSpec{
-			Kind: launchplan.EffectHeadroomStart,
-			Shared: &launchplan.SharedStartSpec{
-				Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fp,
-				UpstreamURL: realBackend, ListenPort: headroom.DefaultPort,
-			},
-		})
 	}
 	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
 		Process: &launchplan.ProcessStartSpec{
 			Mode: launchplan.ModeEmbedded, Resolved: spec, RequireRunHandle: true,
+			WebUIPlane: claudePlane,
 		},
 	})
 	// C-01: Bootstrap write effect carries the canonical startup command so the
@@ -447,8 +452,6 @@ resolve:
 		effects = append(effects, launchplan.EffectSpec{
 			Kind: launchplan.EffectWSLConfigSupply,
 			WSLSupply: &launchplan.WSLConfigSupplySpec{
-				CLI:           "opencode",
-				Reason:        string(wslsupply.ReasonLaunch),
 				OpenCodeLayer: &launchplan.OpenCodeLayerSpec{Content: launchplan.SecretBufferRef{Index: 0}},
 			},
 		})
@@ -549,35 +552,11 @@ func (p *appLaunchPlanner) buildCodexPlan(recipe launchplan.StableRecipe, req la
 		return fail(launchplan.FailureCapability)
 	}
 
-	// Effects: [HeadroomStart?] PTYStart. Model/provider/preset routing is
+	// Effects: PTYStart. Model/provider/preset routing is
 	// carried as per-process CLI overrides, so concurrent Codex sessions never
 	// race by rewriting the user's config.toml.
 	var admissions []launchplan.SharedAdmissionSpec
 	var effects []launchplan.EffectSpec
-	if recipe.UseHeadroom {
-		// D6（remote/restart 链）：Codex 压缩路由仅写入宿主侧 config.toml
-		//（syncCodexGlobalHeadroomConfig），WSL codex 读发行版侧配置且无同步，
-		// 任何网络模式下压缩都不生效——显式选择压缩的 WSL 会话按「无法兑现即
-		// 拒绝」处理（与 Claude D1 对称），不默默以直连冒充压缩生效；桌面链的
-		// 全局开关 advisory 在 LaunchCodexSession。v1 客户端收到既有 capability
-		// 失败文案（不扩公开契约）。
-		if headroomSpecTargetsWSL(spec) {
-			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureCapability, CLIType: req.CLIType}
-		}
-		upstream := strings.TrimRight(provider.EffectiveBaseURL("openai"), "/")
-		if upstream == "" {
-			upstream = codexGlobalHeadroomDefaultTarget
-		}
-		fp := sharedFingerprintForHeadroom("codex-headroom", upstream, CodexGlobalHeadroomDefaultPort)
-		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedCodexHeadroom, ConfigFingerprint: fp})
-		effects = append(effects, launchplan.EffectSpec{
-			Kind: launchplan.EffectHeadroomStart,
-			Shared: &launchplan.SharedStartSpec{
-				Service: launchplan.SharedCodexHeadroom, ConfigFingerprint: fp,
-				UpstreamURL: upstream, ListenPort: CodexGlobalHeadroomDefaultPort,
-			},
-		})
-	}
 	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
 		Process: &launchplan.ProcessStartSpec{
@@ -819,28 +798,10 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 
 	var effects []launchplan.EffectSpec
 	var secrets *launchplan.EphemeralSecretBundle
-	wslLaunch := spec.BootstrapMode == platform.BootstrapWSL && appType == session.AppTypePi
-	if wslLaunch {
-		// P3-S2（remote 计划接入）：WSL 会话消费 distro 内 models.json，Windows
-		// 侧 ConfigMutation 不再随 remote 启动写入（Windows 文件旧由 providerSync
-		// 拥有）；选中 provider 经托管分发到达目标（与桌面 runWSLManagedModelsAtLaunch
-		// 同单元同闸门——effect 按协调器能力过滤）。选中 provider 构建失败已在
-		// 上方 BuildPlan 阶段 fail（与桌面 WSL 阻断语义一致）。
-		effects = append(effects, launchplan.EffectSpec{
-			Kind: launchplan.EffectWSLConfigSupply,
-			WSLSupply: &launchplan.WSLConfigSupplySpec{
-				CLI:    string(wslsupply.CLIPi),
-				Reason: string(wslsupply.ReasonLaunch),
-				Units: []string{
-					string(wslsupply.UnitPiManagedModels),
-					string(wslsupply.UnitPiSettings),
-					string(wslsupply.UnitPiAmagi),
-					string(wslsupply.UnitPiMCP),
-				},
-			},
-		})
-		hasConfigMutation = false
-	} else if hasConfigMutation {
+	// WSL 内 pi 共享 Windows agent 根（主上裁定 2026-10）：WSL 与原生同一路径——
+	// Windows 侧 ConfigMutation 写 models.json（pi 读同一份），不再携带 distro
+	// 供给 effect；凭据 admission 同样携带（共享 canonical 凭据）。
+	if hasConfigMutation {
 		secrets = launchplan.NewEphemeralSecretBundle(configBuf)
 		effects = append(effects, launchplan.EffectSpec{
 			Kind: launchplan.EffectConfigMutation,
@@ -849,6 +810,20 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 				ExpectedPreimageDigest: preimage,
 			},
 		})
+	}
+	// Claude 订阅账号轮换（design §6.3）：Pi 会话使用 canonical ~/.pi/agent
+	// 根（启动时 provider 无关，运行中可 /login），受管时保守持有凭据
+	// admission；OMP（~/.omp 独立根）不携带。
+	var piAdmissions []launchplan.SharedAdmissionSpec
+	if appType == session.AppTypePi {
+		if credSpec, ok, credErr := p.claudeCredentialAdmissionSpec(); credErr != nil {
+			if secrets != nil {
+				secrets.Dispose()
+			}
+			return nil, &launchplan.BuildFailure{Kind: launchplan.FailureLaunchContext, CLIType: req.CLIType}
+		} else if ok {
+			piAdmissions = append(piAdmissions, credSpec)
+		}
 	}
 	effects = append(effects, launchplan.EffectSpec{
 		Kind: launchplan.EffectPTYStart,
@@ -860,7 +835,16 @@ func (p *appLaunchPlanner) buildPiOmpPlan(
 	if secrets == nil {
 		secrets = launchplan.NewEphemeralSecretBundle()
 	}
-	return p.finalizePlanWithSecrets(recipe, nil, effects, secrets)
+	return p.finalizePlanWithSecrets(recipe, piAdmissions, effects, secrets)
+}
+
+// claudeCredentialAdmissionSpec 是凭据 admission 接缝的安全包装（nil 接缝
+// = 未接线，不携带；design §6.3）。
+func (p *appLaunchPlanner) claudeCredentialAdmissionSpec() (launchplan.SharedAdmissionSpec, bool, error) {
+	if p.claudeCredentialAdmission == nil {
+		return launchplan.SharedAdmissionSpec{}, false, nil
+	}
+	return p.claudeCredentialAdmission()
 }
 
 // ---------------------------------------------------------------------------
@@ -942,18 +926,9 @@ func computeFilePreimage(path string) [32]byte {
 	return sha256.Sum256(data)
 }
 
-// claudeEffectiveHeadroomPort returns the local Headroom port for Claude env.
-func claudeEffectiveHeadroomPort(useHeadroom bool) int {
-	if useHeadroom {
-		return headroom.DefaultPort
-	}
-	return 0
-}
-
 // computeClaudeOverrides replicates launcher.LauncherService.BuildOverrides
-// without mutating the LauncherService Headroom state. The effective Headroom port is
-// pre-computed by the caller.
-func computeClaudeOverrides(provider config.Provider, presetName, apiKey string, agentTeams config.AgentTeamsConfig, effectiveHeadroomPort int) map[string]string {
+// without mutating LauncherService state.
+func computeClaudeOverrides(provider config.Provider, presetName, apiKey string, agentTeams config.AgentTeamsConfig) map[string]string {
 	preset, ok := provider.Presets[presetName]
 	overrides := map[string]string{}
 	if !provider.IsAnthropicCompatible() {
@@ -964,8 +939,6 @@ func computeClaudeOverrides(provider config.Provider, presetName, apiKey string,
 	}
 	if provider.IsOAuthMode() {
 		overrides["ANTHROPIC_BASE_URL"] = ""
-	} else if effectiveHeadroomPort > 0 {
-		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", effectiveHeadroomPort)
 	} else {
 		overrides["ANTHROPIC_BASE_URL"] = provider.EffectiveBaseURL("anthropic")
 	}

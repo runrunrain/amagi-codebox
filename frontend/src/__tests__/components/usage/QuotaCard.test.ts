@@ -123,7 +123,6 @@ describe('QuotaCard 陈旧标注（ok 且 probed_at >30min 黄点）', () => {
 describe('重置时刻文案', () => {
   it('绝对时刻优先：今日/明日时刻、7 天内周几、更远日期；过期诚实陈述', () => {
     const now = Date.now();
-    const baseSec = Math.ceil(now / 1000);
     // 过期（Codex 本地会话数据常见）：不再误导性「即将重置」
     expect(formatResetCountdown(Math.floor(now / 1000) - 10, now)).toBe('重置时刻已过');
     expect(formatResetCountdown(undefined, now)).toBe('');

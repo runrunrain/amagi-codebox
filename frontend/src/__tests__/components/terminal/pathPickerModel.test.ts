@@ -12,7 +12,7 @@ import type { ListDirectoriesResult } from '../../../api/paths'
 // ---- 桩工具：内存目录树 → ListDirectoriesResult ----
 
 function listingOf(root: string, names: string[], truncated = false): ListDirectoriesResult {
-  const parent = root === '/' ? null : `/${root.split('/').filter(Boolean).slice(0, -1).join('/') || ''}` || null
+  const parent = root === '/' ? null : `/${root.split('/').filter(Boolean).slice(0, -1).join('/')}`
   return {
     root,
     parent: parent === '' ? null : parent,
@@ -118,7 +118,7 @@ describe('PathPickerModel', () => {
 
     expect(backend.calls).toEqual(['/w'])
     expect(model.listing?.root).toBe('/w')
-    expect(model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name)).toEqual(['a', 'b'])
+    expect(model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name)).toEqual(['a', 'b'])
     expect(model.breadcrumb.map((s) => s.name)).toEqual(['/', 'w'])
     expect(model.loading).toBe(false)
     expect(model.errorMsg).toBe('')
@@ -215,7 +215,7 @@ describe('PathPickerModel', () => {
     // 收起
     await model.toggleExpand('/w/a')
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['a', 'b'])
     // 收起不清勾选
     expect(model.selected).toEqual(['/w/a', '/w/a/c'])
@@ -242,7 +242,7 @@ describe('PathPickerModel', () => {
     await model.toggleExpand('/w/a', true)
     expect(model.rows.some((r) => r.kind === 'error')).toBe(false)
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['a', 'c', 'b'])
   })
 
@@ -254,7 +254,7 @@ describe('PathPickerModel', () => {
     model.navigate('/w/a')
     await vi.waitFor(() => expect(model.listing?.root).toBe('/w/a'))
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['c'])
     expect(model.breadcrumb.map((s) => s.name)).toEqual(['/', 'w', 'a'])
 
@@ -278,7 +278,7 @@ describe('PathPickerModel', () => {
     // forceReload 与首次加载共享 pending 门：至多两次（第二次在 pending 期间被吞）
     expect(backend.calls.filter((c) => c === '/w/a').length).toBeLessThanOrEqual(2)
     expect(
-      model.rows.filter((r) => r.kind === 'dir').map((r: any) => r.name),
+      model.rows.filter((r): r is Extract<typeof r, { kind: 'dir' }> => r.kind === 'dir').map((r) => r.name),
     ).toEqual(['a', 'c', 'b'])
   })
 
@@ -373,6 +373,135 @@ describe('PathPickerModel Linux 路径形态声明', () => {
     model.navigate('C:\\Users\\bob')
     await vi.waitFor(() => expect(model.listing?.root).toBe('C:\\Users\\bob'))
     expect(model.linuxForm).toBe(false)
+    expect(model.errorMsg).toBe('')
+  })
+})
+
+// ---- 会话感知加载器（WSL 会话目录选择链路的前端半段） ----
+
+import {
+  createSessionPathLoader,
+  type SessionAwareLoaders,
+} from '../../../components/terminal/pathPickerModel'
+
+describe('createSessionPathLoader', () => {
+  const stubLoaders = (
+    sessionImpl?: (sessionId: string, root: string) => Promise<ListDirectoriesResult>,
+  ): SessionAwareLoaders & { nativeRoots: string[]; sessionCalls: [string, string][] } => {
+    const nativeRoots: string[] = []
+    const sessionCalls: [string, string][] = []
+    return {
+      nativeRoots,
+      sessionCalls,
+      listDirectories: async (root) => {
+        nativeRoots.push(root)
+        return listingOf('/native', ['a'])
+      },
+      sessionListDirectories: sessionImpl
+        ?? (async (sessionId, root) => {
+            sessionCalls.push([sessionId, root])
+            return listingOf('/wsl-home', ['proj'])
+          }),
+    }
+  }
+
+  it('空/缺省 sessionId 回退原生入口（独立使用场景行为不变）', async () => {
+    for (const id of ['', '   ', undefined]) {
+      const loaders = stubLoaders()
+      const loader = createSessionPathLoader(id, loaders)
+      const result = await loader('/w')
+      expect(result.root).toBe('/native')
+      expect(loaders.nativeRoots).toEqual(['/w'])
+    }
+  })
+
+  it('非空 sessionId 固定携带会话 ID 走 facade，root 原样透传', async () => {
+    const loaders = stubLoaders()
+    const loader = createSessionPathLoader(' sess-1 ', loaders)
+    await loader('')
+    await loader('/home/u')
+    await loader('~/proj')
+    expect(loaders.sessionCalls).toEqual([
+      ['sess-1', ''],
+      ['sess-1', '/home/u'],
+      ['sess-1', '~/proj'],
+    ])
+    expect(loaders.nativeRoots).toEqual([])
+  })
+
+  it('facade 错误透传（不吞错，供错误态展示）', async () => {
+    const loaders = stubLoaders(async () => {
+      throw new Error('发行版不可达')
+    })
+    const loader = createSessionPathLoader('sess-2', loaders)
+    await expect(loader('/home/u')).rejects.toThrow('发行版不可达')
+  })
+})
+
+describe('PathPickerModel 会话目录流（WSL 分支）', () => {
+  it('Linux 形态 root 由后端成功返回：正常展示行与勾选（不再触发形态声明）', async () => {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      return listingOf('/home/u', ['proj-a', 'proj-b'])
+    }
+    const model = new PathPickerModel(loader)
+
+    await model.resetAndLoad('/home/u/proj-a')
+
+    expect(calls).toEqual(['/home/u'])
+    expect(model.linuxForm).toBe(false)
+    expect(model.rows.map((r) => (r.kind === 'dir' ? r.path : r.kind))).toEqual([
+      '/home/u/proj-a',
+      '/home/u/proj-b',
+    ])
+    model.toggleCheck('/home/u/proj-b')
+    expect([...model.selected]).toEqual(['/home/u/proj-b'])
+  })
+
+  it('显式导航到不存在目录：明确错误态，goHome 透传空 root（WSL = distro 主目录）', async () => {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      if (root === '/gone') throw new Error('目录在 WSL 发行版内不存在或不可访问：/gone；可点「从主目录开始」')
+      return listingOf('/home/u', ['proj'])
+    }
+    const model = new PathPickerModel(loader)
+
+    await model.resetAndLoad('/home/u/proj')
+    expect(model.listing?.root).toBe('/home/u')
+
+    // 显式导航失败：不降级、展示明确错误（原生语义不变）
+    model.navigate('/gone')
+    await vi.waitFor(() => expect(model.errorMsg).toContain('不存在或不可访问'))
+    expect(model.listing).toBeNull()
+
+    // 「从主目录开始」= 空 root 透传（WSL 会话由后端展开 distro $HOME）
+    model.goHome()
+    await vi.waitFor(() => expect(model.listing?.root).toBe('/home/u'))
+    expect(calls[calls.length - 1]).toBe('')
+  })
+
+  it('初始 WSL root 不可达：保留错误，重试原目录；显式 goHome 才进入发行版主目录', async () => {
+    const calls: string[] = []
+    const loader: PathLoader = async (root) => {
+      calls.push(root)
+      if (root === '/gone') throw new Error('会话目录不可用：目录在 WSL 发行版内不存在或不可访问：/gone')
+      return listingOf('/home/u', ['proj'])
+    }
+    const model = new PathPickerModel(loader)
+
+    await model.resetAndLoad('/gone/proj')
+
+    expect(calls).toEqual(['/gone'])
+    expect(model.listing).toBeNull()
+    expect(model.errorMsg).toContain('会话目录不可用')
+    model.retry()
+    await vi.waitFor(() => expect(calls).toEqual(['/gone', '/gone']))
+    expect(model.listing).toBeNull()
+    model.goHome()
+    await vi.waitFor(() => expect(model.listing?.root).toBe('/home/u'))
+    expect(calls).toEqual(['/gone', '/gone', ''])
     expect(model.errorMsg).toBe('')
   })
 })

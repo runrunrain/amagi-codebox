@@ -145,7 +145,7 @@ func TestRunFixActionUninstallToolRejectsUnsupportedTools(t *testing.T) {
 		return &platform.ProcessResult{}, os.ErrNotExist
 	}})
 
-	for _, tool := range []CLITool{ToolClaudeCode, ToolHeadroom, CLITool("bogus")} {
+	for _, tool := range []CLITool{ToolClaudeCode, CLITool("bogus")} {
 		result, err := svc.RunFixAction(FixActionRequest{Action: SolutionUninstallTool, Tool: tool})
 		if err == nil && result != nil && result.Success {
 			t.Fatalf("uninstall_tool for %s must be rejected (dedicated flows only), got %+v", tool, result)
@@ -481,12 +481,11 @@ func TestUninstallToolAddsNoExportedServiceMethods(t *testing.T) {
 		}
 	}
 	// The private entry must exist instead (reachable via RunFixAction).
-	// reflect cannot see unexported methods, so existence is proven by this
-	// compile-time reference; if the method disappears the build breaks.
-	var entry func(*Service, CLITool) (*OperationState, error) = (*Service).startUninstallTool
-	if entry == nil {
-		t.Fatal("unreachable")
-	}
+	// reflect cannot see unexported methods, so existence (and the exact
+	// signature) is proven by this compile-time reference; if the method
+	// disappears or changes shape the build breaks. A method value is never
+	// nil, so no runtime nil check is possible or needed.
+	var _ func(*Service, CLITool) (*OperationState, error) = (*Service).startUninstallTool
 }
 
 // ---------------------------------------------------------------------------

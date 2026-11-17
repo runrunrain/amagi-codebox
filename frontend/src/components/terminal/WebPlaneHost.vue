@@ -13,7 +13,7 @@
       class="web-frame"
       :src="frameSrc"
       sandbox="allow-scripts allow-forms"
-      title="Pi Web 会话平面"
+      title="Web 会话平面"
       @load="onFrameLoad"
       @error="onFrameError"
     />
@@ -27,7 +27,7 @@
     <div v-else-if="phase === 'error'" class="plane-overlay">
       <ErrorState
         title="Web 平面加载失败"
-        message="pi webui 服务不可达或页面加载超时"
+        message="Web 平面服务不可达或页面加载超时"
         :on-retry="handleRetry"
       />
       <button class="plane-btn" @click="emit('switchToTui')">切回终端</button>
@@ -45,17 +45,27 @@
 
     <!-- 设计 §7：宿主额度细工具条（iframe 输入框下侧的同容器落点），
          常驻 30px；iframe flex:1 自适应，term-body 高度链路不变。
-         TUI 平面的同款条由 TerminalView 直接挂载（v-show 互斥） -->
-    <SessionQuotaStrip class="plane-quota-strip" :session-id="sessionId" />
+         TUI 平面的同款条由 TerminalView 直接挂载（v-show 互斥）。
+         额度数据是 pi 专属概念：非 pi 会话由父级传 :quota-strip="false"
+         整条不渲染，iframe 独占全高（布局不变）。 -->
+    <SessionQuotaStrip
+      v-if="quotaStrip"
+      class="plane-quota-strip"
+      :session-id="sessionId"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 /**
- * WebPlaneHost — pi Web 平面 iframe 容器（蓝图 T-1.6，交互文档 §4.2）。
+ * WebPlaneHost — Web 会话平面 iframe 容器（蓝图 T-1.6，交互文档 §4.2）。
+ *
+ * 容器 CLI 无关：pi（amagi-pi 扩展进程数据面）与 claudecode（CodeBox 进程内
+ * internal/claudewebui 数据面）共用，URL 形状与探测契约一致。
  *
  * props: url（OpenWebPlane 返回的 ${httpBase}/#/t=<token>，v1.0.2）、sessionId、
- * ended（会话结束态由父级从 webui 探测状态推导传入）。
+ * ended（会话结束态由父级从 webui 探测状态推导传入）、quotaStrip（默认 true：
+ * 是否渲染底部额度条；额度是 pi 专属概念，非 pi 会话传 false）。
  * emits: error（iframe 加载失败/超时）、retry（用户点重试）、
  * switchToTui（用户点切回终端）。
  *
@@ -76,8 +86,8 @@ import {
 import { openExternalURL } from '../../api/webui';
 
 const props = withDefaults(
-  defineProps<{ url: string; sessionId: string; ended?: boolean }>(),
-  { ended: false },
+  defineProps<{ url: string; sessionId: string; ended?: boolean; quotaStrip?: boolean }>(),
+  { ended: false, quotaStrip: true },
 );
 
 const emit = defineEmits<{

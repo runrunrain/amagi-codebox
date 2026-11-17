@@ -666,3 +666,23 @@ func TestJournalCommittedRetryDebtUsesOperationAndReceipt(t *testing.T) {
 		t.Fatalf("debt=%d completeCalls=%d", fixture.adapter.journalRetries.Count(), journal.completeCalls.Load())
 	}
 }
+
+// noopSessionRawPort records nothing (tests inject fakes)。
+type noopSessionRawPort struct{}
+
+func (noopSessionRawPort) StopSession(ctx context.Context, sessionID contract.SessionID) error {
+	return nil
+}
+func (noopSessionRawPort) RemoveSession(ctx context.Context, sessionID contract.SessionID) error {
+	return nil
+}
+func (noopSessionRawPort) ResizeSession(ctx context.Context, sessionID contract.SessionID, cols, rows int) error {
+	return nil
+}
+
+// noopFencer does nothing (used when no authority fencer is wired)。
+type noopFencer struct{}
+
+func (noopFencer) FenceSubscriptionWrites(SubscriptionFenceToken, interface{}) AuthorityFenceReceipt {
+	return AuthorityFenceReceipt{}
+}

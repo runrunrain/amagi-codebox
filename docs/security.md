@@ -81,7 +81,7 @@ API key 不写入 `models.json`（该文件只保存 provider/preset 配置）�
 ## 供应链与构建安全
 
 - Go 依赖全部 vendored 并提交（`vendor/`，构建用 `-mod=vendor`）；新增依赖须 `go get` 后 `go mod vendor` 一并提交审查。
-- CI/release 工具链精确 pin：Go `1.25.0`、Node `20.19.0`、golangci-lint `v2.12.2`（`.github/workflows/ci.yml`、`release.yml`）。
+- CI/release 工具链精确 pin：Go `1.26.0`、Node `20.19.0`、golangci-lint `v2.12.2`（`.github/workflows/ci.yml`、`release.yml`）。
 - 发布产物目前**未代码签名、未公证**（`release.yml` 中占位步骤禁用），macOS 用户需手动放行 Gatekeeper——这是当前最大的分发信任缺口，启用时间表待核实。详见 `ops/release.md`。
 
 ## 待核实项

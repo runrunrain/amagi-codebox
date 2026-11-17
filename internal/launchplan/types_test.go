@@ -41,17 +41,17 @@ func TestPlanRejectsProcessDuplicationAndOutOfOrderEffects(t *testing.T) {
 	if err := plan.Validate(); err == nil {
 		t.Fatal("duplicate process effect accepted")
 	}
-	plan.Effects = []EffectSpec{process(), {Kind: EffectHeadroomStart, Shared: &SharedStartSpec{Service: SharedClaudeHeadroom}}}
+	plan.Effects = []EffectSpec{process(), {Kind: EffectWSLConfigSupply, WSLSupply: &WSLConfigSupplySpec{}}}
 	if err := plan.Validate(); err != ErrInvalidEffectOrder {
 		t.Fatalf("out-of-order error = %v", err)
 	}
 }
 
 // TestPlanValidateWSLConfigSupplyEffect（P3-S0）：供给 effect 必须在 PTY 之前
-//（rank 8 < 16）、必须携带 WSLSupply 描述且与其他 spec 互斥。
+// （rank 8 < 16）、必须携带 WSLSupply 描述且与其他 spec 互斥。
 func TestPlanValidateWSLConfigSupplyEffect(t *testing.T) {
 	supply := EffectSpec{Kind: EffectWSLConfigSupply, WSLSupply: &WSLConfigSupplySpec{
-		CLI: "pi", Reason: "launch", Units: []string{"pi/a2-auth"},
+		OpenCodeLayer: &OpenCodeLayerSpec{Content: SecretBufferRef{Index: 0}},
 	}}
 	pty := EffectSpec{Kind: EffectPTYStart, Process: &ProcessStartSpec{Mode: ModeEmbedded}}
 	plan := &Plan{Recipe: StableRecipe{CLIType: contract.CLITypePi, Workdir: "/work"}, Effects: []EffectSpec{supply, pty}}
@@ -105,7 +105,7 @@ func TestDefaultStorePersistsOnlyStableRefsInSettingsAfterExplicitRecord(t *test
 	if _, ok := store.HostDefaultRefs(contract.CLITypeClaudeCode); ok {
 		t.Fatal("default exists before desktop activation record")
 	}
-	recipe := StableRecipe{CLIType: contract.CLITypeClaudeCode, Workdir: "/work", ProviderRef: "provider-a", PresetRef: "preset-a", ModelRef: "model-a", UseHeadroom: true}
+	recipe := StableRecipe{CLIType: contract.CLITypeClaudeCode, Workdir: "/work", ProviderRef: "provider-a", PresetRef: "preset-a", ModelRef: "model-a"}
 	if err := store.RecordDesktopActivation(recipe); err != nil {
 		t.Fatalf("RecordDesktopActivation: %v", err)
 	}

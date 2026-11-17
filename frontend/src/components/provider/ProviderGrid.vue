@@ -107,6 +107,9 @@
       v-model:open="showAddDialog"
       @saved="handleProviderSaved"
     />
+
+    <!-- Claude 订阅账号区（Phase 1c，design §7.1）：独立于 API/登录卡片，平台不支持时自隐藏 -->
+    <ClaudeAccountsSection />
     </template>
 
     <!-- 删除服务商确认弹窗 -->
@@ -131,6 +134,7 @@ import LoadingState from '../ui/LoadingState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import AddProviderDialog from './AddProviderDialog.vue';
+import ClaudeAccountsSection from './ClaudeAccountsSection.vue';
 import { useProviderStore, type ProviderFilter, type ProviderEntry } from '../../stores/provider';
 import { useToast } from '../../composables/useToast';
 
@@ -230,25 +234,25 @@ async function confirmDeleteProvider() {
 }
 
 function hasAnthropic(p: Provider): boolean {
-  return !!(p && (p as any).anthropic && (p as any).anthropic.enabled);
+  return !!(p && p.anthropic && p.anthropic.enabled);
 }
 function hasOpenAI(p: Provider): boolean {
-  return !!(p && (p as any).openai && (p as any).openai.enabled);
+  return !!(p && p.openai && p.openai.enabled);
 }
 /** 当前有效 Base URL：优先 anthropic/openai 子块，回退 legacy base_url */
 function baseUrl(p: Provider): string {
   if (!p) return '';
-  const a = (p as any).anthropic;
-  const o = (p as any).openai;
+  const a = p.anthropic;
+  const o = p.openai;
   if (a && a.enabled && a.base_url) return a.base_url;
   if (o && o.enabled && o.base_url) return o.base_url;
   return p.base_url || '';
 }
 function typeLabel(p: Provider): string {
-  return ((p && (p as any).type) || 'anthropic').toUpperCase();
+  return ((p && p.type) || 'anthropic').toUpperCase();
 }
 function typeInitial(p: Provider): string {
-  const t = ((p && (p as any).type) || 'anthropic').toLowerCase();
+  const t = ((p && p.type) || 'anthropic').toLowerCase();
   return t === 'openai' ? 'O' : 'A';
 }
 

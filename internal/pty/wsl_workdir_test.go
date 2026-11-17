@@ -82,7 +82,7 @@ func TestBuildWSLCommandLinePrefersStartupCommand(t *testing.T) {
 		Env:            platform.ResolvedEnv{Variables: []string{}},
 	}
 	cmd := buildWSLCommandLine(spec, nil)
-	if !strings.HasPrefix(cmd, "wsl.exe -d "+distro+" --cd \"~/projects\" -- bash -lic ") {
+	if !strings.HasPrefix(cmd, "wsl.exe -d "+distro+" --cd \"~/projects\" --exec bash -lic ") {
 		t.Fatalf("command line shell frame wrong: %s", cmd)
 	}
 	// 权威载荷：同步片段 + env -u 前缀在内层 Windows 双引号里（内部双引号经

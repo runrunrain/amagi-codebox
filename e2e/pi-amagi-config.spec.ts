@@ -38,6 +38,61 @@ async function save(page: Page) {
   await expect(page.locator('#test-notifications')).toContainText('配置已保存');
 }
 
+test('role model selector recovers provider/ drafts and selects authenticated models', async ({ page }) => {
+  await open(page, { agents: { luban: { model: 'anthropic/' } } }, '?login-catalog', { section: null });
+  const selector = page.locator('.pac-agent-spec');
+  await expect(selector.locator('.mss-input')).toHaveCount(0);
+  await expect(selector.locator('.dropdown-trigger')).toHaveCount(3);
+  await selector.locator('.dropdown-trigger').nth(1).click();
+  await page.getByRole('option', { name: 'claude-fixture', exact: true }).click();
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('anthropic/claude-fixture');
+  await selector.locator('.dropdown-trigger').first().click();
+  await page.getByRole('option', { name: 'openai-codex ✓', exact: true }).click();
+  await expect(selector.locator('.mss-spec')).toHaveText('openai-codex/codex-fixture');
+  await selector.locator('.dropdown-trigger').nth(2).click();
+  await page.getByRole('option', { name: 'max', exact: true }).click();
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('openai-codex/codex-fixture:max');
+  await page.reload();
+  await expect(selector.locator('.dropdown-trigger')).toHaveCount(3);
+  await expect(selector.locator('.mss-spec')).toHaveText('openai-codex/codex-fixture:max');
+});
+
+test('empty login catalog stays selectable, supports switching away and explicit manual input', async ({ page }) => {
+  await open(page, { agents: { luban: { model: 'amagi-glm/glm-5.3' } } }, '?login-catalog&empty-cache', { section: null });
+  const selector = page.locator('.pac-agent-spec');
+  for (const provider of ['anthropic', 'openai-codex']) {
+    await selector.locator('.dropdown-trigger').first().click();
+    await page.getByRole('option', { name: `${provider} ✓`, exact: true }).click();
+    await expect(selector.locator('.mss-spec')).toHaveText(`${provider}/`);
+    await expect(selector.locator('.mss-input')).toHaveCount(0);
+    await expect(selector.getByRole('status')).toContainText('暂无模型目录');
+    await expect(selector.locator('.dropdown-trigger').nth(1)).toBeDisabled();
+    await expect(selector.locator('.dropdown-trigger').nth(2)).toBeDisabled();
+  }
+  await selector.locator('.dropdown-trigger').first().click();
+  await page.getByRole('option', { name: 'amagi-glm ✓', exact: true }).click();
+  await expect(selector.locator('.mss-spec')).toHaveText('amagi-glm/glm-5.3');
+  await selector.getByRole('button', { name: '手动输入模型', exact: true }).click();
+  await selector.locator('input').fill('dynamic/vendor/model:high');
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('dynamic/vendor/model:high');
+  await page.reload();
+  await expect(selector.locator('input')).toHaveValue('dynamic/vendor/model:high');
+});
+
+test('known provider with an uncatalogued model preserves the current complete spec', async ({ page }) => {
+  await open(page, { agents: { luban: { model: 'anthropic/unlisted:max' } } }, '?login-catalog', { section: null });
+  const selector = page.locator('.pac-agent-spec');
+  await expect(selector.locator('.mss-input')).toHaveCount(0);
+  await selector.locator('.dropdown-trigger').nth(1).click();
+  await expect(page.getByRole('option', { name: 'unlisted（当前值，目录未收录）', exact: true })).toBeVisible();
+  await page.getByRole('option', { name: 'unlisted（当前值，目录未收录）', exact: true }).click();
+  await save(page);
+  expect((await saved(page)).agents.luban.model).toBe('anthropic/unlisted:max');
+});
+
 test('copies luban, persists the exact spec and preserves all unrelated fields on reload', async ({ page }) => {
   await open(page);
   await expect(compaction(page).locator('.mss-spec')).toHaveText('ollama/qwen:32b:high');
@@ -173,4 +228,49 @@ test('single section preserves drafts, hidden errors and roving keyboard navigat
   await expect(page.getByRole('region', { name: '并发限制', exact: true })).toBeVisible();
   await page.keyboard.press('Tab');
   expect(await page.evaluate(() => !!document.activeElement?.closest('.editor-detail'))).toBe(true);
+});
+
+test('Advisor switches pi/desktop chat, detects connection, persists target and rejects invalid budget', async ({ page }) => {
+  await open(page, { ...fixture, advisor: { model: 'amagi-glm/glm-5.3:max', roles: ['luban'], maxCalls: 5 } }, '', { section: null });
+  await page.getByRole('navigation', {name:'配置分区',exact:true}).getByRole('button', {name:'执行中咨询',exact:true}).click();
+  const card = page.locator('.editor-section[data-section="advisor"]');
+  await expect(card.getByRole('button', {name:'pi 内模型',exact:true})).toHaveAttribute('aria-pressed','true');
+  await card.getByRole('button', {name:'Codex 桌面聊天',exact:true}).click();
+  await expect(card.getByRole('button', {name:'新建并自动续接',exact:true})).toHaveAttribute('aria-pressed','true');
+  await save(page);
+  expect((await saved(page)).advisor.codex).toEqual({mode:'managed'});
+  await page.screenshot({path:test.info().outputPath('advisor-managed-config.png'),fullPage:true});
+  await card.getByRole('button', {name:'指定已有聊天',exact:true}).click();
+  await card.getByPlaceholder('桌面端同一 app-server 的本机 socket 绝对路径').fill('/fixture/unavailable.sock');
+  await card.getByRole('button', {name:'检测连接并读取最近 50 个聊天'}).click();
+  await expect(card.getByRole('alert').filter({hasText:'unavailable'})).toBeVisible();
+  await card.getByPlaceholder('桌面端同一 app-server 的本机 socket 绝对路径').fill('/fixture/desktop.sock');
+  await card.getByRole('button', {name:'检测连接并读取最近 50 个聊天'}).click();
+  await expect(card.getByRole('status')).toContainText('没有发送消息');
+  await card.locator('.dropdown-trigger').click();
+  await page.getByRole('option', {name:'Advisor 验证聊天 · idle',exact:true}).click();
+  await save(page);
+  expect((await saved(page)).advisor).toMatchObject({backend:'codex-chat',codex:{socketPath:'/fixture/desktop.sock',threadId:'advisor-chat-123'},roles:['luban'],maxCalls:5});
+  expect((await saved(page)).future).toEqual(fixture.future);
+  await page.screenshot({path:test.info().outputPath('advisor-desktop-config.png'),fullPage:true});
+  await page.reload();
+  await page.getByRole('navigation', {name:'配置分区',exact:true}).getByRole('button', {name:'执行中咨询',exact:true}).click();
+  await expect(card.getByPlaceholder('目标聊天 ID（可粘贴或从上方选择）')).toHaveValue('advisor-chat-123');
+  const count = await page.evaluate(()=>localStorage.getItem('save-count'));
+  await card.locator('.advisor-budgets input').first().fill('0');
+  await page.getByRole('button', {name:'保存配置',exact:true}).click();
+  expect(await page.evaluate(()=>localStorage.getItem('save-count'))).toBe(count);
+  await expect(card.getByRole('alert')).toContainText('maxCalls');
+});
+
+test('CodeMode saves model preference and overridable defaults without authorization controls', async ({ page }) => {
+  await open(page, fixture, '', {section:null});
+  const nav=page.getByRole('navigation',{name:'配置分区',exact:true});await nav.getByRole('button',{name:'CodeMode',exact:true}).click();
+  const card=page.locator('.editor-section[data-section="codemode"]');await expect(card).toContainText('无需单独授权');await expect(card.getByRole('button',{name:'允许只读',exact:true})).toHaveCount(0);
+  await card.getByRole('button',{name:'适用时优先考虑',exact:true}).click();await card.getByLabel('默认输出 tokens',{exact:true}).fill('3000');await save(page);
+  const config=await saved(page);expect(config.codemode).toEqual({preference:'prefer',budget:{maxOutputTokensPerScript:3000}});expect(config.future).toEqual(fixture.future);expect(config.agents).toEqual(fixture.agents);
+  await page.reload();await nav.getByRole('button',{name:'CodeMode',exact:true}).click();await expect(card.getByRole('button',{name:'适用时优先考虑',exact:true})).toHaveAttribute('aria-pressed','true');
+  const count=await page.evaluate(()=>localStorage.getItem('save-count'));await card.getByLabel('默认时限（毫秒）',{exact:true}).fill('0');await page.getByRole('button',{name:'保存配置',exact:true}).click();expect(await page.evaluate(()=>localStorage.getItem('save-count'))).toBe(count);await expect(card.getByRole('alert')).toContainText('maxTimeoutMsPerScript');
+  await nav.getByRole('button',{name:'角色模型',exact:true}).click();await page.getByRole('button',{name:'CodeMode 待修正',exact:true}).click();await expect(card).toBeVisible();
+  await card.getByLabel('默认时限（毫秒）',{exact:true}).fill('30000');await page.locator('#test-notifications').evaluate(el=>{el.textContent='';});await save(page);await page.screenshot({path:test.info().outputPath('codemode-config.png'),fullPage:true});
 });

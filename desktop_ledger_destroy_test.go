@@ -100,7 +100,7 @@ func TestM3_005_ClearStopped_LegacyDestroysLedger(t *testing.T) {
 		t.Fatal("LedgerForSession must create ledgers after SetSessionAdapter")
 	}
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	if result.Cleared != 2 {
 		t.Fatalf("ClearStoppedSessions cleared %d, want 2; result=%+v", result.Cleared, result)
 	}
@@ -136,7 +136,7 @@ func TestM3_005_ClearStopped_RetainedDoesNotDestroyLedger(t *testing.T) {
 		return app.Sessions.Remove(id)
 	}
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	if result.Cleared != 0 {
 		t.Fatalf("retained session must not be counted as cleared: %+v", result)
 	}

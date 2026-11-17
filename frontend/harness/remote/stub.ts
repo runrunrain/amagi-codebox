@@ -177,7 +177,7 @@ export function installRemoteStub(): void {
   // 场景种子：?seedStartupWarning=1 预置与 app.go Startup 完全同文的启动警告
   if (params.get('seedStartupWarning') === '1') {
     state.startupWarnings.push(
-      '检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁 Headroom',
+      '检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁外部进程安全锁定',
     );
   }
 
@@ -368,7 +368,7 @@ export function installRemoteStub(): void {
 
     /* ------------------------------------------------------------------
      * M2-INT R12：恢复 status/confirm/startup warnings stub。
-     * 语义对齐 headroom_facade.go：status 每次调用复检活性；
+     * 语义对齐后端外部清理恢复门面：status 每次调用复检活性；
      * confirm 走 confirmed=true + 活性复检 + 持久化，无 force-clear。
      * ------------------------------------------------------------------ */
     GetExternalCleanupRecoveryStatus: () =>

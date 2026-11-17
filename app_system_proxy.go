@@ -11,10 +11,10 @@ import (
 // 面。活状态真值是操作系统配置（Windows Internet Settings 注册表 / 未来 macOS
 // networksetup），由 internal/platform 的 SystemProxyControl 门面读写；本层只做
 // 聚合：实时状态 + 持久化端点（settings.Service）+ 代理进程可达性探测，一次往返
-// 给前端完整渲染所需的数据（同 CodexGlobalHeadroomStatus 的聚合模式）。
+// 给前端完整渲染所需的数据（同其他 App 状态卡片的聚合模式）。
 //
 // 与 CLI 会话代理注入（SystemProxyEnv）的关系：两者都读系统代理，但互不写入
-// 对方状态——本开关只操作系统配置层，不改进程环境变量、不动 headroom/relay。
+// 对方状态——本开关只操作系统配置层，不改进程环境变量、不动本地 relay。
 
 // SystemProxyStatus 是前端渲染「全局设备显式代理」卡片所需的完整快照：
 // enabled/host/port/reachable 反映系统当前真实状态（关闭时 host/port 仍可能是

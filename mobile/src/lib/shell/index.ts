@@ -11,21 +11,21 @@
  */
 export {
   NATIVE_PLUGIN_PENDING_DETAIL,
-  currentGate,
-  describeError,
+  
+  
   __setNativeGateForTest,
   type NativeGate,
-  type Platform,
+  
 } from './capability'
 
 export {
   detectBarcodeCapability,
   scanBarcode,
-  type BarcodeCapability,
-  type BarcodeScanFallback,
-  type BarcodeScanResult,
-  type BarcodeScanSuccess,
-  type BarcodeUnavailableReason,
+  
+  
+  
+  
+  
 } from './barcode'
 
 export {
@@ -33,16 +33,16 @@ export {
   secureGet,
   secureRemove,
   secureSet,
-  type SecureGetResult,
-  type SecureOpResult,
-  type SecureStorageCapability,
-  type SecureStorageUnavailableReason,
+  
+  
+  
+  
 } from './secureStorage'
 
 export {
   detectLifecycleCapability,
   onAppBackground,
   onAppForeground,
-  type LifecycleCapability,
-  type LifecycleUnavailableReason,
+  
+  
 } from './appLifecycle'

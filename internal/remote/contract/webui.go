@@ -27,6 +27,16 @@ import (
 // plane's ONLY externally visible face.
 const WebUIProxyPathPrefix = "/webui/"
 
+// WebUIPlaneActorDeviceHeader 是设备平面车道身份透传头的 wire 值（冻结
+// "X-Amagi-Plane-Actor-Device"，design §5.5-3）。仅由 remote 反代在写面
+// 转发时覆盖式设置：先剥离客户端自带值，再注入 plane token 解析出的已
+// 鉴权设备 ID（与 Authorization 覆盖注入同一纪律）。后端数据面
+// （internal/claudewebui）把它当作「车道选择信号」——请求携带非空值 →
+// 写入分流到设备平面车道（无夺权、写时校验该设备持控），否则 → 桌面
+// 车道；该头不是鉴权（鉴权永远是 Bearer/子协议 token），伪造头不构成
+// 提权。
+const WebUIPlaneActorDeviceHeader = "X-Amagi-Plane-Actor-Device"
+
 // WebUIPlaneState enumerates the five session webui-plane states (mirrors the
 // host-side internal/webui.State machine).
 type WebUIPlaneState string

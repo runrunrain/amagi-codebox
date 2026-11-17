@@ -106,7 +106,7 @@
             <div class="pre-models-head">
               <span class="pre-label">模型</span>
             </div>
-            <ConfigContentGroup v-for="(m, idx) in providerModels(name)" :key="idx" class="pre-model" icon="model" :label="`模型 ${idx + 1}`">
+            <ConfigContentGroup v-for="(_m, idx) in providerModels(name)" :key="idx" class="pre-model" icon="model" :label="`模型 ${idx + 1}`">
               <template #header>
               <div class="pre-model-head">
                 <TextInput
@@ -183,7 +183,7 @@
                     </AppButton>
                   </div>
                   <ThinkingLevelMapEditor
-                    :model-value="modelFieldObject(name, idx, 'thinkingLevelMap')"
+                    :model-value="modelThinkingLevelMap(name, idx)"
                     @update:model-value="setModelField(name, idx, 'thinkingLevelMap', $event)"
                   />
                 </div>
@@ -360,6 +360,17 @@
       </div>
     </template>
     </div>
+
+    <ConfirmDialog
+      v-model:open="showDeleteProviderDialog"
+      title="删除提供商"
+      :message="pendingDeleteProvider ? `确认删除提供商 ${pendingDeleteProvider} 及其全部模型配置？` : ''"
+      danger
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmRemoveProvider"
+      @cancel="clearPendingDeleteProvider"
+    />
   </div>
 </template>
 
@@ -387,11 +398,38 @@ import EditorToolbar from '../ui/EditorToolbar.vue';
 import FieldLabel from '../ui/FieldLabel.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import { providerSectionId, pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot, type ConfigSectionItem } from './configNavigation';
 import ConfigContentGroup from './ConfigContentGroup.vue';
 import StringListEditor from './StringListEditor.vue';
 import ThinkingLevelMapEditor from './ThinkingLevelMapEditor.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
+
+interface RegistryModelEntry {
+  id?: string;
+  name?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  thinking?: { mode?: string; levels?: string[]; [k: string]: unknown };
+  cost?: Record<string, number | undefined>;
+  [k: string]: unknown;
+}
+
+interface RegistryProviderEntry {
+  api?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  models?: RegistryModelEntry[];
+  [k: string]: unknown;
+}
+
+interface RegistryData {
+  providers?: Record<string, RegistryProviderEntry>;
+  [k: string]: unknown;
+}
 
 const props = withDefaults(defineProps<EditorNavigationProps & { engine: 'pi' | 'omp' }>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
@@ -438,14 +476,21 @@ const mode = ref<'visual' | 'source'>('visual');
 const sourceContent = ref('');
 const parseError = ref('');
 const configPath = ref('');
-const data = ref<Record<string, any>>({});
+const data = ref<RegistryData>({});
 const activeSection = ref(props.sectionId || '');
 const visited = ref<Record<string, boolean>>({});
 const newProviderName = ref('');
+const showDeleteProviderDialog = ref(false);
+const pendingDeleteProvider = ref('');
+const pendingDeleteRestoreFocus = ref(false);
 
-const providersMap = computed<Record<string, any>>(() => {
+watch(showDeleteProviderDialog, (open) => {
+  if (!open) clearPendingDeleteProvider();
+});
+
+const providersMap = computed<Record<string, RegistryProviderEntry>>(() => {
   const v = data.value.providers;
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  return isJsonRecord(v) ? (v as Record<string, RegistryProviderEntry>) : {};
 });
 
 const providerNames = computed<string[]>(() => Object.keys(providersMap.value));
@@ -459,7 +504,7 @@ function modelCount(name: string): number {
   return Array.isArray(models) ? models.length : 0;
 }
 
-function providerModels(name: string): any[] {
+function providerModels(name: string): RegistryModelEntry[] {
   const models = providersMap.value[name]?.models;
   return Array.isArray(models) ? models : [];
 }
@@ -508,29 +553,32 @@ function hasModelField(name: string, idx: number, key: string): boolean {
   return !!m && typeof m === 'object' && key in m;
 }
 
-function modelAdvancedPresent(name: string, idx: number): string[] {
-  const m = providerModels(name)[idx];
-  if (!m || typeof m !== 'object') return [];
-  return Object.keys(m).filter((k) => MODEL_ADVANCED_KEYS.has(k));
-}
-
 function modelExtraKeys(name: string, idx: number): string[] {
   return modelUnknownKeys(name, idx);
 }
 
-function modelFieldObject(name: string, idx: number, key: string): Record<string, any> {
+function modelFieldObject(name: string, idx: number, key: string): JsonRecord {
   const v = providerModels(name)[idx]?.[key];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  return isJsonRecord(v) ? v : {};
+}
+
+function modelThinkingLevelMap(name: string, idx: number): Record<string, string | null> {
+  const raw = modelFieldObject(name, idx, 'thinkingLevelMap');
+  const out: Record<string, string | null> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === null || typeof v === 'string') out[k] = v;
+  }
+  return out;
 }
 
 function modelFieldStringArray(name: string, idx: number, key: string): string[] {
   const v = providerModels(name)[idx]?.[key];
-  return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
 function thinkingLevels(name: string, idx: number): string[] {
   const thinking = modelFieldObject(name, idx, 'thinking');
-  return Array.isArray(thinking.levels) ? thinking.levels.filter((x: any) => typeof x === 'string') : [];
+  return Array.isArray(thinking.levels) ? thinking.levels.filter((x: unknown): x is string => typeof x === 'string') : [];
 }
 
 function thinkingMode(name: string, idx: number): string {
@@ -585,11 +633,9 @@ function parseSource() {
     return;
   }
   try {
-    const parsed = isPi.value ? JSON.parse(trimmed) : yamlLoad(trimmed);
-    data.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, any>)
-      : {};
-    if (!parsed || typeof parsed !== 'object') throw new Error('root must be an object/mapping');
+    const parsed: unknown = isPi.value ? JSON.parse(trimmed) : yamlLoad(trimmed);
+    if (!isJsonRecord(parsed)) throw new Error('root must be an object/mapping');
+    data.value = parsed as RegistryData;
     parseError.value = '';
   } catch (e) {
     parseError.value = (isPi.value ? 'JSON 格式错误：' : 'YAML 格式错误：') + (e as Error).message;
@@ -607,31 +653,32 @@ function serialize() {
   }
 }
 
-function ensureProviders(): Record<string, any> {
-  if (!data.value.providers || typeof data.value.providers !== 'object' || Array.isArray(data.value.providers)) {
+function ensureProviders(): Record<string, RegistryProviderEntry> {
+  if (!isJsonRecord(data.value.providers)) {
     data.value.providers = {};
   }
   return data.value.providers;
 }
 
-function setProviderField(name: string, key: string, value: any) {
+function setProviderField(name: string, key: string, value: unknown) {
   const providers = ensureProviders();
   const entry = providers[name];
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+  if (!isJsonRecord(entry)) return;
   if (key === 'apiKey' || key === 'baseUrl' || key === 'api') {
-    if (value === '' && key !== 'api') {
+    const str = typeof value === 'string' ? value : String(value ?? '');
+    if (str === '' && key !== 'api') {
       delete entry[key]; // 留空 = 移除该字段
     } else {
-      entry[key] = value;
+      entry[key] = str;
     }
   } else {
-    entry[key] = value;
+    (entry as JsonRecord)[key] = value;
   }
   data.value.providers = { ...providers };
   serialize();
 }
 
-function setRootField(key: string, value: any) {
+function setRootField(key: string, value: unknown) {
   data.value[key] = value;
   serialize();
 }
@@ -653,13 +700,13 @@ function deleteProviderField(name: string, key: string) {
   serialize();
 }
 
-function addProviderField(name: string, defaultValue: any) {
+function addProviderField(name: string, defaultValue: unknown) {
   const entry = providersMap.value[name];
   if (!entry || typeof entry !== 'object') return;
   let k = 'new_field';
   let i = 1;
   while (k in entry) k = 'new_field_' + i++;
-  entry[k] = defaultValue;
+  (entry as JsonRecord)[k] = defaultValue;
   data.value.providers = { ...ensureProviders() };
   serialize();
 }
@@ -667,13 +714,13 @@ function addProviderField(name: string, defaultValue: any) {
 function deleteModelField(name: string, idx: number, key: string) {
   const m = providerModelsRef(name)[idx];
   if (!m || typeof m !== 'object') return;
-  delete m[key];
+  delete (m as JsonRecord)[key];
   data.value.providers = { ...ensureProviders() };
   serialize();
 }
 
 function addModelAdvanced(name: string, idx: number, key: string) {
-  const defaults: Record<string, any> = {
+  const defaults: JsonRecord = {
     thinkingLevelMap: { high: 'high', max: 'max' },
     thinking: { mode: 'effort', levels: ['low', 'high'] },
     input: ['text'],
@@ -681,18 +728,18 @@ function addModelAdvanced(name: string, idx: number, key: string) {
   };
   const m = providerModelsRef(name)[idx];
   if (!m || typeof m !== 'object' || !(key in defaults)) return;
-  m[key] = defaults[key];
+  (m as JsonRecord)[key] = defaults[key];
   data.value.providers = { ...ensureProviders() };
   serialize();
 }
 
-function addModelExtraField(name: string, idx: number, defaultValue: any) {
+function addModelExtraField(name: string, idx: number, defaultValue: unknown) {
   const m = providerModelsRef(name)[idx];
   if (!m || typeof m !== 'object') return;
   let k = 'new_field';
   let i = 1;
   while (k in m) k = 'new_field_' + i++;
-  m[k] = defaultValue;
+  (m as JsonRecord)[k] = defaultValue;
   data.value.providers = { ...ensureProviders() };
   serialize();
 }
@@ -753,12 +800,26 @@ function addProvider() {
   focusSelection();
 }
 
+function clearPendingDeleteProvider() {
+  pendingDeleteProvider.value = '';
+  pendingDeleteRestoreFocus.value = false;
+}
+
 function removeProvider(name: string) {
-  if (!confirm(`确认删除提供商 ${name} 及其全部模型配置？`)) return;
+  pendingDeleteProvider.value = name;
+  pendingDeleteRestoreFocus.value = !!editorRoot.value?.contains(document.activeElement);
+  showDeleteProviderDialog.value = true;
+}
+
+function confirmRemoveProvider() {
+  const name = pendingDeleteProvider.value;
+  const restoreFocus = pendingDeleteRestoreFocus.value;
+  clearPendingDeleteProvider();
+  if (!name) return;
   const index = providerNames.value.indexOf(name);
   const successor = providerNames.value[index + 1] || providerNames.value[index - 1];
-  const restoreFocus = !!editorRoot.value?.contains(document.activeElement);
   const providers = ensureProviders();
+  if (!(name in providers)) return;
   delete providers[name];
   data.value.providers = { ...providers };
   serialize();
@@ -766,7 +827,7 @@ function removeProvider(name: string) {
   if (restoreFocus) focusSelection(true);
 }
 
-function providerModelsRef(name: string): any[] {
+function providerModelsRef(name: string): RegistryModelEntry[] {
   const providers = ensureProviders();
   const entry = providers[name];
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
@@ -788,14 +849,14 @@ function removeModel(name: string, idx: number) {
   serialize();
 }
 
-function setModelField(name: string, idx: number, key: string, value: any) {
+function setModelField(name: string, idx: number, key: string, value: unknown) {
   const models = providerModelsRef(name);
   const m = models[idx];
   if (!m || typeof m !== 'object') return;
   if ((key === 'name') && value === '') {
     delete m[key];
   } else {
-    m[key] = value;
+    (m as JsonRecord)[key] = value;
   }
   data.value.providers = { ...ensureProviders() };
   serialize();
@@ -805,7 +866,7 @@ function setModelNumber(name: string, idx: number, key: string, raw: string) {
   const trimmed = String(raw).trim();
   if (!trimmed) {
     const models = providerModelsRef(name);
-    if (models[idx]) delete models[idx][key];
+    if (models[idx]) delete (models[idx] as JsonRecord)[key];
   } else {
     const num = Number(trimmed);
     if (Number.isNaN(num)) return; // 非数值不写入
@@ -833,14 +894,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

@@ -168,17 +168,17 @@ func unitNames(units []wslsupply.UnitID) string {
 
 func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 	t.Run("nil runner / empty distro is a no-op", func(t *testing.T) {
-		if err := runWSLSharedFilesAtLaunch(context.Background(), nil, "Ubuntu"); err != nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), nil, "Ubuntu", nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), &gateStubRunner{}, "  "); err != nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), &gateStubRunner{}, "  ", nil); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("runs only shared small-file units at launch, no skills", func(t *testing.T) {
 		runner := &gateStubRunner{}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err != nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err != nil {
 			t.Fatal(err)
 		}
 		calls := runner.callsSnapshot()
@@ -201,7 +201,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 			Unit: wslsupply.UnitSharedVisionExport, Outcome: wslsupply.UnitBlocked,
 			Detail: "withdrawal-unconfirmed-frozen",
 		}}}}
-		err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu")
+		err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil)
 		if err == nil || !strings.Contains(err.Error(), "未确认撤回") {
 			t.Fatalf("unconfirmed withdrawal must return explicit error, got %v", err)
 		}
@@ -215,7 +215,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 			Unit: wslsupply.UnitSharedModalityKB, Outcome: wslsupply.UnitBlocked,
 			Detail: "unmanaged-existing",
 		}}}}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err != nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err != nil {
 			t.Fatalf("expected states must not block launch: %v", err)
 		}
 	})
@@ -228,7 +228,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 			Unit: wslsupply.UnitSharedModalityKB, Outcome: wslsupply.UnitFailed,
 			Detail: "write-failed",
 		}}}}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err != nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err != nil {
 			t.Fatalf("withdrawn + non-sensitive modality failure must not block: %v", err)
 		}
 	})
@@ -240,7 +240,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 
 	t.Run("run error with managed copy blocks", func(t *testing.T) {
 		runner := &gateStubRunner{runErr: errors.New("supply runner broke"), status: managedCopyStatus}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err == nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err == nil {
 			t.Fatal("run error with a possible managed copy must block")
 		}
 	})
@@ -250,7 +250,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 			Unit: wslsupply.UnitSharedVisionExport, Outcome: wslsupply.UnitFailed,
 			Detail: "withdrawal-remove-failed",
 		}}}}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err == nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err == nil {
 			t.Fatal("failed withdrawal removal with a managed copy must block")
 		}
 	})
@@ -260,7 +260,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 			Unit: wslsupply.UnitSharedVisionExport, Outcome: wslsupply.UnitFailed,
 			Detail: "write-failed: supply staging isolation unverified: mode=\"\" ok=false",
 		}}}}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err == nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err == nil {
 			t.Fatal("unverified staging with a managed copy still present must block")
 		}
 	})
@@ -270,7 +270,7 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 			Unit: wslsupply.UnitSharedVisionExport, Outcome: wslsupply.UnitFailed,
 			Detail: "write-failed",
 		}}}}
-		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu"); err != nil {
+		if err := runWSLSharedFilesAtLaunch(context.Background(), runner, "Ubuntu", nil); err != nil {
 			t.Fatalf("failure with proven absence of a managed copy must not block: %v", err)
 		}
 	})
@@ -278,53 +278,8 @@ func TestRunWSLSharedFilesAtLaunchGate(t *testing.T) {
 	t.Run("canceled context propagates", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := runWSLSharedFilesAtLaunch(ctx, &gateStubRunner{}, "Ubuntu"); err == nil {
+		if err := runWSLSharedFilesAtLaunch(ctx, &gateStubRunner{}, "Ubuntu", nil); err == nil {
 			t.Fatal("canceled ctx must propagate to the launch chain")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// steer#3：必需模型供给（managed-models）未落地不得按可选配置放行。
-// ---------------------------------------------------------------------------
-
-func TestVerdictForWSLPiConfigSupplyRequiredUnits(t *testing.T) {
-	t.Run("managed-models write failure blocks", func(t *testing.T) {
-		launchErr, _, _ := verdictForWSLPiConfigSupply(wslsupply.RunResult{Results: []wslsupply.UnitResult{{
-			Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFailed, Detail: "write-failed",
-		}}}, nil)
-		if launchErr == nil || !strings.Contains(launchErr.Error(), "未落地") {
-			t.Fatalf("required model supply failure must block, got %v", launchErr)
-		}
-	})
-	t.Run("managed-models fresh passes", func(t *testing.T) {
-		launchErr, warn, _ := verdictForWSLPiConfigSupply(wslsupply.RunResult{Results: []wslsupply.UnitResult{{
-			Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitFresh, Detail: "no-change",
-		}}}, nil)
-		if launchErr != nil || warn != "" {
-			t.Fatalf("fresh managed-models must pass silently, got err=%v warn=%q", launchErr, warn)
-		}
-	})
-	t.Run("optional keyed units still warn only", func(t *testing.T) {
-		launchErr, warn, _ := verdictForWSLPiConfigSupply(wslsupply.RunResult{Results: []wslsupply.UnitResult{
-			{Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitApplied, Detail: "written"},
-			{Unit: wslsupply.UnitPiMCP, Outcome: wslsupply.UnitFailed, Detail: "write-failed"},
-		}}, nil)
-		if launchErr != nil {
-			t.Fatalf("optional unit failure must not block, got %v", launchErr)
-		}
-		if warn == "" {
-			t.Fatal("optional unit failure must still warn")
-		}
-	})
-	t.Run("expected states stay silent", func(t *testing.T) {
-		launchErr, warn, _ := verdictForWSLPiConfigSupply(wslsupply.RunResult{Results: []wslsupply.UnitResult{
-			{Unit: wslsupply.UnitPiManagedModels, Outcome: wslsupply.UnitApplied, Detail: "written"},
-			{Unit: wslsupply.UnitPiAmagi, Outcome: wslsupply.UnitBlocked, Detail: "awaiting-consent"},
-			{Unit: wslsupply.UnitPiSettings, Outcome: wslsupply.UnitBlocked, Detail: "local-modification-frozen"},
-		}}, nil)
-		if launchErr != nil || warn != "" {
-			t.Fatalf("expected states must pass silently, got err=%v warn=%q", launchErr, warn)
 		}
 	})
 }

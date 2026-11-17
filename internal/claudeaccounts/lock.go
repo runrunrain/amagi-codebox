@@ -1,0 +1,42 @@
+package claudeaccounts
+
+import (
+	"os"
+	"path/filepath"
+)
+
+// DefaultPoolLockPath 返回跨进程锁文件的默认路径
+// ~/.amagi-codebox/claude-accounts.lock（design §3.3）。锁文件不含任何秘密。
+// 生产接线可覆盖；测试必须注入 tempdir 路径。
+func DefaultPoolLockPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".amagi-codebox", "claude-accounts.lock"), nil
+}
+
+// DefaultPoolMarkerPath 返回不含秘密的「池曾初始化」标记文件路径（F10：
+// 区分「从未创建池」与「已创建后被外部删除」；后者 fail closed 为
+// POOL_MISSING，不自动重建空池覆盖原生认证）。
+func DefaultPoolMarkerPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".amagi-codebox", "claude-accounts.pool-initialized"), nil
+}
+
+// crossProcessLock 是进程间互斥锁句柄；结构体与获取/释放的平台实现见
+// lock_unix.go 与 lock_windows.go（Unix 形态持有锁文件路径，Windows v1
+// 获取一律 unsupported、无需路径字段）。
+
+// release 释放跨进程锁（幂等）。
+func (l *crossProcessLock) release() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = unlockFile(l.file)
+	_ = l.file.Close()
+	l.file = nil
+}

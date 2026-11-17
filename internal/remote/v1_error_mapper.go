@@ -205,7 +205,7 @@ const (
 	LaunchResolveFailureContext
 	// LaunchResolveFailureCapability: CLIResolver.Resolve error、PTY unsupported.
 	LaunchResolveFailureCapability
-	// LaunchResolveFailureEffect: proxy/headroom/PTY/process/bootstrap fail
+	// LaunchResolveFailureEffect: proxy/PTY/process/bootstrap fail
 	// (after spec resolution; not a resolver error).
 	LaunchResolveFailureEffect
 )

@@ -42,7 +42,7 @@ func (a *b2aSpyApp) GetSessions() []session.SessionInfo {
 func (a *b2aSpyApp) GetSession(string) (session.SessionInfo, error) {
 	return session.SessionInfo{}, errors.New("n/a")
 }
-func (a *b2aSpyApp) LaunchSession(string, string, string, string, bool, string) (string, error) {
+func (a *b2aSpyApp) LaunchSession(string, string, string, string, string) (string, error) {
 	return "", errors.New("n/a")
 }
 func (a *b2aSpyApp) LaunchCodexSession(string, string, string, string, string) (string, error) {
@@ -96,7 +96,7 @@ func (a *b2aSpyApp) ProbeSessionWebUI(string) (SessionWebUIInfo, bool) {
 
 func newB2AServer(t *testing.T, app *b2aSpyApp) *Server {
 	t.Helper()
-	return NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
+	return NewServer(0, app, newTestLogService(t), embed.FS{})
 }
 
 func loopbackReq(method, target string) *http.Request {

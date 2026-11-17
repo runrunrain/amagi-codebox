@@ -30,11 +30,12 @@ docs/
 面向使用 Amagi CodeBox 管理配置、启动会话、使用终端与远程控制的用户。
 
 - [下载安装](user/installation.md) — 环境要求、下载渠道、单实例保护、系统托盘、首次运行
-- [界面功能总览](user/usage.md) — 各功能页（会话设置、终端、提供商中心、扩展、规则、环境检测、日志、用量统计）与启动会话流程
+- [界面功能总览](user/usage.md) — 各功能页（会话设置、终端、提供商中心、扩展、环境检测、日志、用量统计）与启动会话流程
 - [提供商与预设配置](user/providers.md) — Provider / Preset / Parameters 概念、五种应用类型、配置结构
 - [内嵌终端](user/terminal.md) — xterm.js + ConPTY/PTY、多 Tab、终端预设与回调机制
-- [插件系统](user/plugins.md) — Claude Code、OpenCode、Codex、Pi、omp 插件管理
+- [插件系统](user/plugins.md) — Claude Code、OpenCode、Codex、Pi、omp 插件管理与 `~/.agents` 共用技能、共用 MCP 子页
 - [远程控制与移动端](user/remote-mobile.md) — HTTP/WebSocket 远程 API、Token 认证、设备配对、移动端连接
+- [Agent CLI](user/agent-cli.md) — codebox-agent 命令行：启用/shim 路径/技能安装、安全模型、退出码、故障排查与自动生成的命令参考
 - [常见问题](user/faq.md) — 环境检测、安装、单实例、托盘、配置目录
 
 ## 开发者 / 贡献者

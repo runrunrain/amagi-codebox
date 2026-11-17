@@ -57,7 +57,7 @@ import { createTimingRecorder, type TimingRecorder, type TimingReportV1 } from '
 // --- 错误分类（展示层消费；禁笼统失败） ---
 
 /** 大厅级错误分类：连接 / 宿主服务 / 授权 / 其他契约错误。 */
-export type LobbyErrorKind = 'connection' | 'service' | 'auth' | 'other';
+type LobbyErrorKind = 'connection' | 'service' | 'auth' | 'other';
 
 export interface ClassifiedError {
   kind: LobbyErrorKind;
@@ -72,7 +72,7 @@ export interface ClassifiedError {
 }
 
 /** 启动失败四分类（AC-25，design §8.3）。 */
-export type LaunchFailureKind = 'workdir' | 'launch-failed' | 'control' | 'connection' | 'other';
+type LaunchFailureKind = 'workdir' | 'launch-failed' | 'control' | 'connection' | 'other';
 
 export interface ClassifiedLaunchError {
   kind: LaunchFailureKind;
@@ -141,7 +141,7 @@ export function classifyLobbyError(rawErr: unknown): ClassifiedError {
 }
 
 /** 启动失败分类（AC-25）：400→workdir；422→launch-failed（服务端固定文案呈现）；control.*→控制权。 */
-export function classifyLaunchError(rawErr: unknown, cliType: CLIType): ClassifiedLaunchError {
+function classifyLaunchError(rawErr: unknown, cliType: CLIType): ClassifiedLaunchError {
   const err = toApiRequestError(rawErr);
   if (err.code === ERROR_CODE_BAD_REQUEST) {
     return {
@@ -306,8 +306,16 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
     return false;
   }
 
+  let listVersion = 0;
+  let loadVersion = 0;
+  const operationError = ref<ClassifiedError | null>(null);
+  function dismissOperationError() { operationError.value = null; }
+
   /** 大厅加载/刷新：host/summary（含 CLI availability）+ 会话列表。 */
   async function load(): Promise<void> {
+    const version = ++loadVersion;
+    const listRequest = ++listVersion;
+    authLost.value = null;
     // M3-006 T0：每次列表加载创建新 recorder 并在起点打 T0（design §6）。
     listTiming = createTimingRecorder();
     listTiming.mark('T0');
@@ -315,35 +323,41 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
     controlConflict.value = null;
     try {
       const nextHost = await getHostSummary();
+      if (version !== loadVersion) return;
       host.value = nextHost;
       try {
         const list = await listSessions();
+        if (version !== loadVersion || listRequest !== listVersion) return;
         sessions.value = list; // P2-C 裁定 A：不过滤 stopped，卡片按状态展示
         loadError.value = null;
       } catch (rawErr) {
+        if (version !== loadVersion || listRequest !== listVersion) return;
         const err = toApiRequestError(rawErr);
         if (handleAuthFailure(err)) return;
         // 列表失败不清空已有投影：保留上次列表 + 分类错误呈现（不伪装空态）。
         loadError.value = classifyLobbyError(err);
       }
     } catch (rawErr) {
+      if (version !== loadVersion) return;
       const err = toApiRequestError(rawErr);
       if (handleAuthFailure(err)) return;
       host.value = null;
       loadError.value = classifyLobbyError(err);
     } finally {
-      loading.value = false;
-      loaded.value = true;
+      if (version === loadVersion) { loading.value = false; loaded.value = true; }
     }
   }
 
   /** 仅刷新会话列表（危险操作/控制权变更后）。 */
   async function refreshSessions(): Promise<void> {
+    const version = ++listVersion;
     try {
       const list = await listSessions();
+      if (version !== listVersion) return;
       sessions.value = list; // P2-C 裁定 A：与 load() 同语义，不过滤 stopped
       if (loadError.value !== null) loadError.value = null;
     } catch (rawErr) {
+      if (version !== listVersion) return;
       const err = toApiRequestError(rawErr);
       if (handleAuthFailure(err)) return;
       loadError.value = classifyLobbyError(err);
@@ -376,6 +390,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
    */
   async function runDangerousOperation(operation: DangerousOperation, session: SessionSummary): Promise<boolean> {
     controlConflict.value = null;
+    operationError.value = null;
     try {
       if (operation === 'stop') await stopSession(session.id);
       else if (operation === 'restart') await restartSession(session.id);
@@ -399,7 +414,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
               : '你没有该会话的控制权，操作未执行。',
         };
       } else {
-        loadError.value = classifyLobbyError(err);
+        operationError.value = classifyLobbyError(err);
       }
       await refreshSessions(); // 冲突后如实刷新投影（控制者可能已变化）
       return false;
@@ -409,6 +424,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   /** 获取控制权；409 control.busy → 冲突反馈（不静默覆盖）。 */
   async function acquire(session: SessionSummary): Promise<boolean> {
     controlConflict.value = null;
+    operationError.value = null;
     try {
       await acquireControl(session.id);
       await refreshSessions();
@@ -427,7 +443,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
           message: '当前无法获取该会话的控制权；已为你刷新最新状态。',
         };
       } else {
-        loadError.value = classifyLobbyError(err);
+        operationError.value = classifyLobbyError(err);
       }
       await refreshSessions();
       return false;
@@ -437,6 +453,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
   /** 释放控制权（you→none）。 */
   async function release(session: SessionSummary): Promise<boolean> {
     controlConflict.value = null;
+    operationError.value = null;
     try {
       await releaseControl(session.id);
       await refreshSessions();
@@ -451,7 +468,7 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
         };
         await refreshSessions();
       } else {
-        loadError.value = classifyLobbyError(err);
+        operationError.value = classifyLobbyError(err);
       }
       return false;
     }
@@ -475,6 +492,8 @@ export const useLobbyStore = defineStore('remote-lobby', () => {
     host,
     sessions,
     loadError,
+    operationError,
+    dismissOperationError,
     authLost,
     launching,
     launchError,

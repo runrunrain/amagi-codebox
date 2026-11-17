@@ -54,13 +54,6 @@ func newCommitFaults() *commitFaults {
 	return &commitFaults{hits: map[string]int{}}
 }
 
-// add 注入一个故障。
-func (f *commitFaults) add(stage string, times int, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.faults = append(f.faults, commitFault{stage: stage, times: times, err: err})
-}
-
 // fail 返回该阶段应注入的错误（nil = 放行）。
 func (f *commitFaults) fail(stage string) error {
 	f.mu.Lock()
@@ -196,7 +189,7 @@ func (c *Coordinator) commitFile(ctx context.Context, req CommitRequest) *Commit
 		OpID: opID, Kind: req.Kind, TargetKey: targetKey,
 		TargetDistro: req.Target.Distro, TargetHome: req.Target.Home,
 		TargetCLI: string(req.Target.CLI),
-		Unit: req.Unit, RelPath: req.RelPath, Sensitive: req.Sensitive,
+		Unit:      req.Unit, RelPath: req.RelPath, Sensitive: req.Sensitive,
 		BeforeExists: rc.BeforeExists, BeforeHash: rc.BeforeHash, AfterHash: hexHash(req.Candidate),
 		BackupRel: rc.BackupRel, StagingRel: rc.StagingRel, DisplacedRel: displacedRel,
 		PluginMeta: req.PluginMeta,

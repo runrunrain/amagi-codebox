@@ -10,9 +10,7 @@ import {
   GetEnvVarsJSON,
   SaveEnvVarsJSON,
   ImportEnvVars,
-  ExportEnvVars,
   ExportEnvVarsToFile,
-  ImportEnvVarsFromFile,
   GetEnvVarsGlobalSyncStatus,
   SetEnvVarsGlobalSyncEnabled,
   SetEnvVarPathAllow,
@@ -67,24 +65,10 @@ export function importEnvVars(jsonStr: string): Promise<void> {
 }
 
 /**
- * Export environment variables
- */
-export function exportEnvVars(): Promise<string> {
-  return callApi('[api.envvars.exportEnvVars]', () => ExportEnvVars());
-}
-
-/**
  * Export environment variables to file
  */
 export function exportEnvVarsToFile(): Promise<void> {
   return callApi('[api.envvars.exportEnvVarsToFile]', () => ExportEnvVarsToFile());
-}
-
-/**
- * Import environment variables from file
- */
-export function importEnvVarsFromFile(): Promise<void> {
-  return callApi('[api.envvars.importEnvVarsFromFile]', () => ImportEnvVarsFromFile());
 }
 
 /**
@@ -116,7 +100,7 @@ export function setEnvVarPathAllow(key: string, allow: boolean): Promise<void> {
  * WSL WSLENV 保留键：永不跨界转发，也不适用路径值放行门
  * （后端 platform.IsWSLENVReservedKey / 保存校验拒绝，前端同步禁用操作）。
  */
-export const WSL_RESERVED_ENV_KEYS: readonly string[] = ['WSLENV', 'PATH', 'PATHEXT'];
+const WSL_RESERVED_ENV_KEYS: readonly string[] = ['WSLENV', 'PATH', 'PATHEXT'];
 
 /** 键是否为 WSL 保留键（大小写不敏感，容忍首尾空白） */
 export function isWSLReservedEnvKey(key: string): boolean {

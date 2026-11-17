@@ -165,6 +165,19 @@ import SectionNav from '../ui/SectionNav.vue';
 import { OMP_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
 import ModelSpecSelector from './ModelSpecSelector.vue';
 import { useModelCatalog } from './useModelCatalog';
+import { isJsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
+
+interface OmpTaskConfig {
+  agentModelOverrides?: Record<string, string>;
+  [k: string]: unknown;
+}
+
+interface OmpConfigData {
+  modelRoles?: Record<string, string>;
+  task?: OmpTaskConfig;
+  [k: string]: unknown;
+}
 
 const { showSuccess, showError } = useToast();
 
@@ -197,7 +210,7 @@ const mode = ref<'visual' | 'source'>('visual');
 const sourceContent = ref('');
 const yamlError = ref('');
 const configPath = ref('');
-const configData = ref<Record<string, any>>({});
+const configData = ref<OmpConfigData>({});
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const activeSection = ref(props.sectionId || 'modelRoles');
@@ -268,9 +281,7 @@ function parseYamlToConfig() {
   }
   try {
     const parsed = yamlLoad(trimmed);
-    configData.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, any>)
-      : {};
+    configData.value = isJsonRecord(parsed) ? (parsed as OmpConfigData) : {};
     yamlError.value = '';
   } catch (e) {
     yamlError.value = 'YAML 格式错误：' + (e as Error).message;
@@ -352,15 +363,19 @@ function removeOverride(agent: string) {
 
 function renameOverride(oldAgent: string, newAgent: string) {
   const trimmed = newAgent.trim();
-  const overrides = configData.value.task?.agentModelOverrides;
-  if (!trimmed || trimmed === oldAgent || !overrides || overrides[trimmed]) return;
+  const task = configData.value.task;
+  const overrides = task?.agentModelOverrides;
+  if (!task || !trimmed || trimmed === oldAgent || !overrides || overrides[trimmed]) return;
   const entries = Object.keys(overrides).map((k) => [k === oldAgent ? trimmed : k, overrides[k]] as const);
-  configData.value.task.agentModelOverrides = Object.fromEntries(entries);
+  task.agentModelOverrides = Object.fromEntries(entries);
   serialize();
 }
 
 function updateOverride(agent: string, value: string) {
-  const overrides = configData.value.task?.agentModelOverrides || {};
+  if (!configData.value.task || typeof configData.value.task !== 'object') {
+    configData.value.task = {};
+  }
+  const overrides = configData.value.task.agentModelOverrides || {};
   overrides[agent] = value;
   configData.value.task.agentModelOverrides = { ...overrides };
   serialize();
@@ -395,14 +410,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

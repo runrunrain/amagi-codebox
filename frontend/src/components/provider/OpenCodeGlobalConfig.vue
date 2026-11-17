@@ -46,7 +46,7 @@
         <template #actions>
           <Segmented
             v-model="modeModel"
-            :options="MODE_OPTIONS"
+            :options="EDITOR_MODE_OPTIONS"
             variant="pill"
           />
           <AppButton
@@ -198,14 +198,11 @@ import PermissionMapEditor from './PermissionMapEditor.vue';
 import StringListEditor from './StringListEditor.vue';
 import TypedKeyValueEditor from './TypedKeyValueEditor.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
+import { asJsonRecord, isJsonRecord, type JsonRecord } from './jsonTypes';
+import { EDITOR_MODE_OPTIONS, copyConfigPath } from './editorUtils';
 
 const { showSuccess, showError } = useToast();
 const store = useProviderStore();
-
-const MODE_OPTIONS = [
-  { value: 'visual', label: '可视化' },
-  { value: 'json', label: 'JSON' },
-];
 
 /** 顶层模型卡片 InfoTip（design §5.2 T43）：原「Model 说明卡」的正文收进这里，卡片仅在键存在时渲染 */
 const MODEL_TIP = 'OpenCode 通常在 agent 级配置模型（agent.<名称>.model），顶层 model 较少使用。';
@@ -235,7 +232,7 @@ const jsonError = ref('');
 const configPath = ref('');
 
 // 配置数据（可视化模式使用）
-const configData = ref<Record<string, any>>({});
+const configData = ref<JsonRecord>({});
 
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
@@ -245,46 +242,34 @@ const visited = ref<Record<string, boolean>>({ [activeSection.value]: true });
 // ===== 计算属性：各顶层键的强类型视图（直接映射，无别名 fallback） =====
 
 // provider object map
-const providerMap = computed<Record<string, any>>(() => {
-  const v = configData.value[CONFIG_KEYS.provider];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
-});
+const providerMap = computed<JsonRecord>(() => asJsonRecord(configData.value[CONFIG_KEYS.provider]));
 
 // agent object map
-const agentMap = computed<Record<string, any>>(() => {
-  const v = configData.value[CONFIG_KEYS.agent];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
-});
+const agentMap = computed<JsonRecord>(() => asJsonRecord(configData.value[CONFIG_KEYS.agent]));
 
 // mcp object map（真实键，无 mcp_servers fallback）
-const mcpMap = computed<Record<string, any>>(() => {
-  const v = configData.value[CONFIG_KEYS.mcp];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
-});
+const mcpMap = computed<JsonRecord>(() => asJsonRecord(configData.value[CONFIG_KEYS.mcp]));
 
 // permission object map
 const permissionMap = computed<Record<string, string>>(() => {
   const v = configData.value[CONFIG_KEYS.permission];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  return isJsonRecord(v) ? (v as Record<string, string>) : {};
 });
 
 // instructions array<string>
 const instructionsArray = computed<string[]>(() => {
   const v = configData.value[CONFIG_KEYS.instructions];
-  return Array.isArray(v) ? v : [];
+  return Array.isArray(v) ? (v as string[]) : [];
 });
 
 // plugin array<string>（OpenCode v1.17+ 标准格式，元素如 github:owner/repo）
 const pluginArray = computed<string[]>(() => {
   const v = configData.value[CONFIG_KEYS.plugin];
-  return Array.isArray(v) ? v : [];
+  return Array.isArray(v) ? (v as string[]) : [];
 });
 
 // experimental object（类型保持）
-const experimentalMap = computed<Record<string, any>>(() => {
-  const v = configData.value[CONFIG_KEYS.experimental];
-  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
-});
+const experimentalMap = computed<JsonRecord>(() => asJsonRecord(configData.value[CONFIG_KEYS.experimental]));
 
 // 顶层 model 是否真实存在
 const hasTopLevelModel = computed(() => {
@@ -343,8 +328,8 @@ function parseJsonToConfig() {
     return;
   }
   try {
-    const parsed = JSON.parse(trimmed);
-    configData.value = parsed && typeof parsed === 'object' ? parsed : {};
+    const parsed: unknown = JSON.parse(trimmed);
+    configData.value = isJsonRecord(parsed) ? parsed : {};
     jsonError.value = '';
   } catch (e) {
     jsonError.value = 'JSON 格式错误：' + (e as Error).message;
@@ -367,22 +352,22 @@ function serializeConfigToJson() {
 
 // ===== 各顶层键的更新函数（直接写回 configData[key]，保持类型） =====
 
-function updateField(key: string, value: any) {
+function updateField(key: string, value: unknown) {
   configData.value[key] = value;
   serializeConfigToJson();
 }
 
-function updateProvider(v: Record<string, any>) {
+function updateProvider(v: JsonRecord) {
   configData.value[CONFIG_KEYS.provider] = v;
   serializeConfigToJson();
 }
 
-function updateAgent(v: Record<string, any>) {
+function updateAgent(v: JsonRecord) {
   configData.value[CONFIG_KEYS.agent] = v;
   serializeConfigToJson();
 }
 
-function updateMcp(v: Record<string, any>) {
+function updateMcp(v: JsonRecord) {
   configData.value[CONFIG_KEYS.mcp] = v;
   serializeConfigToJson();
 }
@@ -402,7 +387,7 @@ function updatePlugin(v: string[]) {
   serializeConfigToJson();
 }
 
-function updateExperimental(v: Record<string, any>) {
+function updateExperimental(v: JsonRecord) {
   configData.value[CONFIG_KEYS.experimental] = v;
   serializeConfigToJson();
 }
@@ -425,24 +410,8 @@ async function handleSave() {
 }
 
 // 复制路径
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    const textarea = document.createElement('textarea');
-    textarea.value = configPath.value;
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand('copy');
-      showSuccess('路径已复制到剪贴板');
-    } catch {
-      showError('复制失败');
-    }
-    document.body.removeChild(textarea);
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 // 模式切换时同步数据

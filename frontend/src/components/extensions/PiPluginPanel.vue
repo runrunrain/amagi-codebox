@@ -1,80 +1,57 @@
 <template>
   <div class="pi-plugin-panel">
-    <LoadingState v-if="initialLoading" message="加载 Pi 包中..." />
+    <!-- 首屏门控（store 派生，契约 §6.1/§6.4）：加载中且无数据无错误 → Loading；
+         loadError 且无数据 → 整页 ErrorState（重试仍走 refresh）。 -->
+    <LoadingState v-if="showInitialLoading" message="加载 Pi 包中..." />
     <ErrorState
-      v-else-if="initialError"
-      :message="initialError"
-      :on-retry="loadPackages"
+      v-else-if="showInitialError"
+      :message="loadError"
+      :on-retry="reload"
     />
 
     <template v-else>
-      <div v-if="warnings.length" class="status-banner warning">
-        <span>{{ warnings.join('；') }}</span>
-        <AppButton variant="ghost" size="small" @click="loadPackages">重试</AppButton>
-      </div>
+      <!-- ① 诊断横幅：errors=store.loadError（有数据后的刷新失败），warnings=store.warnings -->
+      <DiagnosticBanner :errors="diagnosticErrors" :warnings="warnings" />
 
-      <div class="scope-note">
-        <div>
-          <strong>Pi 全局包 / Pi Packages</strong>
-          <p>通过官方 pi CLI 管理 settings.json 中登记的包，支持 npm、git 与本地路径源。/ Manage packages registered in settings.json via the official pi CLI.</p>
-        </div>
-        <div class="header-actions">
+      <!-- ② 资源计数标签：包 N | 技能 | 扩展 | 提示词 | 主题（Σ=0 隐藏）+ 行尾搜索 -->
+      <CountTabs
+        v-model="resourceTabModel"
+        v-model:search-value="searchText"
+        :tabs="countTabs"
+        :search-placeholder="searchPlaceholder"
+      />
+
+      <!-- ③ 工具栏：标题+计数徽章 | 目标 Segmented（Windows/WSL/同时应用，保留）+ 刷新 + 安装包 -->
+      <ListToolbar :title="toolbarTitle" :count="toolbarCount" :loading="loading">
+        <template #actions>
           <Segmented
             v-model="opTargetModel"
             :options="targetOptions"
             class="target-seg"
           />
-          <AppButton variant="ghost" size="small" :disabled="loading" @click="loadPackages">
+          <AppButton variant="ghost" size="small" :disabled="loading" @click="reload">
             {{ loading ? '刷新中…' : '刷新' }}
           </AppButton>
           <AppButton variant="primary" size="small" @click="openInstallDialog">
             安装包
           </AppButton>
-        </div>
-      </div>
+        </template>
+      </ListToolbar>
 
-      <div class="panel-header">
-        <div class="header-title">
-          <h2>已安装</h2>
-          <span class="count-badge">{{ installed.length }}</span>
-        </div>
-      </div>
-
-      <div v-if="installed.length" class="package-split">
-        <div class="package-list">
-          <button
-            v-for="pkg in installed"
-            :key="pkg.source"
-            :class="['package-item', { active: activeSource === pkg.source }]"
-            @click="select(pkg.source)"
+      <!-- ④ 内容区 -->
+      <!-- 包详情态：居中窄单列二级详情页（← 返回列表 + 「Pi › 包名」面包屑 +
+           DetailHeader + 描述 + 只读资源列表 + MetaGrid + 切换源卡片），替换内容区 -->
+      <div v-if="resourceTab === 'packages' && activePackage" class="detail-page">
+        <div class="detail-column">
+          <button type="button" class="detail-back" @click="closeDetail">← 返回列表</button>
+          <DetailHeader
+            :breadcrumb="[{ label: 'Pi', clickable: true }, { label: activePackage.name }]"
+            :title="activePackage.name"
+            :badges="detailBadges"
+            @back="closeDetail"
           >
-            <div class="package-name-row">
-              <span class="package-name">{{ pkg.name }}</span>
-              <Badge type="scope" text="用户级" />
-            </div>
-            <div class="package-badges">
-              <Badge type="source" :text="sourceLabel(pkg.sourceType)" variant="muted" />
-              <Badge v-if="pkg.version" type="ver" :text="`v${pkg.version}`" />
-              <Badge v-if="pkg.pinned" type="tag" text="pinned" variant="muted" />
-            </div>
-            <p class="package-source">{{ pkg.source }}</p>
-            <p v-if="pkg.description" class="package-description">
-              {{ truncate(pkg.description, 90) }}
-            </p>
-          </button>
-        </div>
-
-        <div v-if="activePackage" class="package-detail">
-          <div class="detail-header">
-            <div>
-              <h3>{{ activePackage.name }}</h3>
-              <div class="package-badges">
-                <Badge type="source" :text="sourceLabel(activePackage.sourceType)" variant="muted" />
-                <Badge v-if="activePackage.version" type="ver" :text="`v${activePackage.version}`" />
-                <Badge v-if="activePackage.pinned" type="tag" text="pinned" variant="muted" />
-              </div>
-            </div>
-            <div class="detail-actions">
+            <template #actions>
+              <!-- P4 包级启停：!**×4 过滤标记，与「更新/移除」同区 -->
               <div class="enable-toggle" :title="activePackage.enabled ? '已启用：包内资源正常加载' : '已停用：已停止加载该包全部资源（重新启用可恢复）'">
                 <span class="enable-label">{{ activePackage.enabled ? '已启用' : '已停用' }}</span>
                 <Switch
@@ -84,7 +61,7 @@
                 />
               </div>
               <AppButton
-                variant="ghost"
+                variant="primary"
                 size="small"
                 :disabled="mutating || activePackage.sourceType === 'local'"
                 @click="handleUpdate"
@@ -94,41 +71,39 @@
               <AppButton variant="danger" size="small" :disabled="mutating" @click="showRemoveDialog = true">
                 移除
               </AppButton>
-            </div>
-          </div>
+            </template>
+          </DetailHeader>
 
           <p v-if="activePackage.description" class="detail-description">
             {{ activePackage.description }}
           </p>
 
-          <div class="meta-list">
-            <div class="meta-row">
-              <span>包源 Source</span>
-              <code>{{ activePackage.source }}</code>
+          <div v-if="loadingDetail" class="detail-loading">正在读取包资源…</div>
+          <div v-else-if="isDetail(activePackage)" class="detail-section">
+            <div class="detail-section-title">包含资源</div>
+            <div v-if="activePackage.resources.length" class="resource-rows">
+              <!-- P4 融合：skill 行可单独启停（pi 原生 skills[] 过滤语义）；
+                   包停用或处理中时行只读（不渲染开关）。 -->
+              <SubItemRow
+                v-for="(item, index) in activePackage.resources"
+                :key="`${item.type}:${item.name}:${index}`"
+                :name="item.name"
+                :type-badge="resourceTypeLabel(item.type)"
+                :toggleable="skillToggleable(item)"
+                :enabled="!item.disabled"
+                @toggle="(val: boolean) => handleToggleSkill(item, val)"
+              />
             </div>
-            <div class="meta-row">
-              <span>安装路径</span>
-              <code>{{ activePackage.installPath || '未找到实体目录' }}</code>
-            </div>
-            <div v-if="activePackage.author" class="meta-row">
-              <span>作者</span>
-              <span>{{ activePackage.author }}</span>
-            </div>
-            <div v-if="activePackage.repository" class="meta-row">
-              <span>仓库</span>
-              <span class="break-text">{{ activePackage.repository }}</span>
-            </div>
-            <div v-if="activePackage.lastUpdated" class="meta-row">
-              <span>更新时间</span>
-              <span>{{ formatDate(activePackage.lastUpdated) }}</span>
-            </div>
-            <div v-if="isDetail(activePackage)" class="meta-row">
-              <span>Manifest</span>
-              <span>{{ activePackage.manifestDeclared ? '已声明 Declared' : '未声明（按目录扫描）' }}</span>
-            </div>
+            <p v-else class="detail-hint">该包没有可展示的资源。</p>
+            <p v-if="isDetail(activePackage) && !activePackage.enabled && activePackage.resources.some(r => r.type === 'skill')" class="skill-note">
+              包已停用：先重新启用包，再单独调整 skill。
+            </p>
           </div>
 
-          <!-- 源类型切换：git ⇄ npm ⇄ 本地（remove+install 原子事务，失败自动回滚） -->
+          <MetaGrid :items="detailMetaItems" />
+
+          <!-- 源类型切换：git ⇄ npm ⇄ 本地（remove+install 原子事务，失败自动回滚）。
+               功能与交互保留，样式 token 化（契约 §5.4/§6.4）。 -->
           <div class="switch-source-card">
             <div class="switch-source-head">
               <span>切换源类型</span>
@@ -180,74 +155,52 @@
               </AppButton>
             </div>
           </div>
-
-          <div v-if="loadingDetail" class="detail-loading">正在读取包资源…</div>
-          <template v-else-if="isDetail(activePackage)">
-            <div class="resource-summary">
-              <div class="resource-card">
-                <span class="resource-value">{{ resourceCount('extension') }}</span>
-                <span>Extensions</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ resourceCount('skill') }}</span>
-                <span>Skills</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ resourceCount('prompt') }}</span>
-                <span>Prompts</span>
-              </div>
-              <div class="resource-card">
-                <span class="resource-value">{{ resourceCount('theme') }}</span>
-                <span>Themes</span>
-              </div>
-            </div>
-
-            <div v-if="skillResources.length" class="resource-list">
-              <h4>Skills（可单独启停）</h4>
-              <div class="skill-rows">
-                <div
-                  v-for="skill in skillResources"
-                  :key="skill.name"
-                  :class="['skill-row', { disabled: skill.disabled }]"
-                >
-                  <div class="skill-main">
-                    <span class="skill-name">{{ skill.name }}</span>
-                    <span class="skill-path">{{ skill.filePath }}</span>
-                  </div>
-                  <Switch
-                    :model-value="!skill.disabled"
-                    :disabled="mutating || !activePackage.enabled"
-                    @update:model-value="(val) => handleToggleSkill(skill, val)"
-                  />
-                </div>
-              </div>
-              <p v-if="!activePackage.enabled" class="skill-note">包已停用：先重新启用包，再单独调整 skill。</p>
-            </div>
-
-            <div v-if="otherResourceNames.length" class="resource-list">
-              <h4>包含资源</h4>
-              <div class="resource-chips">
-                <code v-for="item in otherResourceNames" :key="item">{{ item }}</code>
-              </div>
-            </div>
-          </template>
-        </div>
-
-        <div v-else class="detail-empty">
-          <EmptyState icon="◇" title="选择包" description="点击左侧包查看元数据与 extensions/skills 资源" />
         </div>
       </div>
 
-      <EmptyState
-        v-else
-        icon="⊘"
-        title="暂无 Pi 全局包"
-        description="点击“安装包”，输入 npm 包名、git 地址或本地路径"
-      />
+      <!-- 包列表态：行式列表（无开关），不分组 -->
+      <template v-else-if="resourceTab === 'packages'">
+        <div v-if="filteredPackages.length" class="package-rows">
+          <PluginRow
+            v-for="pkg in filteredPackages"
+            :key="pkg.source"
+            :name="pkg.name"
+            :description="pkg.description"
+            :badges="rowBadges(pkg)"
+            @click="select(pkg.source)"
+          />
+        </div>
+        <EmptyStateCard
+          v-else-if="!installed.length"
+          title="暂无 Pi 全局包"
+          description="点击『安装包』，输入 npm 包名、git 地址或本地路径"
+        >
+          <template #primary>
+            <AppButton variant="primary" size="small" @click="openInstallDialog">安装包</AppButton>
+          </template>
+        </EmptyStateCard>
+        <p v-else class="list-empty-hint">未找到匹配「{{ searchText }}」的包。</p>
+      </template>
+
+      <!-- 资源标签页：按所属包分组的行式条目（名称=资源名，描述缺省不显示） -->
+      <template v-else>
+        <template v-for="group in resourceGroups" :key="group.source">
+          <GroupHeader :title="group.name" :count="group.items.length" />
+          <div class="package-rows">
+            <PluginRow
+              v-for="item in group.items"
+              :key="`${group.source}:${item}`"
+              :name="item"
+              @click="jumpToPackage(group.source)"
+            />
+          </div>
+        </template>
+        <p v-if="!resourceGroups.length" class="list-empty-hint">未找到匹配的资源。</p>
+      </template>
     </template>
 
     <!-- P3-S5：WSL 侧插件面板（原生重放）——与 Windows 列表各自反映自己的
-         实体；目标选择器为 wsl/both 时操作会同步作用到本区。 -->
+         实体；目标选择器为 wsl/both 时操作会同步作用到本区。整体保留（契约 §6.4）。 -->
     <PiPluginWSLSection ref="wslSection" />
 
     <Dialog
@@ -264,9 +217,9 @@
           placeholder="例：npm:@earendil-works/pi-web-access、git:github.com/owner/repo 或 /path/to/pkg"
           @keydown.enter="handleInstall"
         />
-        <p>npm 包需加 npm: 前缀（如 npm:@earendil-works/pi-web-access）；git 源用 git:&lt;url&gt;；本地源直接给绝对路径。/ npm packages need the npm: prefix (e.g. npm:@earendil-works/pi-web-access); git sources use git:&lt;url&gt;; local sources are absolute paths.</p>
+        <p>npm 包需加 npm: 前缀（如 npm:@earendil-works/pi-web-access）；git 源用 git:&lt;url&gt;；本地源直接给绝对路径。</p>
         <p class="install-target-note">
-          应用目标：{{ targetLabel }}（在面板右上目标选择器切换 Windows / WSL / 同时应用；WSL 侧重放固定版本/ref）
+          应用目标：{{ targetLabel }}（在工具栏目标选择器切换 Windows / WSL / 同时应用；WSL 侧重放固定版本/ref）
         </p>
       </div>
       <template #footer>
@@ -303,36 +256,128 @@ import {
   updatePiPackageTargeted,
 } from '../../api/piPlugin';
 import AppButton from '../ui/AppButton.vue';
-import Badge from '../ui/Badge.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import Dialog from '../ui/Dialog.vue';
-import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
 import Segmented from '../ui/Segmented.vue';
 import Switch from '../ui/Switch.vue';
 import PiPluginWSLSection from './PiPluginWSLSection.vue';
+import CountTabs from './ui/CountTabs.vue';
+import DetailHeader from './ui/DetailHeader.vue';
+import DiagnosticBanner from './ui/DiagnosticBanner.vue';
+import EmptyStateCard from './ui/EmptyStateCard.vue';
+import GroupHeader from './ui/GroupHeader.vue';
+import ListToolbar from './ui/ListToolbar.vue';
+import MetaGrid from './ui/MetaGrid.vue';
+import PluginRow from './ui/PluginRow.vue';
+import SubItemRow from './ui/SubItemRow.vue';
+import type { CountTabItem, PluginBadgeDescriptor } from './pluginViewTypes';
 import { useToast } from '../../composables/useToast';
 import { SwitchPackageSource } from '../../../wailsjs/go/piplugin/Service';
-import { truncate } from '../../utils/format';
 
 const store = usePiPluginStore();
 const {
   installed,
   warnings,
+  loadError,
   activeSource,
   activePackage,
   loading,
   loadingDetail,
+  skillCount,
+  extensionCount,
+  promptCount,
+  themeCount,
 } = storeToRefs(store);
 const { showSuccess, showError } = useToast();
 
-const initialLoading = ref(true);
-const initialError = ref('');
+// ---- 首屏门控（store 派生，契约 §6.1/§6.4）----
+const showInitialLoading = computed(() => loading.value && installed.value.length === 0 && !loadError.value);
+const showInitialError = computed(() => !!loadError.value && installed.value.length === 0);
+// 有数据后的刷新失败 → loadError 并入诊断横幅（整页 ErrorState 只在无数据时出现）
+const diagnosticErrors = computed(() => (loadError.value ? [loadError.value] : []));
+
 const mutating = ref(false);
 const showInstallDialog = ref(false);
 const showRemoveDialog = ref(false);
 const installSource = ref('');
+
+// ---- 资源计数标签与页态（面板本地 resourceTab，契约 §2/§6.4）----
+type PiResourceTabKey = 'packages' | 'skills' | 'extensions' | 'prompts' | 'themes';
+type PiResourceField = 'skills' | 'extensions' | 'prompts' | 'themes';
+const RESOURCE_FIELDS: Record<Exclude<PiResourceTabKey, 'packages'>, PiResourceField> = {
+  skills: 'skills',
+  extensions: 'extensions',
+  prompts: 'prompts',
+  themes: 'themes',
+};
+function isResourceTabKey(value: string): value is Exclude<PiResourceTabKey, 'packages'> {
+  return value === 'skills' || value === 'extensions' || value === 'prompts' || value === 'themes';
+}
+const resourceTab = ref<PiResourceTabKey>('packages');
+// CountTabs 的 modelValue 是 string：经 computed 收窄回资源标签联合类型。
+const resourceTabModel = computed({
+  get: () => resourceTab.value as string,
+  set: (value: string) => {
+    if (value === 'packages' || isResourceTabKey(value)) {
+      resourceTab.value = value;
+    }
+  },
+});
+function openResourceTab(key: string): void {
+  resourceTabModel.value = key;
+}
+const searchText = ref('');
+
+const countTabs = computed<CountTabItem[]>(() => [
+  { key: 'packages', label: '包', count: installed.value.length },
+  { key: 'skills', label: '技能', count: skillCount.value, hidden: skillCount.value === 0 },
+  { key: 'extensions', label: '扩展', count: extensionCount.value, hidden: extensionCount.value === 0 },
+  { key: 'prompts', label: '提示词', count: promptCount.value, hidden: promptCount.value === 0 },
+  { key: 'themes', label: '主题', count: themeCount.value, hidden: themeCount.value === 0 },
+]);
+
+const searchPlaceholder = computed(() =>
+  resourceTab.value === 'packages' ? '搜索包名称或描述' : '搜索资源名称或所属包');
+
+// 本地过滤（契约 §7：搜索为面板本地 computed，不进 store、不发后端请求）
+const filteredPackages = computed(() => {
+  const keyword = searchText.value.trim().toLowerCase();
+  if (!keyword) return installed.value;
+  return installed.value.filter(pkg =>
+    pkg.name.toLowerCase().includes(keyword)
+    || (pkg.description ?? '').toLowerCase().includes(keyword));
+});
+
+interface ResourceGroup {
+  name: string;
+  source: string;
+  items: string[];
+}
+const resourceGroups = computed<ResourceGroup[]>(() => {
+  if (!isResourceTabKey(resourceTab.value)) return [];
+  const field = RESOURCE_FIELDS[resourceTab.value];
+  const keyword = searchText.value.trim().toLowerCase();
+  const groups: ResourceGroup[] = [];
+  for (const pkg of installed.value) {
+    const all = pkg[field] ?? [];
+    const items = keyword
+      ? all.filter(name => name.toLowerCase().includes(keyword) || pkg.name.toLowerCase().includes(keyword))
+      : all;
+    if (items.length) groups.push({ name: pkg.name, source: pkg.source, items });
+  }
+  return groups;
+});
+
+const toolbarTitle = computed(() =>
+  resourceTab.value === 'packages'
+    ? '已安装'
+    : countTabs.value.find(tab => tab.key === resourceTab.value)?.label ?? '资源');
+const toolbarCount = computed(() =>
+  resourceTab.value === 'packages'
+    ? filteredPackages.value.length
+    : resourceGroups.value.reduce((sum, group) => sum + group.items.length, 0));
 
 // ---- P3-S5：操作目标（Windows / WSL / 同时应用）----
 // windows（默认）走既有 store 路径；含 WSL 的目标走目标化 wrapper，每目标
@@ -448,7 +493,7 @@ const switchPlaceholder = computed(() => {
     case 'npm':
       return '例：npm:amagi-pi';
     case 'local':
-      return '例：/Users/maorun/maorun-workpace/amagi-pi';
+      return '例：/c/Users/name/dev/amagi-pi 或 ~/dev/amagi-pi';
     default:
       return '';
   }
@@ -496,21 +541,21 @@ async function handleSwitchSource(): Promise<void> {
   }
 }
 
-// skill 资源（带启停态）与其余资源（仅展示）拆分（P4）。
-const skillResources = computed(() => {
-  const pkg = activePackage.value;
-  if (!pkg || !isDetail(pkg)) return [];
-  return pkg.resources.filter(item => item.type === 'skill');
-});
+// skill 启停行可用性（P4 融合）：包启用且非 mutating 时 skill 行可切换；
+// 包停用时行只读（SubItemRow 不渲染开关），语义与旧版 disabled 开关一致。
+const skillToggleable = (item: { type: string }) =>
+  item.type === 'skill' && !!activePackage.value?.enabled && !mutating.value;
 
-const otherResourceNames = computed(() => {
-  const pkg = activePackage.value;
-  if (!pkg || !isDetail(pkg)) return [];
-  return pkg.resources
-    .filter(item => item.type !== 'skill')
-    .map(item => `${item.type}:${item.name}`)
-    .slice(0, 30);
-});
+// ---- 视图字段映射（契约 §5）----
+const RESOURCE_TYPE_LABELS: Record<string, string> = {
+  extension: '扩展',
+  skill: '技能',
+  prompt: '提示词',
+  theme: '主题',
+};
+function resourceTypeLabel(type: string): string {
+  return RESOURCE_TYPE_LABELS[type] ?? type;
+}
 
 // 包级启停（P4）：写入 Windows 侧 settings.json（!**×4 标记，pi 原生过滤语义）。
 async function handleToggleEnabled(enabled: boolean) {
@@ -546,30 +591,75 @@ function isDetail(pkg: PiPackage | PiPackageDetail): pkg is PiPackageDetail {
   return Array.isArray((pkg as PiPackageDetail).resources);
 }
 
-function resourceCount(type: PiPackageDetail['resources'][number]['type']) {
-  const pkg = activePackage.value;
-  if (!pkg || !isDetail(pkg)) return 0;
-  return pkg.resources.filter(item => item.type === type).length;
-}
-
 function sourceLabel(sourceType: string) {
   if (sourceType === 'git') return 'Git';
   if (sourceType === 'local') return '本地';
   return 'npm';
 }
 
+function scopeLabel(scope: string) {
+  return scope === 'user' ? '用户级' : scope;
+}
+
 function formatDate(value: string) {
   return new Date(value).toLocaleString('zh-CN');
 }
 
-async function loadPackages() {
-  initialError.value = '';
+// 行徽章（契约 §5.1 Pi 列）：来源类型 + v{version} + pinned + 包源（mono，超长截断）。
+// pinned 用 scope（--control 底 + --secondary 字）：tag 为白字无底色，浅色背景上不可见
+function rowBadges(pkg: PiPackage): PluginBadgeDescriptor[] {
+  const badges: PluginBadgeDescriptor[] = [
+    { text: sourceLabel(pkg.sourceType), type: 'source', variant: 'muted' },
+  ];
+  if (pkg.version) badges.push({ text: `v${pkg.version}`, type: 'ver' });
+  if (pkg.pinned) badges.push({ text: 'pinned', type: 'scope', variant: 'muted' });
+  badges.push({ text: shortenSource(pkg.source), type: 'source', variant: 'mono' });
+  return badges;
+}
+
+const detailBadges = computed<PluginBadgeDescriptor[]>(() => {
+  const pkg = activePackage.value;
+  if (!pkg) return [];
+  const badges: PluginBadgeDescriptor[] = [
+    { text: sourceLabel(pkg.sourceType), type: 'source', variant: 'muted' },
+  ];
+  if (pkg.version) badges.push({ text: `v${pkg.version}`, type: 'ver' });
+  if (pkg.pinned) badges.push({ text: 'pinned', type: 'scope', variant: 'muted' });
+  return badges;
+});
+
+interface MetaItem {
+  label: string;
+  value: string;
+  mono?: boolean;
+}
+// MetaGrid 行（契约 §5.2 Pi 列）；空 value 项在此过滤，不造占位假值。
+const detailMetaItems = computed<MetaItem[]>(() => {
+  const pkg = activePackage.value;
+  if (!pkg) return [];
+  const items: MetaItem[] = [
+    { label: '包源', value: pkg.source, mono: true },
+    { label: '来源类型', value: sourceLabel(pkg.sourceType) },
+    { label: '作用域', value: scopeLabel(pkg.scope) },
+  ];
+  if (pkg.installPath) items.push({ label: '安装路径', value: pkg.installPath });
+  if (pkg.author) items.push({ label: '开发者', value: pkg.author });
+  if (pkg.repository) items.push({ label: '仓库', value: pkg.repository });
+  if (pkg.lastUpdated) items.push({ label: '更新时间', value: formatDate(pkg.lastUpdated) });
+  if (isDetail(pkg)) {
+    items.push({ label: 'Manifest', value: pkg.manifestDeclared ? '已声明' : '未声明（按目录扫描）' });
+  }
+  return items;
+});
+
+// ---- 加载 / 导航 / 操作 ----
+async function reload(): Promise<void> {
+  // refresh 失败由 store 写入 loadError 并 rethrow；此处吞掉避免未处理拒绝，
+  // 失败展示统一走 store.loadError（诊断横幅 / 整页 ErrorState）。
   try {
     await store.refresh(true);
-  } catch (error) {
-    initialError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    initialLoading.value = false;
+  } catch {
+    /* 展示见 store.loadError */
   }
 }
 
@@ -580,6 +670,16 @@ async function select(source: string) {
   } catch (error) {
     showError(`读取包详情失败：${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function jumpToPackage(source: string): void {
+  resourceTab.value = 'packages';
+  void select(source);
+}
+
+function closeDetail(): void {
+  cancelSwitch();
+  activeSource.value = null;
 }
 
 function openInstallDialog() {
@@ -645,254 +745,120 @@ async function handleRemove() {
   }
 }
 
-onMounted(loadPackages);
+// 可测试性契约（§8）：行为断言经 expose 的 handler 触发
+defineExpose({
+  openInstallDialog,
+  showInstallDialog,
+  handleInstall,
+  handleUpdate,
+  handleRemove,
+  select,
+  openResourceTab,
+});
+
+onMounted(() => {
+  void reload();
+});
 </script>
 
 <style scoped>
+/* 根间距与 PluginInstalledPanel/PluginMarketPanel 对齐（14px，跨面板一致） */
 .pi-plugin-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.status-banner,
-.scope-note {
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.status-banner.warning {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 8%, var(--card));
-}
-
-.scope-note {
-  background: var(--card);
-}
-
-.scope-note strong {
-  font-size: 14px;
-  color: var(--label);
-}
-
-.scope-note p,
-.install-form p {
-  margin: 5px 0 0;
-  font-size: 12px;
-  color: var(--secondary);
-}
-
-.header-actions,
-.detail-actions,
-.package-badges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.header-actions {
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 14px;
 }
 
 .target-seg {
   font-size: 12px;
 }
 
-.install-target-note {
-  color: var(--tertiary);
-}
-
-.panel-header,
-.header-title,
-.detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.header-title {
-  justify-content: flex-start;
-  gap: 8px;
-}
-
-.header-title h2,
-.detail-header h3 {
-  margin: 0;
-}
-
-.count-badge {
-  min-width: 22px;
-  text-align: center;
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 11px;
-  background: var(--control);
-  color: var(--secondary);
-}
-
-.package-split {
-  display: grid;
-  grid-template-columns: minmax(280px, 36%) 1fr;
-  min-height: 470px;
-  border: 1px solid var(--separator);
-  border-radius: 14px;
-  overflow: hidden;
+.package-rows {
   background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card);
+  padding: 6px;
 }
 
-.package-list {
-  border-right: 1px solid var(--separator);
-  overflow-y: auto;
-  max-height: 620px;
-}
-
-.package-item {
-  width: 100%;
-  text-align: left;
-  border: 0;
-  border-bottom: 1px solid var(--separator);
-  background: transparent;
-  padding: 15px 16px;
-  color: var(--label);
-  cursor: pointer;
-}
-
-.package-item:hover,
-.package-item.active {
-  background: var(--control);
-}
-
-.package-item.active {
-  box-shadow: inset 3px 0 var(--accent);
-}
-
-.package-name-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.package-name {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.package-badges {
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-
-.package-source,
-.package-description {
-  margin: 8px 0 0;
-  font-size: 11px;
-  color: var(--tertiary);
-  overflow-wrap: anywhere;
-}
-
-.package-description {
-  color: var(--secondary);
-  line-height: 1.5;
-}
-
-.package-detail {
-  padding: 22px;
-  overflow-y: auto;
-}
-
-.detail-header {
+/* 描述完整多行显示（不截断、不加省略号）：ui/PluginRow 不可改，面板 scoped :deep 覆盖 */
+.package-rows :deep(.plugin-row) {
   align-items: flex-start;
+}
+
+.package-rows :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* 详情页：居中窄单列（约 720px，左右留白） */
+.detail-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
 }
 
+.detail-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.detail-back:hover {
+  text-decoration: underline;
+}
+
 .detail-description {
+  margin: 0;
   color: var(--secondary);
   line-height: 1.65;
   font-size: 13px;
 }
 
-.meta-list {
-  margin-top: 20px;
-  border-top: 1px solid var(--separator);
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.meta-row {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--separator);
-  font-size: 12px;
-  color: var(--secondary);
+.detail-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-.meta-row code,
-.break-text {
-  color: var(--label);
-  overflow-wrap: anywhere;
+.resource-rows {
+  display: flex;
+  flex-direction: column;
 }
 
 .detail-loading {
-  padding: 24px 0;
   color: var(--secondary);
   font-size: 12px;
 }
 
-.resource-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(70px, 1fr));
-  gap: 8px;
-  margin-top: 20px;
+.detail-hint {
+  margin: 0;
+  color: var(--tertiary);
+  font-size: 12px;
 }
 
-.resource-card {
-  background: var(--control);
-  border-radius: 10px;
-  padding: 12px 8px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--secondary);
-}
-
-.resource-value {
-  font-size: 18px;
-  font-weight: 650;
-  color: var(--label);
-}
-
-.resource-list {
-  margin-top: 20px;
-}
-
-.resource-list h4 {
-  margin: 0 0 10px;
-}
-
-.resource-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.resource-chips code {
-  padding: 4px 7px;
-  border-radius: 6px;
-  background: var(--control);
-  color: var(--secondary);
-  font-size: 10px;
-}
-
-/* P4：包级启停开关 + skill 级启停行 */
+/* P4 融合：详情页 actions 区包级启停开关 + 包停用时 skill 提示 */
 .enable-toggle {
   display: flex;
   align-items: center;
@@ -905,60 +871,18 @@ onMounted(loadPackages);
   white-space: nowrap;
 }
 
-.skill-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.skill-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 8px;
-  padding: 8px 12px;
-  transition: opacity 0.15s;
-}
-
-.skill-row.disabled {
-  opacity: 0.6;
-}
-
-.skill-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.skill-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--label);
-}
-
-.skill-path {
-  font-size: 10px;
-  color: var(--tertiary);
-  font-family: var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .skill-note {
   margin: 8px 0 0;
   font-size: 11px;
   color: var(--warning);
 }
 
-.detail-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.list-empty-hint {
+  margin: 0;
+  padding: 24px 0;
+  text-align: center;
+  color: var(--tertiary);
+  font-size: 13px;
 }
 
 .install-form {
@@ -970,6 +894,16 @@ onMounted(loadPackages);
 .install-form label {
   font-size: 13px;
   font-weight: 600;
+}
+
+.install-form p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.install-target-note {
+  color: var(--tertiary);
 }
 
 .module-input {
@@ -985,30 +919,15 @@ onMounted(loadPackages);
   border-color: var(--accent);
 }
 
-@media (max-width: 900px) {
-  .package-split {
-    grid-template-columns: 1fr;
-  }
-
-  .package-list {
-    border-right: 0;
-    border-bottom: 1px solid var(--separator);
-    max-height: 280px;
-  }
-
-  .resource-summary {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-/* 源类型切换卡片 */
+/* 源类型切换卡片（token 化，契约 §5.4/风险 11：原 --border/--bg-elevated/--text-muted
+   全前端无定义、渲染为深色 fallback，替换为 --separator/--control/--secondary） */
 .switch-source-card {
-  margin-top: 14px;
   padding: 12px 14px;
-  border: 1px solid var(--border, #2a2f3a);
-  border-radius: 10px;
-  background: var(--bg-elevated, #171a21);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--control);
 }
+
 .switch-source-head {
   display: flex;
   align-items: baseline;
@@ -1017,45 +936,54 @@ onMounted(loadPackages);
   margin-bottom: 10px;
   font-size: 13px;
   font-weight: 600;
+  color: var(--label);
 }
+
 .switch-source-tip {
   font-size: 11px;
   font-weight: 400;
-  color: var(--text-muted, #8b93a3);
+  color: var(--secondary);
 }
+
 .switch-type-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
 }
+
 .switch-input-row {
   margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
+
 .switch-input-row label {
   font-size: 11px;
-  color: var(--text-muted, #8b93a3);
+  color: var(--secondary);
 }
+
 .switch-history {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
   font-size: 11px;
-  color: var(--text-muted, #8b93a3);
+  color: var(--secondary);
 }
+
 .switch-history-item {
   cursor: pointer;
   padding: 2px 8px;
   border-radius: 6px;
-  border: 1px solid var(--border, #2a2f3a);
+  border: 1px solid var(--separator);
   transition: border-color 0.15s ease;
 }
+
 .switch-history-item:hover {
-  border-color: var(--accent, #4f8cff);
+  border-color: var(--accent);
 }
+
 .switch-actions {
   margin-top: 10px;
   display: flex;

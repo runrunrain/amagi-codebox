@@ -84,12 +84,24 @@
         </tbody>
       </table>
     </div>
+
+    <ConfirmDialog
+      v-model:open="showDeleteDialog"
+      title="删除模型价格"
+      :message="deletingEntry ? `确认删除价格「${deletingEntry.displayName || deletingEntry.modelPattern}」？` : ''"
+      danger
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmDelete"
+      @cancel="clearPendingDelete"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import AppButton from '../ui/AppButton.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import { formatPerMillion, formatCount } from '../../utils/usage-format';
 import type { ModelPricing, UnknownModel } from '../../api/usage';
 
@@ -137,9 +149,27 @@ const filtered = computed(() => {
   );
 });
 
+const showDeleteDialog = ref(false);
+const deletingEntry = ref<ModelPricing | null>(null);
+
+watch(showDeleteDialog, (open) => {
+  if (!open) clearPendingDelete();
+});
+
 function handleDelete(entry: ModelPricing) {
   if (entry.isBuiltin) return;
-  if (!confirm(`确认删除价格「${entry.displayName || entry.modelPattern}」？`)) return;
+  deletingEntry.value = entry;
+  showDeleteDialog.value = true;
+}
+
+function clearPendingDelete() {
+  deletingEntry.value = null;
+}
+
+function confirmDelete() {
+  const entry = deletingEntry.value;
+  clearPendingDelete();
+  if (!entry || entry.isBuiltin) return;
   emit('delete', entry);
 }
 </script>

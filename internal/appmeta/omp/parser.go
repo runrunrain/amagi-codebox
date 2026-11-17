@@ -114,20 +114,20 @@ type ompHeader struct {
 // Provider/Model are only meaningful for assistant turns; toolResult carries
 // neither (its nested usage is LLM work done inside the tool).
 type ompMessage struct {
-	Role      string   `json:"role"`
-	Provider  string   `json:"provider"`
-	Model     string   `json:"model"`
+	Role      string    `json:"role"`
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
 	Usage     *ompUsage `json:"usage,omitempty"`
-	Timestamp int64    `json:"timestamp"` // message-level timestamp, Unix ms
+	Timestamp int64     `json:"timestamp"` // message-level timestamp, Unix ms
 }
 
 // ompUsage mirrors omp's Usage type (identical shape to pi-ai's Usage).
 type ompUsage struct {
-	Input       int    `json:"input"`
-	Output      int    `json:"output"`
-	CacheRead   int    `json:"cacheRead"`
-	CacheWrite  int    `json:"cacheWrite"`
-	TotalTokens int    `json:"totalTokens"`
+	Input       int     `json:"input"`
+	Output      int     `json:"output"`
+	CacheRead   int     `json:"cacheRead"`
+	CacheWrite  int     `json:"cacheWrite"`
+	TotalTokens int     `json:"totalTokens"`
 	Cost        ompCost `json:"cost"`
 }
 

@@ -19,7 +19,7 @@
  */
 import { NATIVE_PLUGIN_PENDING_DETAIL, currentGate } from './capability'
 
-export type SecureStorageUnavailableReason = 'not-native' | 'native-pending-shell'
+type SecureStorageUnavailableReason = 'not-native' | 'native-pending-shell'
 
 /** 安全存储能力探测结果。Web 回落即「cookie jar 现状如实声明」。 */
 export type SecureStorageCapability =

@@ -217,7 +217,7 @@ function dayDiffDays(from: Date, to: Date): number {
 }
 
 /** 重置时刻短形式（strip 迷你摘要用）：今日 HH:mm / 明日 HH:mm / 周四 / M月d日。 */
-export function formatResetShort(resetsAtSec?: number, nowMs: number = Date.now()): string {
+function formatResetShort(resetsAtSec?: number, nowMs: number = Date.now()): string {
   if (!resetsAtSec || resetsAtSec <= 0) return '';
   const target = resetsAtSec * 1000;
   if (target <= nowMs) return '已过';
@@ -234,7 +234,7 @@ export function formatResetShort(resetsAtSec?: number, nowMs: number = Date.now(
 }
 
 /** probed_at 距今毫秒；解析失败返回 NaN */
-export function probedAgeMs(entry: ProviderQuotaEntry | null | undefined, nowMs: number = Date.now()): number {
+function probedAgeMs(entry: ProviderQuotaEntry | null | undefined, nowMs: number = Date.now()): number {
   if (!entry?.probed_at) return NaN;
   const ms = Date.parse(entry.probed_at);
   if (Number.isNaN(ms)) return NaN;
@@ -319,7 +319,7 @@ export function codexCreditsBadge(entry: ProviderQuotaEntry | null | undefined):
 
 // === Web 平面 strip 摘要 / Strip summary（设计 §7）===
 
-export type QuotaStripTone = 'data' | 'error' | 'muted';
+type QuotaStripTone = 'data' | 'error' | 'muted';
 
 export interface QuotaStripSummary {
   /** 迷你摘要正文（不含「额度」前缀，由组件拼） */

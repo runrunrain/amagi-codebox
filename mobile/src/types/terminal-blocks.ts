@@ -19,7 +19,7 @@ export const TERMINAL_BLOCK_TYPES = [
 
 export type TerminalBlockType = typeof TERMINAL_BLOCK_TYPES[number]
 
-export interface TerminalBlockBase {
+interface TerminalBlockBase {
   id: string
   type: TerminalBlockType
   appType: AppType
@@ -27,14 +27,14 @@ export interface TerminalBlockBase {
   createdAt: number
 }
 
-export interface TerminalTextBlock extends TerminalBlockBase {
+interface TerminalTextBlock extends TerminalBlockBase {
   type: 'text' | 'prompt' | 'action' | 'markdown' | 'thinking' | 'status' | 'streaming'
   content: string
   shortcutHint?: string
   primaryAction?: string
 }
 
-export interface TerminalSummaryBlock extends TerminalBlockBase {
+interface TerminalSummaryBlock extends TerminalBlockBase {
   type: 'summary'
   title: string
   version?: string
@@ -43,7 +43,7 @@ export interface TerminalSummaryBlock extends TerminalBlockBase {
   effort?: string
 }
 
-export interface TerminalCodeBlock extends TerminalBlockBase {
+interface TerminalCodeBlock extends TerminalBlockBase {
   type: 'code'
   code: string
   language?: string
@@ -58,7 +58,7 @@ export interface TerminalToolBlock extends TerminalBlockBase {
   shortcutHint?: string
 }
 
-export interface TerminalDiffBlock extends TerminalBlockBase {
+interface TerminalDiffBlock extends TerminalBlockBase {
   type: 'diff'
   filename: string
   additions: number
@@ -66,25 +66,25 @@ export interface TerminalDiffBlock extends TerminalBlockBase {
   diff: string
 }
 
-export interface TodoItem {
+interface TodoItem {
   text: string
   completed: boolean
 }
 
-export interface TerminalTodoBlock extends TerminalBlockBase {
+interface TerminalTodoBlock extends TerminalBlockBase {
   type: 'todo'
   items: TodoItem[]
   content: string
 }
 
-export interface TerminalTableBlock extends TerminalBlockBase {
+interface TerminalTableBlock extends TerminalBlockBase {
   type: 'table'
   headers: string[]
   rows: string[][]
   content: string
 }
 
-export interface TerminalRawBlock extends TerminalBlockBase {
+interface TerminalRawBlock extends TerminalBlockBase {
   type: 'raw-terminal'
   lines: string[]
 }

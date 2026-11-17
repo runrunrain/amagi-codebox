@@ -325,8 +325,7 @@ const terminalType = computed(() => {
 // 可用的 Provider 名称
 const providerNames = computed(() => Object.entries(store.providers)
   .filter(([, provider]) => {
-    const p = provider as any;
-    return props.format === 'anthropic' ? !!p.anthropic?.enabled : !!p.openai?.enabled;
+    return props.format === 'anthropic' ? !!provider.anthropic?.enabled : !!provider.openai?.enabled;
   })
   .map(([name]) => name));
 
@@ -449,7 +448,7 @@ async function handleSave() {
   loading.value = true;
   try {
     const presetName = form.name || form.label;
-    const terminalPreset: any = new config.TerminalPreset();
+    const terminalPreset = new config.TerminalPreset();
 
     // key 生成策略（防止编辑循环污染）：
     // - 编辑模式：key 锁定为原 props.preset.key（稳定 ID），只更新 name + 其他字段；
@@ -489,34 +488,36 @@ async function handleSave() {
     }
 
     // 参数设置
-    const parameters: any = {};
-    if (form.temperature !== undefined) parameters.temperature = form.temperature;
-    if (form.topP !== undefined) parameters.top_p = form.topP;
-    if (form.maxTokens !== undefined) parameters.max_tokens = form.maxTokens;
+    const parameters = new config.Parameters();
+    let hasParameters = false;
+    if (form.temperature !== undefined) { parameters.temperature = form.temperature; hasParameters = true; }
+    if (form.topP !== undefined) { parameters.top_p = form.topP; hasParameters = true; }
+    if (form.maxTokens !== undefined) { parameters.max_tokens = form.maxTokens; hasParameters = true; }
     if (form.streamValue !== '') {
       parameters.stream = form.streamValue === 'true';
+      hasParameters = true;
     }
     if (form.thinkingType) {
-      parameters.thinking = {
+      parameters.thinking = config.ThinkingConfig.createFrom({
         type: form.thinkingType,
         budgetTokens: form.thinkingBudget,
-      };
+      });
+      hasParameters = true;
     }
     // 推理强度：Claude Code 通过 CLAUDE_CODE_EFFORT_LEVEL，Codex 通过
     // model_reasoning_effort 单进程覆盖，Pi / OMP 通过 --thinking。
     if (form.reasoningEffort) {
       parameters.reasoning_effort = form.reasoningEffort;
+      hasParameters = true;
     }
     if (form.contextWindow !== undefined || form.compactLimit !== undefined) {
-      parameters.context_window = {};
-      if (form.contextWindow !== undefined) {
-        parameters.context_window.model_context_window = form.contextWindow;
-      }
-      if (form.compactLimit !== undefined) {
-        parameters.context_window.model_auto_compact_token_limit = form.compactLimit;
-      }
+      parameters.context_window = config.ContextWindowConfig.createFrom({
+        model_context_window: form.contextWindow,
+        model_auto_compact_token_limit: form.compactLimit,
+      });
+      hasParameters = true;
     }
-    if (Object.keys(parameters).length > 0) {
+    if (hasParameters) {
       terminalPreset.parameters = parameters;
     }
 

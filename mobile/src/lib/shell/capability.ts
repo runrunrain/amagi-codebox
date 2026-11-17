@@ -28,7 +28,7 @@
 import { Capacitor } from '@capacitor/core'
 
 /** Capacitor 报告的运行平台（web 含 SSR/桌面浏览器）。 */
-export type Platform = 'android' | 'ios' | 'web'
+type Platform = 'android' | 'ios' | 'web'
 
 /** 原生平台门：唯一从 `@capacitor/core` 读取 Capacitor 全局的地方。 */
 export interface NativeGate {
@@ -59,12 +59,6 @@ export function __setNativeGateForTest(next: NativeGate): NativeGate {
 /** 读取当前门（模块内私有访问点）。 */
 export function currentGate(): NativeGate {
   return gate
-}
-
-/** 把任意 unknown 错误归一为字符串（不抛、不泄漏细节给上层，仅用于 detail 文案）。 */
-export function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message
-  return typeof err === 'string' ? err : 'unknown error'
 }
 
 /**

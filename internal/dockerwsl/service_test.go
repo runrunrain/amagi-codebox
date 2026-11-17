@@ -1,6 +1,7 @@
 package dockerwsl
 
 import (
+	"amagi-codebox/internal/logging"
 	"context"
 	"errors"
 	"strings"
@@ -103,8 +104,8 @@ func healthyFake() *fakeRunner {
 		states:      map[string]string{"Ubuntu": "Running", "docker-desktop": "Running"},
 		tasklist:    map[string]int{"Docker Desktop.exe": 1, "com.docker.backend.exe": 2},
 		wslOut: map[string]string{
-			mountStatKey("Ubuntu"):   "23,219,968",
-			dockerBinKey("Ubuntu"):   "",
+			mountStatKey("Ubuntu"):       "23,219,968",
+			dockerBinKey("Ubuntu"):       "",
 			"--terminate docker-desktop": "",
 		},
 		engineReadyAfter: 0,
@@ -312,13 +313,13 @@ func TestSelfHealNotAvailable(t *testing.T) {
 func TestBuildIssuesAndShouldSelfHealPure(t *testing.T) {
 	// 纯函数：未注入 docker CLI 但挂载 ok → 有 issue；引擎就绪+挂载 ok → 不自愈。
 	rep := HealthReport{
-		Available:                true,
-		ToolDistroPresent:        true,
-		IntegrationMountState:    MountOK,
-		IntegrationMountBytes:    23219968,
-		DistroDockerBinInjected:  false,
-		EngineReady:              true,
-		DesktopProcessesRunning:  1,
+		Available:               true,
+		ToolDistroPresent:       true,
+		IntegrationMountState:   MountOK,
+		IntegrationMountBytes:   23219968,
+		DistroDockerBinInjected: false,
+		EngineReady:             true,
+		DesktopProcessesRunning: 1,
 	}
 	if shouldSelfHeal(&rep) {
 		t.Fatal("引擎就绪+挂载 ok 不应自愈")
@@ -327,4 +328,9 @@ func TestBuildIssuesAndShouldSelfHealPure(t *testing.T) {
 	if len(issues) != 1 || !strings.Contains(issues[0], "/usr/bin/docker") {
 		t.Fatalf("issues = %v", issues)
 	}
+}
+
+// newServiceWithRunner 供测试注入假件。
+func newServiceWithRunner(log *logging.Service, r runner) *Service {
+	return &Service{log: log, r: r}
 }

@@ -7,6 +7,7 @@ package wslsupply
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ type commitTestEnv struct {
 func newCommitTestEnv(t *testing.T, sensitive bool, preimage []byte) *commitTestEnv {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: 0})
+	c := newCoordinatorWith(t, fp)
 	adapter := &reviewAdapter{rel: "prefs.json", source: func() []byte { return []byte(`{"v":2}`) }}
 	_ = adapter
 	target, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
@@ -327,31 +328,32 @@ func TestAttackWithdrawalAfterUnregisteredWriteNoFreshLeak(t *testing.T) {
 // 或明确保留位置；空目录也不丢（不做 RemoveAll 冒充恢复）。
 func TestAttackDirMoveAsideCancelRestores(t *testing.T) {
 	root := t.TempDir()
-	src := filepath.Join(root, "host", "demo")
+	src := filepath.Join(root, "host", "commands", "demo")
 	if err := os.MkdirAll(src, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("# NEW"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scope := NewSkillsScope(filepath.Join(root, "host"), DefaultSkillsScanLimits())
-	scope.Scan()
 	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
 		identity: platformUserIdentityFixture()}
-	c := newCoordinatorWith(t, fp, nil)
-	c.RegisterSkills(scope)
-	unit := SkillUnitID("demo")
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {
+	c := newCoordinatorWith(t, fp)
+	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
+		HostRoot: filepath.Join(root, "host"), DirUnits: []string{"commands"}, TargetPrefix: ".claude/",
+	}, DefaultSkillsScanLimits()))
+	c.resourceScope(CLIClaude).Scan()
+	unit := ResourceUnitID(CLIClaude, "commands/demo")
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, unit); err != nil {
 		t.Fatal(err)
 	}
-	targetDir := filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo")
+	targetDir := filepath.Join(fp.uncRoot, "home/u/.claude/commands/demo")
 	if err := os.MkdirAll(targetDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(targetDir, "SKILL.md"), []byte("# USER ORIGINAL"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pv, x := c.PreviewUnits(context.Background(), "Ubuntu", CLICommon, []UnitID{unit})
+	pv, x := c.PreviewUnits(context.Background(), "Ubuntu", CLIClaude, []UnitID{unit})
 	if x != nil {
 		t.Fatal(x)
 	}
@@ -365,7 +367,7 @@ func TestAttackDirMoveAsideCancelRestores(t *testing.T) {
 		}
 		return len(ps) > 0
 	}}
-	res, xerr := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, unit, pv[0].TargetHash)
+	res, xerr := c.TakeOverUnit(ctx, "Ubuntu", CLIClaude, unit, pv[0].TargetHash)
 	if xerr != nil {
 		t.Fatal(xerr)
 	}
@@ -413,4 +415,27 @@ func timeNow() time.Time { return time.Now() }
 // platformUserIdentityFixture 返回目录测试用的固定身份。
 func platformUserIdentityFixture() platform.WSLUserIdentity {
 	return platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "fixture", OK: true}
+}
+
+// readIntent 读回单个 intent（存在性/可读性判断用，测试观察口）。
+func (s *stateStore) readIntent(opID string) (OperationIntent, bool, error) {
+	data, err := os.ReadFile(pendingIntentPath(s.configDir, opID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return OperationIntent{}, false, nil
+		}
+		return OperationIntent{}, false, err
+	}
+	var op OperationIntent
+	if jerr := json.Unmarshal(data, &op); jerr != nil {
+		return OperationIntent{}, true, fmt.Errorf("parse intent %s: %w", opID, jerr)
+	}
+	return op, true, nil
+}
+
+// add 注入一个故障（测试故障注入通道；生产恒空表）。
+func (f *commitFaults) add(stage string, times int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults = append(f.faults, commitFault{stage: stage, times: times, err: err})
 }

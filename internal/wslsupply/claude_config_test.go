@@ -10,9 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
-
-	"amagi-codebox/internal/launcher"
 )
 
 type stubClaudeConfigSource struct {
@@ -37,7 +36,7 @@ func (s *stubClaudeConfigSource) SettingsJSON() ([]byte, error) {
 func newS4ClaudeCoordinator(t *testing.T) (*Coordinator, *fakeProbes, *stubClaudeConfigSource, *stubFactsSource) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	src := &stubClaudeConfigSource{}
 	facts := &stubFactsSource{}
 	facts.set(TransformFacts{
@@ -88,6 +87,22 @@ func grantClaudeConsent(t *testing.T, c *Coordinator, units ...UnitID) {
 		}
 	}
 }
+
+// stubFactsSource 是 FactsSource 桩（可变验证结果）。
+type stubFactsSource struct {
+	mu    atomic.Value // TransformFacts
+	calls int32
+	err   bool
+}
+
+func (s *stubFactsSource) TransformFacts(_ context.Context, _ TargetRef) (TransformFacts, error) {
+	atomic.AddInt32(&s.calls, 1)
+	if s.err {
+		return TransformFacts{}, os.ErrDeadlineExceeded
+	}
+	return s.mu.Load().(TransformFacts), nil
+}
+func (s *stubFactsSource) set(f TransformFacts) { s.mu.Store(f) }
 
 func TestClaudeMCPSelectionGate(t *testing.T) {
 	c, fp, src, _ := newS4ClaudeCoordinator(t)

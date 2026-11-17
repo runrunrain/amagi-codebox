@@ -12,6 +12,9 @@ import type { AggregatedSkill, SharedExtEngine, SharedMCPServer } from '../../..
 /** 插件来源条目删除按钮的禁用提示（删除统一在插件管理中处理，P4 联动）。 */
 export const PLUGIN_DELETE_TITLE = '来自插件，请在插件管理中卸载';
 
+/** 插件市场来源条目删除按钮的禁用提示（P6 交汇点：卸载归共用市场子页管理）。 */
+export const MARKET_DELETE_TITLE = '来自插件市场，请在「共用市场」子页管理';
+
 /** 引擎展示名：targets 勾选 chips 与插件来源引擎标识共用。 */
 export const ENGINE_LABELS: Record<SharedExtEngine, string> = {
   claude: 'Claude',
@@ -66,6 +69,10 @@ export function skillRowModel(entry: AggregatedSkill, registryTargets?: string[]
   const pluginEngine = managed ? undefined : entry.pluginEngine;
   const pluginId = managed ? undefined : entry.pluginId;
   const pluginName = managed ? undefined : entry.pluginName;
+  // 插件市场来源（P6 交汇点）：徽章「插件市场·插件名」、禁删文案指向共用
+  // 市场子页；无引擎概念（engineLabel 留空），viewPlugin 白名单不含 market
+  // 天然不跳转（卸载归共用市场）。
+  const isMarket = pluginEngine === 'market';
   return {
     key: managed ? `manual:${entry.name}` : `plugin:${pluginId}:${entry.name}`,
     name: entry.name,
@@ -74,16 +81,16 @@ export function skillRowModel(entry: AggregatedSkill, registryTargets?: string[]
     enabled: entry.enabled,
     canToggle: managed,
     canDelete: managed,
-    deleteTitle: managed ? '' : PLUGIN_DELETE_TITLE,
+    deleteTitle: managed ? '' : isMarket ? MARKET_DELETE_TITLE : PLUGIN_DELETE_TITLE,
     canEditTargets: managed,
     // 勾选态统一按 SHARED_EXT_ENGINES 固定顺序呈现（registry 顺序不保证）
     targets: SHARED_EXT_ENGINES.filter((e) => (registryTargets ?? []).includes(e)),
-    sourceText: managed ? '手动导入' : `插件·${pluginName || pluginId || entry.name}`,
+    sourceText: managed ? '手动导入' : isMarket ? `插件市场·${pluginName || pluginId || entry.name}` : `插件·${pluginName || pluginId || entry.name}`,
     sourceColor: managed ? 'skill' : 'plugin',
     pluginEngine,
     pluginId,
     pluginName,
-    engineLabel: engineLabelOf(pluginEngine),
+    engineLabel: isMarket ? '' : engineLabelOf(pluginEngine),
   };
 }
 

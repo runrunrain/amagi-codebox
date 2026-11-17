@@ -38,7 +38,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/remote/contract"
 )
 
@@ -401,7 +400,7 @@ func TestM011_T41_RevokeAuthorityOrder_ProductionPath(t *testing.T) {
 	// REAL security server.
 	dir := t.TempDir()
 	opts := newSecurityOptions(dir, validHostSummary, clk, rand.Reader, NewVolatileSecurityEventSink())
-	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), emptyFS(), opts)
+	srv := NewServerWithSecurity(0, nil, newTestLogService(t), emptyFS(), opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)
@@ -583,7 +582,7 @@ func TestM011_T42_ServerStopFenceFirst_ProductionPath(t *testing.T) {
 
 	dir := t.TempDir()
 	opts := newSecurityOptions(dir, validHostSummary, clk, rand.Reader, NewVolatileSecurityEventSink())
-	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), emptyFS(), opts)
+	srv := NewServerWithSecurity(0, nil, newTestLogService(t), emptyFS(), opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)

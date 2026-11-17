@@ -1,11 +1,12 @@
 // legacyconfig_test.go — legacy 配置面（WD-5 过渡方案，RC4-1）测试：
 // httptest 假 legacy 服务端（Bearer 鉴权、providers/settings 读写）覆盖：
-//   · providers/settings 往返（列表/详情/保存，请求头注入）；
-//   · 401/403 族 → auth.unpaired 形态（提示重填 token，不泄露 token）；
-//   · token 未配置 → 明确错误 + 零出网；
-//   · 净化层负向断言：伪造含密钥响应 → 下行掩码；伪造含密钥请求 → 上行拦截；
-//   · token 不落盘（Keychain 条目 + 登记簿仅布尔投影）；
-//   · hasLegacyToken 标记生命周期（设置/清除/地址变更重置/ForgetHost 清理）。
+//
+//	· providers/settings 往返（列表/详情/保存，请求头注入）；
+//	· 401/403 族 → auth.unpaired 形态（提示重填 token，不泄露 token）；
+//	· token 未配置 → 明确错误 + 零出网；
+//	· 净化层负向断言：伪造含密钥响应 → 下行掩码；伪造含密钥请求 → 上行拦截；
+//	· token 不落盘（Keychain 条目 + 登记簿仅布尔投影）；
+//	· hasLegacyToken 标记生命周期（设置/清除/地址变更重置/ForgetHost 清理）。
 package remoteclient
 
 import (

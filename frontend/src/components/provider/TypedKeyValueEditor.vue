@@ -73,9 +73,10 @@ import Switch from '../ui/Switch.vue';
 import AppButton from '../ui/AppButton.vue';
 import MaskedValue from '../ui/MaskedValue.vue';
 import RawJsonEditor from './RawJsonEditor.vue';
+import { genId } from './editorUtils';
 
 interface Props {
-  modelValue: Record<string, any>;
+  modelValue: Record<string, unknown>;
   emptyText?: string;
 }
 
@@ -85,20 +86,13 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, any>];
+  'update:modelValue': [value: Record<string, unknown>];
 }>();
 
 interface Entry {
   id: string;
   key: string;
-  value: any;
-}
-
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  value: unknown;
 }
 
 const entries = ref<Entry[]>([]);
@@ -117,7 +111,7 @@ function syncFromModel() {
 }
 
 function emitAll() {
-  const out: Record<string, any> = {};
+  const out: Record<string, unknown> = {};
   for (const e of entries.value) {
     if (e.key === '') continue; // 暂跳过空键
     out[e.key] = e.value;
@@ -132,7 +126,7 @@ function updateKey(id: string, newKey: string) {
     emitAll();
   }
 }
-function updateValue(id: string, newValue: any) {
+function updateValue(id: string, newValue: unknown) {
   const entry = entries.value.find((e) => e.id === id);
   if (entry) {
     entry.value = newValue;
@@ -148,7 +142,7 @@ function removeEntry(id: string) {
   emitAll();
 }
 function addEntry(type: 'string' | 'boolean' | 'number' | 'object') {
-  const defaults: Record<string, any> = {
+  const defaults: Record<string, unknown> = {
     string: '',
     boolean: false,
     number: 0,
@@ -168,7 +162,7 @@ watch(
   () => props.modelValue,
   (next) => {
     const obj = next && typeof next === 'object' ? next : {};
-    const cur: Record<string, any> = {};
+    const cur: Record<string, unknown> = {};
     for (const e of entries.value) {
       if (e.key !== '') cur[e.key] = e.value;
     }

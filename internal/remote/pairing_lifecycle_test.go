@@ -14,8 +14,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"amagi-codebox/internal/logging"
 )
 
 // newSuspendedServer builds a security-enabled server whose pairing service is
@@ -25,7 +23,7 @@ func newSuspendedServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	opts := NewProductionSecurityOptions(dir, validHostSummary)
-	srv := NewServerWithSecurity(0, nil, logging.NewService(t.TempDir()), embed.FS{}, opts)
+	srv := NewServerWithSecurity(0, nil, newTestLogService(t), embed.FS{}, opts)
 	t.Cleanup(srv.log.Close)
 	if err := srv.LoadSecurityState(); err != nil {
 		t.Fatalf("LoadSecurityState: %v", err)

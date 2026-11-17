@@ -9,11 +9,11 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
@@ -29,6 +29,42 @@ import (
 // the gated auto-command (bootstrap) write (M-005). Mirrors the legacy PTY
 // service's 1s shell-init wait.
 const desktopBootstrapDelay = 1000 * time.Millisecond
+
+// launch:progress 事件契约：WSL 冷启动数秒等待中的阶段提示。负载
+// {stage, message, appType}，stage 取下方稳定枚举，与前端
+// useSessionLaunch 的 LAUNCH_STAGE_TEXT 键一一对应（两端同步修改）。
+const (
+	launchProgressEvent          = "launch:progress"
+	launchProgressStagePreflight = "preflight"
+	launchProgressStageSupply    = "supply"
+	launchProgressStagePTY       = "pty"
+)
+
+// launchProgressEmitFn 是事件发射接缝（生产为带守卫的 wails EventsEmit；
+// 测试注入记录器断言发射点，镜像 wslDefaultDistroFn 的替换模式）。
+var launchProgressEmitFn = emitLaunchProgressEvent
+
+// emitLaunchProgressEvent best-effort 发射：Wails EventsEmit 对未携带
+// events 值的 ctx 会 log.Fatalf（vendor wails/v2/pkg/runtime getEvents），
+// 故仅当 ctx 为 Startup 注入的运行时 ctx（携带 "events" 值）时才发射——
+// 测试/非 Wails 环境（ctx 缺失或裸 context）自然降级为不发，绝不影响
+// 启动主流程。
+func emitLaunchProgressEvent(ctx context.Context, event string, data ...any) {
+	if ctx == nil || ctx.Value("events") == nil {
+		return
+	}
+	wailsRuntime.EventsEmit(ctx, event, data...)
+}
+
+// emitLaunchProgress 向前端发射一个 WSL 启动阶段进度事件（仅阶段提示，
+// 发射路径任何失败都不阻断启动）。appType 透传 spec.AppType（五引擎枚举）。
+func (a *App) emitLaunchProgress(stage, message, appType string) {
+	launchProgressEmitFn(a.ctx, launchProgressEvent, map[string]any{
+		"stage":   stage,
+		"message": message,
+		"appType": appType,
+	})
+}
 
 // appPTYRaw adapts pty.Service to the remote.PTYRawPort interface (raw bytes,
 // not base64). It is NEVER Wails-bound (design §4.1 C-01).
@@ -100,10 +136,10 @@ func (a *App) reserveLaunchSession(appType session.AppType, provider, preset, mo
 	return &created, reservation, nil
 }
 
-func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string, useHeadroom bool) launchplan.StableRecipe {
+func stableDesktopRecipe(appType session.AppType, workdir, provider, preset, model, shell string) launchplan.StableRecipe {
 	return launchplan.StableRecipe{
 		CLIType: contract.CLIType(appType), Workdir: workdir, ProviderRef: provider,
-		PresetRef: preset, ModelRef: model, ShellRef: shell, UseHeadroom: useHeadroom,
+		PresetRef: preset, ModelRef: model, ShellRef: shell,
 	}
 }
 
@@ -123,6 +159,19 @@ func (a *App) launchEmbeddedPTY(reservation *session.CreateReservation, recipe l
 }
 
 func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, admission *remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
+	var claims []*remote.SharedLaunchAdmission
+	if admission != nil {
+		claims = append(claims, admission)
+	}
+	return a.launchEmbeddedPTYWithClaims(reservation, recipe, spec, claims, sharedKinds...)
+}
+
+// launchEmbeddedPTYWithClaims 按 kind 匹配多笔启动 admission（design §6.3）：
+// 匹配的 admission 原子提升为运行 lease，未匹配的 kind 走无 admission 获取
+// （提升前无中间副作用时不适用此路径）。
+// 凭据 kind 的指纹在提升时重算（canonical 路径 + 当前池代际），代际变化
+// → 提升失败 → 启动以重新规划语义失败（不带旧代际放行）。
+func (a *App) launchEmbeddedPTYWithClaims(reservation *session.CreateReservation, recipe launchplan.StableRecipe, spec platform.ResolvedLaunchSpec, claims []*remote.SharedLaunchAdmission, sharedKinds ...remote.SharedServiceKind) (int, error) {
 	if reservation == nil || reservation.SessionID() == "" || a.control == nil || a.processRegistry == nil {
 		return 0, remote.ErrControlNotReady
 	}
@@ -131,8 +180,38 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := runWSLSharedFilesForSpec(ctx, a.WSLSupply, spec); err != nil {
+	// WSL 启动预检融合：一次 wsl.exe 调用同时取得身份三件套与工作目录定谳，
+	// 结果只在本次启动 RPC 作用域内显式传递（供给闸门 + PTY 启动共用），不做
+	// 跨启动缓存。失败 fail-closed 阻断启动；成功后 WorkDir 即定谳绝对路径。
+	var preflight *platform.WSLLaunchPreflight
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		preflightStart := time.Now()
+		// 阶段提示（best-effort）：冷启动探测前先让前端亮出「正在唤醒 WSL」，
+		// 数秒等待不再无反馈。
+		a.emitLaunchProgress(launchProgressStagePreflight, "WSL 预检开始：探测发行版与工作目录", spec.AppType)
+		pf, err := wslLaunchPreflightProbeFn(ctx, wslDefaultDistroFn(spec.Env.Variables), spec.WorkDir)
+		if err != nil {
+			return 0, err
+		}
+		preflight = &pf
+		spec.WorkDir = pf.ResolvedWorkDir
+		spec.WSLWorkDirPreflightResolved = true
+		a.emitLaunchProgress(launchProgressStagePreflight, "WSL 预检完成：发行版已就绪", spec.AppType)
+		if a.Log != nil {
+			a.Log.Info("session", "WSL 启动预检完成（一次探测取得身份与定谳目录）",
+				fmt.Sprintf("id=%s 耗时=%dms distro用户uid=%s 定谳目录=%s", sessionID, time.Since(preflightStart).Milliseconds(), pf.Identity.UID, pf.ResolvedWorkDir))
+		}
+	}
+	gateStart := time.Now()
+	if err := runWSLSharedFilesForSpec(ctx, a.WSLSupply, spec, preflight); err != nil {
 		return 0, fmt.Errorf("WSL shared supply: %w", err)
+	}
+	if preflight != nil {
+		// 仅 WSL 启动发进度事件（非 WSL 无事件 → 前端维持现状文案）。
+		a.emitLaunchProgress(launchProgressStageSupply, "共享配置供给完成", spec.AppType)
+		if a.Log != nil {
+			a.Log.Info("session", "WSL 供给闸门完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(gateStart).Milliseconds()))
+		}
 	}
 	launchPermit, runPermit, obsPermit, err := a.control.BeginDesktopRun(ctx, contract.SessionID(sessionID))
 	if err != nil {
@@ -150,14 +229,27 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 			return 0, remote.ErrSharedServiceInUse
 		}
 		for _, kind := range sharedKinds {
+			var admission *remote.SharedLaunchAdmission
+			for _, claim := range claims {
+				if claim != nil && claim.Kind() == kind {
+					admission = claim
+					break
+				}
+			}
 			var lease *remote.SharedDependencyLease
 			var acqErr error
-			if admission != nil && admission.Kind() == kind {
+			if admission != nil {
 				lease, acqErr = a.sharedCoord.AcquireForRunWithAdmission(ctx, runPermit, kind, a.sharedFingerprint(kind), admission)
 			} else {
 				lease, acqErr = a.sharedCoord.AcquireForRun(ctx, runPermit, kind, a.sharedFingerprint(kind))
 			}
 			if acqErr != nil {
+				if kind == remote.SharedServiceClaudeCredentials {
+					// 代际变化/协调器关闭：返回重新规划语义错误（design §6.3：
+					// 启动前代际变更 → 重新规划，不带旧代际放行）。
+					abortHidden(errClaudeCredentialsGenerationChanged)
+					return 0, fmt.Errorf("acquire shared credential lease: %w", errClaudeCredentialsGenerationChanged)
+				}
 				abortHidden(acqErr)
 				return 0, fmt.Errorf("acquire shared lease: %w", acqErr)
 			}
@@ -165,10 +257,17 @@ func (a *App) launchEmbeddedPTYWithAdmission(reservation *session.CreateReservat
 		}
 	}
 
+	ptyStart := time.Now()
 	start, err := a.Pty.StartResolvedWithRunEvidence(sessionID, spec, obsPermit)
 	if err != nil {
 		abortHidden(err)
 		return 0, err
+	}
+	if preflight != nil {
+		a.emitLaunchProgress(launchProgressStagePTY, "PTY 已启动", spec.AppType)
+	}
+	if a.Log != nil {
+		a.Log.Info("session", "PTY 启动完成", fmt.Sprintf("id=%s 耗时=%dms", sessionID, time.Since(ptyStart).Milliseconds()))
 	}
 	if err := start.Validate(processcap.BackendPTY); err != nil {
 		_ = start.Binding.CloseExact(ctx)
@@ -395,25 +494,4 @@ func isControlUnknownSession(err error) bool {
 		return ge.Kind == remote.DenySessionNotFound
 	}
 	return false
-}
-
-// sharedFingerprintForHeadroom computes SHA-256 over the exact service,
-// upstream, and listen-port tuple. The same tuple is used by planner, executor
-// verification, mutation guards, and lease promotion.
-func sharedFingerprintForHeadroom(service, upstreamURL string, port int) [32]byte {
-	return sharedServiceFingerprint(service, upstreamURL, port)
-}
-
-func sharedServiceFingerprint(service, upstreamURL string, port int) [32]byte {
-	payload := make([]byte, 0, 16+len(service)+len(upstreamURL)+8)
-	var scalar [8]byte
-	binary.BigEndian.PutUint64(scalar[:], uint64(len(service)))
-	payload = append(payload, scalar[:]...)
-	payload = append(payload, service...)
-	binary.BigEndian.PutUint64(scalar[:], uint64(len(upstreamURL)))
-	payload = append(payload, scalar[:]...)
-	payload = append(payload, upstreamURL...)
-	binary.BigEndian.PutUint64(scalar[:], uint64(int64(port)))
-	payload = append(payload, scalar[:]...)
-	return sha256.Sum256(payload)
 }

@@ -4,6 +4,358 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.145] - 2026-11-20
+
+### Added
+
+- **共用中心（公共 skill / 公共 MCP，扩展页「共用中心」子页）**：跨 CLI 共享资源的统一仓库与分发面。公共 skill 支持 zip 压缩包/文件夹导入（路径穿越、超大文件、符号链接拒绝）、启停、删除与按需分发——启用时复制分发到勾选目标 CLI（Claude/Codex/OpenCode/Pi/OMP）的 skills 目录，禁用/删除时按部署清单回收；公共 MCP 支持 JSON 粘贴/选文件导入（`{"mcpServers":{}}`/裸对象/单条三格式，导入前解析预览）、启停与目标勾选，启用时保真写入各 CLI 原生 MCP 配置（Claude `~/.claude.json`、Codex `config.toml` TOML 保真编辑、OpenCode `opencode.json`、Pi/OMP `<agentDir>/mcp.json`），写入前自动备份（保留 3 份）。域服务 `internal/sharedext`（App 门面 14 方法 + 服务绑定，与远端 1.3.144 的 sharedskills/sharedmcp/sharedmarket 三服务分层共存：前者为 CodeBox 仓库+复制分发模型，后者为 ~/.agents 目录即真相模型）。
+- **聚合 skill 视图**：公共技能页同时聚合展示插件来源 skill（「插件·名」/「插件市场·名」徽章）——不可单独删除（卸载归插件/市场处），启停走插件子项开关；插件更新/卸载/启停后自动失效刷新（四引擎 OnChange 联动）。
+- **插件生命周期补齐**：Codex 单插件更新（CLI 无原生 update，市场刷新+卸载重装+恢复启用状态的模拟实现，有实证探测）；Pi 包级启停（`!**` 四键全排除过滤标记，与 `pi config` TUI 语义互通可逆）与 skill 级原生启停（packages `skills[]` 过滤，算法与 TUI 对齐）；OMP 零 fork skills 扫描；OpenCode 如实降级不造假开关。
+
+### Fixed
+
+- **合并修复批次（diting 审核 3 Critical/3 Major）**：TOML 写入读错误分流（不再静默清空 config.toml）；多行字符串状态机（`"""`/`'''` 内表头不再误判）；非 bare key 段名引号包裹+读回互通；分发部分失败先落盘 Deployed（禁用/删除可完整回收）；用户自建同名 skill 目录拒绝覆盖；skill 导入信封化部分成功透出。
+
+### Notes
+
+- **P6 融合**：本版本同时包含远端 1.3.144（共用插件市场 + 子项 stash 机制）与本线共用中心，冲突解决与语义整合见 `agent-outputs/workflow/shared-extensions-center/p6-merge-report.md`；远端子项启停重构（文件系统即真相）与共用中心聚合视图适配共存。版本统一 1.3.145。
+
+## [1.3.144] - 2026-11-17
+
+### Added
+
+- **公共子页「共用插件市场」**（扩展中心第三个公共页签，与共用技能/共用 MCP 同构）：把 Claude Code 插件市场（或任意 git 市场源）以引擎中立形式纳入统一管理——浅 clone 到 `~/.agents/marketplaces/<name>`（登记状态 `~/.agents/marketplaces.json` 原子写）；支持「从 Claude Code 导入」（URL/github repo/本地 installLocation 三级源转换，保持同名）与直接添加；市场内插件 skills 可一键部署到 `~/.agents/skills` 成为共用技能（staging 原子发布、不覆盖已有目录、失败可重试），部署后联动刷新共用技能缓存。域服务 `internal/sharedmarket`（git 执行注入点），App 门面 9 个方法（`app_sharedmarket.go`，不进 Bind 列表），前端 `SharedMarketPanel` 两级分页 + api/store 全链。
+
+### Fixed
+
+- **插件子项（skill/command/agent/MCP）启停完全不生效，真实状态不体现**：开关原本只写 CodeBox 私有记录（~/.amagi-codebox/plugin-subitems.json），Claude Code 不读该文件——界面状态变化对 CLI 零效果，且与文件系统真相脱钩。重构为「文件系统即真相」：禁用 skill/command/agent = 把 installPath 下对应目录/文件移入 stash（~/.amagi-codebox/plugin-subitems-stash，Claude 扫描不到即真实不加载）；禁用 MCP server = 从插件 .mcp.json 移除条目存入 stash（读不到即不挂载）；启用 = 原样移回/写回。详情页子项状态以「installPath 在位 = 启用、stash 在位 = 禁用」实时合并（插件 update 重装恢复后新文件优先，孤儿 stash 下次启用时弃置，MCP 同策略不覆盖新版定义）；展示名（frontmatter name）与物理路径经 stash sidecar 元数据映射——按显示名操作始终定位真实物理文件；.mcp.json/stash 为合法 JSON null 时按空对象处理不 panic，stash 损坏时显式报错不覆盖；子项写操作与卸载/更新互斥（锁内重验安装身份，防向已卸载路径恢复孤立文件）；hooks.json 无稳定条目标识，hooks 子项如实标注不支持单独启停（行不可切、操作明确报错）。插件级启停链路实测有效（settings.json enabledPlugins 双向验证）；App 分派层在 Claude 注册表读取失败时改为显式报错（原先静默落到 Codex no-op，开关无声失效无从排查）。
+- **插件全装完的市场显示「0 个可安装」、市场页「已安装」页签永远为空**：市场目录数据源原为 `claude plugin list --json --available`，该输出只含未安装插件（Claude Code 2.1.319 实测），vexel（2 插件全装）/godot（1 插件全装）必显 0；旧版 CLI bare-array 形状还混入 claude.ai 插件目录 3700+ 条虚标「全部市场」计数（截图 3956 实为 232 市场条目 + 3724 目录条目）。改为本地市场 clone 直读（`~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json`，完整含已安装条目）为主，CLI 输出降级为 installCount 合并与本地不可读时的 fallback（过滤未注册市场条目；混合可用性时仅对失败市场合并）；官方市场 173/223 条 `source` 为对象导致整个 catalog 解析失败被跳过——`flexibleString` 宽容降级。连带修复：跨市场同名插件（writing-skills 同时在 amagi/vexel）isInstalled 仅按 name 互相误判 + 安装传参歧义（改按完整 `name@marketplace`）；添加市场后 5 分钟目录缓存不失效（改为全量三 load 失效重载）；市场徽章文案改「N 个插件」对齐含已安装条目的语义。
+
+## [1.3.143] - 2026-11-17
+
+### Added
+
+- **WSL 目标的 Claude Code 会话 Web 平面**（claude-webui design §5.1 WSL 扩展）：此前 WSL 会话有意降级为无平面（转录写在 distro 内、宿主读不到）。现经发行版文件共享跨界读取：PTY 捕获的实际 distro（不可变）→ 身份探测（`WSLTargetIdentity`，一次 wsl.exe）取默认用户 home → `WSLToUNCPath` 翻译为 `\\wsl.localhost\<distro>\...` UNC 路径供进程内数据面 server 经 9P 读取；`CLAUDE_CONFIG_DIR` 存活值优先（Windows 盘符原样 / Linux 绝对路径 UNC 翻译 / 相对路径拒绝），tailer 的 Stat 轮询语义与 9P 天然兼容（inotify 不经 9P 传播）。桌面门控不再按目标形态分叉；remote v1 链 planner 无条件携带 sid+平面材料，executor Prepare 阶段裁决跨界根（失败仅 WARN 降级为无平面、会话照常）。设置页与设计文档口径同步更新。
+
+### Fixed
+
+- **WSL 启动的 pi 会话 Web 视图永不出现（探测窗口耗尽后停探，服务晚就绪无人再探）**：WSL+DrvFS 目标下 pi 扩展的 webui server 就绪耗时可达 3m42s+（2026-11-17 会话 b5415434 实测：11:35:03 启动、11:38:45 就绪，超出 3min WSL 探测窗口 42s），后端落 unavailable 后前端把该态当终态永久停探——服务真正就绪（端口仍在监听）后无人再探测，Web 视图入口永不出现。修复三面：桌面前端（`stores/session.ts`）unavailable 非终态，转 10s 低频复活探测（后端状态机本就允许 unavailable → available，一轮探测即恢复）；mobile `useSessionWebUI` 同口径（网络瞬断亦自愈）；remote v1 启动链（`launch_executor.go`）WSL 目标补齐桌面同款的 `DefaultWSLProbingWindow` 分窗口注册（原默认 45s，同族缺口）。连带根治 `internal/webui` 测试在 Windows 上因日志句柄未关导致的 TempDir 清理文件锁失败（`newTestService` 等两处轻 `t.Cleanup` 关闭日志句柄）。
+
+### Notes
+
+- 已验证（均本地 Windows 实跑）：`go vet ./...` 零告警、gofmt 干净；root/platform/appmeta·claude/claudewebui/webui 五包定向测试全绿（root 包全量中的失败项经 clean-HEAD worktree 基线比对确认均为跨盘路径/文件锁/WSL 环境预存族，与本版改动无关）；frontend vitest 693/693、vue-tsc 零错误；`\\\\wsl.localhost\\Ubuntu-24.04\\home\\<user>\\` 从 Windows 侧实际可列目录（9P 通路实存验证）。
+
+## [1.3.142] - 2026-11-17
+
+### Changed
+
+- **WSL 启动预检融合——关键路径串行 wsl.exe 探测降为 1 次**：冷 distro 每次探测都要付一次 VM 唤醒 + 登录 shell 解析成本，启动 RPC 在 PTY 前的多次串行探测是 WSL 冷启动延迟的主因。融合后关键路径仅 1 次探测：claudecode/codex 由 5 次（两轮 RunUnits 的 ResolveTarget + Apply 复核共 4 次 + 目录定谳 1 次）、pi/omp 由 3 次（首启另 +1 次 fd/rg）、opencode 由 3 次，降为全部 1 次（WSLLaunchPreflightProbe 单次融合身份 + 目录；fd/rg 移出关键路径异步）。
+  - 新增 `platform.WSLLaunchPreflightProbe`（internal/platform/wsl_launch_probe.go，新文件）：一次 wsl.exe 调用同时取得身份三件套（uid/$HOME/machine-id，脚本逐字复用 wslIdentityScript）与工作目录定谳（buildWSLWorkDirCheck + 与 WSLResolveDirectoryContext 完全一致的 `__AMAGI_RESOLVED_DIRECTORY__` NUL 标记协议，返回 cd -P 后的绝对物理路径）；10s 预算、经 wslScriptRunnerContext 可取消执行；任一环节失败即整体失败（fail-closed 拒绝启动、不回退换目录），结果只在单次启动 RPC 作用域内显式传递、不做任何跨启动缓存。
+  - 身份在单次启动 RPC 作用域内复用：`Coordinator.TargetFromIdentity`/`RunUnitsWithTarget`（internal/wslsupply/coordinator.go）与 RunUnits 同流程（Inspect → 健康门 → ReconcilePending → Plan → Apply），但入口跳过 ResolveTarget、Apply 跳过「重探身份复核」——预检身份在该次启动 RPC 作用域内视为当次真值，两轮供给闸门（shared 与 claude/codex cli-config）共享同一次身份；跨启动 generation 失效语义不变（下次启动重新预检，重装/换用户/换 Home 仍会被新预检看见），公开的 RunUnits/Apply 语义与既有测试不变（测试 stub 运行器不实现新接口即自动回退原路径）。
+  - pty 预检定谳后跳过重复目录探测：`ResolvedLaunchSpec` 新增 `WSLWorkDirPreflightResolved`（internal/platform/resolver.go），prepareWSLStartupSpec（internal/pty/runtime_target_windows.go）据此直接采用预检返回的定谳路径；remote/restart 路径（launch_executor.go，preflight=nil）保持既有 RunUnits + 目录探测路径，行为完全不变。
+  - fd/rg 搜索工具告警移出关键路径：pi/omp 启动由「PTY 前串行探测 + WARN」改为会话成功启动后 `go warnWSLSearchToolsOnce` 异步执行（app_session_pty.go 两处对称；per-distro 缓存与 sync.Once 单飞语义不变，仅日志告警、不参与启动决策）。
+  - 预检/供给闸门/PTY 各阶段毫秒计时日志（control_wiring.go），冷启动各段耗时可观测。
+
+### Added
+
+- **WSL 启动进度反馈（launch:progress 阶段事件）**：后端在预检/供给/PTY 阶段 best-effort 发射 `launch:progress`（负载 `{stage, message, appType}`，stage 为 preflight/supply/pty 稳定枚举，与前端映射键一一对应；非 Wails ctx/测试环境自动降级不发，发射路径任何失败不阻断启动主流程）。前端 `useSessionLaunch` 在 launching 期间订阅，启动按钮随阶段显示进度文案（正在唤醒 WSL 发行版…/正在准备共享配置…/正在启动终端…），启动结束（成功/失败/异常 finally）注销订阅不泄漏；非 WSL 或无事件的启动维持现状文案。进度映射与订阅生命周期补 vitest（useSessionLaunch.progress.test.ts、control_wiring_progress_test.go）。
+
+### Notes
+
+- 已验证（均本地 Windows 实跑）：go vet、全量编译门、两套 WSL 定向回归、frontend vitest + vue-tsc/vite 构建；独立评审一次通过。
+- 已知边界：真机冷启动端到端耗时未实测（探测次数削减与各阶段毫秒计时已落日志，量化收益待真机验证）；remote/restart 路径行为不变；版本号因 master 已独立发布 1.3.140/1.3.141 顺延至 1.3.142。
+
+## [1.3.141] - 2026-11-17
+
+### Removed
+
+- **后端与测试代码深扫（code-sweep 第二轮：deadcode 可达性 × unused(tests:false) 交叉，净删约 1590 行）**：
+  - **测试替身移出产品编译**：`control_h123_test_helpers.go` 整文件（fakeCausalPort/recordingLifecycleHook 等 19 符号）改名 `_test.go`；resetWSL*CacheForTest 系列钩子、waitForWSLSupplyPushIdleForTest、recordCount、newServiceWithRunner、readIntent、tryAcquire、writeServerEventSync、noopSessionRawPort/noopFencer/serverMsg、sharedServiceFingerprint、boolPtr、commitFaults.add、submitFileCtx、VolatileSecurityEventSink 簇、newSecurityOptions、noopSessionOperationJournal 簇、SessionStateAdapter 整文件——凡「仅测试消费的观察口/构造口/替身」一律归位 `_test.go`（Go 同包加方法合法，调用点零改动），产品二进制不再携带测试基建。
+  - **退役特性孤儿及其守护测试删除**（deadcode 判 main 不可达 + unused 判仅测试引用双确认，全平台词界复核剔除 darwin/Linux/e2e 在用 17 项）：App 补偿债查询/重试、getProviderAPIKeyForFormat、stopAllSessionsForShutdown、syncCodexConfig* 子系统 ×4、envcheck codex stale-NPM 清理子系统 ×13、claude 二进制健康自愈 ×2、NPM 候选枚举 ×3、RunEventSinkFunc、ShutdownCleanupPermit 死字段等；连带删除 28 个「博物馆测试」（测的是已从产品摘除的子系统）与 10 项孤儿测试基建。
+  - **有意保留豁免（设计锚）**：productionRemoteLaunchResolver 簇（app.go fail-closed 注释明示五 planners 实现前不注入）、resolvePiLoginPreset（毗邻活的统一登录分类器）、realRunnerOnInit（init 接线快照）、procFSProcessIdentity/encodePoolEnvelope/verifySavedPool/syncFeedAndAttachCausal（Linux/darwin keychain/e2e harness 平台在用——Windows 侧扫描的平台盲区）。
+  - 工具沉淀：新增 `go run` 形式的 deadcode/unused(tests:false) 交叉流程与 AST 声明级删除脚本经验，纳入 code-sweep skill 后续演进素材。
+
+### Notes
+
+- 已验证：go build/vet/golangci-lint（0 issues，含 --tests=false 复扫仅剩 8 项已豁免平台盲区）/gofmt 全空；受影响包与全量 Windows 测试失败集与清扫前基线逐族一致（Pairing/MigrationGate 翻转项经基线代码单跑复验为 Windows 预存文件锁/时序 flake 族）；macOS CI 全量为权威门；setTestUserHome 因唯一消费者为 windows-only 测试文件在 darwin 编译集成 lint 孤儿，已随消费者归位（GOOS=darwin lint 预扫复核干净）。
+
+## [1.3.140] - 2026-11-17
+
+### Fixed
+
+- **Go 侧安全漏洞清偿（govulncheck 33 项归零）**：工具链 go1.26.0 → go1.26.11 一次清偿 31 项调用路径可达的标准库漏洞（net/http×13、crypto/tls×3、crypto/x509×3、net/url、encoding/asn1、net/textproto、os 等，修复分布在 go1.26.1~1.26.11）；`golang.org/x/net` v0.60.0 → v0.62.0 清偿 GO-2026-6866/GO-2026-6860（导入未达调用路径，预防性升级），连带 x/crypto v0.58.0、x/sys v0.49.0、x/text v0.43.0 一致性升级并同步 vendor；CI 与 release workflow 的 go-version pin 同步升至 1.26.11。npm 侧 frontend/mobile/webui-claude `npm audit` 复核均 0 漏洞。
+- **pluginIcon 契约公式测试跨平台必挂**：测试用 Number 直接求幂 `31 ** i` 独立复算哈希，i≥11 时超出 `Number.MAX_SAFE_INTEGER`，浮点舍入随 V8 版本/平台漂移（CI 必挂而 Windows 本地全绿）；实现本身用逐步取模的精确写法无此问题。测试改用 BigInt 直接求幂——保留独立复算意图且全平台精确（extensions 重构合入后 CI 一直未手动跑过，故未被发现）。
+- **mobile lockfile 跨平台损坏**：在 Windows 上重写 mobile 依赖使 lock 剪掉了 macOS `npm ci` 所需的 wasm32 可选绑定解析项（`npm error Missing: @emnapi/core@2.0.0-beta.2`）。`@emnapi/core`、`@emnapi/runtime` 实为跨平台 lock 解析垫片而非死依赖，frontend/mobile 均恢复为 devDeps（精确 pin 2.0.0-beta.2）并登记 knip 豁免；两子项目 `npm ci` 从零复装验证通过。
+
+### Removed
+
+- **全仓死代码清扫（code-sweep skill 首跑）**：
+  - Go：golangci-lint 11 项清零——删除 9 个无引用死函数（`App` 门面层 4 个方法、Round8 测试缝 `stopExternalProcessesForShutdown`、`sharedAdmissionFromBinding`、测试辅助 3 个），S1021 两处变量声明与赋值合并；gofmt 全量规范化 55 个文件（中文注释全角括号前空格等纯格式微调）。复扫 `golangci-lint run ./...` 0 issues。
+  - frontend：净删约 730 行——knip 摘除 142 个无引用导出；`vue-tsc --noUnusedLocals` 裁决级联删除约 117 段死声明与 73 个死 import specifier（迭代至 TS6133/6192/6196 清零）；修复 2 处 Vue 模板未用 v-for 项变量；移除无引用 devDeps（`@babel/types`、`@types/js-yaml`；`@emnapi/*` 经 CI 验证为平台解析垫片，保留见 Fixed）。
+  - mobile：删除 11 段死声明 + 4 个 .vue 类型导出去 export；显式声明 audit 脚本实际依赖的 `@vue/compiler-sfc`、`@vue/compiler-dom`（修复依赖漂移）；`@emnapi/*` 垫片保留（见 Fixed）。
+  - webui-claude：5 个导出 + 4 个类型导出清偿（均有文件内使用，仅去 export）。
+  - 新增 knip 项目配置：`wailsjs/`（Wails 生成代码）、e2e/harness 测试基建计入口或排除，`@capacitor/android`（平台工作流依赖）忽略——后续 knip 复扫可判定干净。
+  - 新增 `.agents/skills/code-sweep` 项目清扫 skill，固化「golangci-lint / govulncheck / knip 三线扫描 → P0-P3 分级 → 修复 → 回归」流程。
+
+### Notes
+
+- 已验证：`go build` / `go vet` / `golangci-lint`（0 issues）/ `govulncheck`（No vulnerabilities found）/ `gofmt -l` 全空，`go mod tidy` 无漂移；frontend 683 + mobile 423 + webui-claude 69 例 vitest 全过，三子项目 vue-tsc 构建绿，eslint 0 错误，knip 复扫 0 命中；Windows 全量 `go test` 失败集与清扫前基线一致（均为 TempDir 文件锁等平台性预存失败，与 1.3.138 Notes 记录的既有环境问题同类，CI 在 macOS 跑全量兜底）。
+
+## [1.3.139] - 2026-11-17
+
+### Added
+
+- **会话感知的 WSL 目录选择器**：目录选择器按会话实际文件系统浏览——WSL 会话列出 distro 内目录（新增 `App.SessionListDirectories` 与 `PathsService.ListWSLDirectories` 绑定），Windows 收藏根在会话捕获的 distro 内换算（含 UNC）；换算不到的收藏显式标不可用、会话目标失效时以「会话目录不可用」失败收敛，绝不静默替换成其他家目录。pty 在进程启动瞬间捕获实际 wslDistro（不可变），校验/建进程/目录浏览全程使用同一 distro，不受并发环境刷新影响；新增 `SessionWSLTarget` 只读查询。
+- **WSL Pi 任务数据本地化**：任务状态与归档默认写 WSL 本地文件系统（`${XDG_STATE_HOME:-~/.local/state}/amagi-codebox/pi` 下 `data`/`artifacts`，可经 `AMAGI_DATA_DIR`/`AMAGI_ARTIFACT_ROOT` 覆盖），减少跨盘高频读写；`auth.json`/`models.json` 等仍读 Windows agent 根，不复制凭据；目录不可建或仍在跨系统文件系统时告警并沿用原位置。
+- **会话权威启动上下文只读投影**：`LaunchContextByID` 暴露会话定谳的 mode/workdir 与权威记录的 ShellRef，供只读消费方校验会话归属与模式（实际文件系统目标仍须读 PTY 捕获值，不重放请求偏好）。
+
+### Fixed
+
+- **WSL 启动不再静默落到错误目录**：启动前在实际发行版内校验工作目录，不存在或不可访问时直接提示并拒绝启动（覆盖 wsl.exe relay chdir 失败但 exit=0 的场景，不再悄悄换到主目录）；wsl.exe 命令行改用 `--exec` 精确传参。
+
+## [1.3.138] - 2026-11-16
+
+### Fixed
+
+- **WSL 内 pi 会话 Web 视图加载不出**：WSL+DrvFS 工作区下 pi 扩展的 webui server 就绪实测 30-75s+（登录 shell + jiti 加载 200 模块落在 /mnt 慢路径），默认 45s 探测窗口在服务就绪前耗尽误判 unavailable，前端随即隐藏 Web 视图入口。embedded pi 会话在 WSL 目标（BootstrapWSL）改用 3 分钟探测窗口注册（`RegisterSessionWithWindow`），冷启动/高负载不再误判。同修两个连带误判：携正确 capability token 收到的 503（amagi 扩展先验 bearer 再回 503 infoBody，错 token 得 403）不再因 WSL pid 命名空间失配（tracker 记录的是 wsl.exe 的 Windows pid，与 WSL 内 pi 的 Linux pid 必然不等）被当不可达转注册表回退；注册表候选探测得 503（未就绪）不再 best-effort 删除注册文件——服务存活稍后即绪，删除反而丢失发现加速器。
+
+### Notes
+
+- 已验证：`go vet ./internal/webui/ ./` 通过；webui 包全量测试断言通过（新增 3 例：503 token 豁免 pid 失配、注册表候选 notReady 保留条目、WSL 放宽窗口差异化；本地 Windows 跑 go test 的 TempDir 清理失败为 logging 句柄锁的既有环境问题，原代码同样复现，CI 在 macOS 不受影响）；`wails build -trimpath` 通过。排查链：WSL pi 会话 webui 74s 就绪 vs 45s 窗口（当日三次会话 30s/41s/74s），env 注入/端口监听/Windows→WSL localhost 转发均实测正常。
+
+## [1.3.137] - 2026-11-16
+
+### Changed
+
+- **扩展中心顶部分页页签**：左侧子页导航（公共/Agent 分组两栏）改为顶部页签行（共用技能 | 共用 MCP | Claude Code | OpenCode | Codex | Pi | OMP），选中态为白底浮起胶囊，与内容区列表语言一致；子页切换语义、状态持久化与引擎切换重置行为不变。
+- **一级列表页不显示详情、点击行进二级详情页（ZCode 式两级分页）**：各面板一级页去掉详情侧栏，改为全宽行式列表——每行完整多行展示 skill/MCP/插件描述（不截断、2px 紧凑堆叠）；点击行进入二级详情页：「← 返回列表」+ 面包屑 + 居中窄单列（max-width 720px）DetailHeader（大图标/名称/主操作）+ 描述全文 + MetaGrid。共用技能、共用 MCP、五引擎插件面板全部同构。
+- **插件市场两级子页**：市场视图由「左市场源栏 + 右插件流」重构为两级——一级为市场源列表（PluginRow 行：市场名 + 来源类型徽章 内置/本地/远程 Git +「N 个可安装」计数 + 净化路径/Description；首行「全部市场」聚合入口；Codex 行尾红色删除），二级为市场内插件列表（面包屑「插件市场 › 市场名」+ 全部/未安装/已安装 状态页签（计数真实）+ 行尾搜索 + 安装量/名称排序 + 行尾安装按钮）；Codex `\\?\` 扩展长度前缀剥离、绝不裸露，重复市场源名/警告收敛不变。
+- **PluginRow 新增 `trailing` 插槽**：行尾区域支持自定义尾区（`switchVisible` 开关优先、插槽兜底），市场安装按钮与启停开关行同构接入；共享组件对既有消费方完全向后兼容。
+
+### Fixed
+
+- **CountTabs 焦点环**：页签点击选中后不再残留 WebView 默认深色焦点描边（`:focus` 重置，键盘 `:focus-visible` 保留软强调环）。
+
+### Notes
+
+- 已验证：前端 lint 0 告警、全量 675 用例通过、vue-tsc + vite build 通过；`go vet ./...`、`go test ./... -run '^$'` 编译检查、`wails build -trimpath` 整链通过。extensions 套件（21 文件 / 191 用例）随两级导航语义重写。
+
+## [1.3.136] - 2026-11-15
+
+### Added
+
+- **扩展中心 ZCode 式子页重构**：扩展管理页重构为左侧子页导航（分组「公共 / Agent」）+ 右侧内容区两栏布局——「公共」组含共用技能、共用 MCP 两个子页，「Agent」组含 Claude Code / OpenCode / Codex / Pi / OMP 五个子页（复用 1.3.135 的四段式面板，面板行为不变）；子页状态持久化，引擎切换重置列表态的语义保留。
+- **公共·共用技能管理**：新 `internal/sharedskills` 服务 + App 门面。枚举 `~/.agents/skills` 与 `~/.agents/skills-disabled`（SKILL.md frontmatter：名称/描述/版本/作者），启停 = 两目录间移动（对所有读 `~/.agents` 的 CLI 真实生效，操作带确认、失败回滚），删除带确认；amagi-codebox 自带技能标记托管状态并与既有安装五态联动。
+- **公共·共用 MCP 管理**：新 `internal/sharedmcp` 服务 + App 门面。以 `~/.agents/.mcp.json` 为登记源（stdio 与远程两形态：type/command/args/env/url/headers/description；CRUD 保真合并、原子写、0600，未知键与手写条目一律不动）；按引擎分发真实写入四处配置——Claude `~/.claude.json` 顶层 `mcpServers`（字段级 patch + 顶层键集写后校验）、Codex `config.toml` 的 `[mcp_servers.<名>]` 段（段级 Upsert/Remove）、OpenCode `opencode.json` 顶层 `mcp` 键（命名空间合并）、Pi `~/.pi/agent/mcp.json`（合并写，文件不存在则创建）；只动应用托管条目、禁用即还原，外部改动冲突提供 danger+force 接管路径；OMP 无 MCP 佐证按 excluded 如实标注。前端子页四段式：类型筛选、条目×引擎分发矩阵、敏感值脱敏展示（env/headers 值不回显明文）、新增/编辑双形态表单。
+- **设置页新增「环境变量」子页**（自扩展中心迁入，功能不变）。
+
+### Removed
+
+- **Headroom 功能彻底移除**：`internal/headroom` 包、App 门面与全部接线、`LaunchSession` 的 useHeadroom 参数（App/remote/agentcli 全链）、remote v1 契约 useHeadroom 字段（**破坏性变更：旧版移动端 App 需同步升级到本版**）、agentcli `--headroom` 旗标（命令参考 golden 已再生成）、envcheck 第 6 工具位、CI Windows 回归过滤串、前端「其他工具」页与全部 UI 引用、mobile「使用 Headroom」开关、17 个文档中的全部提及。已启用用户的 `~/.codex/config.toml` 遗留标记块在启动时幂等清除（不再残留指向已退役代理的地址）；settings.json 遗留字段随宽容反序列化自然清除。shared-service 协调机制保留并缩编为仅 Claude 凭据共用，外部恢复路径准入改走凭据指纹绑定（指纹失败降级 fail-closed）。
+
+### Notes
+
+- 已验证：八步门禁全绿（frontend lint / test / build、mobile test / build、`go vet ./...`、`go test ./... -run '^$'` 编译检查、`wails build` 整链）；sharedskills 19 用例、sharedmcp 全套 fixture 单测（保真/还原/顶层键集不变/原子性/脱敏）通过；Headroom 清除后定向测试与 HEAD 基线逐名 diff 一致（无新增失败）。设计契约与交付报告归档于 `agent-outputs/{extension-center-restructure,shared-mcp}/`。
+- 共用 MCP 的 WSL 目标化分发与 OMP 支持本期不做（后者仓库与本机均无佐证）；登记文件 `~/.agents/.mcp.json` 为跨工具共享约定，应用写入保持其余内容不动。
+
+## [1.3.135] - 2026-11-15
+
+### Added
+
+- **扩展中心五引擎插件面板 ZCode 式重绘（浅色 Apple 风格）**：Claude Code / OpenCode / Codex / Pi / OMP 五引擎插件管理页统一为「诊断横幅 → 资源计数标签（计数徽章 + 搜索）→ 分组工具栏（已安装 N + 刷新 / 浏览插件市场 / 添加）→ 行式列表」四段式布局。列表行 = 图标（名称确定性生成字母+色相）+ 名称/徽章 + 单行截断描述 + iOS 风格开关；详情视图含面包屑返回、子项列表（技能/Agent/命令/Hook/MCP 逐项开关）与元信息网格（市场/版本/作用域/安装时间/提交 SHA）；MCP 资源页按所属插件分组并如实映射启用状态（不虚构连接态）；市场视图为左市场源栏 + 右插件流（安装量/作者徽章），经「浏览插件市场」进入。Codex 重复项/警告与各引擎加载失败统一收敛为可折叠诊断横幅；空态卡片提供安装/添加入口。
+- **插件面板共享组件层**：新增 `frontend/src/components/extensions/ui/` 11 个纯展示组件（CountTabs / PluginIcon / PluginRow / GroupHeader / ListToolbar / EmptyStateCard / DiagnosticBanner / DetailHeader / MetaGrid / SubItemRow / ActionMenu），全部复用既有 ui/* 基础件与 tokens.css 变量；`ui/AppButton` 新增 `outline` variant（透明底 + separator 描边 + hover 浮 control 底），收敛面板内两处 scoped 描边实现。
+
+### Fixed
+
+- **Claude/Codex 引擎直切不载数据（沿袭缺陷）**：ExtensionsView 两分支渲染同一 PluginInstalledPanel 且无 :key，Vue 原地复用实例导致 onMounted 不再执行、直切后显示假空态须手动刷新；引擎切换改统一走 store 的 setPluginEngine（清空 activePluginId 并重置列表态）。
+- **市场安装失败静默**：PluginMarketPanel 安装失败 catch 仅 console.error 无 UI 反馈，补 showError 提示，与其余引擎写操作对齐。
+- **tag 徽章白字不可见**：Badge `type:'tag'` 为白字无底色，浅色背景上「N 个可安装」计数、OpenCode 资源汇总、Pi「pinned」徽章不可见；三处消费点改用 `type:'scope' + variant:'muted'`（control 底 + secondary 字）。
+- **硬编码颜色与示例清理**：诊断/重复卡 `#a02620/#9a6200` 改用 `--danger-strong`/`--warning-strong`，市场卡 hover 边框改 `--controlHover`；Pi 本地路径示例去除含个人用户名的 macOS 路径；删除 pluginTypeLabel 不可达 codex 分支。
+
+### Notes
+
+- 已验证：`npm run lint`（master 已升 `no-explicit-any` 为 error 的严格门禁下零告警）、`npm run test` 全绿（622 用例，含本版本新增 22 个插件面板/共享组件/集成接线测试文件）、`npm run build`（vue-tsc --noEmit && vite build）通过；合并 master 后复跑全绿。
+- 设计契约与交付报告归档于 `agent-outputs/plugin-ui-redesign/`；后端（Go / wails 绑定）零改动，移动端界面不在本次范围；浏览器端视觉 E2E 未执行（需 wails 运行时与真实插件数据）。
+
+## [1.3.134] - 2026-11-14
+
+### Fixed
+
+- **WebUI「发送失败，请重试」（1.3.133 真机事故根因）**：`webui-claude` Composer 在组件 setup 期一次性值捕获 `props.token`，而宿主 `App.vue` 在 `onMounted`（`startSource`）才解析 `location.hash` 里的 capability token——Vue 子组件 setup 先于父组件 mounted 执行，捕获值永久定格为初始空串，`/api/input`、`/api/draft` 全部携带空 `Bearer` 被 401/403 拒绝（与 CORS/服务端/控制门无关，curl 直打均 200）。修复：`ComposerDeps.token` 与 `DraftSyncOptions.token` 改为 getter（与既有 `busy()/ended()` 取值器惯例对齐），请求时取值；草稿恢复改由 token 就绪 watch 触发（子组件 mounted 早于父赋值时不再静默丢恢复）。新增回归测试锚定「token 后就绪 → 请求带就绪后 token」。真机浏览器端到端验证通过（发送、清空、GLM 回复渲染、回复完成播报）。
+- **中文/特殊字符工作目录的转录空白（消息流/标题/用量同源缺失）**：Claude Code 转录目录编码实为「仅保留 ASCII 字母数字、其余每个 rune 折叠为单个 `-`」，原实现只替换 `:\/` 三类分隔符，中文用户名路径（如 `C:\Users\毛润` → 实际 `C--Users---`）推不出目录，Web 平面消息流空白、会话标题空、用量统计缺失。修复：`internal/appmeta/claude` 统一走 `claudeDirName`（四处调用点），以本机实测样本锚定单测（`C:\Users\毛润`、`a_b.c d(e)` 等真实目录名）。
+
+### Notes
+
+- 真机诊断附带处理：本机 `~/.claude.json` 曾把 glm key 加入 `customApiKeyResponses.rejected`，导致 claude 本地合成「Not logged in · Please run /login」错误（`model:"<synthetic>"`、零网络请求）——该状态已清除（备份 `.bak-20261114`）。新目录首次进入 claude 的信任确认对话框仍会消费 WebUI 首条输入（与共用键盘同构，1.3.133 已记录该边界）。
+- 已验证：`gofmt`、`go vet ./...`、`golangci-lint`（改动包 0 issues）、`go test ./internal/appmeta/claude/... ./internal/claudewebui/...`、CI 口径定向测试（root 双车道/平面接线 + remote 设备平面车道）、`go test -run '^$'` 全仓编译、webui-claude vitest 69/69（含新回归锚）与构建；真机浏览器复现事故 → 验证修复全链路（含转录尾随渲染历史消息）。
+
+## [1.3.133] - 2026-11-14
+
+### Added
+
+- **Claude Code WebUI 视图模式**：内嵌 Claude Code 会话在 `/terminal` 获得「终端 ⇄ 网页」双平面切换（与 pi 会话同构；claude 不自动偏好，仅显式切换）。数据面 server 移入 CodeBox 进程内（`internal/claudewebui`，每会话独立回环端口 + 128bit token），结构化流来自 Claude Code 落盘的会话转录 jsonl 增量尾随——消息流/思考折叠/工具卡配对（running/failed/success）/用量四分项，输入与中断（Esc）经控制门写回 PTY、与 TUI 平面同步，草稿服务端内存暂存（sandbox iframe 无 localStorage）。
+- **输入双车道**：本地 WebUI 输入走桌面车道（take-first，与 xterm 打字同语义）；远程设备经反代的输入走新增的设备平面车道（无夺权、写时校验该设备持控——否则首条输入即夺走设备自身控制权），中断同规则；远程连发不再第 2 条起 403。反代写面透传已鉴权设备身份头（`X-Amagi-Plane-Actor-Device`，覆盖式注入、剥离客户端自带值），`POST /api/interrupt` 纳入写面控制门集合。
+- **远程反代与移动端入口**：remote v1 创建/重启的 claude 会话经 `--session-id` 注入锁定转录文件（消除同目录多会话串扰）后同样获得平面；移动端会话页出现「切换至 Web 平面视图」入口（claude 缺省视图仍为时间线，pi/omp 行为不变）。
+- **双 base SPA**：独立 `webui-claude` 工程（Vue3 + TS，`go:embed` 进二进制），同一份产物同时运行于桌面回环根路径与远程 `/webui/{sid}/` 子路径（vite `base:'./'` 资源相对化 + 运行时 `resolvePlaneBase` 推导 API/WS 地址 + 首屏页内错误态——三重白屏防线；构建产物含根绝对引用即测试失败）。构建链接入 wails 聚合钩子（`build:embedded-web` = mobile + claude 两产物）与 CI/release workflow（artifact 含真实 dist，防发布产物退化为占位提示页）。
+- 设置新增「Claude Code Web 视图」开关（`claudeWebUIEnabled`，默认开启；只在会话启动时读取）。WSL 目标与外部终端/VSCode/Zed 会话不适用（无切换控件）。转录 jsonl 依赖为非官方冻结契约：解析行级容错（坏行/未知行类型跳过）、以真实采集样本回放为单测依据（实测字段清单见 `docs/developer/claude-webui.md` §8），schema 升级最坏表现为对应字段留空，不影响 TUI 主平面。
+
+### Notes
+
+- 已验证：`go vet ./...`、定向 Go 包测试（转录解析/claudewebui 服务/设置/launchplan/root 接线与双车道/remote 设备平面车道与反代透传）、`go test ./... -run '^$'` 全仓编译检查、前端与 webui-claude 的构建（vue-tsc 门禁）及 vitest、移动端 vitest 均通过；wailsjs 再生成仅 settings 服务新增两方法（Bind 清单仍 21 项）。尚未执行：桌面/移动端真机冒烟（含远程形态非白屏、停止会话后端口无残留、连发输入不夺权自锁的实机确认）与发布产物二进制抽验。
+- 已知边界：Web 平面消息粒度为「API message 完成」（转录落盘粒度），长生成期间有数秒静默（busy 态动效提示）；claude TUI 处于菜单/对话框态时 WebUI 输入会触达选项（与共用一个键盘同构）；转录根解析未覆盖的自定义重定向形态表现为空转录（非错误）。
+
+## [1.3.132] - 2026-11-11
+
+### Changed
+
+- **AI 代理分流界面**：重新组织为「分流规则」「连接日志」「节点与设置」三个工作区，页头集中显示运行状态和保存、应用操作。规则列表直接显示服务、域名摘要和出口，详细配置按需展开，并保留拖动及键盘排序。
+- **连接日志阅读与筛选**：提供域名汇总和逐条明细切换，常用搜索与出口判断快捷筛选；高级筛选按需展开，出口不符使用文字、图标和颜色共同突出。汇总优先显示可读的节点名称，完整标识可在连接明细或悬停提示中查看。
+- **使用体验**：设置和导入入口按需展开，工作区切换保留草稿与筛选；优化窄窗口布局、键盘焦点、加载及空状态，并在隐藏日志页时暂停轮询。日志统计范围仍以代理内核观测到的连接为准。
+
+### Fixed
+
+- 修复配置字段顺序不同时页面误报未保存更改，以及旧日志查询返回晚于新筛选时可能覆盖当前结果的问题。
+
+## [1.3.131] - 2026-11-11
+
+### Added
+
+- **分流连接日志**：持久记录 CodeBox 代理内核观测到的连接，按提供商、域名和出口汇总，突出显示指定出口与实际选择不一致的记录；支持关键词、状态、提供商、出口、时间筛选及分页。未知出口、重叠域名和无法解析的记录如实提示。
+
+### Changed
+
+- **会话出口保护**：启用 AI 代理分流后，配置变更尚未应用、内核停止或入口不可达时阻止新会话启动；拒绝域名重叠且指定不同出口的规则，避免提供商流量误走其他规则。此保护依赖会话网络客户端遵守代理设置，不构成对任意子进程的系统级隔离。
+
+### Fixed
+
+- **macOS 发布包完整性**：构建后对应用包执行临时自签名并验证，避免仅有链接器签名时完整性校验失败；仍未使用 Apple Developer ID 签名或公证。
+- **远程控制可靠性**：隔离切换主机时的在途连接、会话列表、配置与终端事件，避免旧主机数据或终端输入落到新主机；修复重启后终端退出状态遗漏。
+- **移动端会话与 WebUI**：修复切换会话时旧 WebUI 探测覆盖新状态、慢网络下轮询堆积、操作失败信息被刷新清除，以及后台更新失败时旧会话列表缺少提示。
+
+### Notes
+
+- 分流日志统计的是代理内核观察到的连接及其所选出口，并非逐字节计量；无法确认绕过代理的流量或上游代理之后的公网出口。历史运行日志不会回填。
+- 已验证真实 sing-box 代理路由、远程服务与浏览器交互；尚未进行手机真机或真实 Windows/WSL 环境验证。
+
+## [1.3.130] - 2026-11-09
+
+### Added
+
+- **Agent CLI（codebox-agent）**：面向 AI agent 的本机命令行。桌面应用内置回环随机端口 + 一次性令牌的命令服务（`internal/agentcli`），业务命令只走运行中的应用、无离线直写；应用二进制新增隐藏 `cli` 子命令作为客户端（`internal/agentcli/client`），由 `~/.amagi-codebox/bin/codebox-agent` shim 转发调用。覆盖提供商/预设/密钥状态、设置、环境变量、工作目录、会话生命周期、用量统计、插件、环境检测与 Git 查询共 45 条命令；exec/destructive 命令需 `--yes` 双重确认（客户端预检 + 服务端强制），密钥只能经 stdin 写入、输出全脱敏，非只读命令记审计日志（不含参数值）。应用启动默认安装 shim 与 `amagi-codebox` agent 技能（`~/.agents` 默认，`~/.claude`/`~/.codex` 可选；用户清理过不再自动装回），设置新增「命令行访问」开关（`agentCLIEnabled`，默认开启）。命令参考文档 `docs/user/agent-cli.md` 由命令表生成并有防漂移测试锚定。
+
+### Fixed（审核 R1）
+
+- **R1-F01 并发建链穿透**：发布改为「临时名建链 + `mv -T` 原子改名 + readlink 终验」——不再直达 `ln -s "$T" "$L"`（L 已是目录符号链接时会穿透把链接写进 Windows 技能根内）；同 distro 并发在 App 层单飞串行化，后到者复用结果（幂等收敛）。
+- **R1-F02 备份静默覆盖**：前像迁移改用唯一备份槽（同秒碰撞追加序号）+ `mv -n` no-clobber + 落位校验——绝不覆盖既有 `skills.pre-shared.*` 备份，让位竞争如实 `FAIL-MOVE-LOST`。
+- **R1-F03 退役 pending 复活**：退役单元（`pi/*`、`shared/skill/*`）的未决 intent 对账时收口为 `retired-closed`——终结 intent（墓碑留证）但不重建在役登记、不触碰 WSL 侧旧副本；`applyIntentBaseline` 加同口径防线，GetStatus 过滤补齐 `shared/skill/*`。
+- **R1-F04/F07/F08 清理与诚实性**：删除不可达的内存前像快照恢复链（`snapshotSkillPreimage`/`restoreSkillPreimage`/`prevFiles` 兜底，持久 prev 树是唯一恢复材料）；路径翻译探测失败归为 failed（与「确认宿主根不存在」的 host-missing 区分）；host-missing 在状态卡显示独立徽标「宿主根不可达」，不再与「未检查」混同。
+- **R1-F05/F06 面与夹具一致性**：技能 face 只读当前 distro 的核验缓存（不串用其它 distro 结果）；e2e 交互夹具绑定同步退役面并补 `EnsureWSLSharedSkillsRoot`。
+- **R1 覆盖回补**：移植原树单元原语的四个独立回归（目录链接不递归×2、凭据名链接排除、候选读取身份重验）+ 退役 pending 对账回归（含在役单元不受误伤的负例）。
+
+### Fixed（审核 R2）
+
+- **R2-F02 备份迁移的成功证明**：`mv -n` 让位（槽位检查后被竞争者占用）不再被误认迁移成功——落位校验改为「L 已迁离 + B 存在 + B 为目录时不得再含 skills 条目」（目录 L 迁走后 B 即该目录本体；L 被挪进竞争者目录则 `B/skills` 存在），任何不可确认迁移一律 `FAIL-MOVE-LOST` 并停止发布，不拿竞争者内容冒充本轮备份。新增真实 sh 执行的竞争回归（文件占用/目录占用/正常迁移三场景，函数覆盖 `mv` 注入确定性时序）。
+- **R2-F09 等待式单飞**：同 distro 的并发核验（第二个首次启动的会话漏斗/显式检查）改为等待在途轮次真正完成并返回真实结果——不再把「正在执行」当结果返回、不借旧缓存冒充本轮结果；完成信号在结果记录之后发出。新增双启动时序回归（在途未完成时后到者不得返回；完成后结果/缓存/face 三面一致）。
+- **R2 边界**：`wslTranslatePathsCore` 错误面在非 Windows 平台按平台门契约校验（空映射 + nil error，不伪造错误分支）。
+
+### Fixed（审核 R3）
+
+- **R3-F02 备份迁移的目的边界**：槽位被竞争者以目录符号链接占用（如指向宿主技能根）时，旧实现 `mv -n` 会把前像穿透写入目的所指目录后才报错。备份迁移改为 `mv -nT`（字面目的地 + 不覆写）：目的已被任何形态占用（文件/目录/目录符号链接）即原语拒绝、绝不解释为目录内移动——不存在穿透窗口；迁移身份由原语结果自证（成功 ⇔ L 已消失且 B 存在），不再有任何子条目名启发式。
+- **R3-F10 合法子技能误判**：名为 `skills` 的合法子技能（`skills/skills/SKILL.md`）不再被 `B/skills` 存在性启发式误判为「挪进竞争者目录」——该启发式已随上项整体移除；正常迁移 BACKED-UP 且嵌套内容逐字节保留。
+- **备份槽位排他**：槽名含时间戳与 PID（同进程单飞串行化、跨进程 PID 互异，同秒不碰撞），替代同秒序号寻槽循环；拒绝/不可确认迁移一律 `FAIL-MOVE-LOST` 如实报错并停止发布。
+- **测试**：BSD 宿主经 `mv` 适配接缝等价模拟 GNU `-nT` 语义（命名语义函数 + 竞争注入包装链）；新增真实 sh 行为测试——文件/目录/目录链接三占槽负例（含「宿主目标目录零写入」穿透断言）、正常迁移正例、合法 skills 子技能正例（R3-F10）。
+- **R4-F11 测试保真**：mv 适配接缝的「目的已占用」判定补 `-L`（lstat）——悬挂符号链接占槽时与 GNU no-clobber 语义一致（拒绝而非替换），并新增对应行为测试（悬挂链接本体不被覆盖、L 原位保留）。
+
+### Changed
+
+- **WSL 内共享 Windows `~/.agents/skills`（受管符号链接）**：延续 1.3.126「WSL 只提供运行环境」裁定——pi 原生按 Agent Skills 规范扫描 `$HOME/.agents/skills`，新增会话启动漏斗（WSL pi 分支，每进程每 distro 首轮核验）与状态页「检查/修复」动作（`EnsureWSLSharedSkillsRoot`），把 distro 内 `~/.agents/skills` 钉成指向 Windows 技能根（wslpath 实测翻译）的符号链接：幂等、指向别处的旧链接自愈替换、既有真实目录先备份为 `skills.pre-shared.<时间戳>` 再建链、目标经 `WSLTranslatePaths` 存在性验证（不可达如实报 host-missing 不建链）。
+
+### Removed
+
+- **退役 P3-S3「共享技能」同意制投影（`shared/skill/<name>` 单元）**：同一棵树不允许两套写入通道——投影副本会遮挡/被符号链接遮挡。删除 `SkillsScope` 作用域、App 动作面（`Get/Check/Preview/Apply/Keep/TakeOver` 六个 wails 方法）、统一管理的技能扫描/重扫/对账分支与前端技能面板；树单元共享原语（`planTreeUnitCore` / `submitDirUnit` / 目标树探测 / 扫描器与兼容检查）保留，继续服务 Claude/Codex 用户资源单元。
+- **旧状态清单读取时剔除退役登记**：`pi/*`（1.3.126 退役后仍残留的 awaiting-consent 死条目）与 `shared/skill/*` 登记在加载时统一剔除（`pruneRetiredUnits`），状态页不再展示永久的待同意/不兼容噪音；在役单元（视觉清单/学习层/Claude/Codex）不受影响。配置状态区「共享技能」卡片改为符号链接核验状态（已指向/已备份迁移/宿主根不可达/核验失败）。
+
+## [1.3.129] - 2026-11-09
+
+### Fixed
+
+- **Claude 账号身份解析兼容真实嵌套响应**：`HTTPIdentityProvider.FetchProfile` 按真实端点返回的嵌套结构（`account.uuid` / `organization.uuid` / `organization_type` / `rate_limit_tier`，与 Claude Code 同源）解析账号/组织 UUID 与席位档位，同时保留早期扁平字段（`accountUuid`/`organizationUuid`/`seatTier`）兼容；席位档位依次回退 `seat_tier` → `organization_type` → `rate_limit_tier`，缺失账号 UUID 仍返回 `IDENTITY_UNVERIFIED`。
+- **发布资产回填修改日志**：release workflow 改为从 CHANGELOG.md 提取对应版本章节作为 Release body（`generate_release_notes` 对单提交直推 tag 只产出 compare 链接，导致更新界面无修改日志）；v1.3.125–v1.3.128 的 Release body 已回填。
+
+## [1.3.128] - 2026-11-08
+
+### Added
+
+- **WSL 会话供给 Windows 根目录事实**：Windows 上落在 WSL 的会话新增 `AMAGI_WIN_SYSTEMROOT` / `AMAGI_WIN_PROGRAMFILES` / `AMAGI_WIN_LOCALAPPDATA` / `AMAGI_WIN_USERPROFILE`（取宿主值、仅盘符绝对路径、经 WSLENV `/p` 翻译为 `/mnt/<盘符>/…`，已有同名键不覆盖），供 amagi-pi `win_exec` 受管调用 Windows 原生程序（cmake/git/UBT 等），无需依赖 WSL PATH 带 Windows 目录，也不放开全局 interop。
+
+## [1.3.127] - 2026-11-08
+
+### Removed
+
+- **清理 Pi 的 WSL 供给遗留代码（1.3.126 共享 Windows agent 根的后续）**：删除「向 WSL distro 内独立 Pi 根供给/同步配置与登录凭据」整套已失效机制——登录凭据 A2 双向同步（`launcher.SyncWSLPiLoginAuth*`）、WSL 托管 `models.json` 分发（`WriteWSLPiAgentConfig` / `BuildWSLPiManagedModelsCandidate` / `pi/managed-models` 单元）、`pi/settings` / `pi/amagi` / `pi/mcp` 三个键级投影单元及其 App 动作面（`Check/Preview/Apply/Keep/TakeOver/EnableWSLPiConfigSupply`）、启动闸门与 remote effect 的 Pi 分支、统一管理固定单元集与状态页「托管 Provider (Pi)」卡中的 Pi 行。旧状态文件中的退役 Pi 单元登记与保存源读取时直接忽略，不报错；OpenCode 附加层（`EffectWSLConfigSupply`）、Claude/Codex 用户配置导入、共享视觉清单/学习层、技能与插件 WSL 重放行为不变。前端同步移除 Pi 配置投影区块与对应 API 封装（wailsjs 生成物待下次 `wails build` 重生）。
+
+## [1.3.126] - 2026-11-08
+
+### Changed
+
+- **WSL 内 Pi 默认共享 Windows agent 根（WSL 只提供运行环境）**：落在 WSL 发行版内的 Pi 会话不再使用发行版自己的 `~/.pi/agent`，而是把 `PI_CODING_AGENT_DIR` 钉到 Windows `~/.pi/agent`（经 WSLENV `/p` 由 wsl.exe 翻译为 `/mnt/<盘符>/…`），`settings.json`、`models.json`、`auth.json`、已装插件（含 amagi-pi 及其 Web UI）、技能与注册表全部与 Windows 侧同一份。桌面启动与 remote 创建/重启同源：provider 配置直接写 Windows `models.json`，不再向发行版分发托管配置、不再做登录凭据副本同步，登录会话与受管 Claude 订阅账号不再因 WSL 被拒绝。新增 `launcher.ApplyWSLSharedPiAgentRoot`（钉定 + 路径放行键，躲过 1.3.59 的盘符路径剥离）及对应回归测试。注意：Windows 侧 npm/git 插件若含原生二进制依赖，在 WSL 内无法运行；`/mnt/c` 读取较慢会拉长冷启动。OMP 与其它 CLI 的 WSL 行为不变。
+
+## [1.3.125] - 2026-11-08
+
+### Fixed
+
+- **WSL 转发 pi Web UI 端口与令牌**：环境变量白名单精确放行 `AMAGI_WEBUI_PORT` 与 `AMAGI_WEBUI_TOKEN`，不开放 `AMAGI_` 前缀避免内部标记泄漏；补充 WSLENV 转发回归测试，验证 Web UI 变量传入 WSL 且内部变量被排除。
+- **发布工作流锁定 Wails 版本**：Wails CLI 改用 go.mod 锁定版本安装，修复 latest CLI 已要求 Go 1.26 而构建基线为 Go 1.25 的漂移；手动 dispatch 明确 checkout 已有标签并发布到同一标签，支持原标签重建且不移动既有标签。
+
+## [1.3.124] - 2026-11-01
+
+### Added
+
+- **Windows / WSL 统一配置管理**：环境检测新增一次授权入口，支持范围内以 Windows 为配置源，WSL 继续运行 Linux 原生 CLI；接通启动补漏、保存推送、启动对账与技能/资源每 5 分钟后台重扫。保留目标身份授权、手改冻结、同名非托管内容与「保留本地」保护；部分授权失败可自动续接，活动会话结束后自动补推，停机 WSL 不被唤醒。
+- **五 CLI 安装升级联动**：Claude Code、OpenCode、Codex、Pi、OMP 在应用内安装或升级时，按 WSL 模式/已有原生安装条件联动默认有效发行版；新增真正的 Linux 版升级路径与 OMP 安装面，Windows/WSL 分别展示结果，部分失败警告并刷新 WSL 卡片。
+
+### Fixed
+
+- 修复资源首次扫描后不再刷新、活动会话暂停后漏补推、部分初始化失败无法自愈以及安装联动后卡片状态陈旧；补充真实后台循环、换代隔离、并发与界面交互回归。
+- 清理 GitHub 跨平台发布门禁暴露的未使用辅助代码、无效赋值与测试断言，明确 Windows 句柄清理语义；修正 Windows 回归夹具的盘符路径与目标 Linux 权限模拟，保留全量 lint 规则和安全断言。
+- 验证：全量 Go 测试、相关 race、go vet、Windows 交叉构建、前端构建、413 项前端单测与 24 项隔离 Vue 交互通过；独立审核问题全部关闭，增量复审 PASS。真实 Windows/WSL 安装与 CLI 消费仍待实机验证。统一管理不包含所有引擎插件、Claude/Codex 订阅登录及所有平台专属配置，支持边界见用户安装文档。
+
+## [1.3.123] - 2026-10-29
+
+### Added
+
+- **Pi 登录预设输出上限**：新增可选输出 token 上限与「填入模型最大值」按钮，读取所选模型目录的 `maxTokens`，未知额度时禁用按钮；留空或 0 恢复默认。保存、编辑回填、列表显示与本机 Pi `modelOverrides.maxTokens` 生效链路完整接通，同供应商/模型的预设共享额度，清零、删除最后一个预设和切换模型时清理旧覆写。保留兄弟模型、上下文窗口与其他自定义字段；本次不向 WSL 分发输出覆写。
+- 补充输出额度校验、目录最大值、配置持久化及生产回调生命周期测试；全量 Go 回归、前端 404 项测试、前端构建与隔离浏览器验证通过，独立审核已收口。
+
+## [1.3.122] - 2026-10-29
+
+### Added
+
+- **Pi Agent 配置「模型选择」合并内置模型目录**：`GetPiModelCatalog` 由仅读 `models.json` 改为「内置目录 + models.json 覆盖层」合并——自定义模型按模型 ID 覆盖内置同名项并支持思考档位补丁；`models.json` 缺失或损坏时仍展示内置目录，不从认证条目猜测模型 ID。前端 `ModelSpecSelector`：`provider/` 暂存为可恢复中间态（便于切换/恢复服务商）；空目录服务商提示「暂无模型目录」并禁用模型与思考档位下拉，保留手动输入；当前模型目录未收录时保留完整模型配置，避免目录缺项导致配置丢失。补充目录合并、选择器单测与端到端配置保存 e2e。
+
+## [1.3.121] - 2026-10-28
+
+### Fixed
+
+- **Phase 1 审核修复批（diting 15 findings）**：①门禁交接（F01）：mutation gate 释放 admission 前直接从 PoolStore 发布权威 ready/blocked/generation，消除「释放→缓存刷新」交接窗口；launch claim 取得后重校权威状态（失败事务代际不变也能拦）；remote create/restart 对无凭据 admission 的受影响 CLI 计划在执行边界校验 absent 仍成立（absent 旧计划→首次 capture 后不再执行）。②静止检查（F02）：归因集合改为仅含持有 SharedServiceClaudeCredentials lease 的会话，absent 时启动的 CodeBox Claude/Pi 会话不再被豁免，首次启用前必须退出。③事务一致性（F03）：短提交锁内终复核整文件/受管 revision，漂移停止写入交由 reconcile 分类；二次 harvest 同步替换 journal before/expected 同源快照。④取消录入（F04）：走 mutation/静止门并分类当前投影，原生漂移时保留 enrollment 标记 drifted → needs-reconcile，不再无条件清 journal 重开启动入口。⑤目标验证（F05）：换入前用目标当前两份 grant 现场验证身份/组织/双端配对，刷新后不可验证或已撤销拒绝写入原生。⑥恢复动作（F06）：complete-target/restore-source 消费 outcome（roll-forward-pending/needs-reconcile → blocked 非 done）并校验 expectedRevision；同目标 no-op 前先处理未结 journal（全 before 先清再 no-op）。⑦身份环境边界（F07）：remote Claude 计划与 Pi 登录计划（env 构建 + 重锚）同步剥离 CLAUDE_CODE_*/CLAUDE_CONFIG_DIR，外部终端 LaunchGuarded 新增受管身份键剥离参数（非受管零变化）。⑧前端反馈（F08）：operation 进行/失败横幅提至各状态共用区域，absent/enrolling/needs-reconcile 分支可见（vitest 接入既有 @vitejs/plugin-vue，SSR 渲染真实组件验证，无新增依赖）。⑨录入续接（F09）：池 DTO 返回持久化 enrollmentId（不含秘密），前端刷新/重启后重建向导，保存仍校验 TxnID+revision。⑩池缺失（F10）：不含秘密的「曾初始化」标记（~/.amagi-codebox/claude-accounts.pool-initialized），已建池被外部删除 → POOL_MISSING fail closed，拒绝重建空池，与从未启用区分。⑪原生项缺项（F11）：Claude Code Keychain update 缺项只返回稳定错误，禁止 Add 重建（与池首建分离权限语义）。⑫进程观察器（F12）：补齐官方 RPC 入口进程标题 pi-rpc 与 pi-coding-agent 包路径片段匹配。⑬未知字段（F13）：standby Pi grant 刷新改为字段级合并保留扩展字段。⑭乐观锁（F14）：RemoveAccount 校验 expectedRevision。⑮operation 缓存（F15）：超限淘汰只删已完成 victim，运行中项保留（requestId 幂等/在途查询不悬空）。另修正四项测试有效性（F04 反向断言、F05 刷新后身份映射、跨进程锁真实互斥断言、目录拒绝用真实目录）。
+
+### Added
+
+- **Pi Agent「执行中咨询」新增 Codex Work 模型与思考档位**：`advisor.codex` 新增 `reasoningEffort` 字段（low/medium/high/xhigh/max，前后端同步校验）；managed 自有咨询会话默认 gpt-6-astra 模型与 high 思考档位，指定既有聊天时不再覆盖其模型与思考档位。另 build 脚本启用 `-trimpath` 归一化编译路径以共享构建缓存。
+- **Provider center「Claude 订阅账号」区（Phase 1c）**：新增 `frontend/src/api/claudeAccounts.ts`（包装 1b facade 十个绑定，1b 错误码全集 → 中文文案映射与解析）、`frontend/src/stores/claudeAccounts.ts`（池状态机 loading/absent/managed/enrolling/needs-reconcile/blocked/error、`claude-accounts:operation|event` 事件订阅 + operation 轮询兑底、operation 进行中防重、switch 同目标在途复用同一 requestId 不重发、SESSIONS_ACTIVE/EXTERNAL_SESSION_UNCERTAIN 进入等待意图并可重试）、`claudeAccountsView.ts` 纯视图模型（三态判定、双端健康文案、遮罩邮箱显隐不变量、恢复三选一引导、录入向导四步）与 `ClaudeAccountsSection.vue`（首次保存双端登录、录入向导、账号卡〔别名/遮罩邮箱/套餐/双端健康/额度占位〕、切换/更新当前登录/重命名/移除、等待会话退出自动完成、needs-reconcile inspect+complete-target/adopt-current/restore-source、自动轮换 riskAck 确认弹层）；切换代际变化后自动 loadLoginProviders() 刷新发现；macOS 以外 capability=unsupported 时全区隐藏。额度数据绑定（Phase 2）、自动引擎（Phase 3）不在本阶段。附 Vitest 29 项（错误码全集、幂等、pending、防重、别名校验等）。
+- **Claude 订阅账号轮换接线（Phase 1b）**：①共享凭据 lease kind：新增 `SharedServiceClaudeCredentials` / `launchplan.SharedClaudeCredentials`（旧枚举值不动），共享协调器 launch admission 白名单扩为凭据+Headroom（卸载 drain 仍限 Headroom），指纹 = canonical 路径 + activeGeneration（不含 token）。②启动入口接入：Claude/Pi 桌面启动在认证读取/配置写入/进程副作用前取凭据 admission，进程启动前复核代际（不一致返回重新规划）；embedded 提升、外部提升、remote create/restart 的 admission 传递与代际转移补齐；WSL 目标（distro 独立根）不持 lease，受管 WSL Pi 登录 v1 明确拒绝；受管 OAuth/登录启动在最终 shell 后边界清除 CLAUDE_CODE_DEVICE_ID/CLAUDE_CODE_ACCOUNT_UUID/CLAUDE_CODE_OAUTH_TOKEN/CLAUDE_CONFIG_DIR。③MutationGate/QuiescenceChecker 生产实现（进程观察器：不可分类/不可归因/存活后代/扫描失败 → EXTERNAL_SESSION_UNCERTAIN）与 NewService 装配，启动时序：池加载 → RecoverAtStartup → 才开放受影响启动入口（needs-reconcile/未结事务期间入口关闭）。④App facade（`claude_accounts_facade.go`，raw 服务不入 Bind）：GetClaudeAccounts/录入三件套/SwitchClaudeAccount（reason 固定 manual + requestId 幂等）/GetOperation/SetRotation（riskAck + 池 revision 校验）/Reconcile（inspect 零写 + complete-target/adopt-current/restore-source）/Remove/Rename，后台 operation 有界缓存，事件只发 operationId/stage/state/generation；wailsjs 绑定已同步（下次 wails dev/build 再生即收敛）。⑤配置持久化：`AppConfig.ClaudeAccountRotation`（JSON `claude_account_rotation`）参与加载/保存/深拷贝，未知 strategy 拒绝不默默回退，导入导出不携带。前端 UI（1c）、quota（Phase 2）、自动引擎（Phase 3）不在本阶段。
+- **Claude 订阅账号轮换领域包（Phase 1a）**：新增 `internal/claudeaccounts`，实现双账号池 Keychain envelope 存储（专用 service `amagi-codebox.claude-accounts`，含 revision 回读验证与跨进程 flock）、Claude Code/Pi 三处原生凭据的字段级读写适配（ReadStable、原子写、locator 唯一匹配）、capture/enrollment/harvest/swap/reconcile 事务（journal 恢复决策表：before/after/混合 roll-forward/未知 needs-reconcile）、standby grant 受控 OAuth 刷新（Pi 协议常量已核实、Claude Code 协议留 adapterVersion 门待真机验证）、双 grant 身份配对校验与自动轮换配置值对象；含 62 项隔离测试（fake Keychain + tempdir 注入，不触真实凭据），接线（lease/facade/前端）待后续阶段。
+
+## [1.3.120] - 2026-10-24
+
+### Added
+- Pi Agent 配置新增 CodeMode 卡片：模型自行选择或适用时优先考虑，以及脚本可覆盖的输出/时限默认值。无需角色、只读或 scope 授权开关；保存沿用原配置校验和原子落盘，保留其他字段与旧配置。
+
+## [1.3.119] - 2026-10-24
+
+### Added
+- Pi Agent 配置新增「执行中咨询」：可选 pi 内模型或本机 Codex；默认新建并自动续接自有咨询会话，另可指定已有聊天及只读检测共享连接。接通角色、Leader 开关、预算、前后端校验及保存回读；保留其他配置字段。
+
 ## [1.3.118] - 2026-10-20
 
 ### Fixed

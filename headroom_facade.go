@@ -1,10 +1,10 @@
 package main
 
-// Headroom facade and shared-service coordination for the desktop app
-// (design §4.1, §6.3, §6.7).
+// Shared-service coordination and external-process cleanup ownership for the
+// desktop app (design §4.1, §6.3, §6.7).
 //
-// These raw services are not in the Wails Bind list (C-01); the frontend
-// reaches them only through these App-level methods. Mutation methods
+// The raw services are not in the Wails Bind list (C-01); the frontend
+// reaches them only through App-level methods. Mutation methods
 // (Start/Stop/reconfigure) are lease-guarded by the SharedServiceCoordinator
 // (design §6.7 N-01): while any active/pending run lease exists, they are
 // stably rejected with raw call = 0. Read methods pass through unconditionally.
@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"amagi-codebox/internal/cleanupstore"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
@@ -30,31 +29,19 @@ var (
 	ErrExternalCleanupRecheckUnavailable   = errors.New("external cleanup recovery: process recheck unavailable")
 )
 
-// acquireSharedMutation owns the check→raw-I/O window for a singleton mutation.
-// Unlike a one-shot check, the exact token remains visible to launch admissions
-// and uninstall drains until the caller releases it.
-func (a *App) acquireSharedMutation(kind remote.SharedServiceKind, mutation remote.SharedServiceMutationKind) (*remote.SharedMutationAdmission, error) {
-	if a.isExternalCleanupRecoveryBlocked() && isHeadroomSharedKind(kind) {
-		return nil, remote.ErrSharedServiceInUse
-	}
-	if a.sharedCoord == nil {
-		return nil, remote.ErrSharedServiceInUse
-	}
-	return a.sharedCoord.AcquireMutationAdmission(kind, mutation)
-}
-
 // sharedFingerprint computes a non-secret config fingerprint for a shared
 // singleton from its current running state (M-006). It is only used to detect
 // incompatible-config launches while a lease exists.
 func (a *App) sharedFingerprint(kind remote.SharedServiceKind) [32]byte {
 	switch kind {
-	case remote.SharedServiceClaudeHeadroom:
-		st := a.Headroom.GetStatus()
-		return sharedFingerprintForHeadroom("claude-headroom", st.BackendURL, st.Port)
-	case remote.SharedServiceCodexHeadroom:
-		if a.CodexHeadroom != nil {
-			st := a.CodexHeadroom.GetStatus()
-			return sharedFingerprintForHeadroom("codex-headroom", st.BackendURL, st.Port)
+	case remote.SharedServiceClaudeCredentials:
+		// 凭据指纹在 lease 提升时重算：canonical 路径 + 当前池代际（design
+		// §6.3）。与 admission 指纹不一致 → 提升失败（代际已变化，重新规划）。
+		// 路径解析失败返回零指纹：configBound admission 与零指纹不匹配 →
+		// fail closed，不会建立错误代际的 lease。
+		fp, err := a.claudeCredentialsFingerprint()
+		if err == nil {
+			return fp
 		}
 	}
 	return [32]byte{}
@@ -154,10 +141,6 @@ func (a *App) acquireAndRememberExternalSharedLease(
 	}
 	a.sharedLeases[lease.OwnerKey()] = lease
 	return nil
-}
-
-func isHeadroomSharedKind(kind remote.SharedServiceKind) bool {
-	return kind == remote.SharedServiceClaudeHeadroom || kind == remote.SharedServiceCodexHeadroom
 }
 
 func (a *App) isExternalCleanupRecoveryBlocked() bool {
@@ -315,14 +298,6 @@ func (a *App) rejectExternalProcessStartAfterFence(
 		return errors.Join(remote.ErrSharedCoordinatorClosed, completionErr)
 	}
 	return remote.ErrSharedCoordinatorClosed
-}
-
-func (a *App) markExternalOwnershipReservation(attempt *externalOwnershipAttempt) {
-	a.externalCleanupMu.Lock()
-	if a.externalOwnershipAttempt == attempt {
-		attempt.durableReservation = true
-	}
-	a.externalCleanupMu.Unlock()
 }
 
 func (a *App) endExternalOwnershipAttempt(attempt *externalOwnershipAttempt) {
@@ -638,33 +613,6 @@ func (a *App) snapshotExternalCleanupAbandonments(reason remote.ExternalCleanupA
 	return out
 }
 
-func (a *App) requireExternalCleanupStore() error {
-	if a.isExternalCleanupRecoveryBlocked() || a.externalCleanupStore == nil || !a.externalCleanupStore.IsReady() {
-		return cleanupstore.ErrStoreNotReady
-	}
-	return nil
-}
-
-// reserveExternalProcessOwnership fsyncs a fixed-schema intent before OS Start.
-// A later PID/identity registration consumes it atomically in journal replay;
-// if that upgrade fails, the reservation remains durable and a fresh App must
-// fail closed rather than infer that no process exists.
-func (a *App) reserveExternalProcessOwnership(sessionID string, kind remote.SharedServiceKind) (cleanupstore.Reservation, error) {
-	reservation := cleanupstore.Reservation{
-		Version:    cleanupstore.JournalVersion,
-		SessionID:  sessionID,
-		Kind:       kind,
-		ReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	if a.externalCleanupStore == nil {
-		return reservation, cleanupstore.ErrStoreNotReady
-	}
-	if err := a.externalCleanupStore.Reserve(reservation); err != nil {
-		return reservation, fmt.Errorf("reserve external process ownership: %w", err)
-	}
-	return reservation, nil
-}
-
 func (a *App) completeExternalProcessReservation(reservation cleanupstore.Reservation) error {
 	if reservation.SessionID == "" || a.externalCleanupStore == nil {
 		return nil
@@ -676,47 +624,8 @@ func (a *App) completeExternalProcessReservation(reservation cleanupstore.Reserv
 	return nil
 }
 
-// persistExternalProcessOwnership writes the OS identity before lease
-// promotion. Thus both successful external runs and promotion-failure cleanup
-// claims survive a concurrent graceful Shutdown/host boundary.
-func (a *App) persistExternalProcessOwnership(
-	sessionID string,
-	pid int,
-	kind remote.SharedServiceKind,
-	lifecycle externalLauncherPort,
-) (cleanupstore.Record, error) {
-	identity, identityErr := lifecycle.CaptureProcessIdentity(sessionID)
-	record := cleanupstore.Record{
-		Version:         cleanupstore.JournalVersion,
-		SessionID:       sessionID,
-		PID:             pid,
-		ProcessIdentity: identity,
-		Kind:            kind,
-		RegisteredAt:    time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	var ownershipErr error
-	if identityErr != nil {
-		ownershipErr = fmt.Errorf("capture external process identity: %w", identityErr)
-	}
-	if a.externalCleanupStore == nil {
-		ownershipErr = errors.Join(ownershipErr, cleanupstore.ErrStoreNotReady)
-	} else if err := a.externalCleanupStore.Register(record); err != nil {
-		ownershipErr = errors.Join(ownershipErr, fmt.Errorf("persist external process ownership: %w", err))
-	}
-	return record, ownershipErr
-}
-
-func (a *App) rememberExternalDurableRun(record cleanupstore.Record) {
-	a.externalCleanupMu.Lock()
-	if a.externalDurableRuns == nil {
-		a.externalDurableRuns = make(map[string]cleanupstore.Record)
-	}
-	a.externalDurableRuns[record.SessionID] = record
-	a.externalCleanupMu.Unlock()
-}
-
 // registerExternalCleanup transfers an already-started process (durable record,
-// durable reservation, or transient no-Headroom PID) and any unpromoted
+// durable reservation, or transient non-durable PID) and any unpromoted
 // admission into the exact in-memory reaper owner before Stop.
 func (a *App) registerExternalCleanup(
 	record cleanupstore.Record,
@@ -743,6 +652,23 @@ func (a *App) registerExternalCleanup(
 	return claim
 }
 
+// acquireRecoveryAdmission re-derives the launch admission a replayed durable
+// record needs. The credential kind is config-bound by design §6.3: recovery
+// recomputes the fingerprint from the authoritative startup state (canonical
+// credential paths + reloaded active generation), which equals the tuple the
+// pre-boundary admission used whenever config survived unchanged. A fingerprint
+// failure degrades to the admission-error path (fail closed, global fence).
+func (a *App) acquireRecoveryAdmission(kind remote.SharedServiceKind) (*remote.SharedLaunchAdmission, error) {
+	if kind != remote.SharedServiceClaudeCredentials {
+		return a.sharedCoord.AcquireLaunchAdmission(kind)
+	}
+	fingerprint, err := a.claudeCredentialsFingerprint()
+	if err != nil {
+		return nil, fmt.Errorf("recompute credential config fingerprint: %w", err)
+	}
+	return a.sharedCoord.AcquireLaunchAdmissionForConfig(kind, fingerprint)
+}
+
 // recoverExternalCleanups replays durable active records into a fresh
 // coordinator + Launcher instance. Each identity-verified live process receives
 // a new startup admission before its reaper starts; terminal or PID-reused
@@ -763,7 +689,7 @@ func (a *App) recoverExternalCleanups() error {
 	}
 	// A reservation has no PID by design because it precedes OS Start. After an
 	// App boundary its process existence is indeterminate, so retain a global
-	// Headroom recovery fence until an operator/repair path resolves the journal.
+	// shared-service recovery fence until an operator/repair path resolves the journal.
 	hardBlocked := len(pending) > 0
 	var recoveryErr error
 	if hardBlocked {
@@ -784,7 +710,7 @@ func (a *App) recoverExternalCleanups() error {
 	}
 
 	for _, record := range records {
-		admission, admissionErr := a.sharedCoord.AcquireLaunchAdmission(record.Kind)
+		admission, admissionErr := a.acquireRecoveryAdmission(record.Kind)
 		if admissionErr != nil {
 			hardBlocked = true
 			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover %s admission: %w", record.SessionID, admissionErr))
@@ -804,8 +730,8 @@ func (a *App) recoverExternalCleanups() error {
 		recoveryReason := remote.ExternalCleanupRecoveryReason("")
 		if adoptErr != nil {
 			// A live process whose identity could not be authoritatively adopted
-			// keeps both its exact admission and the global Headroom recovery fence.
-			// It is completed only through the explicit terminal-confirmation API.
+			// keeps both its exact admission and the global shared-service recovery
+			// fence. It is completed only through the explicit terminal-confirmation API.
 			hardBlocked = true
 			a.setExternalCleanupRecoveryBlocked(true)
 			if errors.Is(adoptErr, launcher.ErrLegacyProcFSIdentity) {
@@ -1101,36 +1027,3 @@ func (a *App) finishSharedLeaseRelease(sessionID string, gate chan struct{}, lea
 		_ = a.sharedCoord.ReleaseExact(context.Background(), lease)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Headroom facade
-// ---------------------------------------------------------------------------
-
-// HeadroomStart starts the Claude Headroom service (mutation; lease-guarded).
-func (a *App) HeadroomStart(realBackendURL string) error {
-	admission, err := a.acquireSharedMutation(remote.SharedServiceClaudeHeadroom, remote.MutationStartDifferentConfig)
-	if err != nil {
-		return err
-	}
-	defer a.sharedCoord.ReleaseMutationAdmission(admission)
-	return a.Headroom.Start(realBackendURL)
-}
-
-// HeadroomStop stops the Claude Headroom service (mutation; lease-guarded).
-func (a *App) HeadroomStop() error {
-	admission, err := a.acquireSharedMutation(remote.SharedServiceClaudeHeadroom, remote.MutationStop)
-	if err != nil {
-		return err
-	}
-	defer a.sharedCoord.ReleaseMutationAdmission(admission)
-	return a.Headroom.Stop()
-}
-
-// HeadroomIsRunning reports whether headroom is running (read).
-func (a *App) HeadroomIsRunning() bool { return a.Headroom.IsRunning() }
-
-// HeadroomGetStatus returns the headroom status (read).
-func (a *App) HeadroomGetStatus() headroom.HeadroomStatus { return a.Headroom.GetStatus() }
-
-// HeadroomGetPort returns the headroom port (read).
-func (a *App) HeadroomGetPort() int { return a.Headroom.GetPort() }

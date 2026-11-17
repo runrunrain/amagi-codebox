@@ -166,6 +166,8 @@ import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
 import { ICONS } from './icons';
 import { useToast } from '../../composables/useToast';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { genId, hexToRgb } from './editorUtils';
 
 const { showError } = useToast();
 
@@ -177,11 +179,11 @@ interface AgentConfig {
   prompt?: string;
   variant?: string;
   tools?: Record<string, boolean>;
-  [k: string]: any;
+  [k: string]: unknown;
 }
 
 interface Props {
-  modelValue: Record<string, AgentConfig>;
+  modelValue: JsonRecord;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -189,7 +191,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'update:modelValue': [value: Record<string, AgentConfig>];
+  'update:modelValue': [value: JsonRecord];
 }>();
 
 const MODE_OPTIONS = [
@@ -204,13 +206,6 @@ const VARIANT_OPTIONS = [
   { value: 'xhigh', label: 'xhigh' },
   { value: 'max', label: 'max' },
 ];
-
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
 
 interface ToolEntry {
   id: string;
@@ -238,16 +233,6 @@ function toggleExpanded(id: string) {
   expandedKeys.value[id] = !expandedKeys.value[id];
 }
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return null;
-  return {
-    r: parseInt(m[1].slice(0, 2), 16),
-    g: parseInt(m[1].slice(2, 4), 16),
-    b: parseInt(m[1].slice(4, 6), 16),
-  };
-}
-
 // 略缩图色调：优先使用 agent 自定义 color（透明度 0.16），否则 systemGreen
 function thumbStyle(color?: string): Record<string, string> {
   const fallback = '#34C759';
@@ -269,8 +254,8 @@ function normalizeColor(c: string | undefined): string {
   return /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#000000';
 }
 
-function toolEntriesFrom(tools: any): ToolEntry[] {
-  if (!tools || typeof tools !== 'object') return [];
+function toolEntriesFrom(tools: unknown): ToolEntry[] {
+  if (!isJsonRecord(tools)) return [];
   return Object.entries(tools).map(([k, v]) => ({
     id: genId(),
     key: k,
@@ -279,16 +264,15 @@ function toolEntriesFrom(tools: any): ToolEntry[] {
 }
 
 function syncFromModel() {
-  const obj =
-    props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {};
+  const obj = isJsonRecord(props.modelValue) ? props.modelValue : {};
   agents.value = Object.entries(obj).map(([k, v]) => {
     const exist = agents.value.find((a) => a.key === k);
-    const valueCopy: AgentConfig = v && typeof v === 'object' ? { ...(v as object) } : {};
+    const valueCopy: AgentConfig = isJsonRecord(v) ? ({ ...v } as AgentConfig) : {};
     return {
       id: exist ? exist.id : genId(),
       key: k,
       value: valueCopy,
-      toolEntries: toolEntriesFrom((valueCopy as any).tools),
+      toolEntries: toolEntriesFrom(valueCopy.tools),
     };
   });
 }
@@ -332,13 +316,13 @@ function updateKey(id: string, key: string) {
   a.key = key;
   emitAll();
 }
-function updateProp(id: string, prop: string, value: any) {
+function updateProp(id: string, prop: string, value: unknown) {
   const a = agents.value.find((x) => x.id === id);
   if (!a) return;
   if (prop === 'variant' && value === '') {
     delete a.value.variant;
   } else {
-    a.value[prop] = value;
+    (a.value as JsonRecord)[prop] = value;
   }
   emitAll();
 }
@@ -409,8 +393,8 @@ function addAgent() {
 watch(
   () => props.modelValue,
   (next) => {
-    const obj = next && typeof next === 'object' ? next : {};
-    const cur: Record<string, any> = {};
+    const obj = isJsonRecord(next) ? next : {};
+    const cur: JsonRecord = {};
     for (const a of agents.value) if (a.key !== '') cur[a.key] = a.value;
     const nk = Object.keys(obj);
     const ck = Object.keys(cur);

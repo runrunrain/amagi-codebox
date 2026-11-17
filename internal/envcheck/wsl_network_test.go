@@ -23,7 +23,7 @@ func TestAppendWSLNetworkingModeInfo_ThreeModes(t *testing.T) {
 		{
 			mode:           "mirrored",
 			wantMessage:    "WSL 网络模式：mirrored",
-			wantDetailSubs: []string{"AI 代理分流与 Headroom 对 WSL 会话可用"},
+			wantDetailSubs: []string{"AI 代理分流对 WSL 会话可用"},
 		},
 		{
 			mode:           "nat",
@@ -62,14 +62,14 @@ func TestAppendWSLNetworkingModeInfo_ThreeModes(t *testing.T) {
 }
 
 func TestAppendWSLNetworkingModeInfo_Gates(t *testing.T) {
-	// Tools that never launch inside WSL (Headroom) get no card.
+	// Tools that never launch inside WSL (unknown tools) get no card.
 	withWSLHybridGates(t, "windows", "Ubuntu-Test")
 	withWSLNetworkingMode(t, "mirrored")
 	svc := NewServiceWithRunner(&wslHybridProbeRunner{})
-	status := &CheckStatus{Tool: ToolHeadroom}
+	status := &CheckStatus{Tool: CLITool("bogus")}
 	svc.appendWSLNetworkingModeInfo(status)
 	if findIssue(status, "wsl_networking_mode") != nil {
-		t.Errorf("headroom must be skipped: %#v", status.Issues)
+		t.Errorf("unknown tool must be skipped: %#v", status.Issues)
 	}
 
 	// Non-Windows host: WSL is not a launch path.

@@ -120,6 +120,7 @@ import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
 import { CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
+import { errorMessage } from '../../utils/format';
 
 interface UpdateInfo {
   hasUpdate: boolean;
@@ -228,10 +229,9 @@ function handlePrimaryUpdateAction() {
 
 // normalizeUpdateError 从 Wails 抛出的错误中提取可读消息。
 // 兼容 string / Error / 普通对象三种形态。
-function normalizeUpdateError(err: any): string {
+function normalizeUpdateError(err: unknown): string {
   if (!err) return '下载更新失败';
-  if (typeof err === 'string') return err;
-  return err?.message || String(err);
+  return errorMessage(err);
 }
 
 function handleOpenReleasePage() {

@@ -12,6 +12,12 @@ mobile/node_modules
 # Build output
 frontend/dist
 mobile/dist
+frontend/package.json.md5
+
+# Claude WebUI SPA 构建产物（fresh checkout 依赖 .gitkeep 占位过 go:embed，
+# design §7.3/R6——空目录会让 go vet 失败）
+internal/claudewebui/dist/*
+!internal/claudewebui/dist/.gitkeep
 
 # Config with secrets
 *-config.json
@@ -37,6 +43,9 @@ frontend/qa-*.log
 # Agent outputs
 .amagi/
 .amagi-worktrees/
+amagi-task/
+agent-outputs/
+.agent-outputs/
 
 # 历史备份，已脱离维护（工作区保留，不入库）
 frontend/src_legacy_backup/
@@ -76,9 +85,13 @@ playwright-report/
 # 本地测试临时产物（go-cache / codex / pty 工作目录，勿提交）
 /.tmp-tests/
 
+# 本地调试与工具产物（appdbg/golangci-lint 等，勿提交）
+/tmp/
+
 # 本地运行时产物（Saved/Logs 等，勿提交）
 /Saved/
 
 # node compile-cache accidentally created inside the repo (frontend tooling bug, 2026-10-16)
 frontend/C:
-amagi-task/
+# WSL/DrvFS 将盘符冒号映射为私用区字符 U+F03A 时误创建的单字母盘符目录
+?/

@@ -196,14 +196,17 @@ func TestREST_DecodeRequests(t *testing.T) {
 func TestREST_DecodeCreateSessionSettings(t *testing.T) {
 	req, err := DecodeCreateSessionRequest([]byte(`{
 		"cliType":"codex","workdir":"/workspace","providerRef":"openai-main",
-		"presetRef":"max","modelRef":"gpt-5.6","shellRef":"/bin/zsh",
-		"useHeadroom":true
+		"presetRef":"max","modelRef":"gpt-5.6","shellRef":"/bin/zsh"
 	}`))
 	if err != nil {
 		t.Fatalf("DecodeCreateSessionRequest settings: %v", err)
 	}
-	if req.ProviderRef == nil || *req.ProviderRef != "openai-main" || req.UseHeadroom == nil || !*req.UseHeadroom {
+	if req.ProviderRef == nil || *req.ProviderRef != "openai-main" {
 		t.Fatalf("settings not decoded: %#v", req)
+	}
+	// 旧客户端显式携带 useHeadroom → rejectUnknown 判 400 bad_request（R4 契约）。
+	if _, err := DecodeCreateSessionRequest([]byte(`{"cliType":"codex","useHeadroom":true}`)); err == nil {
+		t.Fatal("retired useHeadroom field accepted by rejectUnknown whitelist")
 	}
 	for _, raw := range [][]byte{
 		[]byte(`{"cliType":"codex","providerRef":""}`),

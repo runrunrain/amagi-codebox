@@ -31,6 +31,7 @@
 import { ref, watch } from 'vue';
 import TextInput from '../ui/TextInput.vue';
 import AppButton from '../ui/AppButton.vue';
+import { genId } from './editorUtils';
 
 interface Props {
   /** 真实 array<string>。空值按 [] 处理，绝不写空对象。 */
@@ -58,12 +59,6 @@ const ids = ref<string[]>([]);
 function ensureIds(len: number) {
   while (ids.value.length < len) ids.value.push(genId());
   if (ids.value.length > len) ids.value.length = len;
-}
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 const items = ref<string[]>(Array.isArray(props.modelValue) ? [...props.modelValue] : []);

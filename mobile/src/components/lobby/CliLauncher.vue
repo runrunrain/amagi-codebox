@@ -25,7 +25,7 @@ const emit = defineEmits<{
 }>();
 
 const selectedCLI = ref<CLIType | null>(null);
-const draft = reactive({ workdir: '', providerRef: '', presetRef: '', modelRef: '', shellRef: '', useHeadroom: false });
+const draft = reactive({ workdir: '', providerRef: '', presetRef: '', modelRef: '', shellRef: '' });
 
 const cliSettings = computed(() => props.settings?.clis.find((item) => item.cliType === selectedCLI.value));
 
@@ -37,7 +37,6 @@ function chooseCLI(cliType: CLIType): void {
   draft.presetRef = defaults?.presetRef ?? '';
   draft.modelRef = defaults?.presetRef ? '' : (defaults?.modelRef ?? '');
   draft.shellRef = defaults?.shellRef ?? '';
-  draft.useHeadroom = defaults?.useHeadroom ?? false;
 }
 
 function applyPreset(): void {
@@ -61,9 +60,6 @@ function submit(): void {
   if (draft.presetRef) request.presetRef = draft.presetRef;
   if (draft.modelRef.trim()) request.modelRef = draft.modelRef.trim();
   if (draft.shellRef) request.shellRef = draft.shellRef;
-  if (selectedCLI.value === 'claudecode') {
-    request.useHeadroom = draft.useHeadroom;
-  }
   emit('launch', request);
 }
 
@@ -154,9 +150,6 @@ function cliIcon(meta: CliMeta): string {
           <option v-for="item in settings?.shells ?? []" :key="item.path" :value="item.path">{{ item.label }}</option>
         </select>
       </label>
-      <div v-if="selectedCLI === 'claudecode'" class="settings-checks">
-        <label><input v-model="draft.useHeadroom" type="checkbox" /> 使用 Headroom</label>
-      </div>
       <button class="launch-submit" type="submit" :disabled="launching !== null">
         {{ launching === selectedCLI ? '启动中…' : '启动会话' }}
       </button>
@@ -251,9 +244,7 @@ function cliIcon(meta: CliMeta): string {
 .settings-heading { display: flex; align-items: center; justify-content: space-between; }
 .settings-close { min-width: 36px; min-height: 36px; border: 0; background: transparent; color: var(--VT-text-secondary); font-size: 24px; }
 .launch-settings label { display: grid; gap: 6px; color: var(--VT-text-secondary); font-size: 12px; }
-.launch-settings input:not([type='checkbox']), .launch-settings select { min-height: 44px; padding: 9px 10px; border: 1px solid var(--VT-border); border-radius: 8px; background: var(--VT-canvas); color: var(--VT-text); font: inherit; }
-.settings-checks { display: flex; flex-wrap: wrap; gap: 16px; }
-.settings-checks label { display: flex; align-items: center; gap: 8px; }
+.launch-settings input, .launch-settings select { min-height: 44px; padding: 9px 10px; border: 1px solid var(--VT-border); border-radius: 8px; background: var(--VT-canvas); color: var(--VT-text); font: inherit; }
 .launch-submit { min-height: 44px; border: 0; border-radius: 8px; background: var(--VT-accent-strong); color: white; font-weight: 700; }
 .launch-settings input:focus-visible, .launch-settings select:focus-visible, .launch-submit:focus-visible, .settings-close:focus-visible { outline: 2px solid var(--VT-accent); outline-offset: 2px; }
 

@@ -204,15 +204,6 @@
             </div>
           </div>
         </div>
-
-        <!-- 启用 Headroom 上下文压缩 -->
-        <div class="setting-row">
-          <label>启用 Headroom 上下文压缩</label>
-          <Switch
-            :model-value="dashState.useHeadroom"
-            @update:model-value="dashState.useHeadroom = $event"
-          />
-        </div>
       </div>
     </ConfigCard>
 
@@ -252,7 +243,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PageHead from '../components/ui/PageHead.vue'
 import ConfigCard from '../components/ui/ConfigCard.vue'
-import Switch from '../components/ui/Switch.vue'
 import TextInput from '../components/ui/TextInput.vue'
 import Dialog from '../components/ui/Dialog.vue'
 import RemoteSessionsView from './RemoteSessionsView.vue'
@@ -536,8 +526,13 @@ function validateOmpPreset() {
 }
 
 // --- 事件处理 ---
+type EngineValue = typeof dashState.engine
+const ENGINE_VALUES: readonly string[] = ['claudecode', 'opencode', 'codex', 'pi', 'omp']
+function isEngineValue(v: string): v is EngineValue {
+  return ENGINE_VALUES.includes(v)
+}
 function handleEngineChange(v: string) {
-  dashState.engine = v as any
+  if (isEngineValue(v)) dashState.engine = v
 }
 
 function handleProviderChange(v: string) {
@@ -761,12 +756,11 @@ async function loadOpenCodePresets() {
     const map = await GetOpenCodePresets()
     const list: Array<{ key: string; name: string; description: string; bindingCount: number }> = []
     for (const [key, preset] of Object.entries(map || {})) {
-      const p = preset as any
       list.push({
         key,
-        name: p?.name || key,
-        description: p?.description || '',
-        bindingCount: p?.bindings ? Object.keys(p.bindings).length : 0,
+        name: preset?.name || key,
+        description: preset?.description || '',
+        bindingCount: preset?.bindings ? Object.keys(preset.bindings).length : 0,
       })
     }
     openCodePresetList.value = list

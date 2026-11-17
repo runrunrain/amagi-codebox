@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"amagi-codebox/internal/aiproxy"
+	"amagi-codebox/internal/aiproxy/router"
 	"amagi-codebox/internal/config"
 )
 
@@ -103,9 +104,16 @@ func TestAIProxyBrowserBridge(t *testing.T) {
 			http.Error(w, "invalid input", 400)
 			return
 		}
-		var result aiproxy.State
+		var result any
 		var err error
 		switch input.Method {
+		case "GetAIProxyTraffic":
+			var q router.TrafficQuery
+			if len(input.Args) != 1 || json.Unmarshal(input.Args[0], &q) != nil {
+				http.Error(w, "invalid query", 400)
+				return
+			}
+			result, err = app.GetAIProxyTraffic(q)
 		case "GetAIProxyState":
 			result, err = app.GetAIProxyState()
 		case "SaveAIProxySettings":

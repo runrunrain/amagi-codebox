@@ -166,16 +166,16 @@ export function useCommonSkillsPanel() {
   }
 
   /**
-   * 「查看插件」跳转：切到插件管理 tab + 对应引擎 + 尽力选中该插件
-   * （activePluginId 仅 Claude/Codex 列表消费；先 engine 后 id——
-   * setPluginEngine 会清空 activePluginId，顺序不能反）。
+   * 「查看插件」跳转（P6 融合：远端子页签体系）：切到对应引擎子页 +
+   * 尽力选中该插件（activePluginId 仅 Claude/Codex 列表消费；先切页后 id
+   * ——setExtSubPage 内部联动的 setPluginEngine 会清空 activePluginId，
+   * 顺序不能反）。
    */
   function viewPlugin(row: SkillRowModel): void {
     const engine = row.pluginEngine;
     const engines: readonly string[] = ['claude', 'opencode', 'codex', 'pi', 'omp'];
     if (!engine || !engines.includes(engine)) return;
-    pluginStore.setExtMainTab('plugins');
-    pluginStore.setPluginEngine(engine as 'claude' | 'opencode' | 'codex' | 'pi' | 'omp');
+    pluginStore.setExtSubPage(engine as 'claude' | 'opencode' | 'codex' | 'pi' | 'omp');
     if (row.pluginId) {
       pluginStore.setActivePlugin(row.pluginId);
     }

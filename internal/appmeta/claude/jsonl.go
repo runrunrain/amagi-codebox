@@ -31,15 +31,22 @@ import (
 	"time"
 )
 
-// pathSepReplacer 把路径分隔符（: / \）统一替换为连字符，匹配 Claude Code 的 encoded-cwd 编码。
+// claudeDirName 把 workDir 编码为 Claude Code projects 目录名（encoded-cwd）。
 //
-// 实测：Claude Code 对 workDir 做字符级替换（不是 path.Clean），所以三种字符都要处理。
-// 例："X:/WorkSpace" → "X--WorkSpace"；"C:\\Users\\a" → "C--Users-a"。
-var pathSepReplacer = strings.NewReplacer(
-	":", "-",
-	"\\", "-",
-	"/", "-",
-)
+// 实测规则（2026-11-14 本机双重验证：既有真实目录 + 探针目录）：Claude Code 逐字符
+// 替换，仅保留 ASCII 字母数字，其余字符——含 : / \ . _ 空格 括号 连字符 CJK 等——
+// 一律替换为单个连字符（多字节字符算一个字符，如「毛润」→ "--"）。
+// 例："X:/WorkSpace" → "X--WorkSpace"；"C:\Users\毛润" → "C--Users---"；
+// "a_b.c d(e)" → "a-b-c-d-e-"。此前仅替换 : \ / 的旧实现在含非 ASCII 或
+// _ . 空格等字符的 workDir 上与真实目录名错位（转录/标题/用量全部找不到）。
+func claudeDirName(workDir string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, workDir)
+}
 
 // jsonlRecord 描述 jsonl 单行记录中我们关心的字段。
 //
@@ -79,7 +86,7 @@ type originStruct struct {
 //   - workDir：会话工作目录（Claude Code 启动时的 -C/--add-dir 目标）
 //   - sessionID：Claude 会话 uuid（也是 jsonl 文件主名；方案 P 下由 tracker 动态跟踪 mtime 最新 jsonl 得到，不通过启动命令注入）
 //
-// encoded-cwd：路径中冒号、反斜杠、正斜杠全部替换为连字符。
+// encoded-cwd：仅保留 ASCII 字母数字，其余字符逐个替换为连字符（见 claudeDirName）。
 // 例：homeDir="C:/Users/毛润", workDir="X:/WorkSpace", sessionID="abc-123"
 //
 //	→ "C:/Users/毛润/.claude/projects/X--WorkSpace/abc-123.jsonl"
@@ -87,7 +94,7 @@ type originStruct struct {
 // 注：homeDir / workDir 由调用方传入（不在此处硬编码或读环境变量），
 // 便于单元测试与服务端复用。
 func SessionJSONLPath(homeDir, workDir, sessionID string) string {
-	encoded := pathSepReplacer.Replace(workDir)
+	encoded := claudeDirName(workDir)
 	return filepath.Join(homeDir, ".claude", "projects", encoded, sessionID+".jsonl")
 }
 
@@ -110,7 +117,7 @@ func SessionJSONLPath(homeDir, workDir, sessionID string) string {
 // 注意：仅按 mtime 排序，不读取文件内容（避免对大 jsonl 全文 IO）；
 // 同 workDir 并发多个 amagi 会话会指向同一最新 jsonl（串扰，主上已接受为边缘场景）。
 func FindLatestActiveJSONL(homeDir, workDir string) (path, sessionID string, err error) {
-	encoded := pathSepReplacer.Replace(workDir)
+	encoded := claudeDirName(workDir)
 	dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 
 	entries, readErr := os.ReadDir(dir)
@@ -119,7 +126,7 @@ func FindLatestActiveJSONL(homeDir, workDir string) (path, sessionID string, err
 	}
 
 	var (
-		latestPath string
+		latestPath  string
 		latestMTime time.Time
 		latestID    string
 	)
@@ -243,17 +250,17 @@ func ExtractFirstUserMessage(jsonlPath string) (content string, found bool, err 
 //
 // usage.Service 内部把 Stub 转换为自身的 UsageEvent。
 type UsageEventStub struct {
-	DedupKey                  string
-	Model                     string
-	Provider                  string
-	ProjectDir                string
-	SessionID                 string
-	RawMessageID              string
-	InputTokens               int
-	OutputTokens              int
-	CacheReadInputTokens      int
-	CacheCreationInputTokens  int
-	OccurredAt                time.Time
+	DedupKey                 string
+	Model                    string
+	Provider                 string
+	ProjectDir               string
+	SessionID                string
+	RawMessageID             string
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	OccurredAt               time.Time
 
 	// OpenCode 专用：CostProvided=true 时跳过价格表计算，直接用 NativeCost。
 	CostProvided bool
@@ -281,11 +288,11 @@ type usageMessageUse struct {
 
 // usageRecord 是 type=="assistant" 行的根级结构（只取统计需要的字段）。
 type usageRecord struct {
-	Type      string                 `json:"type"`
-	Message   usageAssistantMessage  `json:"message"`
-	Timestamp string                 `json:"timestamp"`
-	SessionID string                 `json:"session_id"` // 部分 schema 有根级 session_id
-	Cwd       string                 `json:"cwd"`
+	Type      string                `json:"type"`
+	Message   usageAssistantMessage `json:"message"`
+	Timestamp string                `json:"timestamp"`
+	SessionID string                `json:"session_id"` // 部分 schema 有根级 session_id
+	Cwd       string                `json:"cwd"`
 }
 
 // ExtractUsageRecords 解析单个 Claude jsonl 文件，提取用量记录（断点续传）。

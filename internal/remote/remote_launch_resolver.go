@@ -33,7 +33,6 @@ type RemoteLaunchRecipe struct {
 	ModelRef    string
 	Mode        string
 	ShellPath   string
-	UseHeadroom bool
 }
 
 // RemoteLaunchResolution is the resolver output: the recipe + the ephemeral spec.
@@ -106,17 +105,4 @@ type SessionRawPort interface {
 	StopSession(ctx context.Context, sessionID contract.SessionID) error
 	RemoveSession(ctx context.Context, sessionID contract.SessionID) error
 	ResizeSession(ctx context.Context, sessionID contract.SessionID, cols, rows int) error
-}
-
-// noopSessionRawPort records nothing (tests inject fakes).
-type noopSessionRawPort struct{}
-
-func (noopSessionRawPort) StopSession(ctx context.Context, sessionID contract.SessionID) error {
-	return nil
-}
-func (noopSessionRawPort) RemoveSession(ctx context.Context, sessionID contract.SessionID) error {
-	return nil
-}
-func (noopSessionRawPort) ResizeSession(ctx context.Context, sessionID contract.SessionID, cols, rows int) error {
-	return nil
 }

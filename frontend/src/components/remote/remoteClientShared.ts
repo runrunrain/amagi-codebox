@@ -11,7 +11,7 @@ import type { RemoteErrorCode } from '../../api/remoteClient';
  * 12 稳定错误码 → 面向用户的分类文案 + 可执行动作
  * （契约：internal/remote/contract/errors.go；交互稿 §2.1 失败分支）。
  */
-export const REMOTE_ERROR_CODE_COPY: Record<RemoteErrorCode, string> = {
+const REMOTE_ERROR_CODE_COPY: Record<RemoteErrorCode, string> = {
   'net.unreachable': '无法连接到该地址：请确认对方 CodeBox 已启动、地址与端口正确且网络可达后重试。',
   'service.down': '对方远程服务异常或未开启：请在对方 CodeBox 确认远程访问服务已启动后重试。',
   'auth.unpaired': '本设备尚未与对方配对：请先完成配对流程。',

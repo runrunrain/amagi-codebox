@@ -293,3 +293,16 @@ func TestResetWSLSearchToolCache(t *testing.T) {
 		t.Fatalf("noop reset must not re-probe, probes = %d, want 4", probes)
 	}
 }
+
+// resetWSLHomeCachesForTest clears the home/UNC/tools probe caches.
+func resetWSLHomeCachesForTest() {
+	wslHomeMu.Lock()
+	wslHomeCache = map[string]string{}
+	wslHomeMu.Unlock()
+	wslUNCRootMu.Lock()
+	wslUNCRootCache = map[string]string{}
+	wslUNCRootMu.Unlock()
+	wslToolsMu.Lock()
+	wslToolsCache = map[string]WSLSearchTools{}
+	wslToolsMu.Unlock()
+}

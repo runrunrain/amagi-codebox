@@ -41,7 +41,6 @@ type LauncherService struct {
 	mu                sync.Mutex
 	ownerID           uint64
 	bindingGeneration uint64
-	headroomPort      int
 	log               *logging.Service
 	envVars           *envvars.EnvVarsService
 	resolver          platform.CLIResolver
@@ -86,12 +85,6 @@ func (s *LauncherService) buildEnv(overrides map[string]string) ([]string, error
 	return env, nil
 }
 
-func (s *LauncherService) SetHeadroomPort(port int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.headroomPort = port
-}
-
 // BuildOverrides 根据提供商配置和预设参数构建环境变量覆盖映射。
 // 返回的 map 可直接传给 BuildEnv。
 func (s *LauncherService) BuildOverrides(
@@ -100,10 +93,6 @@ func (s *LauncherService) BuildOverrides(
 	apiKey string,
 	agentTeams config.AgentTeamsConfig,
 ) map[string]string {
-	s.mu.Lock()
-	headroomPort := s.headroomPort
-	s.mu.Unlock()
-
 	preset, ok := provider.Presets[presetName]
 
 	overrides := map[string]string{}
@@ -118,8 +107,6 @@ func (s *LauncherService) BuildOverrides(
 	if provider.IsOAuthMode() {
 		// OAuth 模式必须直连官方端点，不能继承代理或 API Key 环境。
 		overrides["ANTHROPIC_BASE_URL"] = ""
-	} else if headroomPort > 0 {
-		overrides["ANTHROPIC_BASE_URL"] = fmt.Sprintf("http://localhost:%d", headroomPort)
 	} else {
 		overrides["ANTHROPIC_BASE_URL"] = provider.EffectiveBaseURL("anthropic")
 	}
@@ -200,6 +187,26 @@ func (s *LauncherService) BuildOverrides(
 	return overrides
 }
 
+// stripLauncherEnvKeys 从 "K=V" 列表移除指定键（大小写不敏感；空键集零变化）。
+func stripLauncherEnvKeys(env []string, keys []string) []string {
+	if len(keys) == 0 {
+		return env
+	}
+	lower := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		lower[strings.ToLower(key)] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, ok := strings.Cut(kv, "=")
+		if ok && lower[strings.ToLower(k)] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func (s *LauncherService) reserveBindingID(sessionID string) (processcap.BindingID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -254,12 +261,17 @@ func (s *LauncherService) Launch(
 	mode session.LaunchMode,
 	workDir string,
 ) (*LaunchResult, error) {
-	return s.LaunchGuarded(sessionID, provider, presetName, apiKey, agentTeams, mode, workDir, nil)
+	return s.LaunchGuarded(sessionID, provider, presetName, apiKey, agentTeams, mode, workDir, nil, nil)
 }
 
 // LaunchGuarded invokes beforeRawStart immediately before cmd.Start. App uses
 // this hook to revalidate its shutdown generation after any command/env setup
 // delay; a rejected guard guarantees raw OS Start was never called.
+// managedEnvStrip（F07/design §6.3 R3）：受管 OAuth 启动在最终执行边界清除的
+// 身份/认证覆盖变量（CLAUDE_CODE_*、CLAUDE_CONFIG_DIR 等）；nil = 非受管
+// 路径零行为变化。外部终端直接 exec，无 shell startup 干预，直接从最终
+// env 剥键即可（与桌面 embedded 的 managedClaudeIdentityBoundarySpec 同一
+// 键集）。
 func (s *LauncherService) LaunchGuarded(
 	sessionID string,
 	provider config.Provider,
@@ -269,12 +281,14 @@ func (s *LauncherService) LaunchGuarded(
 	mode session.LaunchMode,
 	workDir string,
 	beforeRawStart func() error,
+	managedEnvStrip []string,
 ) (*LaunchResult, error) {
 	overrides := s.BuildOverrides(provider, presetName, apiKey, agentTeams)
 	env, networkErr := s.buildEnv(overrides)
 	if networkErr != nil {
 		return nil, networkErr
 	}
+	env = stripLauncherEnvKeys(env, managedEnvStrip)
 
 	// ============================================================
 	// 启动策略：复刻原始验证可行的方式

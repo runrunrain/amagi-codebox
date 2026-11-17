@@ -9,11 +9,14 @@
       <!-- RC4-2：远程模式下读写宿主应用设置（legacy）；下方其余设置均为本机内容 -->
       <template v-if="rcStore.isRemoteMode">
         <RemoteHostSettingsCard @configure-token="tokenDialogOpen = true" />
-      </template>      <GeneralSettings v-if="activeKey === 'general'" />
+      </template>
+      <GeneralSettings v-if="activeKey === 'general'" />
+      <EnvVarsSettings v-else-if="activeKey === 'env-vars'" />
       <ShellSettings v-else-if="activeKey === 'shell'" />
       <TerminalSettings v-else-if="activeKey === 'terminal'" />
       <AppearanceSettings v-else-if="activeKey === 'appearance'" />
       <RemoteSettings v-else-if="activeKey === 'remote'" />
+      <AgentCliSettings v-else-if="activeKey === 'agent-cli'" />
       <AgentProfileSettings v-else-if="activeKey === 'agent-profiles'" />
       <UpdateSettings v-else-if="activeKey === 'update'" />
       <AboutSettings v-else-if="activeKey === 'about'" />
@@ -37,10 +40,12 @@ import PageHead from '../../components/ui/PageHead.vue'
 import RemoteHostSettingsCard from '../../components/remote/RemoteHostSettingsCard.vue'
 import LegacyTokenDialog from '../../components/remote/LegacyTokenDialog.vue'
 import GeneralSettings from './GeneralSettings.vue'
+import EnvVarsSettings from './EnvVarsSettings.vue'
 import ShellSettings from './ShellSettings.vue'
 import TerminalSettings from './TerminalSettings.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
 import RemoteSettings from './RemoteSettings.vue'
+import AgentCliSettings from './AgentCliSettings.vue'
 import AgentProfileSettings from './AgentProfileSettings.vue'
 import UpdateSettings from './UpdateSettings.vue'
 import AboutSettings from './AboutSettings.vue'
@@ -58,10 +63,12 @@ function onTokenChanged() {
 
 const META: Record<string, { title: string; description: string }> = {
   general: { title: '常规设置', description: '配置应用启动默认项' },
+  'env-vars': { title: '环境变量', description: '管理会话环境变量与 Shell 启动脚本全局同步' },
   shell: { title: 'Shell', description: '自定义终端 Shell 路径' },
   terminal: { title: '终端设置', description: '终端渲染与滚动缓冲' },
   appearance: { title: '外观', description: '皮肤背景、调光与模糊' },
   remote: { title: '远程控制', description: 'HTTP/WebSocket 远程访问与移动端连接' },
+  'agent-cli': { title: '命令行访问', description: '本机 AI agent 专用 CLI（codebox-agent）的开关、令牌与本机分发' },
   'agent-profiles': { title: 'Agent 配置档', description: 'CLI 模型配置多档保存与一键切换' },
   update: { title: '软件更新', description: '检查并安装新版本' },
   about: { title: '关于', description: '应用信息' },

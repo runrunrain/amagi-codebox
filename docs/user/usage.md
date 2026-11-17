@@ -20,16 +20,16 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
 |------|----------|----------|------|
 | `/` | `SessionSettingsView.vue` | 会话设置 | 配置并启动一个新的 AI 编程会话（应用默认页） |
 | `/provider` | `ProviderCenterView.vue` | Provider Center | 统一管理服务提供商、公共预设与各 CLI 独立配置 |
-| `/extensions` | `ExtensionsView.vue` | 扩展管理 | 管理五种引擎的插件 / 包、环境变量与辅助工具 |
+| `/extensions` | `ExtensionsView.vue` | 扩展管理 | 管理五种引擎的插件 / 包与 `~/.agents` 下的共用技能、共用 MCP |
 | `/envcheck` | `EnvCheckView.vue` | 环境检测 | CLI 工具安装状态、版本与 PATH 校验；Windows 含 WSL 安装辅助 |
-| `/logs` | `LogsView.vue` | 系统日志 | 查看应用运行日志与 Headroom 压缩统计 |
+| `/logs` | `LogsView.vue` | 系统日志 | 查看应用运行日志 |
 | `/usage` | `UsageView.vue` | 使用统计 | 五种引擎的 Token 用量、缓存经济性与成本趋势 |
 
 `/terminal`（`TerminalPageView.vue`）不在主导航中，启动内嵌会话或点击侧栏会话条目时进入；该路由由 Vue `KeepAlive` 缓存。
 
 除路由页外，还有两个全局界面层：
 
-- **设置模式**：点击侧栏底部齿轮按钮进入。设置页（`frontend/src/views/settings/SettingsView.vue`）不走路由，直接替换主内容区。子页包括：常规设置、Shell、终端设置、外观（皮肤背景/调光/模糊，`internal/skins`）、远程控制、Agent 配置档（`internal/agentprofile`）、软件更新、关于。
+- **设置模式**：点击侧栏底部齿轮按钮进入。设置页（`frontend/src/views/settings/SettingsView.vue`）不走路由，直接替换主内容区。子页包括：常规设置、环境变量（`internal/envvars`）、Shell、终端设置、外观（皮肤背景/调光/模糊，`internal/skins`）、Agent 配置档（`internal/agentprofile`）、远程控制、命令行访问（Agent CLI）、软件更新、关于。
 - **主机切换器**（`HostScopeSwitcher.vue`）：位于侧栏顶部，快捷键 `Cmd/Ctrl+Shift+H`。可在"本机"与已登记的远程 CodeBox 主机之间切换；切到远程主机后，会话设置页替换为远程会话视图（`RemoteSessionsView.vue`），可查看并操作远端会话。详见 [./remote-mobile.md](./remote-mobile.md#桌面端互联remote-client)。
 
 ---
@@ -49,8 +49,7 @@ Amagi CodeBox 的桌面前端采用 hash 路由（`createWebHashHistory`），UR
     - 其他外部模式（如外部窗口 / webui 等，具体可选项随引擎而变）。
 5. **终端 Shell**（仅 `embedded` 模式可见）：可选"直接启动"、内置 Shell（Windows 默认 WSL，macOS 默认 zsh，另含 PowerShell、bash 等，取决于平台能力）或"自定义路径"。
 6. **工作目录**：本次会话的实际 `cwd`。OpenCode 引擎要求必填，未填写时给出"尚未选择启动目录"的提示。
-7. **启用 Headroom 上下文压缩**（仅 Claude Code）：开启后经 Headroom 代理压缩上下文（`internal/headroom`）。
-8. **启动按钮**：触发会话启动逻辑（详见下文"启动一个会话"）。
+7. **启动按钮**：触发会话启动逻辑（详见下文"启动一个会话"）。
 
 > 当主机切换器处于远程模式时，本页内容被 `RemoteSessionsView` 替换。字段实际名称、可选项与平台分发以应用内显示为准。
 
@@ -72,6 +71,21 @@ Windows 上内嵌会话默认落在 WSL，工作目录的选择直接决定会�
 - 仓库必须留在 Windows 侧（Windows 专属工具链、VS 调试等）：要么接受 DrvFS 慢档，要么改选 Windows 原生 Shell 会话（见 [./terminal.md](./terminal.md#何时选择-windows-原生-shell-会话)）。
 
 > CodeBox 启动 WSL 会话时，若 `--cd` 工作目录映射到 `/mnt/<盘符>`（DrvFS/9P），后端会记一条 warn 日志「DrvFS 工作区 I/O 显著慢于 ext4」作为提示（`/logs` 页可查）；这只是建议，不会阻止会话启动。
+
+WSL 启动前会在实际发行版中校验目录；不存在或不可访问时直接提示并拒绝启动，不会悄悄换到主目录。导入自 macOS 的 `/Users/...` 收藏不会自动映射到 Linux `/home/...`。例如本机工程应选择 `X:\WorkSpace\amagi-codebox`，或目标发行版内确实存在的路径。
+
+### WSL Pi 的任务运行数据
+
+WSL Pi 仍直接使用 Windows 的 agent 根读取配置、登录凭据与插件，不复制 `auth.json`、`models.json` 等文件。高频写入的任务状态与归档默认改放到 WSL 本地文件系统：
+
+| 内容 | 默认位置（相对 `${XDG_STATE_HOME:-$HOME/.local/state}/amagi-codebox/pi`） | 覆盖变量 |
+|------|------|------|
+| Amagi 任务状态、通道、journal 等 | `data` | `AMAGI_DATA_DIR` |
+| 任务回流归档 | `artifacts` | `AMAGI_ARTIFACT_ROOT` |
+
+已有显式环境变量值优先；目录无法创建或仍在跨系统文件系统时会告警并沿用既有位置。不会搬迁或删除历史数据。Pi 会话 JSONL 仍保留在原 agent 根的 `sessions` 中，避免破坏 Windows/WSL 之间的续接和 CodeBox 用量统计。新任务状态与归档可从 Windows 通过 `\\wsl.localhost\<发行版>\home\<用户>\...` 访问。
+
+这项优化减少的是 agent 任务状态与归档的跨盘读写，不会把 Windows 工程或插件代码自动搬入 WSL。本机小文件基准有明显改善，但插件代码仍需经 `/mnt/...` 加载，冷启动和工程扫描仍可能较慢；若需要彻底避开该开销，应使用 Windows 原生会话，或在确认同步方案后另行安排 WSL 本地代码部署。
 
 ---
 
@@ -111,20 +125,20 @@ Provider 与 Preset 的概念、字段含义与 `models.json` 结构详见 [./pr
 
 ## 扩展管理 `/extensions`（ExtensionsView）
 
-页面描述："管理 Claude、OpenCode、Codex、Pi 与 OMP 插件和环境变量"。
+页面描述："管理 Claude Code、OpenCode、Codex、Pi、OMP 的插件，以及 ~/.agents 下的共用技能与共用 MCP"。
 
-- **一级 Pill 导航**：
-    - **Plugins**：二级 Tab 为 ClaudeCode / OpenCode / Codex / Pi / OMP。Claude 与 Codex 支持 marketplace；OpenCode 直接按模块地址安装；Pi 管理 agent 目录下的 packages；OMP 通过 `omp plugin` 子命令管理。
-    - **Environment**：环境变量面板（写入 `~/.amagi-codebox/envvars.json`）。
-    - **Other tools**：当前为 Headroom 全局压缩卡片（Codex 全局 Headroom 开关 + 按客户端区分的压缩统计）。
+- **ZCode 式两栏子页布局**：左侧子页导航按「公共 / Agent」分组，右侧为子页内容区。
+    - **公共 · 共用技能**：管理 `~/.agents/skills` 与 `~/.agents/skills-disabled` 下的共用技能（详见 [./plugins.md](./plugins.md#共用技能子页)）。
+    - **公共 · 共用 MCP**：管理 `~/.agents/.mcp.json` 登记的 MCP 服务器并分发到四个引擎（详见 [./plugins.md](./plugins.md#共用-mcp-子页)）。
+    - **Agent · ClaudeCode / OpenCode / Codex / Pi / OMP**：五个引擎子页。Claude 与 Codex 支持 marketplace；OpenCode 直接按模块地址安装；Pi 管理 agent 目录下的 packages；OMP 通过 `omp plugin` 子命令管理。
 
-插件系统对应后端 `internal/plugin`、`internal/opencodeplugin`、`internal/codexplugin`、`internal/piplugin` 与 `internal/ompplugin`，能力差异详见 [./plugins.md](./plugins.md)。
+插件系统对应后端 `internal/plugin`、`internal/opencodeplugin`、`internal/codexplugin`、`internal/piplugin` 与 `internal/ompplugin`，共用技能对应 `internal/sharedskills`，共用 MCP 对应 `internal/sharedmcp`，能力差异详见 [./plugins.md](./plugins.md)。
 
 ---
 
 ## 环境检测 `/envcheck`（EnvCheckView）
 
-页面描述："CLI 工具安装状态、版本与 PATH 校验"。检测对象为六种工具：Claude Code、OpenCode、Codex、Pi、OMP 与 Headroom（`internal/envcheck/types.go` 的 `CLITool` 枚举）。
+页面描述："CLI 工具安装状态、版本与 PATH 校验"。检测对象为五种工具：Claude Code、OpenCode、Codex、Pi 与 OMP（`internal/envcheck/types.go` 的 `CLITool` 枚举）。
 
 `App.Startup` 异步触发首次全量检测（`CheckAll`），结果缓存并由本页展示。页面通常提供：
 
@@ -139,8 +153,6 @@ Provider 与 Preset 的概念、字段含义与 `models.json` 结构详见 [./pr
 ## 系统日志 `/logs`（LogsView）
 
 页面描述："查看应用运行日志与调试信息"。日志文件落在 `~/.amagi-codebox/logs/`。
-
-页面另含一张 **Headroom 上下文压缩统计** 卡片，展示累计、全局 ledger 数据，每 10 秒自动刷新。指标包括累计压缩次数、累计节省 Token、累计节省比例。空态与错误态均以内联提示展示。Headroom 后端位于 `internal/headroom`。
 
 ---
 
@@ -172,7 +184,7 @@ Provider 与 Preset 的概念、字段含义与 `models.json` 结构详见 [./pr
 2. 在顶部引擎方块中选择：ClaudeCode / Pi / OpenCode / Oh My Pi / Codex。
 3. 选择服务提供商与预设。ClaudeCode 要求所选 provider 兼容 Anthropic 格式。
 4. 选择启动模式（`embedded` 或外部模式）；（仅 `embedded`）按需选择终端 Shell。
-5. 设置工作目录（OpenCode 必填）；（仅 ClaudeCode）按需开启 Headroom。
+5. 设置工作目录（OpenCode 必填）。
 6. 点击启动按钮。
 
 ### 启动后的行为
@@ -183,9 +195,9 @@ Provider 与 Preset 的概念、字段含义与 `models.json` 结构详见 [./pr
 
 ### 五引擎对应的后端入口
 
-| 引擎 | 后端方法（`app.go`） | 关键参数 |
+| 引擎 | 后端方法（`app_session_pty.go`） | 关键参数 |
 |------|---------------------|----------|
-| ClaudeCode | `LaunchSession` | `providerName, presetName, mode, workDir, useHeadroom, shellPath` |
+| ClaudeCode | `LaunchSession` | `providerName, presetName, mode, workDir, shellPath` |
 | Codex | `LaunchCodexSession` | `modelName, providerID, mode, workDir, shellPath` |
 | OpenCode | `LaunchOpenCode` | `providerName, presetName, mode, workDir, shellPath` |
 | Pi | `LaunchPiSession` | `modelName, providerID, mode, workDir, shellPath` |

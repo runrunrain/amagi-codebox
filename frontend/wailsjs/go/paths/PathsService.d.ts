@@ -12,6 +12,8 @@ export function GetPaths():Promise<Array<paths.PathEntry>>;
 
 export function ListDirectories(arg1:string):Promise<string>;
 
+export function ListWSLDirectories(arg1:string,arg2:string):Promise<string>;
+
 export function Load():Promise<void>;
 
 export function RemovePath(arg1:string):Promise<void>;

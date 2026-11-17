@@ -12,7 +12,7 @@
 import { computed } from 'vue';
 
 interface Props {
-  variant?: 'primary' | 'ghost' | 'icon' | 'danger';
+  variant?: 'primary' | 'ghost' | 'icon' | 'danger' | 'outline';
   size?: 'small' | 'medium' | 'large';
   disabled?: boolean;
 }
@@ -34,6 +34,7 @@ const classes = computed(() => {
     ghost: 'btn-ghost',
     icon: 'icon-btn',
     danger: 'btn-ghost danger',
+    outline: 'btn-outline',
   };
   const sizes: Record<string, string> = {
     small: 'btn-sm',
@@ -80,6 +81,17 @@ const classes = computed(() => {
 
 .btn-ghost.danger {
   color: #FF3B30;
+}
+
+/* 描边按钮（契约 §3.3：透明底 + 1px separator 描边，hover 浮 control 底色） */
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--separator);
+  color: var(--label);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--control);
 }
 
 .icon-btn {

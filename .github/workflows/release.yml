@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to rebuild (for example v1.3.124)'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build-windows:
@@ -14,11 +23,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25.0'
+          go-version: '1.26.11'
           cache: true
 
       - name: Setup Node.js
@@ -29,9 +40,13 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             mobile/package-lock.json
+            webui-claude/package-lock.json
 
       - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        shell: bash
+        run: |
+          version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$version"
 
       - name: Install frontend dependencies
         run: npm ci
@@ -49,9 +64,24 @@ jobs:
         run: npm run build
         working-directory: mobile
 
+      # webui-claude（Claude Code Web 平面 SPA）：镜像 mobile 步骤构建，
+      # 产物落 internal/claudewebui/dist（vite outDir），供 wails build 嵌入。
+      # Windows job 的 wails build -s 虽仍会执行 preBuildHooks（聚合脚本
+      # build:embedded-web，hook 在 IgnoreFrontend 判定之前运行），此处显式
+      # 构建保证日志可见且不依赖 hook 行为。
+      - name: Install claude-webui dependencies
+        run: npm ci
+        working-directory: webui-claude
+
+      - name: Build claude-webui
+        run: npm run build
+        working-directory: webui-claude
+
       - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
+          echo "VERSION=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Sync wails.json version
@@ -87,10 +117,28 @@ jobs:
           7z a -tzip ../../amagi-codebox-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip amagi-codebox.exe
         shell: cmd
 
+      - name: Extract CHANGELOG release notes
+        shell: bash
+        run: |
+          ver="${RELEASE_TAG#v}"
+          awk -v ver="$ver" '
+            $0 ~ "^## \\[" ver "\\]($| )" { in_section=1; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG 未收录 [${ver}] 章节，回退到仓库 CHANGELOG 链接" >&2
+            printf '本次更新内容见 CHANGELOG：https://github.com/%s/blob/master/CHANGELOG.md\n' "$GITHUB_REPOSITORY" > release-notes.md
+          fi
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
           files: amagi-codebox-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip
+          body_path: release-notes.md
           generate_release_notes: true
 
   build-macos-arm64:
@@ -98,11 +146,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25.0'
+          go-version: '1.26.11'
           cache: true
 
       - name: Setup Node.js
@@ -113,9 +163,13 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             mobile/package-lock.json
+            webui-claude/package-lock.json
 
       - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        shell: bash
+        run: |
+          version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$version"
 
       - name: Install frontend dependencies
         run: npm ci
@@ -133,9 +187,24 @@ jobs:
         run: npm run build
         working-directory: mobile
 
+      # webui-claude（Claude Code Web 平面 SPA）：镜像 mobile 步骤构建，
+      # 产物落 internal/claudewebui/dist（vite outDir），供 wails build 嵌入。
+      # macOS job 的 wails build 不带 -s，本就会执行 preBuildHooks（聚合脚本
+      # build:embedded-web）重建两个 dist；此处显式构建保证日志可见、
+      # 失败点独立可读，不依赖 hook 行为。
+      - name: Install claude-webui dependencies
+        run: npm ci
+        working-directory: webui-claude
+
+      - name: Build claude-webui
+        run: npm run build
+        working-directory: webui-claude
+
       - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
+          echo "VERSION=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Sync wails.json version
@@ -165,6 +234,11 @@ jobs:
         run: |
           wails build -clean -platform darwin/arm64 -ldflags "-X main.Version=${{ steps.get_version.outputs.VERSION }} -X main.GitCommit=${{ steps.build_meta.outputs.git_commit }} -X main.BuildTime=${{ steps.build_meta.outputs.build_time }} -X main.GoVersion=${{ steps.build_meta.outputs.go_version }}"
 
+      - name: Ad-hoc sign and verify macOS bundle
+        run: |
+          codesign --force --deep --sign - build/bin/amagi-codebox.app
+          codesign --verify --deep --strict --verbose=2 build/bin/amagi-codebox.app
+
       - name: Prepare macOS arm64 artifact
         run: |
           mkdir -p release-assets
@@ -183,4 +257,5 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
           files: release-assets/amagi-codebox-${{ steps.get_version.outputs.VERSION }}-darwin-arm64.zip

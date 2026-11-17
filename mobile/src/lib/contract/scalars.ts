@@ -41,7 +41,6 @@ export type ExtensibleString<T extends string> = T | (string & Record<never, nev
 export const API_VERSION_V1 = 'v1' as const;
 /** The set of API versions; v1 defines only "v1". Future versions extend this union. */
 export type APIVersion = typeof API_VERSION_V1;
-export const REQUEST_ID_HEADER = 'X-Request-ID' as const;
 export const REST_BASE_PATH = '/api/remote/v1' as const;
 /** The SOLE v1 WebSocket upgrade path. There is no second "/events" entry point. */
 export const WEB_SOCKET_V1_PATH = '/ws/v1' as const;
@@ -77,17 +76,11 @@ export const KNOWN_SESSION_STATES = [
 ] as const;
 
 // --- Control states relative to the current device ---
-export type ControlState = 'none' | 'you' | 'other' | 'desktop';
-
 /** Complete set of four control states. */
 export const KNOWN_CONTROL_STATES = ['none', 'you', 'other', 'desktop'] as const;
 
 // --- History/window states ---
-export type HistoryState = 'continuous' | 'backfilled' | 'gap';
-
 /** Complete set of three history states. */
 export const KNOWN_HISTORY_STATES = ['continuous', 'backfilled', 'gap'] as const;
 
 // --- Attached-time constrained states (design §8.3) ---
-export const ATTACHED_CONNECTION_STATE = 'connected' as const;
-export const ATTACHED_AUTH_STATE = 'authorized' as const;

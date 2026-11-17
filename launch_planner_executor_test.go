@@ -3,22 +3,20 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/envvars"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/paths"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
-	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/settings"
@@ -334,94 +332,16 @@ func TestBuildPlanCodexUsesProviderAndPresetAsPerProcessOverrides(t *testing.T) 
 	}
 }
 
-// --- M-01: SharedStartSpec carries upstream/port ---
-
-func TestBuildPlanClaudeHeadroomUpstreamPort(t *testing.T) {
-	dir := isolatedHome(t)
-	cfgSvc := config.NewConfigService(dir)
-	cfgSvc.Load()
-	secSvc := secrets.NewSecretsService(dir)
-	settingsSvc := settings.NewService(dir)
-	settingsSvc.Load()
-	defaults, _ := launchplan.NewDefaultStore(settingsSvc)
-	cfgSvc.SaveProvider("claude-provider", config.Provider{
-		Anthropic:    &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com"},
-		DefaultModel: "claude-3",
-	})
-	secSvc.SetAPIKey("claude-provider", "sk-ant-test123456")
-	defaults.RecordDesktopActivation(launchplan.StableRecipe{
-		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
-		ProviderRef: "claude-provider", PresetRef: "p", ModelRef: "claude-3",
-		UseHeadroom: true,
-	})
-	p := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(),
-		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), dir)
-	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
-		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
-	})
-	if failure != nil {
-		t.Fatalf("BuildPlan failure: %v", failure)
-	}
-	defer plan.Secrets.Dispose()
-	// M-01: verify SharedStartSpec carries non-empty upstream + correct ports.
-	for _, eff := range plan.Effects {
-		if eff.Kind == launchplan.EffectHeadroomStart && eff.Shared != nil {
-			if eff.Shared.UpstreamURL != "https://api.anthropic.com" {
-				t.Fatalf("headroom upstream = %q, want https://api.anthropic.com", eff.Shared.UpstreamURL)
-			}
-			if eff.Shared.ListenPort != 8787 {
-				t.Fatalf("headroom port = %d, want 8787", eff.Shared.ListenPort)
-			}
-		}
-	}
-}
-
 // --- M-01: fake services verify Start parameters ---
-
-type fakeHeadroomService struct {
-	mu         sync.Mutex
-	running    bool
-	port       int
-	backendURL string
-	startCalls []string
-}
-
-func (f *fakeHeadroomService) IsRunning() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.running }
-func (f *fakeHeadroomService) GetStatus() headroom.HeadroomStatus {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return headroom.HeadroomStatus{Running: f.running, Port: f.port, BackendURL: f.backendURL}
-}
-func (f *fakeHeadroomService) SetPort(port int) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.port = port
-	return nil
-}
-func (f *fakeHeadroomService) Start(backendURL string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.startCalls = append(f.startCalls, backendURL)
-	f.backendURL = backendURL
-	f.running = true
-	return nil
-}
-func (f *fakeHeadroomService) StartForOpenAI(backendURL string) error { return f.Start(backendURL) }
-func (f *fakeHeadroomService) Stop() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.running = false
-	return nil
-}
 
 func TestSharedServiceFingerprintIsExactTupleHash(t *testing.T) {
 	longPrefix := "https://api.example.test/" + strings.Repeat("segment/", 12)
-	base := sharedServiceFingerprint("claude-headroom", longPrefix+"left", 8787)
+	base := sharedServiceFingerprint("svc-left", longPrefix+"left", 8787)
 	for name, candidate := range map[string][32]byte{
-		"url-suffix": sharedServiceFingerprint("claude-headroom", longPrefix+"right", 8787),
-		"port":       sharedServiceFingerprint("claude-headroom", longPrefix+"left", 8788),
-		"service":    sharedServiceFingerprint("codex-headroom", longPrefix+"left", 8787),
-		"boundary":   sharedServiceFingerprint("claude-headroom", longPrefix+"left8", 787),
+		"url-suffix": sharedServiceFingerprint("svc-left", longPrefix+"right", 8787),
+		"port":       sharedServiceFingerprint("svc-left", longPrefix+"left", 8788),
+		"service":    sharedServiceFingerprint("svc-right", longPrefix+"left", 8787),
+		"boundary":   sharedServiceFingerprint("svc-left", longPrefix+"left8", 787),
 	} {
 		if candidate == base {
 			t.Fatalf("%s change collided with exact tuple fingerprint", name)
@@ -430,109 +350,6 @@ func TestSharedServiceFingerprintIsExactTupleHash(t *testing.T) {
 	if sharedServiceFingerprint("svc", "https://x.test/x1", 23) == sharedServiceFingerprint("svc", "https://x.test/x12", 3) {
 		t.Fatal("length-boundary tuple ambiguity collided")
 	}
-}
-
-func TestExecutorRejectsRunningHeadroomConfigurationMismatch(t *testing.T) {
-	service := &fakeHeadroomService{running: true, port: 8787, backendURL: "https://wrong.example/v1"}
-	effect := &headroomStartEffect{
-		deps: launchExecutorDeps{headroom: service}, service: launchplan.SharedClaudeHeadroom,
-		upstreamURL: "https://expected.example/v1", listenPort: 8787,
-	}
-	if _, err := effect.Apply(context.Background()); err == nil {
-		t.Fatal("running headroom with wrong upstream was accepted")
-	}
-	service.mu.Lock()
-	service.backendURL = "https://expected.example/v1"
-	service.port = 9999
-	service.mu.Unlock()
-	if _, err := effect.Apply(context.Background()); err == nil {
-		t.Fatal("running headroom with wrong port was accepted")
-	}
-	service.mu.Lock()
-	service.port = 8787
-	service.mu.Unlock()
-	if _, err := effect.Apply(context.Background()); err != nil {
-		t.Fatalf("exact running headroom rejected: %v", err)
-	}
-}
-
-func TestExecutorHeadroomStartWithUpstreamPort(t *testing.T) {
-	dir := isolatedHome(t)
-	cfgSvc := config.NewConfigService(dir)
-	cfgSvc.Load()
-	secSvc := secrets.NewSecretsService(dir)
-	settingsSvc := settings.NewService(dir)
-	settingsSvc.Load()
-	defaults, _ := launchplan.NewDefaultStore(settingsSvc)
-	cfgSvc.SaveProvider("p", config.Provider{
-		Anthropic:    &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com"},
-		DefaultModel: "m",
-	})
-	secSvc.SetAPIKey("p", "key123456789")
-	defaults.RecordDesktopActivation(launchplan.StableRecipe{
-		CLIType: contract.CLITypeClaudeCode, Workdir: dir,
-		ProviderRef: "p", PresetRef: "p", ModelRef: "m",
-		UseHeadroom: true,
-	})
-	p := newAppLaunchPlanner(cfgSvc, secSvc, defaults, fakeCLIResolver{}, fakePlatformCaps(),
-		paths.NewPathsService(dir), envvars.NewEnvVarsService(dir), dir)
-	plan, failure := p.BuildPlan(context.Background(), launchplan.BuildRequest{
-		CLIType: contract.CLITypeClaudeCode, Origin: launchplan.OriginRemote, Mode: launchplan.ModeEmbedded,
-	})
-	if failure != nil {
-		t.Fatalf("BuildPlan: %v", failure)
-	}
-	// Fake services as spies.
-	headroomSpy := &fakeHeadroomService{}
-	coord := remote.NewSharedServiceCoordinator()
-	sharedAdmissions := make(map[launchplan.SharedServiceKind]any)
-	for _, spec := range plan.Admissions {
-		var kind remote.SharedServiceKind
-		switch spec.Service {
-		case launchplan.SharedClaudeHeadroom:
-			kind = remote.SharedServiceClaudeHeadroom
-		case launchplan.SharedCodexHeadroom:
-			kind = remote.SharedServiceCodexHeadroom
-		default:
-			t.Fatalf("unknown shared kind %d", spec.Service)
-		}
-		admission, err := coord.AcquireLaunchAdmission(kind)
-		if err != nil {
-			t.Fatalf("AcquireLaunchAdmission: %v", err)
-		}
-		sharedAdmissions[spec.Service] = admission
-		defer coord.ReleaseLaunchAdmission(admission)
-	}
-	exec := newAppLaunchExecutor(launchExecutorDeps{
-		headroom: headroomSpy, sharedCoord: coord,
-	})
-	prepared, err := exec.Prepare(context.Background(), plan, launchplan.ExecutionBinding{
-		SessionID: "s", RunEpoch: 1, RunHandle: "handle", SharedAdmissions: sharedAdmissions,
-	})
-	if err != nil {
-		plan.Secrets.Dispose()
-		t.Fatalf("Prepare: %v", err)
-	}
-	// Apply the Headroom effect (skip PTY + bootstrap).
-	for i := 0; i < prepared.Count(); i++ {
-		eff := prepared.Effect(i)
-		if eff.Kind() == launchplan.EffectPTYStart || eff.Kind() == launchplan.EffectBootstrapWrite {
-			continue
-		}
-		eff.ArmOwnership()
-		_, applyErr := eff.Apply(context.Background())
-		if applyErr != nil {
-			t.Fatalf("effect %d Apply: %v", i, applyErr)
-		}
-		prepared.RecordApplied(i, launchplan.EffectEvidence{})
-	}
-	prepared.DisposeSecrets()
-	// Assert headroom received real upstream.
-	headroomSpy.mu.Lock()
-	if len(headroomSpy.startCalls) != 1 || headroomSpy.startCalls[0] != "https://api.anthropic.com" {
-		t.Fatalf("headroom Start calls = %v, want [https://api.anthropic.com]", headroomSpy.startCalls)
-	}
-	headroomSpy.mu.Unlock()
 }
 
 // --- M-02: Pi/Omp provider ID = PiProviderID ---
@@ -1067,100 +884,6 @@ func TestConfigMutationCASOmpAndCodexModeRestore(t *testing.T) {
 	}
 }
 
-func TestConfigCompensationUnavailableProjectionAndRetry(t *testing.T) {
-	isolatedHome(t)
-	path := filepath.Join(defaultPiAgentDir(), "models.json")
-	original := []byte(`{"original":"unavailable"}`)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	debts := launchplan.NewCompensationDebtRegistry()
-	effect := &configMutationEffect{
-		target: launchplan.ConfigPi, content: []byte(`{"providers":{"replacement":{}}}`),
-		preimage: sha256.Sum256(original), owner: "session-18/4/config/pi", debts: debts,
-	}
-	if _, err := effect.Apply(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	outcome := effect.compensate(canceled)
-	if outcome.Disposition != launchplan.CompensationUnavailable {
-		t.Fatalf("canceled compensation = %#v", outcome)
-	}
-	app := &App{compensationDebts: debts}
-	listed := app.GetLaunchCompensationDebts()
-	if len(listed) != 1 || listed[0].Disposition != launchplan.CompensationUnavailable {
-		t.Fatalf("unavailable debt projection = %#v", listed)
-	}
-	if err := app.RetryLaunchCompensationDebt(effect.owner); err != nil {
-		t.Fatal(err)
-	}
-	if len(app.GetLaunchCompensationDebts()) != 0 {
-		t.Fatal("confirmed unavailable retry retained debt")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != string(original) {
-		t.Fatalf("unavailable retry restored %q, err=%v", data, err)
-	}
-}
-
-func TestConfigCompensationDebtQueryAndExactRetry(t *testing.T) {
-	isolatedHome(t)
-	path := filepath.Join(defaultPiAgentDir(), "models.json")
-	original := []byte(`{"original":true}`)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, original, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	debts := launchplan.NewCompensationDebtRegistry()
-	writeCalls := 0
-	injectDurabilityFailure := true
-	effect := &configMutationEffect{
-		target: launchplan.ConfigPi, content: []byte(`{"providers":{"amagi-test":{}}}`),
-		preimage: sha256.Sum256(original), owner: "session-17/2/config/pi", debts: debts,
-	}
-	effect.atomicWrite = func(path string, content []byte, mode, dirMode os.FileMode) (atomicConfigWriteResult, error) {
-		writeCalls++
-		result, err := writeAtomicConfig(path, content, mode, dirMode)
-		if err == nil && injectDurabilityFailure && writeCalls <= 2 {
-			return result, &configIOError{step: "sync-directory", err: errors.New("injected durability uncertainty")}
-		}
-		return result, err
-	}
-	if _, err := effect.Apply(context.Background()); err == nil {
-		t.Fatal("post-rename durability failure was presented as success")
-	}
-	app := &App{compensationDebts: debts}
-	listed := app.GetLaunchCompensationDebts()
-	if len(listed) != 1 || listed[0].Owner != effect.owner || listed[0].Disposition != launchplan.CompensationIndeterminate {
-		t.Fatalf("debt projection = %#v", listed)
-	}
-	injectDurabilityFailure = false
-	if err := app.RetryLaunchCompensationDebt(effect.owner); err != nil {
-		t.Fatalf("RetryLaunchCompensationDebt: %v", err)
-	}
-	if remaining := app.GetLaunchCompensationDebts(); len(remaining) != 0 {
-		t.Fatalf("resolved debt retained: %#v", remaining)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != string(original) {
-		t.Fatalf("retry restored content = %q, err=%v", data, err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat retry-restored config: %v", err)
-	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("retry restored mode = %v", info.Mode().Perm())
-	}
-}
-
 // --- Derived: DisposeSecrets zeroes env copies ---
 
 func TestDisposeSecretsZeroesConfigCandidate(t *testing.T) {
@@ -1400,4 +1123,20 @@ func TestBuildPlanAllWorkdirsInvalidFails(t *testing.T) {
 	if failure == nil || failure.Kind != launchplan.FailureWorkdir {
 		t.Fatalf("expected FailureWorkdir, got %v", failure)
 	}
+}
+
+// sharedServiceFingerprint computes SHA-256 over the exact service, upstream,
+// and listen-port tuple (测试断言用：与 planner/executor 的指纹构成语义对齐)。
+func sharedServiceFingerprint(service, upstreamURL string, port int) [32]byte {
+	payload := make([]byte, 0, 16+len(service)+len(upstreamURL)+8)
+	var scalar [8]byte
+	binary.BigEndian.PutUint64(scalar[:], uint64(len(service)))
+	payload = append(payload, scalar[:]...)
+	payload = append(payload, service...)
+	binary.BigEndian.PutUint64(scalar[:], uint64(len(upstreamURL)))
+	payload = append(payload, scalar[:]...)
+	payload = append(payload, upstreamURL...)
+	binary.BigEndian.PutUint64(scalar[:], uint64(int64(port)))
+	payload = append(payload, scalar[:]...)
+	return sha256.Sum256(payload)
 }

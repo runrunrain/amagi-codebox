@@ -69,6 +69,7 @@ import Dropdown from '../ui/Dropdown.vue';
 import AppButton from '../ui/AppButton.vue';
 import { ICONS, ACCENTS } from './icons';
 import { useToast } from '../../composables/useToast';
+import { genId, hexToRgb } from './editorUtils';
 
 const { showError } = useToast();
 
@@ -96,13 +97,6 @@ interface Entry {
   value: string;
 }
 
-function genId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
 const entries = ref<Entry[]>([]);
 
 // 第二层折叠：每个 permission 项默认收起
@@ -120,15 +114,6 @@ const PERM_ACCENTS: Record<string, string> = {
   unknown: ACCENTS.unknown,
 };
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return null;
-  return {
-    r: parseInt(m[1].slice(0, 2), 16),
-    g: parseInt(m[1].slice(2, 4), 16),
-    b: parseInt(m[1].slice(4, 6), 16),
-  };
-}
 function permAccent(value?: string): string {
   if (!value) return PERM_ACCENTS.unknown;
   return PERM_ACCENTS[value] || PERM_ACCENTS.unknown;

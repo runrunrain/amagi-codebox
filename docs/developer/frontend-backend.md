@@ -38,35 +38,29 @@ Go: RunEventProjector → EventsEmit("pty:data:<id>", {s: seq, d: base64})
 
 ### 绑定来源与生成目录
 
-绑定列表的唯一事实源是 `bind_list.go` 的 `buildWailsBindList`（21 个绑定 = App + 20 个服务，精确清单与 pty/headroom 排除说明见 [./architecture.md](./architecture.md#绑定主干-21-个绑定)）。`wails dev` / `wails build` 扫描该列表，对每个被绑定的 struct 在 `frontend/wailsjs/go/<go-package>/` 下生成一对 `<Struct>.js` / `<Struct>.d.ts`。
+绑定列表的唯一事实源是 `bind_list.go` 的 `buildWailsBindList`（15 个绑定 = App + 14 个服务，精确清单与 8 个排除服务的说明见 [./architecture.md](./architecture.md#绑定主干-15-个绑定)）。`wails dev` / `wails build` 扫描该列表，对每个被绑定的 struct 在 `frontend/wailsjs/go/<go-package>/` 下生成一对 `<Struct>.js` / `<Struct>.d.ts`。
 
-当前实际生成目录（`ls frontend/wailsjs/go/`，21 个目录 + `models.ts`）：
+当前实际生成目录（`ls frontend/wailsjs/go/`，15 个目录 + `models.ts`）：
 
 | 生成目录 | Go struct |
 |---|---|
 | `main/` | `*App`（package main） |
 | `config/` | `*config.ConfigService` |
-| `secrets/` | `*secrets.SecretsService` |
 | `paths/` | `*paths.PathsService` |
-| `logging/` | `*logging.Service` |
 | `settings/` | `*settings.Service` |
-| `updater/` | `*updater.Service` |
 | `plugin/` | `*plugin.Service` |
 | `codexplugin/` | `*codexplugin.Service` |
 | `opencodeplugin/` | `*opencodeplugin.Service` |
 | `piplugin/` | `*piplugin.Service` |
 | `ompplugin/` | `*ompplugin.Service` |
-| `opencodeconfig/` | `*opencodeconfig.Service` |
 | `piconfig/` | `*piconfig.Service` |
-| `ompconfig/` | `*ompconfig.Service` |
 | `agentprofile/` | `*agentprofile.Service` |
-| `envcheck/` | `*envcheck.Service` |
 | `usage/` | `*usage.Service` |
 | `webui/` | `*webui.Service` |
 | `skins/` | `*skins.Service` |
 | `gitassist/` | `*gitassist.Service` |
 
-注意：**没有 `pty/` 和 `headroom/` 目录**——这两个原始服务被有意排除在 Bind 列表外，前端只能经 `main/App.*` 上的门控门面（`PtyWrite`/`PtyResize`/`HeadroomStart` 等）访问（冻结边界 T-24，见 [./api-reference.md](./api-reference.md)）。
+注意：**没有 `pty/`、`secrets/`、`envcheck/`、`logging/`、`updater/`、`ompconfig/`、`opencodeconfig/` 目录**——这 7 个原始服务被有意排除在 Bind 列表外，前端只能经 `main/App.*` 上的门控/窄门面（如 `PtyWrite`/`PtyResize`、`HasProviderAPIKey`/`GetProviderAPIKey`、`GetLogs`、`CheckForUpdate`、`RunEnvCheck`/`GetEnvCheckSnapshot`、`GetOmp*`/`GetOpenCodeConfig*` 等）访问（冻结边界 T-24，见 [./api-reference.md](./api-reference.md)）。
 
 `frontend/wailsjs/go/models.ts` 集中放置 Go 端结构体对应的 TS 类（`config.Provider`、`session.SessionInfo` 等），按命名空间组织。
 
@@ -76,32 +70,26 @@ Go: RunEventProjector → EventsEmit("pty:data:<id>", {s: seq, d: base64})
 
 每个绑定 struct 的导出方法直接映射为同名导出函数。返回 `error` 的方法在 TS 端是 `Promise<T>`，错误以 rejection 形式抛出。
 
-### 拿到 service 引用再调用
+### 直接导入绑定服务方法
 
-某些方法在服务 struct 上而非 `App` 上。前端通过 `App.GetConfigService()` 拿到代理句柄，再调用其方法（`frontend/src/api/provider.ts` 的现行范式）：
+已进入 `bind_list.go` 的服务 struct（如 `config.ConfigService`）会直接在 `frontend/wailsjs/go/<pkg>/<Struct>.ts/.js` 生成独立导出函数，前端包装层直接按需导入即可（`App.GetConfigService()` 已随远程适配器收口移除），不再经 `App` 获取服务句柄：
 
 ```ts
 // frontend/src/api/provider.ts（节选）
-interface ConfigServiceHandle {
-  GetProvider(name: string): Promise<Provider>;
-  GetPreset(providerName: string, presetName: string): Promise<config.Preset>;
-  SavePreset(providerName: string, presetName: string, preset: config.Preset): Promise<void>;
-  DeletePreset(providerName: string, presetName: string): Promise<void>;
-}
+import {
+  GetProvider,
+  GetPresets,
+  SavePreset,
+  DeletePreset,
+} from '../../wailsjs/go/config/ConfigService';
+import { callApi } from './internal/call';
 
-let configService: ConfigServiceHandle | null = null;
-
-async function getService(): Promise<ConfigServiceHandle> {
-  if (!configService) {
-    // GetConfigService 返回的是 wails 绑定的 ConfigService 代理实例；
-    // models.ts 中 config.ConfigService 类不携带方法签名，故按实际调用面显式声明句柄类型
-    configService = (await GetConfigService()) as unknown as ConfigServiceHandle;
-  }
-  return configService;
+export function getProvider(name: string): Promise<Provider> {
+  return callApi('[api.provider.getProvider]', () => GetProvider(name));
 }
 ```
 
-## 第二层：`frontend/src/api/` 包装层（27 个文件）
+## 第二层：`frontend/src/api/` 包装层（33 个文件）
 
 按业务域组织，当前清单（`find frontend/src/api -type f`）：
 
@@ -115,7 +103,15 @@ async function getService(): Promise<ConfigServiceHandle> {
 | `agentProfile.ts` | Agent 档案 |
 | `envcheck.ts` | 环境检测与一键修复 |
 | `envvars.ts` | 自定义环境变量 |
-| `headroom.ts` / `headroomGlobal.ts` | 会话级 headroom / Codex 全局 headroom |
+| `sharedSkills.ts` | 共用技能（`~/.agents/skills` ⇄ `skills-disabled`） |
+| `sharedMcp.ts` | 共用 MCP（`~/.agents/.mcp.json` 登记 + 四引擎分发矩阵） |
+| `agentcli.ts` | 命令行访问（agent-CLI 状态/安装） |
+| `quota.ts` | provider 额度查询与探测 |
+| `claudeAccounts.ts` | Claude 订阅账号轮换 |
+| `aiProxy.ts` | AI 代理路由 |
+| `systemProxy.ts` | 系统显式代理（仅 Windows） |
+| `dockerwsl.ts` / `drvfsAdvisory.ts` / `wslSupply.ts` | Docker↔WSL 集成健康 / DrvFS 顾问 / WSL 配置供给 |
+| `piLogin.ts` | pi 登录 providers |
 | `gitassist.ts` | AI 辅助 git commit/push |
 | `usage.ts` | 用量统计 |
 | `webui.ts` | pi Web UI 壳 |
@@ -123,8 +119,7 @@ async function getService(): Promise<ConfigServiceHandle> {
 | `wslsetup.ts` | WSL 安装辅助 |
 | `remote.ts` | 本机远程服务器状态/开关 |
 | `remoteClient.ts` | 作为客户端连接其他 CodeBox 宿主 |
-| `updater.ts` / `paths.ts` / `logs.ts` | 更新 / 路径 / 日志 |
-| `index.ts` | 集中再导出，处理命名冲突 |
+| `updater.ts` / `paths.ts` | 更新 / 路径 |
 | `internal/call.ts` | 共享包装器 `callApi`（仅 api 内部使用，勿向 views/stores 暴露） |
 
 ### 包装范式与 `callApi`
@@ -196,7 +191,7 @@ composable 承担流程编排、副作用清理（`onUnmounted` 停轮询/dispos
 
 ### 5. Go 方法
 
-`App.LaunchSession`（`app.go:1891`）解析 provider/preset、编排 headroom、注入 `--session-id`、经 `pty.StartResolved` 拉起 PTY 进程。详见 [./architecture.md#五个启动入口appgo](./architecture.md#五个启动入口appgo)。
+`App.LaunchSession`（`app_session_pty.go:144`）解析 provider/preset（terminal_preset 桥接）、注入 `--session-id`、经 `pty.StartResolved` 拉起 PTY 进程。详见 [./architecture.md#五个启动入口app_session_ptygo](./architecture.md#五个启动入口app_session_ptygo)。
 
 ### 6. 输出回流
 

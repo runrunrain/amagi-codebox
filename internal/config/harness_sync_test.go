@@ -23,9 +23,9 @@ func TestTerminalPresetHarnessSyncRoundTrip(t *testing.T) {
 		t.Fatalf("SaveTerminalPreset: %v", err)
 	}
 	if err := svc.SaveTerminalPreset("anthropic", "glm/unmarked", TerminalPreset{
-		Name:    "Unmarked",
+		Name:     "Unmarked",
 		Provider: "glm",
-		Model:   "glm-4",
+		Model:    "glm-4",
 	}); err != nil {
 		t.Fatalf("SaveTerminalPreset: %v", err)
 	}
@@ -70,9 +70,9 @@ func TestGetMergedTerminalPresetsPassesHarnessSync(t *testing.T) {
 		t.Fatalf("SaveTerminalPreset: %v", err)
 	}
 	if err := svc.SaveTerminalPreset("anthropic", "glm/plain", TerminalPreset{
-		Name:    "Plain",
+		Name:     "Plain",
 		Provider: "glm",
-		Model:   "glm-4",
+		Model:    "glm-4",
 	}); err != nil {
 		t.Fatalf("SaveTerminalPreset: %v", err)
 	}

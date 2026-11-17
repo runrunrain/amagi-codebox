@@ -1,31 +1,31 @@
 package main
 
-// app_wsl_supply.go — P3-S1 WSL 托管配置分发的 App 编排面：
+// app_wsl_supply.go — WSL 托管配置分发的 App 编排面：
 //
-//   - 业务快照源（PiManagedModelsSource / SharedFileSource 的 App 实现）：
-//     从 Config/Secrets 同源构建 amagi-* 期望集与共享小文件内容；
-//   - 启动 lazy 闸门：pi API-provider WSL 启动前经协调器分发托管 models.json
-//     （损坏不覆盖 → 阻断；其余失败 → 告警沿用既有回退）；
+//   - 业务快照源（SharedFileSource 的 App 实现）：共享小文件内容；
+//   - 启动 lazy 闸门：WSL 会话启动前补漏 shared 小文件与 claude/codex 键级
+//     单元（视觉清单资格门 fail-closed；其余失败 → 告警沿用既有回退）；
 //   - 保存标脏接真实调度：MarkDirty 后对「已运行且无活动会话」的目标异步推送
 //     （停机 distro 只标不唤醒；single-flight 合并推送风暴）；
 //   - per-target 视觉清单共享同意（密钥跨界授权入口）；
-//   - 最小状态面（GetWSLConfigSupplyStatus：provider/视觉清单/附加层 已同步/
+//   - 最小状态面（GetWSLConfigSupplyStatus：视觉清单/学习层/附加层 已同步/
 //     陈旧/失败/冻结/待同意 + 最后检查时间；OpenCode 附加层为进程内记录）。
+//
+// Pi 的供给单元（托管 models.json、settings/amagi/mcp 键级投影、登录凭据
+// A2）已随 1.3.126「WSL 内 Pi 共享 Windows agent 根」退役，不再向 distro
+// 分发任何 Pi 配置。
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"amagi-codebox/internal/config"
 	"amagi-codebox/internal/launcher"
-	"amagi-codebox/internal/piconfig"
 	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/session"
@@ -35,67 +35,6 @@ import (
 // ---------------------------------------------------------------------------
 // 业务快照源
 // ---------------------------------------------------------------------------
-
-// wslPiManagedSource 把 Config/Secrets 业务快照翻译为 amagi-* 期望集。构建规则
-// 与宿主 providerSync（syncProvidersToHarnessesLocked）一致：同 provider builders、
-// 同桶（pi 消费 openai 桶）、同「无模型/无 baseURL 不发布」过滤；差异仅一处——
-// 构建失败的 provider 记入 RetainProviders（distro 侧保留旧条目不误 prune），
-// 而宿主 reconcile 语义不变。
-type wslPiManagedSource struct{ app *App }
-
-func (s *wslPiManagedSource) DesiredPiManagedModels() wslsupply.PiManagedModelsSpec {
-	spec := wslsupply.PiManagedModelsSpec{Providers: map[string]any{}, RetainProviders: []string{}, LoginOverrides: []wslsupply.PiLoginModelOverrideSpec{}}
-	app := s.app
-	if app == nil || app.Config == nil || app.Secrets == nil || !app.providerSyncEnabled {
-		return spec
-	}
-	providers := app.Config.GetProviders()
-	presets := app.Config.GetAllTerminalPresets()
-	probeCache := app.Config.GetModalityProbeCache()
-	piOmpModels := collectManagedProviderModels(providers, presets, probeCache, []config.TerminalPresetType{config.TerminalPresetOpenAI})
-	openCodeModels := collectManagedProviderModels(providers, presets, probeCache, config.ValidTerminalPresetTypes())
-
-	names := make([]string, 0, len(providers))
-	for name := range providers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		provider := providers[name]
-		models := piOmpModels[name]
-		// 与宿主同步同一过滤：无模型 / 无显式 endpoint 的条目不发布（发布即
-		// broken amagi-*，或顶掉同名内置 provider 依赖）。这类条目不进
-		// RetainProviders——它们是「有意不发布」，prune 语义与宿主一致。
-		if len(models) == 0 && len(openCodeModels[name]) == 0 {
-			continue
-		}
-		if strings.TrimSpace(provider.EffectiveBaseURL(provider.PreferredFormat())) == "" {
-			continue
-		}
-		apiKey, _ := app.getProviderAPIKey(name, provider)
-		piCfg, err := launcher.BuildPiManagedProviderConfig(name, provider, apiKey, models)
-		if err != nil {
-			// 构建部分失败：不以残缺集合 prune 旧项（design §七）——保留 distro
-			// 侧既有条目并逐项报错。
-			spec.RetainProviders = append(spec.RetainProviders, launcher.ManagedProviderID(name))
-			spec.BuildErrors = append(spec.BuildErrors, fmt.Sprintf("provider %q 构建失败，保留 WSL 侧旧条目: %v", name, err))
-			continue
-		}
-		appendHarnessProviderEntries(spec.Providers, piCfg)
-	}
-
-	// 登录预设 contextWindow 窄字段（补齐语义，cw>0）。
-	if presets, err := app.Config.GetPiLoginPresets(); err == nil {
-		for _, p := range presets {
-			if p.ContextWindow > 0 && strings.TrimSpace(p.Provider) != "" && strings.TrimSpace(p.Model) != "" {
-				spec.LoginOverrides = append(spec.LoginOverrides, wslsupply.PiLoginModelOverrideSpec{
-					Provider: p.Provider, Model: p.Model, ContextWindow: p.ContextWindow,
-				})
-			}
-		}
-	}
-	return spec
-}
 
 // wslSharedFileSource 读取 Config 管理的共享小文件（视觉导出/学习层）。
 type wslSharedFileSource struct{ app *App }
@@ -127,29 +66,27 @@ func (s *wslSharedFileSource) ModalityKBBytes() ([]byte, error) {
 	return data, nil
 }
 
-// newWSLSupplyCoordinator 构造生产协调器并注册 S1 托管面 + S2 键级投影适配器。
+// newWSLSupplyCoordinator 构造生产协调器并注册 shared 小文件与 S4 键级投影
+// 适配器（Pi 的 S1/S2 供给单元已退役）。
 func newWSLSupplyCoordinator(app *App, configDir string) *wslsupply.Coordinator {
 	if appLogHook == nil && app.Log != nil {
 		appLogHook = func(scope, msg, detail string) { app.Log.Warn(scope, msg, detail) }
 	}
 	coord := wslsupply.NewCoordinator(configDir, wslsupplySupplyLog{log: app.Log}, wslsupply.DefaultProbes())
-	coord.RegisterProjection(wslsupply.NewPiManagedModelsAdapter(&wslPiManagedSource{app: app}))
 	coord.RegisterProjection(wslsupply.NewVisionExportAdapter(&wslSharedFileSource{app: app}))
 	coord.RegisterProjection(wslsupply.NewModalityKBAdapter(&wslSharedFileSource{app: app}))
-	piConfigSource := &wslPiConfigSource{app: app}
-	registerPiConfigAdapters(coord, piConfigSource)
 	// P3-S4：Claude/Codex 用户配置导入（键级单元 + 资源目录单元）。
 	registerS4Adapters(coord, app)
-	// P3-S3：共享技能作用域（宿主 ~/.agents/skills；扫描只在后台/显式检查时
-	// 进行，不进启动链）。
-	if root := wslSkillsHostRoot(); root != "" {
-		coord.RegisterSkills(wslsupply.NewSkillsScope(root, wslsupply.DefaultSkillsScanLimits()))
-	}
+	// 共享技能：1.3.130 起不再注册 P3-S3 作用域（WSL 内 ~/.agents/skills 由
+	// 受管符号链接直连 Windows 技能根，见 app_wsl_shared_skills.go）。
 	// P3-S5：插件重放解析面（piplugin 单一来源；wslsupply 经接缝注入）。
 	coord.SetPluginSourceParser(wslPluginSourceParserAdapter, wslsupply.PluginRefChecker{
 		ExactNpmVersion: piplugin.IsExactNpmVersion,
 		FullCommitSHA:   piplugin.IsFullCommitSHA,
 	})
+	// P2-B：扫描完成回调——skills/资源后台扫描真正结束后触发统一对账推送
+	//（避免启用时调度一次早于扫描结束的推送永远不同步）。
+	coord.SetScanCompletionCallback(app.wslUnifiedOnScanDone)
 	return coord
 }
 
@@ -171,27 +108,6 @@ func wslSupplyUnitsFiltered(runner wslsupply.Runner, units ...wslsupply.UnitID) 
 // 启动 lazy 闸门（pi API-provider WSL 路径）
 // ---------------------------------------------------------------------------
 
-// runWSLManagedModelsAtLaunch 在 WSL pi API-provider 会话启动前分发托管
-// models.json 与三个键级配置投影（P3-S2：settings/amagi/mcp 随启动 lazy 补漏）。
-// 失败语义（design §六 + P3 任务书）：
-//   - target-corrupt（distro models.json 损坏，两级保护拒绝覆盖）→ 阻断启动
-//     （后续 launch overlay 的宽松 merge 会破坏损坏文件，必须先挡住）；
-//   - 其余单元失败/阻断（含键级投影的冻结/未托管/转换受阻）→ 告警放行：
-//     可选普通偏好同步失败不得阻断会话（design §六「旧 WSL 配置可读且安全
-//     → 启动继续」）。
-func (a *App) runWSLManagedModelsAtLaunch(distro string) error {
-	if a.WSLSupply == nil || strings.TrimSpace(distro) == "" {
-		return nil
-	}
-	units := wslSupplyUnitsFiltered(a.WSLSupply,
-		wslsupply.UnitPiManagedModels, wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
-	if len(units) == 0 {
-		return nil
-	}
-	res, err := a.WSLSupply.RunUnits(context.Background(), distro, wslsupply.CLIPi, wslsupply.ReasonLaunch, units)
-	return a.gateWSLPiConfigSupplyResult(res, err, distro)
-}
-
 // runWSLSharedFilesAtLaunch 是 SA-09（wsl-goal-closure）的共享小文件启动
 // 补漏/撤回闸门：会话启动前对已注册的 shared 作用域小文件（视觉清单导出
 // shared/vision-export、多模态学习层 shared/modality-kb）执行一次供给运行，
@@ -212,14 +128,59 @@ func (a *App) runWSLManagedModelsAtLaunch(distro string) error {
 // 调用时机：已解析 distro、PTY 启动之前。内部 Go API，不进 Wails 绑定。
 // runWSLSharedFilesForSpec is shared by desktop activation and the remote/restart
 // PTY effect. Keep this out of BuildPlan: distro probing and supply are effects.
-func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec platform.ResolvedLaunchSpec) error {
+// preflight 可为 nil：非 nil（桌面启动的融合预检成功后传入）且 runner 实现了
+// wslPreflightTargetRunner 时，shared 与 cli-config 两轮 RunUnits 都改走免重探
+// 的 RunUnitsWithTarget（两轮 CLI 作用域不同，分别用 TargetFromIdentity 构造）；
+// nil（remote/restart 调用点）或 runner 不支持时回退既有 RunUnits 路径，行为
+// 完全不变。
+func runWSLSharedFilesForSpec(ctx context.Context, runner wslsupply.Runner, spec platform.ResolvedLaunchSpec, preflight *platform.WSLLaunchPreflight) error {
 	if spec.BootstrapMode != platform.BootstrapWSL || runner == nil {
 		return nil
 	}
-	return runWSLSharedFilesAtLaunch(ctx, runner, wslDefaultDistroFn(spec.Env.Variables))
+	distro := wslDefaultDistroFn(spec.Env.Variables)
+	if err := runWSLSharedFilesAtLaunch(ctx, runner, distro, preflight); err != nil {
+		return err
+	}
+	// P2-B 统一管理：Claude/Codex 键级单元的启动 lazy 补漏（只告警不阻断；
+	// pi 共享 Windows agent 根无需补漏，资源/技能不进启动链）。
+	runWSLCliConfigAtLaunch(ctx, runner, distro, spec.AppType, preflight)
+	return nil
 }
 
-func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string) error {
+// wslPreflightTargetRunner 是「启动预检一次取得身份」的免重探供给面（生产
+// *wslsupply.Coordinator 实现；测试 stub 运行器不实现 → 回退既有 RunUnits）。
+type wslPreflightTargetRunner interface {
+	// TargetFromIdentity 由预检身份构造该 CLI 作用域目标（零 wsl.exe 探测）。
+	TargetFromIdentity(distro string, cli wslsupply.CLI, ident platform.WSLUserIdentity) (wslsupply.TargetRef, error)
+	// RunUnitsWithTarget 与 RunUnits 同流程，跳过入口解析与 Apply 重探复核。
+	RunUnitsWithTarget(ctx context.Context, target wslsupply.TargetRef, reason wslsupply.Reason, units []wslsupply.UnitID) (wslsupply.RunResult, error)
+}
+
+// runWSLSupplyUnitsAtLaunch 是启动链 RunUnits 的统一适配：预检身份可用且
+// runner 支持时走 RunUnitsWithTarget（目标按 CLI 作用域分别构造，不再重探
+// 身份）；目标不可解析时按 RunUnits 的 target-unresolved 阻断语义构造逐单元
+// 结果（fail-closed，不重探）。preflight 为 nil 或 runner 不支持时走既有
+// RunUnits（remote/restart/测试 stub 路径不变）。
+func runWSLSupplyUnitsAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, cli wslsupply.CLI, reason wslsupply.Reason, units []wslsupply.UnitID, preflight *platform.WSLLaunchPreflight) (wslsupply.RunResult, error) {
+	if preflight != nil {
+		if pf, ok := runner.(wslPreflightTargetRunner); ok {
+			target, terr := pf.TargetFromIdentity(distro, cli, preflight.Identity)
+			if terr != nil {
+				res := wslsupply.RunResult{Results: make([]wslsupply.UnitResult, 0, len(units))}
+				for _, unit := range units {
+					res.Results = append(res.Results, wslsupply.UnitResult{
+						Unit: unit, Outcome: wslsupply.UnitBlocked, Detail: "target-unresolved", Err: terr,
+					})
+				}
+				return res, nil
+			}
+			return pf.RunUnitsWithTarget(ctx, target, reason, units)
+		}
+	}
+	return runner.RunUnits(ctx, distro, cli, reason, units)
+}
+
+func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, distro string, preflight *platform.WSLLaunchPreflight) error {
 	if runner == nil || strings.TrimSpace(distro) == "" {
 		return nil
 	}
@@ -230,7 +191,7 @@ func runWSLSharedFilesAtLaunch(ctx context.Context, runner wslsupply.Runner, dis
 	if len(units) == 0 {
 		return nil // 裸运行器无 shared 适配器：不阻断普通启动
 	}
-	res, runErr := runner.RunUnits(ctx, distro, wslsupply.CLICommon, wslsupply.ReasonLaunch, units)
+	res, runErr := runWSLSupplyUnitsAtLaunch(ctx, runner, distro, wslsupply.CLICommon, wslsupply.ReasonLaunch, units, preflight)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -325,21 +286,6 @@ func logWSLSharedVisionConfirmWarn(err error) {
 // appLogHook 是无 App 上下文路径的日志接缝（测试注入；生产由 App 装配设置）。
 var appLogHook func(scope, msg, detail string)
 
-// gateWSLPiConfigSupplyResult 是启动闸门的统一判定（桌面闸门与 remote effect
-// 共用，保证同一目标同一结果）：仅 managed-models 的 target-corrupt 阻断；
-// 其余失败/阻断告警放行（冻结/未托管/待同意属预期态，不刷错误日志）。
-func (a *App) gateWSLPiConfigSupplyResult(res wslsupply.RunResult, err error, distro string) error {
-	launchErr, warnMsg, warnDetail := verdictForWSLPiConfigSupply(res, err)
-	if launchErr != nil {
-		return launchErr
-	}
-	if warnMsg != "" {
-		a.Log.Warn("wslsupply", warnMsg, warnDetail)
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // 保存标脏 → 异步推送（已运行 distro + 无活动会话）
 // ---------------------------------------------------------------------------
 
@@ -366,6 +312,12 @@ var wslDistroRunningFn = func(distro string) bool {
 // 单测必须注入固定值而非依赖真机状态。
 var wslDefaultDistroFn = platform.DefaultWSLDistro
 
+// wslLaunchPreflightProbeFn 是启动预检融合探测接缝（生产
+// platform.WSLLaunchPreflightProbe——一次 wsl.exe 同时取得身份三件套与工作
+// 目录定谳；测试注入固定值，动机同 wslDefaultDistroFn：单测不依赖真机
+// wsl.exe）。
+var wslLaunchPreflightProbeFn = platform.WSLLaunchPreflightProbe
+
 // scheduleWSLSupplyPush 异步调度一次保存后推送（非阻塞；失败仅告警——「宿主
 // 保存成功」与「WSL 已同步」是两个结果）。后台 goroutine 由包级 WaitGroup
 // 追踪（PR09：测试可确定性等待推送生命周期真正退出后再还原全局接缝，
@@ -378,13 +330,6 @@ func (a *App) scheduleWSLSupplyPush() {
 		defer wslSupplyPushWG.Done()
 		a.pushWSLSupplyOnce()
 	}()
-}
-
-// waitForWSLSupplyPushIdleForTest 等待全部已调度的后台推送退出（PR09：
-// 仅供测试 cleanup 使用——Add 在 schedule 内同步完成，Enable/保存调用
-// 返回后本等待即覆盖其全部后台生命周期）。
-func waitForWSLSupplyPushIdleForTest() {
-	wslSupplyPushWG.Wait()
 }
 
 // pushWSLSupplyOnce 是 single-flight 入口：已在工作时只置 rerun 标记；
@@ -429,21 +374,14 @@ func (a *App) doPushWSLSupply() {
 		return // 停机 distro：只保留待同步标记（下次启动 lazy 兜底），不唤醒
 	}
 	if a.hasActiveSessionsForWSLPush() {
-		return // 活动会话期间暂停后台应用（design §三），待同步标记保留
+		// 活动会话期间暂停后台应用（design §三）。P4-F2：保留待对账标记，
+		// 会话归零后由统一管理后台循环异步补推（无需用户再保存一次）。
+		a.wslUnifiedMarkPushPending()
+		return
 	}
-	piUnits := wslSupplyUnitsFiltered(a.WSLSupply,
-		wslsupply.UnitPiManagedModels, wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP)
-	if len(piUnits) > 0 {
-		if res, err := a.WSLSupply.RunUnits(context.Background(), distro, wslsupply.CLIPi, wslsupply.ReasonSave, piUnits); err != nil {
-			a.Log.Warn("wslsupply", "保存后推送 WSL 托管 provider 配置失败（已保留待同步标记）", err.Error())
-		} else {
-			for _, r := range res.Results {
-				if r.Outcome == wslsupply.UnitFailed || r.Outcome == wslsupply.UnitBlocked {
-					a.Log.Warn("wslsupply", "保存后推送 WSL 托管 provider 配置未完成", fmt.Sprintf("unit=%s detail=%s", r.Unit, r.Detail))
-				}
-			}
-		}
-	}
+	// P4-F3：统一管理固定单元的幂等续接（未启用统一管理时为 no-op；已就绪
+	// 分组零成本跳过）——先补授权/物化，本推送后续分支随写。
+	a.reconcileWSLUnifiedFixedUnits(distro)
 	sharedUnits := wslSupplyUnitsFiltered(a.WSLSupply, wslsupply.UnitSharedVisionExport, wslsupply.UnitSharedModalityKB)
 	if len(sharedUnits) > 0 {
 		if res, err := a.WSLSupply.RunUnits(context.Background(), distro, wslsupply.CLICommon, wslsupply.ReasonSave, sharedUnits); err != nil {
@@ -459,6 +397,10 @@ func (a *App) doPushWSLSupply() {
 			}
 		}
 	}
+	// P2-B 统一管理增量：claude/codex 键级单元（含选择集物化）与技能/资源
+	// 对账（未启用统一管理时两者都是 no-op，行为与现状一致）。
+	a.pushWSLUnifiedCliConfig(context.Background(), distro)
+	a.reconcileWSLUnifiedResources(distro)
 }
 
 // hasActiveSessionsForWSLPush 报告是否存在活动（running）内嵌会话。保守取全
@@ -549,8 +491,9 @@ type WSLConfigSupplyStatus struct {
 	Reason      string                `json:"reason,omitempty"`
 	Faces       []WSLConfigSupplyFace `json:"faces"`
 	PendingPush bool                  `json:"pendingPush"` // 有保存后未推送的来源变更
-	// Units 是 P3-S2 键级配置单元的逐项详情（配置状态区扩展）。
-	Units []WSLConfigUnitDetail `json:"units"`
+	// Unified（P2-B）：当前 distro 是否已启用统一配置管理（一次授权后启动/
+	// 保存/对账自动同步）。false = 显示「启用统一管理」入口。
+	Unified bool `json:"unified"`
 }
 
 // GetWSLConfigSupplyStatus 返回当前 WSL 目标的配置供给状态（读缓存，不触发
@@ -567,27 +510,25 @@ func (a *App) GetWSLConfigSupplyStatus() WSLConfigSupplyStatus {
 		return out
 	}
 	out.Available = true
+	// P2-B：统一管理状态（只读标记，不探测）。
+	out.Unified = a.wslUnifiedCached(distro)
 
 	pending := map[string]uint64{}
-	piStatus := a.wslSupplyStatus(distro, wslsupply.CLIPi)
 	sharedStatus := a.wslSupplyStatus(distro, wslsupply.CLICommon)
-	if piStatus.PendingSources != nil {
-		for k, v := range piStatus.PendingSources {
+	if sharedStatus.PendingSources != nil {
+		for k, v := range sharedStatus.PendingSources {
 			pending[k] = v
 		}
 	}
 	out.PendingPush = len(pending) > 0
 
 	out.Faces = append(out.Faces,
-		wslFaceFromUnit("providers", "托管 Provider (Pi)", piStatus, wslsupply.UnitPiManagedModels, out.PendingPush),
 		wslVisionFace(sharedStatus, out.PendingPush),
 		wslFaceFromUnit("modality-kb", "多模态学习层", sharedStatus, wslsupply.UnitSharedModalityKB, out.PendingPush),
 		wslOpenCodeLayerFace(distro),
-		wslSkillsFace(distro, a),
+		wslSharedSkillsFace(distro),
 		wslPluginsFace(a),
 	)
-	// P3-S2：键级配置单元逐项详情（相对路径/策略/冻结原因/可执行动作）。
-	out.Units = piConfigUnitDetails(piStatus, out.PendingPush)
 	return out
 }
 
@@ -718,69 +659,6 @@ func wslOpenCodeLayerFace(distro string) WSLConfigSupplyFace {
 	return face
 }
 
-// wslSkillsFace 聚合技能面卡片（配置状态区第五面：已供给/陈旧/冻结/不兼容/
-// 待同意/扫描中）。只读缓存快照，不触发扫描；「已供给」仅指静态检查通过。
-func wslSkillsFace(distro string, a *App) WSLConfigSupplyFace {
-	face := WSLConfigSupplyFace{Key: "skills", Label: "共享技能（Skills）", State: "unchecked", Detail: "尚未扫描（打开技能面板或点检查后后台扫描）"}
-	coord := a.wslSkillsCoordinator()
-	if coord == nil {
-		face.Detail = "技能供给未启用"
-		return face
-	}
-	snap := coord.SkillsSnapshot()
-	if !snap.Started {
-		return face
-	}
-	face.LastCheck = time.Now().Format(time.RFC3339)
-	if snap.Running {
-		face.State = "scanning"
-		face.Detail = fmt.Sprintf("后台扫描中（%d/%d 目录）；分批进行，不阻塞启动", snap.Progress.Scanned, snap.Progress.Total)
-		return face
-	}
-	incompatible := 0
-	for _, m := range snap.Skills {
-		if len(m.Incompatible) > 0 {
-			incompatible++
-		}
-	}
-	supplied, stale, frozen, awaiting := 0, 0, 0, 0
-	for _, u := range a.wslSupplyStatus(distro, wslsupply.CLICommon).Units {
-		if _, ok := wslsupply.ParseSkillUnit(u.Unit); !ok {
-			continue
-		}
-		switch {
-		case u.Frozen:
-			frozen++
-		case u.LastOutcome == "awaiting-consent":
-			awaiting++
-		case (u.LastOutcome == "written" || u.LastOutcome == "takeover-written") && u.Stale:
-			stale++
-		case u.LastOutcome == "written" || u.LastOutcome == "takeover-written":
-			supplied++
-		}
-	}
-	switch {
-	case incompatible > 0:
-		face.State = "incompatible"
-		face.Detail = fmt.Sprintf("已供给 %d · 不兼容 %d（详情见技能面板）", supplied, incompatible)
-	case frozen > 0:
-		face.State = "frozen"
-		face.Detail = fmt.Sprintf("已供给 %d · 冻结 %d（WSL 手改保留本地）", supplied, frozen)
-	case stale > 0:
-		face.State = "stale"
-		face.Detail = fmt.Sprintf("已供给 %d · 陈旧 %d（Windows 侧已变化）", supplied, stale)
-	case awaiting > 0:
-		face.State = "awaiting-consent"
-		face.Detail = "有待写入的已选技能"
-	case supplied > 0:
-		face.State = "synced"
-		face.Detail = fmt.Sprintf("已供给 %d 项技能（静态检查通过，不等于运行已验证）", supplied)
-	default:
-		face.Detail = "扫描完成，尚无已供给技能（在技能面板选择导入）"
-	}
-	return face
-}
-
 func wslFrozenReasonText(reason string) string {
 	switch reason {
 	case "unmanaged-existing":
@@ -828,67 +706,8 @@ func (a *App) GrantWSLVisionConsent() error {
 }
 
 // ---------------------------------------------------------------------------
-// P3-S2：Pi 配置键级投影（settings/amagi/mcp）——来源与事实源 + 动作面
+// 键级投影的共享 DTO 与目标事实源（S4 claude/codex 消费；Pi 的三键级单元已退役）
 // ---------------------------------------------------------------------------
-
-// wslPiConfigSource 把 Windows 侧 pi agent 配置文件暴露为投影来源（经
-// piconfig 显式目标窄接口读取；缺失=键集为空，读失败=source-unavailable）。
-type wslPiConfigSource struct{ app *App }
-
-func (s *wslPiConfigSource) agentDir() string {
-	if dir, err := piconfig.StandardAgentDir(); err == nil {
-		return dir
-	}
-	return ""
-}
-
-func (s *wslPiConfigSource) SettingsJSON() ([]byte, error) {
-	return s.readAgentFile("settings.json")
-}
-
-func (s *wslPiConfigSource) AmagiJSON() ([]byte, error) {
-	return s.readAgentFile("amagi.json")
-}
-
-func (s *wslPiConfigSource) MCPJSON() ([]byte, error) {
-	return s.readAgentFile("mcp.json")
-}
-
-// readAgentFile 经 piconfig 显式目标接口原样读取（只读；缺失=键集为空）。
-func (s *wslPiConfigSource) readAgentFile(name string) ([]byte, error) {
-	dir := s.agentDir()
-	if dir == "" {
-		return nil, fmt.Errorf("windows pi agent dir unavailable")
-	}
-	if s.app == nil || s.app.PiConfig == nil {
-		return nil, fmt.Errorf("pi config service unavailable")
-	}
-	return s.app.PiConfig.ReadAgentFileAt(dir, name)
-}
-
-// KnownProviderIDs 返回 Windows 侧 provider 全集：models.json 注册表 + 内置
-// 目录（GetPiModelCatalog 已合并 builtin，含 openai-codex 等 OAuth provider）。
-func (s *wslPiConfigSource) KnownProviderIDs() ([]string, error) {
-	raw, err := s.app.PiConfig.GetPiModelCatalog()
-	if err != nil {
-		return nil, err
-	}
-	var catalog struct {
-		Providers []struct {
-			Name string `json:"name"`
-		} `json:"providers"`
-	}
-	if json.Unmarshal([]byte(raw), &catalog) != nil {
-		return nil, fmt.Errorf("parse pi model catalog: %w", err)
-	}
-	names := make([]string, 0, len(catalog.Providers))
-	for _, p := range catalog.Providers {
-		if p.Name != "" {
-			names = append(names, p.Name)
-		}
-	}
-	return names, nil
-}
 
 // wslTransformFactsSource 在 Apply 阶段收集目标事实（登录 shell command -v +
 // wslpath 实测映射 + 已部署资产前缀）。一次供给至多两次批量探测（命令/路径
@@ -919,63 +738,9 @@ func (wslTransformFactsSource) TransformFacts(_ context.Context, target wslsuppl
 // 供扩展与测试替换——S2 的 args/env 路径映射经预扫描收敛到本探测）。
 var wslPathMappingProbeFn = platform.WSLTranslatePaths
 
-// collectExtraPathMappings 预扫描 mcp 来源中的待验证路径并经 wslpath 实测
-// （未被资产前缀覆盖的独立盘符路径）。
-func collectExtraPathMappings(distro string, source wslsupply.PiConfigSource) map[string]string {
-	mcpRaw, err := source.MCPJSON()
-	if err != nil || len(mcpRaw) == 0 {
-		return map[string]string{}
-	}
-	var root map[string]any
-	if json.Unmarshal(mcpRaw, &root) != nil {
-		return map[string]string{}
-	}
-	mcpServers, _ := root["mcpServers"].(map[string]any)
-	entries := make([]map[string]any, 0, len(mcpServers))
-	for _, raw := range mcpServers {
-		if entry, ok := raw.(map[string]any); ok {
-			entries = append(entries, entry)
-		}
-	}
-	_, paths := wslsupply.CollectTransformNeeds(entries)
-	if len(paths) == 0 {
-		return map[string]string{}
-	}
-	return wslPathMappingProbeFn(distro, paths...)
-}
-
-// registerPiConfigAdapters 注册三个键级投影单元（生产装配；facts 源附带
-// wslpath 实测映射的扩展包装）。
-func registerPiConfigAdapters(coord *wslsupply.Coordinator, source wslsupply.PiConfigSource) {
-	facts := piConfigFactsWithPaths{base: wslTransformFactsSource{}, source: source}
-	coord.RegisterProjection(wslsupply.NewPiSettingsAdapter(source, facts))
-	coord.RegisterProjection(wslsupply.NewPiAmagiAdapter(source, facts))
-	coord.RegisterProjection(wslsupply.NewPiMCPAdapter(source, facts))
-}
-
-// piConfigFactsWithPaths 在基础事实之上并入 wslpath 实测映射（一次探测）。
-type piConfigFactsWithPaths struct {
-	base   wslTransformFactsSource
-	source wslsupply.PiConfigSource
-}
-
-func (f piConfigFactsWithPaths) TransformFacts(ctx context.Context, target wslsupply.TargetRef) (wslsupply.TransformFacts, error) {
-	facts, err := f.base.TransformFacts(ctx, target)
-	if err != nil {
-		return facts, err
-	}
-	for win, linux := range collectExtraPathMappings(target.Distro, f.source) {
-		if facts.PathMappings == nil {
-			facts.PathMappings = map[string]string{}
-		}
-		facts.PathMappings[win] = linux
-	}
-	return facts, nil
-}
-
 // ---------------------------------------------------------------------------
-// P3-S2 动作面（D4 动作分离：检查 / 预览同步 / 应用安全更新 / 保留本地 /
-// 确认接管——没有强制覆盖全部）与状态页逐单元详情
+// S4 动作面共用 DTO（检查 / 预览同步 / 应用安全更新 / 保留本地 / 确认接管
+// ——没有强制覆盖全部；Pi 专属动作面已退役）
 // ---------------------------------------------------------------------------
 
 // WSLConfigUnitKeyPreview 是预览面上单个键的脱敏动作（敏感项只显示键名与方向）。
@@ -984,7 +749,7 @@ type WSLConfigUnitKeyPreview struct {
 	Action string `json:"action"`
 	Reason string `json:"reason"`
 	// Before/After：S4 转换前→转换后脱敏摘要（命令形态与参数个数；不含 env
-	// 值/密钥）。S2 pi 单元为空。
+	// 值/密钥）。
 	Before string `json:"before,omitempty"`
 	After  string `json:"after,omitempty"`
 	// Selected/Importable：S4 选择面（仅选择的条目导入；可勾选状态）。
@@ -1013,86 +778,10 @@ type WSLConfigUnitOutcome struct {
 	Detail  string `json:"detail"`
 }
 
-// piConfigUnitsForActions 是动作面作用的键级单元清单（固定顺序）。
-var piConfigUnitsForActions = []wslsupply.UnitID{
-	wslsupply.UnitPiSettings, wslsupply.UnitPiAmagi, wslsupply.UnitPiMCP,
-}
-
-// piConfigCoordinator 返回支持 S2 操作面的协调器切片（nil 表示未接线）。
-func (a *App) piConfigCoordinator() interface {
-	PreviewUnits(ctx context.Context, distro string, cli wslsupply.CLI, units []wslsupply.UnitID) ([]wslsupply.UnitPreview, error)
-	DropUnitRegistration(distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
-	TakeOverUnit(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID, expectedTargetHash string) (wslsupply.UnitResult, error)
-} {
-	if a == nil || a.WSLSupply == nil {
-		return nil
-	}
-	coord, _ := a.WSLSupply.(interface {
-		PreviewUnits(ctx context.Context, distro string, cli wslsupply.CLI, units []wslsupply.UnitID) ([]wslsupply.UnitPreview, error)
-		DropUnitRegistration(distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
-		TakeOverUnit(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID, expectedTargetHash string) (wslsupply.UnitResult, error)
-	})
-	return coord
-}
-
 // wslDefaultDistro 返回当前 WSL 目标（空串=不可用；经可注入接缝）。
 func (a *App) wslDefaultDistro() string { return wslDefaultDistroFn(nil) }
 
-// CheckWSLPiConfigSupply 执行「检查」：对当前目标做只读 Inspect（可唤醒当前
-// 目标），刷新状态页；不写任何配置。
-func (a *App) CheckWSLPiConfigSupply() WSLConfigSupplyStatus {
-	if a == nil || a.WSLSupply == nil {
-		return WSLConfigSupplyStatus{}
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return a.GetWSLConfigSupplyStatus()
-	}
-	// 检查=只读探测：经 PreviewUnits 的 Inspect 路径刷新缓存（可唤醒当前
-	// 目标；不写任何配置）。
-	if coord := a.piConfigCoordinator(); coord != nil {
-		units := wslSupplyUnitsFiltered(a.WSLSupply, piConfigUnitsForActions...)
-		if len(units) > 0 {
-			_, _ = coord.PreviewUnits(context.Background(), distro, wslsupply.CLIPi, units)
-		}
-	}
-	return a.GetWSLConfigSupplyStatus()
-}
-
-// PreviewWSLPiConfigSupply 执行「预览同步」：Inspect + Plan（纯计算），返回
-// 逐单元/逐键动作与接管 CAS 令牌；不产生写入。
-func (a *App) PreviewWSLPiConfigSupply() []WSLConfigUnitPreview {
-	out := []WSLConfigUnitPreview{}
-	coord := a.piConfigCoordinator()
-	if coord == nil {
-		return out
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return out
-	}
-	units := wslSupplyUnitsFiltered(a.WSLSupply, piConfigUnitsForActions...)
-	previews, err := coord.PreviewUnits(context.Background(), distro, wslsupply.CLIPi, units)
-	if err != nil {
-		a.Log.Warn("wslsupply", "Pi 配置预览失败", err.Error())
-		return out
-	}
-	for _, pv := range previews {
-		row := WSLConfigUnitPreview{
-			Unit: string(pv.Unit), RelPath: pv.RelPath, Policy: string(pv.Policy),
-			Action: piPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
-			Frozen: pv.Freeze, TargetHash: pv.TargetHash,
-			Notes: append([]string(nil), pv.Notes...), Keys: []WSLConfigUnitKeyPreview{},
-		}
-		for _, k := range pv.Keys {
-			row.Keys = append(row.Keys, WSLConfigUnitKeyPreview{Key: k.Key, Action: k.Action, Reason: k.Reason})
-		}
-		out = append(out, row)
-	}
-	return out
-}
-
-func piPreviewActionName(action wslsupply.Action) string {
+func wslPreviewActionName(action wslsupply.Action) string {
 	switch action {
 	case wslsupply.ActionNone:
 		return "none"
@@ -1104,89 +793,6 @@ func piPreviewActionName(action wslsupply.Action) string {
 		return "blocked"
 	default:
 		return "unknown"
-	}
-}
-
-// ApplyWSLPiConfigSupply 执行「应用安全更新」：只更新未冻结键（冻结/未托管/
-// 转换受阻键天然保持现状——安全路径即 RunUnits 本身）。
-func (a *App) ApplyWSLPiConfigSupply() []WSLConfigUnitOutcome {
-	out := []WSLConfigUnitOutcome{}
-	if a == nil || a.WSLSupply == nil {
-		return out
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return out
-	}
-	units := wslSupplyUnitsFiltered(a.WSLSupply, piConfigUnitsForActions...)
-	if len(units) == 0 {
-		return out
-	}
-	res, err := a.WSLSupply.RunUnits(context.Background(), distro, wslsupply.CLIPi, wslsupply.ReasonManual, units)
-	if err != nil {
-		a.Log.Warn("wslsupply", "Pi 配置安全更新失败", err.Error())
-		return out
-	}
-	for _, r := range res.Results {
-		if !isPiConfigUnit(r.Unit) {
-			continue
-		}
-		out = append(out, WSLConfigUnitOutcome{Unit: string(r.Unit), Outcome: r.Outcome.String(), Detail: r.Detail})
-	}
-	return out
-}
-
-func isPiConfigUnit(unit wslsupply.UnitID) bool {
-	return unit == wslsupply.UnitPiSettings || unit == wslsupply.UnitPiAmagi || unit == wslsupply.UnitPiMCP
-}
-
-// KeepWSLPiConfigUnitLocal 执行「保留本地（停跟随）」：目标内容不动，后续
-// 供给零动作；显式接管可解除。
-func (a *App) KeepWSLPiConfigUnitLocal(unit string) error {
-	coord := a.piConfigCoordinator()
-	if coord == nil {
-		return fmt.Errorf("WSL 配置供给未启用")
-	}
-	if !isPiConfigUnit(wslsupply.UnitID(unit)) {
-		return fmt.Errorf("未知配置单元：%s", unit)
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return fmt.Errorf("未找到可用的 WSL 发行版")
-	}
-	if err := coord.DropUnitRegistration(distro, wslsupply.CLIPi, wslsupply.UnitID(unit)); err != nil {
-		return fmt.Errorf("停跟随失败：%v", err)
-	}
-	a.Log.Info("wslsupply", "已选择保留 WSL 本地配置（停跟随）", "unit="+unit)
-	return nil
-}
-
-// TakeOverWSLPiConfigUnit 执行「确认接管（预览后）」：以预览目标 hash 做 CAS，
-// 用当前来源覆写托管域并重建键级基准；旧预览过期则拒绝并要求重新检查。
-func (a *App) TakeOverWSLPiConfigUnit(unit, expectedTargetHash string) error {
-	coord := a.piConfigCoordinator()
-	if coord == nil {
-		return fmt.Errorf("WSL 配置供给未启用")
-	}
-	if !isPiConfigUnit(wslsupply.UnitID(unit)) {
-		return fmt.Errorf("未知配置单元：%s", unit)
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return fmt.Errorf("未找到可用的 WSL 发行版")
-	}
-	res, err := coord.TakeOverUnit(context.Background(), distro, wslsupply.CLIPi, wslsupply.UnitID(unit), expectedTargetHash)
-	if err != nil {
-		return fmt.Errorf("接管失败：%v", err)
-	}
-	switch res.Outcome {
-	case wslsupply.UnitApplied:
-		a.Log.Info("wslsupply", "已按预览确认接管 WSL 配置单元", fmt.Sprintf("unit=%s", unit))
-		return nil
-	case wslsupply.UnitBlocked:
-		return fmt.Errorf("预览已过期（WSL 侧文件已变化，旧预览不覆盖新编辑）；请重新检查后再接管")
-	default:
-		return fmt.Errorf("接管失败：%s", res.Detail)
 	}
 }
 
@@ -1203,139 +809,6 @@ type WSLConfigUnitDetail struct {
 	State   string   `json:"state"`   // synced / stale / frozen / partial / detached / failed / unchecked
 	Detail  string   `json:"detail"`  // 中文短说明（冻结原因/失败阶段）
 	Actions []string `json:"actions"` // 可执行动作 key
-}
-
-var piConfigUnitMeta = map[wslsupply.UnitID]struct{ relPath, label string }{
-	wslsupply.UnitPiSettings: {relPath: wslsupply.PiSettingsFile, label: "settings.json 偏好（白名单字段）"},
-	wslsupply.UnitPiAmagi:    {relPath: wslsupply.PiAmagiFile, label: "amagi.json 角色与路由"},
-	wslsupply.UnitPiMCP:      {relPath: wslsupply.PiMCPFile, label: "mcp.json 服务器（逐个转换）"},
-}
-
-// piConfigUnitDetails 从状态清单派生键级单元详情。
-func piConfigUnitDetails(st wslsupply.TargetStatus, pendingPush bool) []WSLConfigUnitDetail {
-	out := []WSLConfigUnitDetail{}
-	for _, unit := range piConfigUnitsForActions {
-		meta, ok := piConfigUnitMeta[unit]
-		if !ok {
-			continue
-		}
-		detail := WSLConfigUnitDetail{
-			Unit: string(unit), RelPath: meta.relPath, Policy: string(wslsupply.PolicyTrackedProjection),
-			State: "unchecked", Detail: "尚未检查", Actions: []string{"check", "preview"},
-		}
-		var entry *wslsupply.UnitStatus
-		for i := range st.Units {
-			if st.Units[i].Unit == unit {
-				entry = &st.Units[i]
-				break
-			}
-		}
-		if entry == nil {
-			out = append(out, detail)
-			continue
-		}
-		switch {
-		case entry.Detached:
-			detail.State = "detached"
-			detail.Detail = "已保留 WSL 本地（停跟随）；确认接管可重新启用"
-			detail.Actions = []string{"preview", "takeover"}
-		case entry.LastOutcome == "awaiting-consent" && !entry.Consented:
-			// F-3（S2 diting 裁定）：三键级单元首启需 per-target 同意——未同意
-			// 只读不写，状态页给「启用投影」入口（与视觉清单同一 UI 模式）。
-			detail.State = "awaiting-consent"
-			detail.Detail = "尚未同意向 WSL 投影该配置（同意后未手改条目跟随 Windows 面板）"
-			detail.Actions = []string{"consent", "preview"}
-		case entry.Frozen:
-			detail.State = "frozen"
-			detail.Detail = wslFrozenReasonText(entry.FrozenReason)
-			detail.Actions = []string{"check", "preview", "keep-local", "takeover"}
-		case entry.LastErrorCode != "":
-			detail.State = "failed"
-			detail.Detail = "上次同步失败：" + entry.LastErrorCode
-			detail.Actions = []string{"check", "preview", "apply"}
-		case entry.LastOutcome == "partial":
-			detail.State = "partial"
-			detail.Detail = "部分条目保持 WSL 现状（冻结/未托管/转换受阻）；预览查看逐项"
-			detail.Actions = []string{"check", "preview", "apply", "keep-local", "takeover"}
-		case entry.LastOutcome == "written" || entry.LastOutcome == "takeover-written":
-			if pendingPush {
-				detail.State = "stale"
-				detail.Detail = "有保存后的变更待推送"
-			} else {
-				detail.State = "synced"
-				detail.Detail = "已同步（未手改的条目跟随 Windows 面板）"
-			}
-			detail.Actions = []string{"check", "preview", "apply"}
-		default:
-			detail.Actions = []string{"check", "preview", "apply"}
-		}
-		out = append(out, detail)
-	}
-	return out
-}
-
-// verdictForWSLPiConfigSupply 是纯配置供给（无 A2 单元）结果的闸门判定
-// （P3-S2 + wsl-goal-closure steer#3 严谨分类）：
-//   - managed-models（选中 amagi-* provider 的必需模型供给）未落地
-//     （failed/blocked）→ 阻断：后续 overlay/内置回退会把会话切到未经选择的
-//     endpoint/provider，不能按可选配置告警后继续；确认内容一致的 Fresh
-//     （安全无动作）放行；
-//   - 其余键级/可选单元失败 → 告警放行（可选偏好面，design §六）；
-//   - 预期态（awaiting-consent/frozen/unmanaged/detached/conversion-blocked）
-//     状态页可见，不作为启动告警面。
-//
-// 桌面闸门与 remote effect 共用本函数——同一目标同一结果。
-func verdictForWSLPiConfigSupply(res wslsupply.RunResult, runErr error) (launchErr error, warnMsg, warnDetail string) {
-	if runErr != nil {
-		return nil, "WSL 托管配置分发失败（会话继续，按既有回退语义）", runErr.Error()
-	}
-	for i := range res.Results {
-		r := res.Results[i]
-		if r.Unit == wslsupply.UnitPiManagedModels && (r.Outcome == wslsupply.UnitFailed || r.Outcome == wslsupply.UnitBlocked) {
-			if r.Outcome == wslsupply.UnitFailed && r.Detail == "target-corrupt" {
-				return fmt.Errorf("WSL 内 Pi models.json 已损坏，未覆盖（请手动修复 %s 后重试）；本次启动未执行", res.Target.Distro), "", ""
-			}
-			return fmt.Errorf("WSL 托管 provider 配置（amagi-*）未落地（unit=%s detail=%s），本次启动未执行；请重试或检查 WSL 目标状态", r.Unit, r.Detail), "", ""
-		}
-		if r.Outcome != wslsupply.UnitFailed && r.Outcome != wslsupply.UnitBlocked {
-			continue
-		}
-		if r.Detail == "awaiting-consent" || strings.Contains(r.Detail, "frozen") ||
-			strings.Contains(r.Detail, "unmanaged-existing") || strings.Contains(r.Detail, "detached") ||
-			strings.Contains(r.Detail, "conversion-blocked") {
-			continue // 预期态：状态页可见，不作为启动告警面
-		}
-		return nil, "WSL 托管配置分发未完成（会话继续，按既有回退语义）", fmt.Sprintf("unit=%s detail=%s", r.Unit, r.Detail)
-	}
-	return nil, "", ""
-}
-
-// EnableWSLPiConfigSupply 授予当前 distro 的 Pi 配置投影同意（F-3，S2 diting
-// 裁定：settings/amagi/mcp 三单元首启前需 per-target 明确同意——Windows 用户
-// 配置跨界是授权动作）。授权后异步推送一次；已同意幂等。distro 重装（generation
-// 变化）后旧授权自动失效，需重新同意（与视觉清单共享 GrantUnitConsent 语义）。
-func (a *App) EnableWSLPiConfigSupply() error {
-	if a == nil || a.WSLSupply == nil {
-		return fmt.Errorf("WSL 配置供给未启用")
-	}
-	granter, ok := a.WSLSupply.(interface {
-		GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
-	})
-	if !ok {
-		return fmt.Errorf("当前供给运行器不支持投影授权")
-	}
-	distro := wslDefaultDistroFn(nil)
-	if distro == "" {
-		return fmt.Errorf("未找到可用的 WSL 发行版")
-	}
-	for _, unit := range piConfigUnitsForActions {
-		if err := granter.GrantUnitConsent(context.Background(), distro, wslsupply.CLIPi, unit); err != nil {
-			return fmt.Errorf("授权失败（%s）：%v", unit, err)
-		}
-	}
-	a.Log.Info("wslsupply", "已同意向 WSL 投影 Pi 配置（settings/amagi/mcp；未手改条目将跟随 Windows 面板）", "distro="+distro)
-	a.scheduleWSLSupplyPush()
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,25 +829,6 @@ func wslSkillsHostRoot() string {
 	return filepath.Join(home, ".agents", "skills")
 }
 
-// wslSkillsCoordinator 是技能面消费的协调器能力切片（nil 表示未接线）。
-type wslSkillsCoordinator interface {
-	StartSkillsScan() bool
-	RescanSkills() bool
-	SkillsSnapshot() wslsupply.SkillsScanSnapshot
-	GrantUnitConsent(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
-	PreviewUnits(ctx context.Context, distro string, cli wslsupply.CLI, units []wslsupply.UnitID) ([]wslsupply.UnitPreview, error)
-	DropUnitRegistration(distro string, cli wslsupply.CLI, unit wslsupply.UnitID) error
-	TakeOverUnit(ctx context.Context, distro string, cli wslsupply.CLI, unit wslsupply.UnitID, expectedTargetHash string) (wslsupply.UnitResult, error)
-}
-
-func (a *App) wslSkillsCoordinator() wslSkillsCoordinator {
-	if a == nil || a.WSLSupply == nil {
-		return nil
-	}
-	coord, _ := a.WSLSupply.(wslSkillsCoordinator)
-	return coord
-}
-
 // WSLSkillSummary 是状态页单技能摘要（脱敏：不兼容项只报相对路径与原因）。
 type WSLSkillSummary struct {
 	Name         string   `json:"name"`
@@ -1386,91 +840,6 @@ type WSLSkillSummary struct {
 	Bytes        int64    `json:"bytes"`
 	Selectable   bool     `json:"selectable"` // 预览勾选面：可导入（可移植且未入供给）
 	Actions      []string `json:"actions"`
-}
-
-// WSLSkillsSupplyStatus 是技能面聚合状态（含扫描进度；扫描未完成不冒充完成）。
-type WSLSkillsSupplyStatus struct {
-	Distro         string            `json:"distro"`
-	Available      bool              `json:"available"`
-	Reason         string            `json:"reason,omitempty"`
-	RootMissing    bool              `json:"rootMissing"`
-	ScanStarted    bool              `json:"scanStarted"`
-	ScanRunning    bool              `json:"scanRunning"`
-	ScanScanned    int               `json:"scanScanned"`
-	ScanTotal      int               `json:"scanTotal"`
-	ScanIncomplete bool              `json:"scanIncomplete"`
-	Skills         []WSLSkillSummary `json:"skills"`
-}
-
-// GetWSLSkillsSupplyStatus 返回技能面状态：首次单飞启动后台扫描（SA-17：
-// 已启动过即幂等——Get 不重启已完成的扫描，显式 Check 才重扫），立即返回
-// 当前缓存快照（不等待扫描完成——大目录不阻塞 UI）。
-func (a *App) GetWSLSkillsSupplyStatus() WSLSkillsSupplyStatus {
-	out := WSLSkillsSupplyStatus{Skills: []WSLSkillSummary{}}
-	if a == nil {
-		return out
-	}
-	distro := wslDefaultDistroFn(nil)
-	out.Distro = distro
-	if distro == "" {
-		out.Reason = "未找到可用的 WSL 发行版"
-		return out
-	}
-	out.Available = true
-	coord := a.wslSkillsCoordinator()
-	if coord == nil {
-		out.Reason = "技能供给未启用"
-		return out
-	}
-	coord.StartSkillsScan() // SA-17：仅首次启动；已启动过幂等（显式 Check 才重扫）
-	return wslSkillsStatusFrom(coord, distro, a.wslSupplyStatus(distro, wslsupply.CLICommon))
-}
-
-// CheckWSLSkillsSupply 执行「检查」：强制触发一轮后台重扫（SA-17：Get 不
-// 重启扫描，重扫仅由本显式动作触发）并返回当前状态；扫描未完成时状态面
-// 明确显示进度，不冒充完成。不写任何目标内容。
-func (a *App) CheckWSLSkillsSupply() WSLSkillsSupplyStatus {
-	if a != nil {
-		if coord := a.wslSkillsCoordinator(); coord != nil {
-			coord.RescanSkills() // 已在跑则保持本轮；否则强制新扫
-		}
-	}
-	return a.GetWSLSkillsSupplyStatus()
-}
-
-func wslSkillsStatusFrom(coord wslSkillsCoordinator, distro string, shared wslsupply.TargetStatus) WSLSkillsSupplyStatus {
-	snap := coord.SkillsSnapshot()
-	out := WSLSkillsSupplyStatus{
-		Distro: distro, Available: true, RootMissing: snap.RootMissing,
-		ScanStarted: snap.Started, ScanRunning: snap.Running,
-		ScanScanned: snap.Progress.Scanned, ScanTotal: snap.Progress.Total,
-		ScanIncomplete: snap.Incomplete(), Skills: []WSLSkillSummary{},
-	}
-	units := map[string]wslsupply.UnitStatus{}
-	for _, u := range shared.Units {
-		if name, ok := wslsupply.ParseSkillUnit(u.Unit); ok {
-			units[name] = u
-		}
-	}
-	for _, m := range snap.Skills {
-		entry, hasEntry := units[m.Name]
-		out.Skills = append(out.Skills, wslSkillSummary(m, entry, hasEntry))
-	}
-	// 已供给但宿主侧已消失的登记：source-deleted（删除需确认，不自动删）。
-	seen := map[string]bool{}
-	for _, m := range snap.Skills {
-		seen[m.Name] = true
-	}
-	for name := range units {
-		if !seen[name] {
-			out.Skills = append(out.Skills, WSLSkillSummary{
-				Name: name, State: "source-deleted",
-				Detail:  "Windows 侧该技能目录已删除；目标删除需确认（不自动删除）",
-				Actions: []string{"keep-local"},
-			})
-		}
-	}
-	return out
 }
 
 // wslSkillSummary 从扫描清单与登记派生单技能摘要（hasEntry=false 表示从未
@@ -1505,7 +874,6 @@ func wslSkillSummary(m *wslsupply.SkillManifest, entry wslsupply.UnitStatus, has
 
 // wslSkillRegisteredState 派生已登记技能的状态面（TrackedProjection 语义）。
 func wslSkillRegisteredState(entry wslsupply.UnitStatus) (state, detail string, actions []string) {
-	actions = []string{"preview"}
 	switch {
 	case entry.Detached:
 		return "detached", "已保留 WSL 本地（停跟随）；确认接管可重新启用", []string{"preview", "takeover"}
@@ -1540,156 +908,16 @@ type WSLSkillPreview struct {
 	Notes        []string `json:"notes,omitempty"`
 }
 
-// PreviewWSLSkillsSupply 执行「预览」：扫描缓存 + 目标只读探测 + 纯判定；逐
-// 技能给出动作/冻结原因/不兼容清单与接管 CAS 令牌。不写任何内容。
-func (a *App) PreviewWSLSkillsSupply() []WSLSkillPreview {
-	out := []WSLSkillPreview{}
-	coord := a.wslSkillsCoordinator()
-	if coord == nil {
-		return out
-	}
-	distro := wslDefaultDistroFn(nil)
-	if distro == "" {
-		return out
-	}
-	snap := coord.SkillsSnapshot()
-	units := make([]wslsupply.UnitID, 0, len(snap.Skills))
-	manifests := map[string]*wslsupply.SkillManifest{}
-	for _, m := range snap.Skills {
-		units = append(units, wslsupply.SkillUnitID(m.Name))
-		manifests[m.Name] = m
-	}
-	if len(units) == 0 {
-		return out
-	}
-	previews, err := coord.PreviewUnits(context.Background(), distro, wslsupply.CLICommon, units)
-	if err != nil {
-		a.Log.Warn("wslsupply", "技能预览失败", err.Error())
-		return out
-	}
-	for _, pv := range previews {
-		name, ok := wslsupply.ParseSkillUnit(pv.Unit)
-		if !ok {
-			continue
-		}
-		row := WSLSkillPreview{
-			Name: name, Action: piPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
-			Frozen: pv.Freeze, TargetHash: pv.TargetHash,
-			Notes: append([]string(nil), pv.Notes...),
-		}
-		if m := manifests[name]; m != nil {
-			row.Portable = m.Portable()
-			row.Excluded = len(m.Excluded)
-			for _, it := range m.Incompatible {
-				row.Incompatible = append(row.Incompatible, it.RelPath+"："+it.Reason)
-			}
-		}
-		out = append(out, row)
-	}
-	return out
-}
-
-// ApplyWSLSkillsSupply 执行「预览勾选后导入」：对勾选的可移植技能登记
-// per-target 同意（复用同意门与跨代语义），随后一次 RunUnits 供给（受 CAS
-// 与冻结保护）。不可移植/不存在的名字逐项拒绝并说明原因。
-func (a *App) ApplyWSLSkillsSupply(names []string) []WSLConfigUnitOutcome {
-	out := []WSLConfigUnitOutcome{}
-	if a == nil || a.WSLSupply == nil {
-		return out
-	}
-	distro := wslDefaultDistroFn(nil)
-	if distro == "" {
-		return out
-	}
-	coord := a.wslSkillsCoordinator()
-	if coord == nil {
-		return out
-	}
-	snap := coord.SkillsSnapshot()
-	manifests := map[string]*wslsupply.SkillManifest{}
-	for _, m := range snap.Skills {
-		manifests[m.Name] = m
-	}
-	var units []wslsupply.UnitID
-	for _, name := range names {
-		m := manifests[name]
-		if m == nil {
-			out = append(out, WSLConfigUnitOutcome{Unit: string(wslsupply.SkillUnitID(name)), Outcome: "blocked", Detail: "扫描缓存中不存在该技能（未扫描或已删除）"})
-			continue
-		}
-		if reason := m.NotPortableReason(); reason != "" {
-			out = append(out, WSLConfigUnitOutcome{Unit: string(wslsupply.SkillUnitID(name)), Outcome: "blocked", Detail: "该技能当前不可移植：" + reason})
-			continue
-		}
-		unit := wslsupply.SkillUnitID(name)
-		if err := coord.GrantUnitConsent(context.Background(), distro, wslsupply.CLICommon, unit); err != nil {
-			out = append(out, WSLConfigUnitOutcome{Unit: string(unit), Outcome: "failed", Detail: "授权失败：" + err.Error()})
-			continue
-		}
-		units = append(units, unit)
-	}
-	if len(units) == 0 {
-		return out
-	}
-	res, err := a.WSLSupply.RunUnits(context.Background(), distro, wslsupply.CLICommon, wslsupply.ReasonManual, units)
-	if err != nil {
-		a.Log.Warn("wslsupply", "技能导入失败", err.Error())
-		for _, u := range units {
-			out = append(out, WSLConfigUnitOutcome{Unit: string(u), Outcome: "failed", Detail: err.Error()})
-		}
-		return out
-	}
-	for _, r := range res.Results {
-		if _, isSkill := wslsupply.ParseSkillUnit(r.Unit); !isSkill {
-			continue
-		}
-		out = append(out, WSLConfigUnitOutcome{Unit: string(r.Unit), Outcome: r.Outcome.String(), Detail: r.Detail})
-	}
-	return out
-}
-
-// KeepWSLSkillLocal 执行技能的「保留本地（停跟随）」。
-func (a *App) KeepWSLSkillLocal(name string) error {
-	coord := a.wslSkillsCoordinator()
-	if coord == nil {
-		return fmt.Errorf("WSL 配置供给未启用")
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return fmt.Errorf("未找到可用的 WSL 发行版")
-	}
-	if err := coord.DropUnitRegistration(distro, wslsupply.CLICommon, wslsupply.SkillUnitID(name)); err != nil {
-		return fmt.Errorf("停跟随失败：%v", err)
-	}
-	a.Log.Info("wslsupply", "已保留 WSL 本地技能（停跟随）", "skill="+name)
-	return nil
-}
-
-// TakeOverWSLSkill 执行技能的「确认接管（预览后）」：目标树 hash 做 CAS，
-// 旧预览过期则拒绝。
-func (a *App) TakeOverWSLSkill(name, expectedTargetHash string) error {
-	coord := a.wslSkillsCoordinator()
-	if coord == nil {
-		return fmt.Errorf("WSL 配置供给未启用")
-	}
-	distro := a.wslDefaultDistro()
-	if distro == "" {
-		return fmt.Errorf("未找到可用的 WSL 发行版")
-	}
-	res, err := coord.TakeOverUnit(context.Background(), distro, wslsupply.CLICommon, wslsupply.SkillUnitID(name), expectedTargetHash)
-	if err != nil {
-		return fmt.Errorf("接管失败：%v", err)
-	}
-	switch res.Outcome {
-	case wslsupply.UnitApplied:
-		a.Log.Info("wslsupply", "已按预览确认接管 WSL 技能", "skill="+name)
-		return nil
-	case wslsupply.UnitBlocked:
-		if res.Detail == "awaiting-consent" {
-			return fmt.Errorf("尚未选择导入该技能（未授权）；先在技能面板勾选导入再接管")
-		}
-		return fmt.Errorf("预览已过期（WSL 侧技能已变化，旧预览不覆盖新编辑）；请重新检查后再接管")
-	default:
-		return fmt.Errorf("接管失败：%s", res.Detail)
-	}
+// WSLSkillsSupplyStatus 是技能面聚合状态（含扫描进度；扫描未完成不冒充完成）。
+type WSLSkillsSupplyStatus struct {
+	Distro         string            `json:"distro"`
+	Available      bool              `json:"available"`
+	Reason         string            `json:"reason,omitempty"`
+	RootMissing    bool              `json:"rootMissing"`
+	ScanStarted    bool              `json:"scanStarted"`
+	ScanRunning    bool              `json:"scanRunning"`
+	ScanScanned    int               `json:"scanScanned"`
+	ScanTotal      int               `json:"scanTotal"`
+	ScanIncomplete bool              `json:"scanIncomplete"`
+	Skills         []WSLSkillSummary `json:"skills"`
 }

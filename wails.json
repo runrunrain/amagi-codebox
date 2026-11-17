@@ -8,7 +8,7 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "preBuildHooks": {
-    "*/*": "npm --prefix ../.. run build:mobile"
+    "*/*": "npm --prefix ../.. run build:embedded-web"
   },
   "author": {
     "name": "Amagi CodeBox Contributors",

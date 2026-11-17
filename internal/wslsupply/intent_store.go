@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -155,22 +154,6 @@ func (s *stateStore) loadIntents() (map[string]OperationIntent, error) {
 	return out, nil
 }
 
-// readIntent 读回单个 intent（存在性/可读性判断用）。
-func (s *stateStore) readIntent(opID string) (OperationIntent, bool, error) {
-	data, err := os.ReadFile(pendingIntentPath(s.configDir, opID))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return OperationIntent{}, false, nil
-		}
-		return OperationIntent{}, false, err
-	}
-	var op OperationIntent
-	if jerr := json.Unmarshal(data, &op); jerr != nil {
-		return OperationIntent{}, true, fmt.Errorf("parse intent %s: %w", opID, jerr)
-	}
-	return op, true, nil
-}
-
 // deleteIntent 删除一个已终结的 intent 文件（清理顺序的靠后步骤）。
 func (s *stateStore) deleteIntent(opID string) error {
 	if err := os.Remove(pendingIntentPath(s.configDir, opID)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -202,34 +185,6 @@ func (r *observationRegistry) record(ob OperationObservation) {
 			r.latest[key] = ob
 		}
 	}
-}
-
-// latestForUnit 返回目标+单元的最新观察（深复制）。
-func (r *observationRegistry) latestForUnit(targetKey string, unit UnitID) (OperationObservation, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ob, ok := r.latest[obUnitKey(targetKey, unit)]
-	return ob, ok
-}
-
-// forOp 返回某操作的观察（深复制）。
-func (r *observationRegistry) forOp(opID string) (OperationObservation, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ob, ok := r.byOp[opID]
-	return ob, ok
-}
-
-// snapshot 返回全部观察的深复制（GetStatus 合并用）。
-func (r *observationRegistry) snapshot() []OperationObservation {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]OperationObservation, 0, len(r.byOp))
-	for _, ob := range r.byOp {
-		out = append(out, ob)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
-	return out
 }
 
 func obUnitKey(targetKey string, unit UnitID) string { return targetKey + "|" + string(unit) }

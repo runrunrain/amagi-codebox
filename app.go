@@ -1,28 +1,27 @@
+// Package main implements the Amagi CodeBox desktop application, coordinating
+// service wiring, lifecycle hooks, Wails frontend bindings, and local session/remote control.
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"embed"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"amagi-codebox/internal/agentcli"
+	"amagi-codebox/internal/agentcli/install"
 	"amagi-codebox/internal/agentprofile"
 	"amagi-codebox/internal/aiproxy"
+	"amagi-codebox/internal/claudeaccounts"
+	"amagi-codebox/internal/claudewebui"
 	"amagi-codebox/internal/cleanupstore"
 	"amagi-codebox/internal/codexplugin"
 	"amagi-codebox/internal/config"
@@ -30,7 +29,6 @@ import (
 	"amagi-codebox/internal/envcheck"
 	"amagi-codebox/internal/envvars"
 	"amagi-codebox/internal/gitassist"
-	"amagi-codebox/internal/headroom"
 	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/logging"
@@ -46,12 +44,14 @@ import (
 	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/pty"
 	"amagi-codebox/internal/remote"
-	"amagi-codebox/internal/remote/contract"
 	"amagi-codebox/internal/remoteclient"
 	"amagi-codebox/internal/secrets"
 	"amagi-codebox/internal/session"
 	"amagi-codebox/internal/settings"
 	"amagi-codebox/internal/sharedext"
+	"amagi-codebox/internal/sharedmarket"
+	"amagi-codebox/internal/sharedmcp"
+	"amagi-codebox/internal/sharedskills"
 	"amagi-codebox/internal/skins"
 	"amagi-codebox/internal/tray"
 	"amagi-codebox/internal/updater"
@@ -60,7 +60,6 @@ import (
 	"amagi-codebox/internal/wslsetup"
 	"amagi-codebox/internal/wslsupply"
 
-	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -80,7 +79,7 @@ type codexLaunchSettings struct {
 // Claude/Codex sessions. Production uses LauncherService; tests inject a
 // deterministic process lifecycle without changing the exported App surface.
 type externalLauncherPort interface {
-	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error) (*launcher.LaunchResult, error)
+	LaunchGuarded(string, config.Provider, string, string, config.AgentTeamsConfig, session.LaunchMode, string, func() error, []string) (*launcher.LaunchResult, error)
 	LaunchCodexGuarded(string, string, session.LaunchMode, string, map[string]string, func() error) (*launcher.LaunchResult, error)
 	CaptureProcessIdentity(string) (string, error)
 	RecoverProcess(string, int, string) (bool, error)
@@ -97,10 +96,11 @@ type codexArgsExternalLauncherPort interface {
 }
 
 // externalCleanupClaim is the exact App-owned handoff after an OS process
-// starts but its durable PID upgrade or Headroom lease promotion cannot finish.
-// It retains a pre-start reservation or upgraded record, the startup admission
-// (when the coordinator is still open), and a retriable Launcher owner until a
-// true terminal observation. It is not a Control permit and grants no writes.
+// starts but its durable PID upgrade or shared-service lease promotion cannot
+// finish. It retains a pre-start reservation or upgraded record, the startup
+// admission (when the coordinator is still open), and a retriable Launcher
+// owner until a true terminal observation. It is not a Control permit and
+// grants no writes.
 type externalCleanupClaim struct {
 	sessionID        string
 	admission        *remote.SharedLaunchAdmission
@@ -145,63 +145,11 @@ type ompLaunchSettings struct {
 const (
 	codexModelProviderName     = "amagi-codebox-provider"
 	codexOfficialOpenAIAPIHost = "api.openai.com"
-	maxClipboardImageBytes     = 20 * 1024 * 1024
 	// defaultExternalShutdownCleanupBudget is one wall-clock budget shared by
 	// handoff observation and StopAll. It bounds only external ownership cleanup;
 	// every unrecovered item is returned as a typed report.
 	defaultExternalShutdownCleanupBudget = 2 * time.Second
-	// CodexGlobalHeadroomDefaultPort is the dedicated port for the independent
-	// codex-global headroom instance (8788). It must differ from the claude
-	// session headroom DefaultPort (8787) so the two proxies never collide.
-	CodexGlobalHeadroomDefaultPort = 8788
-	// codexGlobalHeadroomDefaultTarget is the fallback OpenAI-compatible
-	// upstream used when the caller does not specify a target. headroom forwards
-	// compressed codex traffic here via OPENAI_TARGET_API_URL.
-	codexGlobalHeadroomDefaultTarget = "https://api.openai.com/v1"
-	// codexGlobalHeadroomMarkerStart / End delimit the amagi-managed
-	// openai_base_url block in ~/.codex/config.toml. They are intentionally
-	// distinct from the amagi-codebox-inject markers so the provider-section
-	// cleanup (removeCodexManagedProviderSection / cleanupCodexManagedProviderConfig)
-	// never touches this block.
-	codexGlobalHeadroomMarkerStart = "# === amagi-headroom-global-start ==="
-	codexGlobalHeadroomMarkerEnd   = "# === amagi-headroom-global-end ==="
 )
-
-var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
-
-type codexConfigSyncOptions struct {
-	Model           string
-	ModelProvider   string
-	ProviderBaseURL string
-	// WireAPI 为托管 provider 段写入的 wire_api 值（经 codexWireAPI 归一化：
-	// "chat" -> chat，其余 -> responses legacy 默认）。空值维持既有行为。
-	WireAPI              string
-	EnsureCustomProvider bool
-	ForceAPILogin        bool
-	CleanupManagedConfig bool
-}
-
-type RemoteWebUIStatusResult struct {
-	Openable                bool   `json:"openable"`
-	Reason                  string `json:"reason"`
-	URL                     string `json:"url"`
-	Port                    int    `json:"port"`
-	Running                 bool   `json:"running"`
-	MobileWebRoot           string `json:"mobileWebRoot"`
-	MobileWebRootConfigured bool   `json:"mobileWebRootConfigured"`
-	MobileWebRootExists     bool   `json:"mobileWebRootExists"`
-	MobileWebEmbedded       bool   `json:"mobileWebEmbedded"`
-	MobileWebAvailable      bool   `json:"mobileWebAvailable"`
-	// HostSummaryDegraded 透出 v1 HostSummary 缓存最近错误态（P3-B R2，非
-	// wire 契约字段）：自检卡据此点亮降级横幅，替代桌面无法直读的探测。
-	HostSummaryDegraded bool `json:"hostSummaryDegraded"`
-}
-
-type OpenRemoteWebUIResult struct {
-	URL     string `json:"url"`
-	Port    int    `json:"port"`
-	Running bool   `json:"running"`
-}
 
 type persistentLoadState struct {
 	initialized    bool
@@ -216,18 +164,18 @@ type persistentLoadState struct {
 type App struct {
 	ctx     context.Context
 	aiProxy *aiproxy.Service
+	// agentCLI 是 agent-CLI 本地命令服务（DESIGN.md §5 A1，独立回环
+	// listener/随机端口/端点文件发现）。构造/启停接线在 agentcli_wiring.go；
+	// 前端门面在 app_agentcli.go。小写不导出：不进 Wails 绑定，只能经门面。
+	agentCLI *agentcli.Server
+	// agentCLIInstall 管理 agent-CLI 本机分发（shim 与 agent 技能，DESIGN.md
+	// §5 C1/C2）。构造与 Startup 默认安装在 app_agentcli_install.go；前端门面
+	// 同文件。小写不导出：不进 Wails 绑定。
+	agentCLIInstall *install.Manager
 
-	Config   *config.ConfigService
-	Secrets  *secrets.SecretsService
-	Launcher *launcher.LauncherService
-	Headroom *headroom.HeadroomService
-	// CodexHeadroom is a second, independent headroom instance that compresses
-	// Codex desktop traffic globally (port 8788, OpenAI target). It is fully
-	// separate from Headroom (claude-session, 8787, Anthropic target): each has
-	// its own port, lifecycle and target kind, so toggling one never touches the
-	// other. Only one Codex-global instance exists app-wide (it is not per
-	// session); Start/Stop are idempotent.
-	CodexHeadroom   *headroom.HeadroomService
+	Config          *config.ConfigService
+	Secrets         *secrets.SecretsService
+	Launcher        *launcher.LauncherService
 	Tray            *tray.Service
 	Sessions        *session.Manager
 	Paths           *paths.PathsService
@@ -248,9 +196,26 @@ type App struct {
 	AgentProfiles   *agentprofile.Service
 	EnvCheck        *envcheck.Service
 	Usage           *usage.Service
+	// SharedSkills 是共用技能管理服务（~/.agents/skills ⇄ skills-disabled 的
+	// 枚举/启停/删除，扩展中心重构 spec §2.1）。**非 Wails 绑定**——经 App
+	// 门面（app_sharedskills.go）暴露，managed 标记在门面层组装。
+	SharedSkills *sharedskills.Service
+	// SharedMcp 是共用 MCP 登记与分发服务（~/.agents/.mcp.json 条目 CRUD +
+	// Claude/Codex/OpenCode/Pi 四引擎写入，共用 MCP spec §2）。**非 Wails
+	// 绑定**——经 App 门面（app_sharedmcp.go）暴露。
+	SharedMcp *sharedmcp.Service
+	// SharedMarkets 是共用插件市场服务（~/.agents/marketplaces 克隆管理 +
+	// 插件技能部署到 ~/.agents/skills）。**非 Wails 绑定**——经 App 门面
+	// （app_sharedmarket.go）暴露。
+	SharedMarkets *sharedmarket.Service
 	// WebUI 是 pi Web UI 壳集成的发现/探测服务（蓝图 T-1.5，契约 v1.0.2）。
 	// 仅 embedded pi 会话注册；其他 CLI 不感知。
 	WebUI *webui.Service
+	// ClaudeWebUI 是 Claude Code 会话的进程内 Web 数据面管理器（claude-webui
+	// design §5.2/§5.3，2026-11）：per-session 回环 server + 转录尾随 + 双车道
+	// 输入端口（claudewebui.Manager，起停助手见 app_claudewebui.go）。
+	// **非 Wails 绑定**——禁进 bind_list.go（design §10：Bind 清单冻结 21 项）。
+	ClaudeWebUI *claudewebui.Manager
 	// Skins 是本地图片皮肤管理服务（皮肤图片库 ~/.amagi-codebox/skins +
 	// /skins/ 只读资源 Handler）。Startup 注入 Wails ctx 后才能弹选择对话框。
 	Skins *skins.Service
@@ -297,7 +262,7 @@ type App struct {
 	rcTerminals *remoteclient.TerminalManager
 
 	// Control runtime (M3-A2): the gate authority for all session write side
-	// effects. Raw ports (Pty/Headroom) sit BEHIND it and are never
+	// effects. Raw ports (e.g. Pty) sit BEHIND it and are never
 	// Wails-bound (design §4.1, §6.3 C-01).
 	control           *remote.ControlRuntime
 	sessionAdapter    *remote.RemoteSessionAdapter
@@ -324,10 +289,10 @@ type App struct {
 	externalRunPollInterval time.Duration
 
 	// externalCleanups owns post-start processes whose durable identity upgrade
-	// or Headroom lease promotion failed and whose first compensating Stop could
-	// not prove terminal. Each exact claim remains until explicit Stop/reaper
-	// terminal; pre-start reservations survive App exit and Shutdown reports every
-	// bounded abandonment rather than silently forgetting ownership.
+	// or shared-service lease promotion failed and whose first compensating Stop
+	// could not prove terminal. Each exact claim remains until explicit
+	// Stop/reaper terminal; pre-start reservations survive App exit and Shutdown
+	// reports every bounded abandonment rather than silently forgetting ownership.
 	externalOwnershipMu     sync.Mutex
 	externalShutdown        atomic.Bool
 	externalStartGeneration atomic.Uint64
@@ -358,6 +323,10 @@ type App struct {
 	// effect 的统一凭据/托管配置执行边界（判定语义零变化，只统一执行边界）。
 	// 测试可替换为假 Runner；nil 时闸门 fail closed。
 	WSLSupply wslsupply.Runner
+
+	// wslUnifiedLoop 是 WSL 统一管理的后台对账循环与延期补推标记（P4 修复
+	// F1/F2：来源周期重扫 + 活动会话阻挡后的自动补推；见 app_wsl_unified.go）。
+	wslUnifiedLoop wslUnifiedReconcileLoopState
 
 	// DockerWSL 面向 Windows：Docker Desktop ↔ WSL 集成健康检查与一键自愈
 	//（2026-09-25 运维复盘 §1.2：共享挂载竞态挂坏的实证修复序列固化）。
@@ -416,16 +385,35 @@ type App struct {
 	providerSyncPiDir   string
 	providerSyncOmpDir  string
 
-	// codexGlobalMu serializes the codex-global headroom orchestration between
-	// the async startup restore goroutine (restoreCodexGlobalHeadroomOnStartup)
-	// and the synchronous UI toggle (SetCodexGlobalHeadroom). Without it, a user
-	// disabling the feature in the narrow startup window could race the restore
-	// goroutine and end with Enabled=false but the proxy running and config.toml
-	// still carrying the marker block. The lock is taken for the full
-	// Start/Stop + config-sync + persistence sequence; inner service locks
-	// (HeadroomService.mu / settings.Service.mu) are always acquired AFTER this
-	// one, so lock ordering stays codexGlobalMu -> inner.
-	codexGlobalMu sync.Mutex
+	// Claude 订阅账号轮换（design §2/§6.3/§7.2）：未导出领域服务 + 启动门禁
+	// 缓存。claudeAccountsPool 为池快照（nil = 无池，未启用）；loadErr 非空 =
+	// 池不可用（blocked）；recovered 在 Startup 恢复完成后置位（§4.5 时序）。
+	claudeAccounts   *claudeaccounts.Service
+	claudeAccountsMu sync.RWMutex
+	// 发布序列锁只覆盖 PoolStore.Load→标记→缓存发布；不得在此锁内取 Service 锁。
+	claudeAccountsPublishMu sync.Mutex
+	// 隔离测试的语义屏障：claim 已取得、认证/进程副作用尚未发生。
+	claudeCredentialsLaunchCheckpoint func() error
+	claudeAccountsRecoveryCheckpoint  func()
+	claudeAccountsPool                *claudeaccounts.AccountPool
+	claudeAccountsLoadErr             error
+	claudeAccountsUnsupported         bool
+	claudeAccountsRecovered           bool
+	// claudeAccountsPoolStore 是池存储直接引用（F01：mutation 释放前发布权威
+	// 状态不经 Service 串行锁；F10：「曾初始化」标记判定）。
+	claudeAccountsPoolStore claudeaccounts.PoolStore
+	// claudeAccountsPoolMarkerPath 是不含秘密的「池曾初始化」标记文件路径
+	//（F10；测试可注入）。
+	claudeAccountsPoolMarkerPath string
+	// nil 使用 File.Sync；测试在真实创建后注入文件/目录同步失败。
+	claudeAccountsMarkerSync func(*os.File) error
+	// claudeAccountsQuiescenceLister 是进程观察器枚举接缝（nil = 生产 ps）。
+	claudeAccountsQuiescenceLister claudeProcessLister
+	// operation 注册表（有界缓存 + requestId 幂等，见 claude_accounts_facade.go）。
+	claudeAccountsOpsMu    sync.Mutex
+	claudeAccountsOps      map[string]*claudeAccountOperation
+	claudeAccountsOpsOrder []string
+	claudeAccountsRequests map[string]string
 }
 
 func NewApp(mobileAssets embed.FS) *App {
@@ -444,60 +432,39 @@ func NewApp(mobileAssets embed.FS) *App {
 	ompPluginsSvc := ompplugin.NewService(log)
 	processRunner := platform.NewProcessRunner()
 
-	// headroom-venv lives under the CodeBox config directory. It is shared by
-	// envcheck (install/detect/uninstall) and headroom (proxy launch) so both
-	// target the same venv. The bin subdir is platform-specific.
-	headroomVenvDir := filepath.Join(configDir, "headroom-venv")
-	headroomVenvBinDir := headroomVenvBinSubdir(headroomVenvDir)
-
-	headroomSvc := headroom.NewHeadroomService(processRunner, log)
-	headroomSvc.SetVenvBinDir(headroomVenvBinDir)
-
-	// Second, independent headroom instance for the Codex desktop global
-	// compression path. It reuses the SAME venv (headroom-venv) as the claude
-	// headroom but listens on a dedicated port (CodexGlobalHeadroomDefaultPort,
-	// 8788) and targets an OpenAI-compatible upstream. Port is set here once;
-	// the App-level SetCodexGlobalHeadroom toggle only starts/stops it.
-	codexHeadroomSvc := headroom.NewHeadroomService(processRunner, log)
-	codexHeadroomSvc.SetVenvBinDir(headroomVenvBinDir)
-	if err := codexHeadroomSvc.SetPort(CodexGlobalHeadroomDefaultPort); err != nil {
-		log.Warn("headroom", "设置 codex 全局 headroom 端口失败", err.Error())
-	}
-
 	envCheckSvc := envcheck.NewServiceWithRunner(processRunner)
-	envCheckSvc.SetHeadroomVenvDir(headroomVenvDir)
 
 	settingsSvc := settings.NewService(configDir)
 
 	app := &App{
-		configDir:           configDir,
-		aiProxy:             aiproxy.New(filepath.Join(configDir, "ai-proxy")),
-		Config:              config.NewConfigService(configDir),
-		Secrets:             secrets.NewSecretsService(configDir),
-		Launcher:            launcher.NewLauncherService(log, envVarsSvc),
-		Headroom:            headroomSvc,
-		CodexHeadroom:       codexHeadroomSvc,
-		Tray:                tray.NewService(),
-		Sessions:            session.NewManager(),
-		Paths:               paths.NewPathsService(configDir),
-		Log:                 log,
-		Pty:                 pty.NewService(log),
-		Settings:            settingsSvc,
-		Skins:               skins.NewService(settingsSvc, filepath.Join(configDir, "skins"), log),
-		EnvVars:             envVarsSvc,
-		Updater:             updater.NewService(resolveAppVersion(), log),
-		Plugins:             pluginsSvc,
-		CodexPlugins:        codexPluginsSvc,
-		OpenCodePlugins:     openCodePluginsSvc,
-		PiPlugins:           piPluginsSvc,
-		OmpPlugins:          ompPluginsSvc,
-		OpenCodeConfig:      opencodeconfig.NewService(),
-		PiConfig:            piconfig.NewService(),
-		OmpConfig:           ompconfig.NewService(),
-		AgentProfiles:       agentprofile.NewService(),
-		EnvCheck:            envCheckSvc,
-		Usage:               usage.NewService(configDir, log),
-		WebUI:               webui.NewService(log, filepath.Join(defaultPiAgentDir(), "amagi", "webui-registry")),
+		configDir:       configDir,
+		aiProxy:         aiproxy.New(filepath.Join(configDir, "ai-proxy")),
+		Config:          config.NewConfigService(configDir),
+		Secrets:         secrets.NewSecretsService(configDir),
+		Launcher:        launcher.NewLauncherService(log, envVarsSvc),
+		Tray:            tray.NewService(),
+		Sessions:        session.NewManager(),
+		Paths:           paths.NewPathsService(configDir),
+		Log:             log,
+		Pty:             pty.NewService(log),
+		Settings:        settingsSvc,
+		EnvVars:         envVarsSvc,
+		Updater:         updater.NewService(resolveAppVersion(), log),
+		Plugins:         pluginsSvc,
+		CodexPlugins:    codexPluginsSvc,
+		OpenCodePlugins: openCodePluginsSvc,
+		PiPlugins:       piPluginsSvc,
+		OmpPlugins:      ompPluginsSvc,
+		OpenCodeConfig:  opencodeconfig.NewService(),
+		PiConfig:        piconfig.NewService(),
+		OmpConfig:       ompconfig.NewService(),
+		AgentProfiles:   agentprofile.NewService(),
+		EnvCheck:        envCheckSvc,
+		Usage:           usage.NewService(configDir, log),
+		WebUI:           webui.NewService(log, filepath.Join(defaultPiAgentDir(), "amagi", "webui-registry")),
+		// Claude Code Web 平面（design §5.3）：per-session 数据面管理器，非 Wails
+		// 绑定；nil 安全（测试构造可省略，相关助手零操作）。
+		ClaudeWebUI:         claudewebui.NewManager(log),
 		Capabilities:        capabilities,
 		CLIResolver:         platform.NewCLIResolver(capabilities),
 		FileOpener:          platform.NewFileOpener(processRunner),
@@ -522,13 +489,34 @@ func NewApp(mobileAssets embed.FS) *App {
 	openCodePluginsSvc.OnChange = invalidateShared
 	piPluginsSvc.OnChange = invalidateShared
 	ompPluginsSvc.OnChange = invalidateShared
-	// P3-S1：WSL 供给协调器携带托管面适配器（pi/managed-models + 共享小文件）；
-	// 业务快照源闭包引用 app，在字面量之后装配。
+	app.Skins = skins.NewServiceWithContext(settingsSvc, filepath.Join(configDir, "skins"), log, app.wailsContext)
+	// WSL 供给协调器携带 shared 小文件与 S4 键级投影适配器（Pi 的供给单元已随
+	// 1.3.126「WSL 内 Pi 共享 Windows agent 根」退役）；业务快照源闭包引用
+	// app，在字面量之后装配。
 	app.WSLSupply = newWSLSupplyCoordinator(app, configDir)
+	// agent-CLI 本地命令服务（DESIGN.md §5 A1）：命令表 + host Handler 驱动；
+	// Startup 按设置决定是否启动（agentcli_wiring.go）。
+	app.constructAgentCLI()
+	// agent-CLI 本机分发（DESIGN.md §5 C2）：shim 与技能安装管理器；Startup
+	// 默认安装见 app_agentcli_install.go。
+	app.constructAgentCLIInstall()
+	// 共用技能服务（扩展中心重构 spec §2.1）：~/.agents/skills ⇄
+	// skills-disabled 的枚举/启停/删除；前端门面在 app_sharedskills.go。
+	app.constructSharedSkills()
+	// 共用 MCP 服务（共用 MCP spec §2）：~/.agents/.mcp.json 登记 CRUD +
+	// 四引擎分发；前端门面在 app_sharedmcp.go。
+	app.constructSharedMcp()
+	// 共用插件市场服务：~/.agents/marketplaces 克隆管理 + 插件技能部署到
+	// ~/.agents/skills；前端门面在 app_sharedmarket.go。
+	app.constructSharedMarkets()
+	// Claude 订阅账号轮换（design §6.3/§7.2）：装配 1a 领域服务（Keychain 池
+	// 后端、canonical 原生适配器、MutationGate/Quiescence 生产实现）。启动
+	// 恢复在 Startup（§4.5 时序：池加载 → RecoverAtStartup → 开放受影响启动）。
+	app.claudeAccounts = newClaudeAccountsService(app)
 	// Remote 先以默认端口 8680 初始化；Startup 加载 Settings 后会同步持久化的端口。
 	// HostSummary 与 remote create 共用同一个 launchplan.Planner；当前五类
 	// desktop-equivalent builder 未接线，因此两条路径一致地 fail closed。
-	app.Remote = remote.NewServerWithSecurity(8680, app, log, mobileAssets,
+	app.Remote = remote.NewServerWithSecurity(8680, app.remoteAdapter(), log, mobileAssets,
 		remote.NewProductionSecurityOptions(configDir, app.buildRemoteHostSummary))
 	// 方案 P：注入用户主目录，供 List 回填已退出 claudecode 会话的标题（直读历史 jsonl）。
 	// 获取失败时记日志但不阻塞启动（标题功能降级，不影响会话启动主流程）。
@@ -587,10 +575,10 @@ func NewApp(mobileAssets embed.FS) *App {
 			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（配置不可读）", err.Error())
 			return
 		}
-		cw := 0 // 无存活预设 → 清除覆写（恢复 Pi 内置目录窗口）
+		cw, maxTokens := 0, 0 // 无存活预设 → 清除窗口与输出覆写
 		for _, p := range presets {
 			if p.Provider == trigger.Provider && p.Model == trigger.Model {
-				cw = p.ContextWindow
+				cw, maxTokens = p.ContextWindow, p.MaxTokens
 				break // 全组对齐保证一致，取首个即权威值
 			}
 		}
@@ -599,11 +587,9 @@ func NewApp(mobileAssets embed.FS) *App {
 			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（canonical root 不可用）", dirErr.Error())
 			return
 		}
-		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw); err != nil {
+		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw, maxTokens); err != nil {
 			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
 		}
-		// P3-S0：配置保存事件 → WSL 供给标脏（只发布 revision，不调度；S1 接分发）。
-		app.markWSLSupplyDirty(wslsupply.DirtySourcePiLoginPresets)
 	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，
 	// GetAPIKey (string,error) → func(string)string，拿不到 key 时由调用方报错。
@@ -611,8 +597,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		return aiproxy.ProvidersFromConfig(app.Config.GetProviders())
 	})
 	app.Launcher.SetNetworkEnv(app.aiProxy.ApplyEnv)
-	app.Headroom.SetNetworkEnv(app.aiProxy.ApplyEnv)
-	app.CodexHeadroom.SetNetworkEnv(app.aiProxy.ApplyEnv)
 	app.GitAssist = gitassist.NewWithHTTPClient(app.Config, app.Settings, func(provider string) string {
 		key, err := app.Secrets.GetAPIKey(provider)
 		if err != nil || key == "" {
@@ -620,15 +604,6 @@ func NewApp(mobileAssets embed.FS) *App {
 		}
 		return key
 	}, app.aiProxyHTTPClient())
-	// Inject the headroom stopper so CleanHeadroom terminates BOTH headroom
-	// proxy child processes (claude 8787 + codex-global 8788) before the shared
-	// venv directory is removed. Required on Windows where a running
-	// headroom.exe inside the venv is locked and os.RemoveAll fails. When the
-	// codex-global switch was on, the stopper also clears the openai_base_url
-	// marker block and persistence so no dead config points at the removed
-	// proxy. The callback is best-effort: CleanHeadroom ignores its error.
-	// Wired after `app` exists so the closure can reference both services.
-	envCheckSvc.SetHeadroomStopper(app.stopAllHeadroomForUninstall)
 
 	// fd/ripgrep 搜索工具安装回调（install_wsl_search_tools 修复动作）：把
 	// wslsetup.InstallSearchTools 的结果适配成 envcheck.InstallResult 形状。
@@ -640,6 +615,10 @@ func NewApp(mobileAssets embed.FS) *App {
 		return &envcheck.InstallResult{Success: res.Success, Message: res.Message, Error: res.Error}, err
 	})
 
+	// P2-C 安装/升级双侧联动：Windows 侧 install/update 成功后，同一操作内
+	// 同步 WSL 侧 CLI（门控/分派见 app_wsl_cli_sync.go）。
+	envCheckSvc.SetWSLCLISync(app.syncCLIToWSL)
+
 	// M3-A2: control runtime + shared-service coordinator. The PTY raw port and
 	// Wails context are injected at Startup (they require the Wails ctx). The
 	// arbiter/gate/projector are ready immediately; MarkReady is called in
@@ -649,7 +628,10 @@ func NewApp(mobileAssets embed.FS) *App {
 	// remote-webui-plane：run-scoped PTY 退出（remote v1 创建/重启会话的进程
 	// 退出径）先把 webui tracker 落 ended，再释放该 run 代的共享租约。桌面
 	// embedded 会话另有各自的退出 goroutine 调 Invalidate，此处幂等。
+	// claude Web 平面（design §5.3-4）：同 commit 点收掉进程内数据面 server
+	//（Stop + Invalidate，幂等；三处 commit 点全覆盖防 listener 泄漏，R9）。
 	app.control.Projector().SetRunTerminalCleanup(func(sessionID string, runEpoch uint64) {
+		app.stopClaudeWebPlane(sessionID)
 		if app.WebUI != nil {
 			app.WebUI.Invalidate(sessionID)
 		}
@@ -681,6 +663,10 @@ func NewApp(mobileAssets embed.FS) *App {
 				}
 				app.Log.Info("session", message, detail)
 			}
+			// 凭据 admission 计划接缝（design §6.3）：纯读计划携带凭据 admission
+			// 描述；池 blocked（needs-reconcile/损坏/未结事务）时计划构建失败，
+			// remote create/restart 的受影响入口同步关闭。
+			app.remotePlanner.(*appLaunchPlanner).claudeCredentialAdmission = app.claudeCredentialsPlanAdmission
 		}
 	}
 	app.sharedLeases = make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)
@@ -705,7 +691,9 @@ func NewApp(mobileAssets embed.FS) *App {
 	m2aAdapter.SetSessionAuthority(app.Sessions, app.processRegistry, app.remotePlanner)
 	// remote-webui-plane：v1 remove GC 完成后同步清理 webui tracker（对齐
 	// App.RemoveSession 的 removeWebUITracker commit 点），再释放共享租约。
+	// claude Web 平面（design §5.3-4）：同 commit 点收掉进程内数据面 server。
 	m2aAdapter.SetPostRemoveCleanup(func(sessionID string) {
+		app.stopClaudeWebPlane(sessionID)
 		if app.WebUI != nil {
 			app.WebUI.RemoveSession(sessionID)
 		}
@@ -714,21 +702,26 @@ func NewApp(mobileAssets embed.FS) *App {
 	// Production executor: applies typed Effects for remote create.
 	if _, ok := app.remotePlanner.(*appLaunchPlanner); ok {
 		exec := newAppLaunchExecutor(launchExecutorDeps{
-			pty:           app.Pty,
-			headroom:      app.Headroom,
-			codexHeadroom: app.CodexHeadroom,
-			sharedCoord:   app.sharedCoord,
-			debts:         app.compensationDebts,
-			configMu:      &app.providerSyncMu,
-			webui:         appWebUILaunchPlane{app: app},
-			wslSupply:     app.WSLSupply,
-			supplyLog:     wslsupplySupplyLog{log: log},
+			pty:            app.Pty,
+			sharedCoord:    app.sharedCoord,
+			debts:          app.compensationDebts,
+			configMu:       &app.providerSyncMu,
+			webui:          appWebUILaunchPlane{app: app},
+			claudeWebUI:    appClaudeWebUILaunchPlane{app: app},
+			claudePlaneLog: claudeWebUILogAdapter{log: log},
+			wslSupply:      app.WSLSupply,
+			supplyLog:      wslsupplySupplyLog{log: log},
 			openCodeLayerPrep: func(ctx context.Context, distro string, cfg map[string]any) (string, error) {
 				return app.prepareWSLOpenCodeLayer(distro, cfg)
 			},
 		})
 		m2aAdapter.SetLaunchExecutor(exec, app.sharedCoord)
 		m2aAdapter.SetSharedLeaseTransfer(app.prepareSharedLeaseTransfer, app.releaseSharedLeasesExact)
+		// 凭据计划新鲜度复核（design §6.3）：启动前代际变更 → 返回重新规划，
+		// 不带旧计划放行。
+		m2aAdapter.SetClaudeCredentialsPlanCheck(app.claudeCredentialsPlanCheck)
+		m2aAdapter.SetClaudeCredentialsAbsenceCheck(app.claudeCredentialsAbsenceCheck)
+		m2aAdapter.SetClaudeCredentialsFingerprint(app.claudeCredentialsFingerprint)
 		m2aAdapter.SetRestartPtyStart(func(sessionID string, spec any, runHandle any) (processcap.StartEvidence, error) {
 			resolved, ok := spec.(platform.ResolvedLaunchSpec)
 			if !ok {
@@ -771,33 +764,62 @@ func (p appWebUILaunchPlane) PrepareEnv() (int, string) {
 	return port, token
 }
 
-// RegisterSession 发布 per-session webui 探测 tracker（服务未接线时静默
-// 跳过，如测试构造）。
-func (p appWebUILaunchPlane) RegisterSession(sessionID string, pid, port int, token string) {
+// RegisterSessionWithWindow 发布 per-session webui 探测 tracker（服务未接线时
+// 静默跳过，如测试构造）。window<=0 取服务默认窗口；WSL 目标应传
+// webui.DefaultWSLProbingWindow（WSL+DrvFS 下 pi 扩展就绪实测送慢于默认窗口）。
+func (p appWebUILaunchPlane) RegisterSessionWithWindow(sessionID string, pid, port int, token string, window time.Duration) {
 	if p.app.WebUI != nil {
-		p.app.WebUI.RegisterSession(sessionID, pid, port, token)
+		p.app.WebUI.RegisterSessionWithWindow(sessionID, pid, port, token, window)
 	}
 }
 
-// GetLaunchCompensationDebts returns the conservative, secret-free projection
-// of config compensation that could not be confirmed.
-func (a *App) GetLaunchCompensationDebts() []launchplan.CompensationDebt {
-	if a.compensationDebts == nil {
-		return nil
+// appClaudeWebUILaunchPlane 把 App 的 claude Web 平面接线适配为 launch
+// executor 的 claudeWebUILaunchPlane 窄接口（claude-webui design §5.4）：
+// remote v1 创建/重启的 embedded claude 会话在 PTY commit 后经此启动进程内
+// 数据面 server、记录 --session-id 映射并注册探测 tracker。全部方法 nil
+// 安全（服务未接线的测试构造零操作/返回错误，不 panic）。
+type appClaudeWebUILaunchPlane struct{ app *App }
+
+// Start 启动 per-session 回环数据面 server，InputPort 桥 t3 的双车道适配器
+// appClaudeInputPort（桌面车道 take-first / 设备平面车道无夺权，design
+// §5.3/§5.6）。ClaudeWebUI 未接线时返回错误（调用方仅记日志，会话照常）。
+func (p appClaudeWebUILaunchPlane) Start(cfg claudewebui.PlaneConfig) (int, error) {
+	if p.app == nil || p.app.ClaudeWebUI == nil {
+		return 0, errors.New("claude webui manager unavailable")
 	}
-	return a.compensationDebts.List()
+	return p.app.ClaudeWebUI.Start(cfg, appClaudeInputPort{a: p.app})
 }
 
-// RetryLaunchCompensationDebt retries one exact receipt/key owner.
-func (a *App) RetryLaunchCompensationDebt(owner string) error {
-	if a.compensationDebts == nil {
-		return fmt.Errorf("compensation debt registry is unavailable")
+// RecordClaudeSessionID 把 --session-id 注入值写入 session.Manager（与桌面
+// LaunchSession app.go:2793 同一落点：tracker 优先读锁定的 jsonl，列表直读
+// 历史 jsonl 的语义同步受益）。
+func (p appClaudeWebUILaunchPlane) RecordClaudeSessionID(sessionID, claudeSessionID string) {
+	if p.app == nil || p.app.Sessions == nil {
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := a.compensationDebts.Retry(ctx, owner)
-	return err
+	p.app.Sessions.SetClaudeSessionID(sessionID, claudeSessionID)
 }
+
+// RegisterTracker 发布 webui.Service 探测 tracker（pi 与 claudecode 共用
+// 同一状态机，design §4-D3；注册端口用 Start 返回的 boundPort）。
+func (p appClaudeWebUILaunchPlane) RegisterTracker(sessionID string, pid, port int, token string) {
+	if p.app == nil || p.app.WebUI == nil {
+		return
+	}
+	p.app.WebUI.RegisterSession(sessionID, pid, port, token)
+}
+
+// claudeWebUILogAdapter 把 logging.Service 适配为 launch executor 的
+// claudePlaneLog 最小日志接缝（nil 安全）。
+type claudeWebUILogAdapter struct{ log *logging.Service }
+
+func (a claudeWebUILogAdapter) Warn(scope, msg, detail string) {
+	if a.log != nil {
+		a.log.Warn(scope, msg, detail)
+	}
+}
+
+func (a *App) wailsContext() context.Context { return a.ctx }
 
 func (a *App) setPersistentLoadState(state persistentLoadState) {
 	a.persistenceMu.Lock()
@@ -821,43 +843,6 @@ func (a *App) skipPersistentSaveError(name string) error {
 		a.Log.Warn("app", msg)
 	}
 	return errors.New(msg)
-}
-
-// --- remote.AppInterface 实现 ---
-
-func (a *App) GetSettingsService() *settings.Service   { return a.Settings }
-func (a *App) GetPathsService() *paths.PathsService    { return a.Paths }
-func (a *App) GetConfigService() *config.ConfigService { return a.Config }
-
-// GetSessionWebUI 返回会话 webui 平面的缓存快照（remote.AppInterface 扩展，
-// remote-webui-plane 切片；供 remote server 的 /webui/{sid} 反向代理使用）。
-// WebUI 服务未接线（测试构造）时返回 unknown。
-func (a *App) GetSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
-	if a.WebUI == nil {
-		return remote.SessionWebUIInfo{State: string(webui.StateUnknown)}, false
-	}
-	return a.sessionWebUIInfo(sessionID, a.WebUI.GetWebUIStatus(sessionID)), true
-}
-
-// ProbeSessionWebUI 先执行一轮 webui 探测（与桌面端轮询同一状态机推进路径）
-// 再返回快照；remote v1 状态端点按此节奏轮询。
-func (a *App) ProbeSessionWebUI(sessionID string) (remote.SessionWebUIInfo, bool) {
-	if a.WebUI == nil {
-		return remote.SessionWebUIInfo{State: string(webui.StateUnknown)}, false
-	}
-	return a.sessionWebUIInfo(sessionID, a.WebUI.ProbeWebUI(sessionID)), true
-}
-
-// sessionWebUIInfo 把 webui.Status 投影为 remote 侧快照；仅 available 时
-// 附带端口与 capability token（token 供代理出向覆盖式注入，不下发日志）。
-func (a *App) sessionWebUIInfo(sessionID string, st webui.Status) remote.SessionWebUIInfo {
-	info := remote.SessionWebUIInfo{State: string(st.State)}
-	if st.State == webui.StateAvailable {
-		if port, token := a.WebUI.SessionEndpoint(sessionID); port > 0 {
-			info.Port, info.Token = port, token
-		}
-	}
-	return info
 }
 
 func (a *App) platformCapabilities() platform.PlatformCapabilities {
@@ -885,1144 +870,16 @@ func (a *App) GetPlatformCapabilities() platform.PlatformCapabilities {
 	return a.platformCapabilities()
 }
 
-// GetEnvCheckStatus 获取最近一次环境检测结果（可能为缓存）。
-func (a *App) GetEnvCheckStatus() *envcheck.OverallStatus {
-	return a.EnvCheck.GetCachedStatus()
-}
-
-// RunEnvCheck 手动触发环境检测。
-func (a *App) RunEnvCheck() (*envcheck.OverallStatus, error) {
-	return a.EnvCheck.CheckAll()
-}
-
-// CheckTool 手动触发单个 CLI 工具检测。
-func (a *App) CheckTool(tool string) (*envcheck.CheckStatus, error) {
-	t, err := parseCLITool(tool)
-	if err != nil {
-		return nil, fmt.Errorf("check tool: %w", err)
-	}
-	return a.EnvCheck.CheckOne(t)
-}
-
-// InstallTool 安装指定 CLI 工具（用户确认后调用）。
-func (a *App) InstallTool(tool string) (*envcheck.InstallResult, error) {
-	t, err := parseCLITool(tool)
-	if err != nil {
-		return nil, fmt.Errorf("install tool: %w", err)
-	}
-	return a.EnvCheck.Install(t)
-}
-
-// GetWSLCLIStatus 返回 WSL 内托管 CLI 的安装状态快照（发行版、原生 Node 版本、
-// 各 CLI 是否已原生安装）。非 Windows 或无可用发行版时 Available=false。
-func (a *App) GetWSLCLIStatus() wslsetup.Status {
-	return a.WSLSetup.GetStatus()
-}
-
-// InstallCLIToWSL 将指定 CLI（claude/opencode/codex）安装到 WSL 发行版内部：
-// 确保原生 Node 20 + 用户级 npm 前缀，再 npm i -g 对应包并包并校验。幂等：已原生安装
-// 则直接返回 AlreadyOK。Windows 有效。
-func (a *App) InstallCLIToWSL(tool string) (*wslsetup.InstallResult, error) {
-	a.Log.Info("wslsetup", "安装 CLI 到 WSL 请求", "tool="+tool)
-	return a.WSLSetup.InstallTool(tool)
-}
-
-// GetDockerWSLHealth 返回 Docker Desktop ↔ WSL 集成的健康快照（挂载字节数/状态、
-// 引擎就绪、工具发行版、进程计数、问题清单与自愈建议）。非 Windows 或未安装
-// Docker Desktop 时 Available=false。对应 2026-09-25 运维复盘 §1.2 环境面修复。
-func (a *App) GetDockerWSLHealth() dockerwsl.HealthReport {
-	return a.DockerWSL.GetHealth()
-}
-
-// SelfHealDockerWSLIntegration 执行实证自愈序列（全退 Desktop → 仅 terminate
-// docker-desktop 工具发行版 → 全新启动 → 等引擎就绪（300s 预算）→ 复核集成挂载）。
-// 同步返回步骤回执；Ubuntu 用户发行版与 CodeBox 会话零影响。
-func (a *App) SelfHealDockerWSLIntegration() dockerwsl.SelfHealReport {
-	a.Log.Info("dockerwsl", "Docker WSL 集成自愈请求")
-	return a.DockerWSL.SelfHeal(context.Background())
-}
-
-// UpdateTool 更新指定 CLI 工具。
-func (a *App) UpdateTool(tool string) (*envcheck.InstallResult, error) {
-	t, err := parseCLITool(tool)
-	if err != nil {
-		return nil, fmt.Errorf("update tool: %w", err)
-	}
-	return a.EnvCheck.Update(t)
-}
-
-// StartInstallToolAsync 异步安装指定 CLI 工具，立即返回操作状态。
-// 安装在后台 goroutine 中执行，不受前端页面切换影响。
-func (a *App) StartInstallToolAsync(tool string) (*envcheck.OperationState, error) {
-	t, err := parseCLITool(tool)
-	if err != nil {
-		return nil, fmt.Errorf("start install tool: %w", err)
-	}
-	return a.EnvCheck.StartInstallTool(t)
-}
-
-// StartUpdateToolAsync 异步更新指定 CLI 工具，立即返回操作状态。
-// 更新在后台 goroutine 中执行，不受前端页面切换影响。
-func (a *App) StartUpdateToolAsync(tool string) (*envcheck.OperationState, error) {
-	t, err := parseCLITool(tool)
-	if err != nil {
-		return nil, fmt.Errorf("start update tool: %w", err)
-	}
-	return a.EnvCheck.StartUpdateTool(t)
-}
-
-// GetEnvCheckOperationState 获取当前异步操作状态（无操作时返回 nil）。
-func (a *App) GetEnvCheckOperationState() *envcheck.OperationState {
-	return a.EnvCheck.GetOperationState()
-}
-
-// GetEnvCheckSnapshot 获取环境检测快照（包含工具状态和当前操作）。
-// 前端可轮询此接口以获取最新状态。
-func (a *App) GetEnvCheckSnapshot() *envcheck.EnvCheckSnapshot {
-	return a.EnvCheck.GetEnvCheckSnapshot()
-}
-
-// RunEnvFixAction 执行白名单化的环境修复动作。
-// 前端传入 FixActionRequest，后端验证 action 类型后执行对应修复。
-func (a *App) RunEnvFixAction(action string, tool string, extraPath string) (*envcheck.FixActionResult, error) {
-	req := envcheck.FixActionRequest{
-		Action:    envcheck.SolutionType(action),
-		Tool:      envcheck.CLITool(tool),
-		ExtraPath: extraPath,
-	}
-	result, err := a.EnvCheck.RunFixAction(req)
-	if err != nil {
-		return nil, fmt.Errorf("run fix action: %w", err)
-	}
-	// Best-effort: refresh check after successful fix
-	if result != nil && result.Success && result.Changed {
-		go func() {
-			_, _ = a.EnvCheck.CheckAll()
-		}()
-	}
-	return result, nil
-}
-
-// InstallClaudeWithMethod installs Claude Code using the specified method.
-// method must be "npm" or "native".
-func (a *App) InstallClaudeWithMethod(method string) (*envcheck.InstallResult, error) {
-	// Convert frontend method string to ClaudeInstallMethod
-	var m envcheck.ClaudeInstallMethod
-	switch method {
-	case "npm":
-		m = envcheck.ClaudeInstallNPM
-	case "native":
-		m = envcheck.ClaudeInstallNative
-	default:
-		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native)", method)
-	}
-
-	return a.EnvCheck.InstallClaudeCodeWithMethod(m)
-}
-
-// StartInstallClaudeWithMethodAsync asynchronously installs Claude Code using
-// the specified method and exposes progress through GetEnvCheckSnapshot.
-func (a *App) StartInstallClaudeWithMethodAsync(method string) (*envcheck.OperationState, error) {
-	var m envcheck.ClaudeInstallMethod
-	switch method {
-	case "npm":
-		m = envcheck.ClaudeInstallNPM
-	case "native":
-		m = envcheck.ClaudeInstallNative
-	default:
-		return nil, fmt.Errorf("不支持的安装方式: %s (支持: npm, native)", method)
-	}
-
-	return a.EnvCheck.StartInstallClaudeCodeWithMethod(m)
-}
-
-// CleanClaudeInstall removes an existing Claude Code installation.
-// method should be the current install method ("npm" or "native").
-func (a *App) CleanClaudeInstall(method string) (*envcheck.InstallResult, error) {
-	var m envcheck.InstallMethod
-	switch method {
-	case "npm":
-		m = envcheck.InstallMethodNPM
-	case "native":
-		m = envcheck.InstallMethodNative
-	default:
-		return nil, fmt.Errorf("不支持的安装方式: %s", method)
-	}
-
-	return a.EnvCheck.CleanClaudeCode(m)
-}
-
-// UninstallClaudeCode removes an existing Claude Code installation without reinstalling.
-// If method is empty, it auto-detects the current install method from the latest check.
-func (a *App) UninstallClaudeCode(method string) (*envcheck.InstallResult, error) {
-	targetMethod := method
-	if targetMethod == "" {
-		// Auto-detect from cached status
-		status := a.EnvCheck.GetCachedStatus()
-		if status == nil {
-			return nil, fmt.Errorf("尚未执行环境检测，无法确定安装方式")
-		}
-		claudeStatus, ok := status.Items[string(envcheck.ToolClaudeCode)]
-		if !ok || !claudeStatus.Installed {
-			return nil, fmt.Errorf("Claude Code 未安装，无需卸载")
-		}
-		targetMethod = string(claudeStatus.InstallMethod)
-	}
-
-	var m envcheck.InstallMethod
-	switch envcheck.InstallMethod(targetMethod) {
-	case envcheck.InstallMethodNPM:
-		m = envcheck.InstallMethodNPM
-	case envcheck.InstallMethodNative:
-		m = envcheck.InstallMethodNative
-	default:
-		return nil, fmt.Errorf("无法确定安装方式 (%s)，请手动指定", targetMethod)
-	}
-
-	result, err := a.EnvCheck.CleanClaudeCode(m)
-	if err != nil {
-		return result, err
-	}
-	return result, nil
-}
-
-// CheckClaudeConfig scans Claude Code configuration files and reports
-// which configuration items are present or missing.
-func (a *App) CheckClaudeConfig() (*envcheck.ClaudeConfigStatus, error) {
-	return a.EnvCheck.CheckClaudeConfig()
-}
-
-// FixClaudeConfig writes a single configuration item to Claude Code settings.
-// Only missing items are added; existing values are never overwritten.
-func (a *App) FixClaudeConfig(key string, value string, filePath string) (*envcheck.ConfigFixResult, error) {
-	// Defense-in-depth: validate file path at the binding layer too
-	if filePath != "" {
-		expanded := envcheck.ExpandTilde(filePath)
-		if !envcheck.IsConfigPathAllowed(expanded) {
-			return nil, fmt.Errorf("目标路径 %s 不在允许的配置文件列表中，拒绝写入", expanded)
-		}
-	}
-	return a.EnvCheck.FixClaudeConfig(envcheck.ConfigFixRequest{
-		Key:      key,
-		Value:    value,
-		FilePath: filePath,
-	})
-}
-
-// parseCLITool 将前端传入的字符串转为 CLITool 枚举。
-func parseCLITool(tool string) (envcheck.CLITool, error) {
-	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case "claude-code", "claude_code", "claude":
-		return envcheck.ToolClaudeCode, nil
-	case "opencode", "open-code", "open_code":
-		return envcheck.ToolOpenCode, nil
-	case "codex":
-		return envcheck.ToolCodex, nil
-	case "pi":
-		return envcheck.ToolPi, nil
-	case "omp":
-		return envcheck.ToolOmp, nil
-	case "headroom":
-		return envcheck.ToolHeadroom, nil
-	default:
-		return "", fmt.Errorf("unknown CLI tool: %s", tool)
-	}
-}
-
-// GetHeadroomSavings 查询 headroom 上下文压缩节省统计（压缩次数、节省 token 等）。
-// headroom 未安装或查询失败时返回 error，前端据此显示空态；绝不返回伪造零值报告冒充"有数据"。
-//
-// 注意：savings 读取的是 headroom 共享 ledger（~/.headroom/savings_events.jsonl），
-// claude 会话级（8787）与 codex 全局（8788）实例的节省数据均写入同一文件，靠
-// SavingsReport.ByClient（client 维度，如 "claude-code" / "codex"）区分来源。
-// 前端按 by_client 分项展示即可，后端无需为第二实例改动 savings 逻辑。
-func (a *App) GetHeadroomSavings() (*headroom.SavingsReport, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), headroom.SavingsTimeout)
-	defer cancel()
-	return a.Headroom.GetSavings(ctx)
-}
-
-// GetHeadroomPerfByClient 查询 headroom perf 按 client 聚合的性能统计
-// （请求数、平均 cache 命中率、累计节省/读取 token 数、节省百分比），供前端
-// codex 卡片突出 cache 命中率。实测（headroom 0.32.x）codex 经 headroom 的
-// 实际收益是 prefix cache 稳定（cache 命中率高 → cached token 计费约为新的 1/5），
-// 而非输入体积压缩（OpenAI responses 协议 tok_saved 多为 0）；故前端 codex 卡片
-// 应突出 AvgCacheHitPct，而非 tokens_saved。
-//
-// headroom 未安装或查询失败时返回 error，前端据此显示空态；绝不返回伪造数据冒充"有数据"。
-// 与 GetHeadroomSavings 一样读取共享 ledger（`headroom perf --format json --raw`），
-// 按 record.client 区分来源（codex / claude-code 等），后端无需为第二实例改动 perf 逻辑。
-func (a *App) GetHeadroomPerfByClient() ([]headroom.ClientPerfStat, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), headroom.PerfTimeout)
-	defer cancel()
-	return a.Headroom.GetPerfByClient(ctx)
-}
-
-// CodexGlobalHeadroomStatus is the frontend-facing snapshot of the codex-global
-// headroom toggle. It augments the persisted settings state with the live
-// running flag so the UI can render the actual proxy state in one round-trip.
-type CodexGlobalHeadroomStatus struct {
-	Enabled bool   `json:"enabled"`
-	Target  string `json:"target"`
-	Port    int    `json:"port"`
-	Running bool   `json:"running"`
-}
-
-// GetCodexGlobalHeadroom returns the persisted codex-global headroom toggle plus
-// the live running state of the second headroom instance (port 8788).
-func (a *App) GetCodexGlobalHeadroom() CodexGlobalHeadroomStatus {
-	state := a.Settings.GetCodexGlobalHeadroom()
-	running := false
-	if a.CodexHeadroom != nil {
-		running = a.CodexHeadroom.IsRunning()
-	}
-	return CodexGlobalHeadroomStatus{
-		Enabled: state.Enabled,
-		Target:  state.Target,
-		Port:    state.Port,
-		Running: running,
-	}
-}
-
-// SetCodexGlobalHeadroom toggles the codex-global headroom (independent 8788
-// instance with an OpenAI target). It is fully orthogonal to the claude
-// session-level headroom (a.Headroom, 8787): this method never starts, stops or
-// reconfigures the claude headroom.
-//
-// enabled=true:
-//   - Starts the second headroom instance (StartForOpenAI) if it is not already
-//     running. target falls back to codexGlobalHeadroomDefaultTarget when empty;
-//     port falls back to CodexGlobalHeadroomDefaultPort when <= 0.
-//   - Writes the openai_base_url marker block into ~/.codex/config.toml so codex
-//     routes its traffic through the local proxy (with backup + idempotency).
-//   - Persists the toggle so Startup can restore it on next launch.
-//
-// enabled=false:
-//   - Removes the openai_base_url marker block first (so codex stops routing
-//     through the proxy before the proxy goes away), then stops the instance.
-//   - Clears the persisted toggle.
-//
-// Returns the resulting status. Errors from the proxy start are returned, but
-// config/persistence cleanup on disable is best-effort: a failure to rewrite
-// config.toml is surfaced as an error so the user knows codex may still point at
-// a stopping proxy.
-func (a *App) SetCodexGlobalHeadroom(enabled bool, target string, port int) (CodexGlobalHeadroomStatus, error) {
-	if a.CodexHeadroom == nil {
-		return CodexGlobalHeadroomStatus{}, fmt.Errorf("codex global headroom service is not initialized")
-	}
-	if a.Settings == nil {
-		return CodexGlobalHeadroomStatus{}, fmt.Errorf("settings service is not initialized")
-	}
-
-	// Serialize against the startup restore goroutine: the Start/Stop +
-	// config-sync + persistence sequence must be atomic with respect to
-	// restoreCodexGlobalHeadroomOnStartup, otherwise a UI disable racing the
-	// restore can leave Enabled=false with the proxy running and config.toml
-	// still carrying the marker block.
-	a.codexGlobalMu.Lock()
-	defer a.codexGlobalMu.Unlock()
-
-	// M-006: the Codex global headroom is a shared singleton. Acquire/release is
-	// session-scoped (Codex launches hold a lease while the toggle is on); the
-	// toggle itself is a Start/Stop mutation that MUST consult the coordinator so
-	// it cannot reconfigure/stop the singleton out from under active sessions.
-	mutation := remote.MutationStartDifferentConfig
-	if !enabled {
-		mutation = remote.MutationStop
-	}
-	admission, err := a.acquireSharedMutation(remote.SharedServiceCodexHeadroom, mutation)
-	if err != nil {
-		return a.GetCodexGlobalHeadroom(), err
-	}
-	defer a.sharedCoord.ReleaseMutationAdmission(admission)
-
-	if enabled {
-		target = strings.TrimSpace(target)
-		if target == "" {
-			target = codexGlobalHeadroomDefaultTarget
-		}
-		if port <= 0 {
-			port = CodexGlobalHeadroomDefaultPort
-		}
-
-		// Start the proxy first; if it fails, do not rewrite config.toml to point
-		// codex at a dead proxy. StartForOpenAI is a no-op when already running
-		// on this instance.
-		if !a.CodexHeadroom.IsRunning() {
-			if err := a.CodexHeadroom.StartForOpenAI(target); err != nil {
-				return CodexGlobalHeadroomStatus{}, fmt.Errorf("start codex global headroom: %w", err)
-			}
-			a.Log.Info("headroom", "codex 全局上下文压缩已启用",
-				fmt.Sprintf("codex → headroom:127.0.0.1:%d → %s", a.CodexHeadroom.GetPort(), target))
-		}
-
-		if err := syncCodexGlobalHeadroomConfig(true, port); err != nil {
-			a.Log.Warn("headroom", "写入 codex 全局 openai_base_url 失败", err.Error())
-			return CodexGlobalHeadroomStatus{}, fmt.Errorf("write codex openai_base_url: %w", err)
-		}
-
-		if err := a.Settings.SetCodexGlobalHeadroom(true, target, port); err != nil {
-			a.Log.Warn("headroom", "持久化 codex 全局 headroom 开关失败", err.Error())
-			return CodexGlobalHeadroomStatus{}, fmt.Errorf("persist codex global headroom: %w", err)
-		}
-		return a.GetCodexGlobalHeadroom(), nil
-	}
-
-	// Disable path: remove the config marker first (so codex stops targeting the
-	// proxy before it stops), then stop the proxy, then clear persistence.
-	if err := syncCodexGlobalHeadroomConfig(false, 0); err != nil {
-		a.Log.Warn("headroom", "移除 codex 全局 openai_base_url 失败", err.Error())
-		return CodexGlobalHeadroomStatus{}, fmt.Errorf("remove codex openai_base_url: %w", err)
-	}
-	if a.CodexHeadroom.IsRunning() {
-		if err := a.CodexHeadroom.Stop(); err != nil {
-			a.Log.Warn("headroom", "停止 codex 全局 headroom 失败", err.Error())
-		}
-	}
-	if err := a.Settings.SetCodexGlobalHeadroom(false, "", 0); err != nil {
-		a.Log.Warn("headroom", "清除 codex 全局 headroom 持久化失败", err.Error())
-		return CodexGlobalHeadroomStatus{}, fmt.Errorf("clear codex global headroom persistence: %w", err)
-	}
-	return a.GetCodexGlobalHeadroom(), nil
-}
-
-// restoreCodexGlobalHeadroomOnStartup re-establishes the codex-global headroom
-// proxy (8788) when it was enabled at last shutdown. It must run AFTER
-// Settings.Load has completed (Startup calls it asynchronously, well after the
-// synchronous settings load). Every failure is best-effort: a broken proxy or
-// config write only downgrades compression, it never blocks app startup or
-// affects the claude session headroom. The marker block is re-synced so a config
-// rewrite by another tool (or a prior crash mid-write) cannot leave codex
-// pointing at the wrong URL.
-func (a *App) restoreCodexGlobalHeadroomOnStartup() {
-	if a.Settings == nil || a.CodexHeadroom == nil {
-		return
-	}
-	if a.isExternalCleanupRecoveryBlocked() {
-		if a.Log != nil {
-			a.Log.Warn("headroom", "跳过 codex 全局 headroom 恢复：外部进程清理登记未完成")
-		}
-		return
-	}
-	// Hold codexGlobalMu across the read + orchestration so a concurrent UI
-	// SetCodexGlobalHeadroom(false) cannot slip in between the Enabled read and
-	// the StartForOpenAI / config-sync below (which would otherwise re-enable a
-	// proxy the user just disabled). SetCodexGlobalHeadroom takes the same lock,
-	// so the two paths are fully serialized.
-	a.codexGlobalMu.Lock()
-	defer a.codexGlobalMu.Unlock()
-
-	state := a.Settings.GetCodexGlobalHeadroom()
-	if !state.Enabled {
-		return
-	}
-	target := strings.TrimSpace(state.Target)
-	if target == "" {
-		target = codexGlobalHeadroomDefaultTarget
-	}
-	port := state.Port
-	if port <= 0 {
-		port = CodexGlobalHeadroomDefaultPort
-	}
-
-	// R5-002: startup restoration is a real Headroom Start mutation too. Keep an
-	// exact coordinator token live across Start + config sync + persistence so a
-	// concurrent uninstall drain cannot observe an empty dependency set midway.
-	if a.sharedCoord != nil {
-		admission, err := a.sharedCoord.AcquireMutationAdmission(remote.SharedServiceCodexHeadroom, remote.MutationStartDifferentConfig)
-		if err != nil {
-			a.Log.Warn("headroom", "恢复 codex 全局上下文压缩被共享服务门禁拒绝", err.Error())
-			return
-		}
-		defer a.sharedCoord.ReleaseMutationAdmission(admission)
-	}
-
-	if !a.CodexHeadroom.IsRunning() {
-		if err := a.CodexHeadroom.StartForOpenAI(target); err != nil {
-			a.Log.Warn("headroom", "启动时恢复 codex 全局 headroom 失败", err.Error())
-			return
-		}
-	}
-	if err := syncCodexGlobalHeadroomConfig(true, port); err != nil {
-		a.Log.Warn("headroom", "启动时校验 codex 全局 openai_base_url 失败", err.Error())
-		return
-	}
-	a.Log.Info("headroom", "codex 全局 headroom 已在启动时恢复",
-		fmt.Sprintf("port=%d target=%s", port, target))
-}
-
-func (a *App) GetSession(sessionID string) (session.SessionInfo, error) {
-	for _, s := range a.GetSessions() {
-		if s.ID == sessionID {
-			return s, nil
-		}
-	}
-	return session.SessionInfo{}, fmt.Errorf("session not found: %s", sessionID)
-}
-
-// GetRemoteToken 返回远程服务器 Bearer Token，供前端展示给用户用于移动端连接。
-func (a *App) GetRemoteToken() string {
-	return a.Remote.GetToken()
-}
-
-// ListLocalLanAddresses 枚举本机局域网 IPv4 候选地址（P3-B R1）：私网优先、
-// 含网卡名与掩码长度；过滤回环；疑似 VPN/虚拟网卡仅标注不硬滤。供配对卡
-// addressRequired 兜底单选与自检卡展示。枚举失败返回错误（前端回退手动输入）。
-func (a *App) ListLocalLanAddresses() ([]remote.LanAddressInfo, error) {
-	return remote.ListLocalLanAddresses()
-}
-
-// GetRemoteStatus 返回远程服务器状态信息。
-func (a *App) GetRemoteStatus() map[string]any {
-	return map[string]any{
-		"host":    a.Remote.GetHost(),
-		"port":    a.Remote.GetPort(),
-		"token":   a.Remote.GetToken(),
-		"running": a.Remote.IsRunning(),
-		// enabled（持久化意图）与 running（实际监听）分离透出：Startup 恢复失败
-		// 时形成 enabled=true / running=false 的可观察漂移窗口（P3-B③），配套
-		// lastStartError 给出原因；hostSummaryDegraded 为 v1 HostSummary 缓存
-		// 最近错误态（P3-B R2，非 wire 契约字段，供自检卡降级横幅）。
-		"enabled":             a.Settings.GetRemoteEnabled(),
-		"lastStartError":      a.getLastRemoteStartError(),
-		"hostSummaryDegraded": a.Remote.HostSummaryDegraded(),
-	}
-}
-
-// SessionControlHoldView 是桌面「控制权管理」卡可消费的会话控制权持有投影
-// （frontend 直接消费的 JSON 形状；不透出内部类型）。仅包含 device holder 的
-// 展示字段，不含任何凭据或连接内部标识。
-type SessionControlHoldView struct {
-	SessionID  string `json:"sessionID"`
-	DeviceID   string `json:"deviceID"`
-	DeviceName string `json:"deviceName"`
-	InGrace    bool   `json:"inGrace"`
-}
-
-// GetSessionControlHolds 返回当前由远程设备持有控制权的会话列表（桌面管理
-// 视图）。安全边界：仅枚举 device holder（无人持有/桌面持有不列——管理目标
-// 是「设备持有」）；只读，不改变任何控制权状态，不触碰远程服务开关。control
-// 运行时未就绪（启动早期/已关闭）时自然返回空列表——彼时不存在设备持有。
-func (a *App) GetSessionControlHolds() []SessionControlHoldView {
-	if a.control == nil || !a.control.IsReady() {
-		return []SessionControlHoldView{}
-	}
-	holds := a.control.Gate().ListSessionHolds()
-	views := make([]SessionControlHoldView, 0, len(holds))
-	for _, h := range holds {
-		views = append(views, SessionControlHoldView{
-			SessionID:  string(h.SessionID),
-			DeviceID:   string(h.DeviceID),
-			DeviceName: h.DeviceName,
-			InGrace:    h.InGrace,
-		})
-	}
-	return views
-}
-
-// ReleaseSessionControl 桌面端主动收回指定会话的远程设备控制权（桌面根
-// 权威：物理主机所有者收回权天然正当）。语义：进程内原子执行
-// TakeDesktop(Wails 权威) → ReleaseDesktop 组合链——设备持有者先收到
-// takeover 事件（手机端提示「桌面端取得控制权」）随即 released 事件，终态
-// 为无人持有（不停留 desktop holder，设备不会被永久 409），设备随后可重新
-// 接管。安全边界：仅桌面本地 Wails 绑定调用面，不接受远程输入；无人持有时
-// 幂等成功；会话不存在时返回明确提示。
-func (a *App) ReleaseSessionControl(sessionID string) error {
-	if a.control == nil || !a.control.IsReady() {
-		return remote.ErrControlNotReady
-	}
-	if err := a.control.Gate().ForceReleaseControl(contract.SessionID(sessionID)); err != nil {
-		// gate 透传层把 *ControlGateError 解引用为值类型返回，这里用值目标
-		// 精确匹配本调用链，避免把「会话不存在」误报成笼统失败。
-		var deny remote.ControlGateError
-		if errors.As(err, &deny) && deny.Kind == remote.DenySessionNotFound {
-			return fmt.Errorf("会话不存在或已结束：%s", sessionID)
-		}
-		return fmt.Errorf("收回控制权失败：%v", err)
-	}
-	return nil
-}
-
-// getLastRemoteStartError 返回最近一次 Startup 恢复路径的 Start 失败文本
-// （空串表示无失败记录）。只读，不触发任何重试。
-func (a *App) getLastRemoteStartError() string {
-	a.lastRemoteStartErrMu.Lock()
-	defer a.lastRemoteStartErrMu.Unlock()
-	return a.lastRemoteStartError
-}
-
-// setLastRemoteStartError 记录 Startup 恢复路径的最终 Start 失败（重试耗尽后）。
-func (a *App) setLastRemoteStartError(err error) {
-	msg := ""
-	if err != nil {
-		msg = err.Error()
-	}
-	a.lastRemoteStartErrMu.Lock()
-	a.lastRemoteStartError = msg
-	a.lastRemoteStartErrMu.Unlock()
-}
-
-// clearLastRemoteStartError 在任何一次成功 Start 后清空历史失败记录，避免
-// 陈旧错误持续点亮自检卡端口横幅。
-func (a *App) clearLastRemoteStartError() {
-	a.lastRemoteStartErrMu.Lock()
-	a.lastRemoteStartError = ""
-	a.lastRemoteStartErrMu.Unlock()
-}
-
-// remoteStartRetryDelays bounds the Startup-restore self-heal (P3-B③): after
-// the initial restore Start failed inside applyRemoteGateResult, a transient
-// listen failure — e.g. the configured port still held by a previous instance
-// mid-shutdown — is retried with a short fixed backoff via
-// remote.Server.StartWithRetry. Small by design: persistent conflicts (real
-// port occupancy) surface as an observable state (startup warning +
-// GetRemoteStatus.lastStartError) instead of blocking boot. Fixed production
-// values; the retry engine itself is schedule-parameterized and unit-tested
-// in internal/remote (StartWithRetry).
-var remoteStartRetryDelays = []time.Duration{500 * time.Millisecond, 1 * time.Second}
-
-// healRemoteStartupRestore runs the bounded Startup-restore self-heal and the
-// enabled/running drift alignment (P3-B③; 素材B ⑥)。 MUST be called by Startup
-// AFTER applyRemoteGateResult — the initial restore Start (and its
-// fail-closed gate) happens there; this step only retries an actually-failed
-// start and records the observable outcome:
-//
-//   - retry succeeds → running=true, drift self-healed, stale error cleared;
-//   - retries exhausted → enabled stays persisted-on (silently flipping the
-//     user's intent off would stop the next boot from even trying); instead
-//     the drift becomes observable: fixed startup warning + GetRemoteStatus
-//     lastStartError/enabled/running so the self-check card can classify it
-//     (e.g. port conflict) instead of the old log-only Warn.
-//
-// The post-load allowStart is reconstructed from the device-store ready latch:
-// applyRemoteGateResult may have latched allowStart=false on a
-// LoadSecurityState failure invisible from here — a not-ready store means
-// exactly that, and Start is never retried across a failed security load
-// (Major-01 fail-closed).
-func (a *App) healRemoteStartupRestore(ctx context.Context, remoteEnabled, startAllowed bool) {
-	if !remoteEnabled || !startAllowed {
-		return
-	}
-	if a.Remote.IsRunning() {
-		return // 初次恢复启动已成功，无漂移可自愈
-	}
-	if !a.Remote.GetSecurityHealth().SecurityReady {
-		return // 安全状态未就绪（load 失败/被 gate 拦截）：绝不越过 fail-closed 重试
-	}
-	if err := a.Remote.StartWithRetry(ctx, remoteStartRetryDelays, nil); err != nil {
-		a.setLastRemoteStartError(err)
-		a.addStartupWarning(fmt.Sprintf(
-			"远程服务自启动失败（含 %d 次重试）：远程开关保持开启，下次启动或手动开启时会重试；若端口被占用，请到设置 › 远程访问更换监听端口。（原因：%s）",
-			len(remoteStartRetryDelays), err.Error()))
-		a.Log.Warn("app", "远程服务器启动失败（不影响主功能；已记录到启动警告与远程状态供自检透出）", err.Error())
-	} else {
-		a.clearLastRemoteStartError()
-		a.Log.Info("app", "远程服务器启动自愈成功",
-			fmt.Sprintf("retries=%d", len(remoteStartRetryDelays)))
-	}
-}
-
-// GetRemoteWebUIStatus 返回桌面入口 Web UI 的可打开状态。
-func (a *App) GetRemoteWebUIStatus() RemoteWebUIStatusResult {
-	status := RemoteWebUIStatusResult{
-		Port:    a.Remote.GetPort(),
-		Running: a.Remote.IsRunning(),
-		// 在所有早退分支之前填充：自检卡无论 WebRoot 是否就绪都需要该降级态。
-		HostSummaryDegraded: a.Remote.HostSummaryDegraded(),
-	}
-
-	if a.ctx == nil {
-		status.Reason = "app context is not ready"
-		return status
-	}
-
-	webRoot, configured, exists := a.Remote.GetMobileWebRootStatus()
-	embeddedAvailable := a.Remote.HasEmbeddedMobileWeb()
-
-	status.MobileWebRoot = webRoot
-	status.MobileWebRootConfigured = configured
-	status.MobileWebRootExists = exists
-	status.MobileWebEmbedded = embeddedAvailable
-	status.MobileWebAvailable = exists || embeddedAvailable
-
-	if !configured && !embeddedAvailable {
-		status.Reason = "mobile web root is not configured"
-		return status
-	}
-
-	if configured && !exists && !embeddedAvailable {
-		status.Reason = "mobile web root index.html not found"
-		return status
-	}
-
-	status.URL = a.Remote.BuildDesktopLaunchURL()
-	if status.URL == "" {
-		// 随机源失败 → 未能签发 launch grant：失败闭合，不打开浏览器。
-		status.Openable = false
-		status.Reason = "failed to issue launch grant"
-		return status
-	}
-	status.Openable = true
-	return status
-}
-
-// ValidateExternalURL 校验外部链接可安全交给系统浏览器打开：仅 http/https 且带 host。
-// 独立于 App 方法便于单测（web 平面 amagi:open-url 宿主桥的 Go 侧白名单）。
-func ValidateExternalURL(rawURL string) error {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("invalid url: 仅支持带主机的 http/https 链接")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("unsupported scheme %q: 仅支持 http/https", u.Scheme)
-	}
-	return nil
-}
-
-// OpenExternalURL 在系统默认浏览器打开外部链接（Web 平面 iframe 内 amagi:open-url
-// 宿主桥的消费端：sandbox 无 allow-popups，页面内 target=_blank 被阻断，改由宿主
-// 代开。前端已做 token 凭证 + http(s) 白名单校验，此处二次白名单纵深防御）。
-func (a *App) OpenExternalURL(rawURL string) error {
-	if err := ValidateExternalURL(rawURL); err != nil {
-		return err
-	}
-	wailsRuntime.BrowserOpenURL(a.ctx, strings.TrimSpace(rawURL))
-	return nil
-}
-
-// OpenRemoteWebUI 确保远程服务可用后，在默认浏览器中打开移动端 Web UI。
-func (a *App) OpenRemoteWebUI() (OpenRemoteWebUIResult, error) {
-	a.remoteLifecycleMu.Lock()
-	defer a.remoteLifecycleMu.Unlock()
-	status := a.GetRemoteWebUIStatus()
-	if !status.Openable {
-		if status.Reason == "" {
-			status.Reason = "remote web ui is not available"
-		}
-		return OpenRemoteWebUIResult{}, errors.New(status.Reason)
-	}
-
-	if !a.Remote.IsRunning() {
-		if err := a.Remote.Start(a.ctx); err != nil {
-			a.Log.Error("remote", "打开 Web UI 前启动远程服务器失败", err.Error())
-			return OpenRemoteWebUIResult{}, fmt.Errorf("start remote server before opening web ui: %w", err)
-		}
-		// Persist enabled=true. If persistence fails, STOP the just-started server and
-		// return an error (R4-Minor: symmetric with Toggle(true)'s failure path) so
-		// we never leave a running server whose enabled state did not persist — that
-		// would form a running=true / settings=false / disk=false drift.
-		if err := a.Settings.SetRemoteEnabled(true); err != nil {
-			a.Remote.Stop()
-			a.Log.Error("remote", "远程服务已启动，但无法保存启用状态，已停止服务", err.Error())
-			return OpenRemoteWebUIResult{}, fmt.Errorf("persist remote enabled state: %w", err)
-		}
-	}
-
-	// Reuse the URL/grant already computed in GetRemoteWebUIStatus; do not issue
-	// a second launch grant.
-	launchURL := status.URL
-	if launchURL == "" {
-		return OpenRemoteWebUIResult{}, errors.New(status.Reason)
-	}
-	wailsRuntime.BrowserOpenURL(a.ctx, launchURL)
-
-	a.Log.Info("remote", "已打开桌面 Web UI", fmt.Sprintf("host=%s port=%d", a.Remote.GetHost(), a.Remote.GetPort()))
-	return OpenRemoteWebUIResult{
-		URL:     launchURL,
-		Port:    a.Remote.GetPort(),
-		Running: a.Remote.IsRunning(),
-	}, nil
-}
-
-// RegenerateRemoteToken 重新生成远程 API Token，返回新 Token。
-func (a *App) RegenerateRemoteToken() string {
-	token := a.Remote.RegenerateToken()
-	a.Log.Info("remote", "Token 已重新生成")
-	return token
-}
-
-// RemoteSecurityEventRecord is the sanitized Wails-facing projection of one
-// durable security event (no raw line/path/secret).
-type RemoteSecurityEventRecord = remote.SecurityEventRecord
-
-// ListRemoteSecurityEvents returns the sanitized newest-first durable security
-// event log. limit 0→100, valid 1..500; invalid limits or a not-open/degraded
-// sink return an error.
-func (a *App) ListRemoteSecurityEvents(limit int) ([]RemoteSecurityEventRecord, error) {
-	return a.Remote.ListRemoteSecurityEvents(limit)
-}
-
-// buildRemoteHostSummary is the private HostSummary provider. It probes every
-// known CLI through the same Planner instance consumed by remote create; a
-// missing planner is fail-closed rather than a binary-only availability fallback.
-func (a *App) buildRemoteHostSummary() (contract.HostSummary, error) {
-	planner := a.remotePlanner
-	if planner == nil {
-		planner = launchplan.NewFailClosedPlanner()
-	}
-	availability := make([]contract.CLIAvailability, 0, len(contract.KnownCLITypes))
-	for _, cliType := range contract.KnownCLITypes {
-		item, _ := planner.Probe(context.Background(), cliType)
-		item.CLIType = cliType
-		availability = append(availability, item)
-	}
-	return contract.HostSummary{
-		APIVersion: contract.APIVersionV1, ServerVersion: resolveAppVersion(),
-		CLIAvailability: availability, LaunchSettings: a.buildRemoteLaunchSettings(),
-	}, nil
-}
-
-// buildRemoteLaunchSettings returns the complete authorized-device launch
-// form without exposing provider URLs, credentials or environment values.
-func (a *App) buildRemoteLaunchSettings() *contract.LaunchSettings {
-	settingsSurface := &contract.LaunchSettings{
-		Workdirs: []contract.LaunchPathOption{}, Shells: []contract.LaunchPathOption{},
-		CLIs: make([]contract.CLILaunchSettings, 0, len(contract.KnownCLITypes)),
-	}
-	seenWorkdirs := map[string]bool{}
-	addWorkdir := func(path, label string) {
-		path = strings.TrimSpace(path)
-		if path == "" || seenWorkdirs[path] {
-			return
-		}
-		label = strings.TrimSpace(label)
-		if label == "" {
-			label = filepath.Base(path)
-		}
-		settingsSurface.Workdirs = append(settingsSurface.Workdirs, contract.LaunchPathOption{Path: path, Label: label})
-		seenWorkdirs[path] = true
-	}
-	if a.Paths != nil {
-		addWorkdir(a.Paths.GetDefaultPath(), "默认目录")
-		for _, item := range a.Paths.GetPaths() {
-			addWorkdir(item.Path, item.Label)
-		}
-	}
-	if a.Settings != nil {
-		for _, item := range a.Settings.GetSettings().SavedWorkDirs {
-			addWorkdir(item.Path, item.Label)
-		}
-		seenShells := map[string]bool{}
-		addShell := func(path, label string) {
-			path = strings.TrimSpace(path)
-			if path == "" || seenShells[path] {
-				return
-			}
-			label = strings.TrimSpace(label)
-			if label == "" {
-				label = filepath.Base(path)
-			}
-			settingsSurface.Shells = append(settingsSurface.Shells, contract.LaunchPathOption{Path: path, Label: label})
-			seenShells[path] = true
-		}
-		for _, item := range a.Settings.GetShellPaths() {
-			addShell(item.Path, item.Label)
-		}
-		dashboard := a.Settings.GetDashboardDefaults()
-		for _, item := range []struct{ path, label string }{
-			{dashboard.ClaudeShell, "Claude Code 默认 Shell"},
-			{dashboard.OpenCodeShell, "OpenCode 默认 Shell"},
-			{dashboard.CodexShell, "Codex 默认 Shell"},
-			{dashboard.PiShell, "Pi 默认 Shell"},
-			{dashboard.OmpShell, "Oh My Pi 默认 Shell"},
-		} {
-			addShell(item.path, item.label)
-		}
-	}
-
-	providers := map[string]config.Provider{}
-	if a.Config != nil {
-		providers = a.Config.GetProviders()
-	}
-	providerKeys := make([]string, 0, len(providers))
-	for key := range providers {
-		providerKeys = append(providerKeys, key)
-	}
-	sort.Strings(providerKeys)
-	defaults := map[string]settings.RemoteLaunchDefaultV1{}
-	if a.Settings != nil {
-		defaults = a.Settings.GetRemoteLaunchDefaultsV1()
-	}
-	presetFormat := map[contract.CLIType]string{
-		contract.CLITypeClaudeCode: string(config.TerminalPresetAnthropic),
-		contract.CLITypeCodex:      string(config.TerminalPresetOpenAI),
-	}
-	// Pi/Omp opt-in 扩面（HarnessSync）：openai 桶（pi/omp 原生桶）全量之外，
-	// anthropic 桶中带 HarnessSync 标记的预设附加在选择面末尾（撞 key 时
-	// openai 先注册胜出）；这些标记预设所属的 provider 即使非 OpenAI 兼容也
-	// 进入 Pi/Omp Providers 下拉——用户已显式标记其预设供 pi/omp 消费。
-	// 两 CLI 共享同一份派生数据，先在循环外算好（marked provider 集合 +
-	// 合并预设项），循环内只消费。
-	markedHarnessSyncProviders := map[string]bool{}
-	piOmpPresetOptions := []contract.LaunchPresetOption{}
-	if a.Config != nil {
-		seenPiOmpPresets := map[string]bool{}
-		if presets, err := a.Config.GetMergedTerminalPresets(string(config.TerminalPresetOpenAI)); err == nil {
-			for _, preset := range presets {
-				piOmpPresetOptions = append(piOmpPresetOptions, contract.LaunchPresetOption{
-					Ref: preset.Key, Label: preset.Label, ProviderRef: preset.Provider, ModelRef: preset.Model,
-				})
-				seenPiOmpPresets[preset.Key] = true
-			}
-		}
-		if presets, err := a.Config.GetMergedTerminalPresets(string(config.TerminalPresetAnthropic)); err == nil {
-			for _, preset := range presets {
-				if !preset.HarnessSync {
-					continue
-				}
-				markedHarnessSyncProviders[preset.Provider] = true
-				if seenPiOmpPresets[preset.Key] {
-					continue
-				}
-				piOmpPresetOptions = append(piOmpPresetOptions, contract.LaunchPresetOption{
-					Ref: preset.Key, Label: preset.Label, ProviderRef: preset.Provider, ModelRef: preset.Model,
-				})
-				seenPiOmpPresets[preset.Key] = true
-			}
-		}
-	}
-	for _, cliType := range contract.KnownCLITypes {
-		entry := contract.CLILaunchSettings{
-			CLIType: cliType, Providers: []contract.LaunchProviderOption{}, Presets: []contract.LaunchPresetOption{},
-		}
-		for _, key := range providerKeys {
-			provider := providers[key]
-			if cliType == contract.CLITypeClaudeCode && !provider.IsAnthropicCompatible() {
-				continue
-			}
-			if cliType == contract.CLITypeCodex && !provider.IsOpenAICompatible() {
-				continue
-			}
-			// Pi/Omp：OpenAI 兼容全集 + anthropic 桶有 HarnessSync 标记预设的
-			// provider（opt-in 扩面，其余非 OpenAI 兼容 provider 仍排除）。
-			if (cliType == contract.CLITypePi || cliType == contract.CLITypeOmp) &&
-				!provider.IsOpenAICompatible() && !markedHarnessSyncProviders[key] {
-				continue
-			}
-			entry.Providers = append(entry.Providers, contract.LaunchProviderOption{
-				Ref: key, Label: key, Kind: provider.EffectiveType(), DefaultModel: provider.DefaultModel,
-			})
-		}
-		if a.Config != nil {
-			seenPresets := map[string]bool{}
-			if cliType == contract.CLITypeOpenCode {
-				openCodePresets := a.Config.GetOpenCodePresets()
-				keys := make([]string, 0, len(openCodePresets))
-				for key := range openCodePresets {
-					keys = append(keys, key)
-				}
-				sort.Strings(keys)
-				for _, key := range keys {
-					label := strings.TrimSpace(openCodePresets[key].Name)
-					if label == "" {
-						label = key
-					}
-					entry.Presets = append(entry.Presets, contract.LaunchPresetOption{Ref: key, Label: label})
-					seenPresets[key] = true
-				}
-			}
-			format, usesCommonPresets := presetFormat[cliType]
-			if usesCommonPresets {
-				presets, err := a.Config.GetMergedTerminalPresets(format)
-				if err == nil {
-					for _, preset := range presets {
-						if seenPresets[preset.Key] {
-							continue
-						}
-						entry.Presets = append(entry.Presets, contract.LaunchPresetOption{
-							Ref: preset.Key, Label: preset.Label, ProviderRef: preset.Provider, ModelRef: preset.Model,
-						})
-						seenPresets[preset.Key] = true
-					}
-				}
-			} else if cliType == contract.CLITypePi || cliType == contract.CLITypeOmp {
-				// Pi/Omp 预设面：openai 桶全量 + anthropic 桶 HarnessSync 标记项
-				// 附加在后（piOmpPresetOptions 已在循环外算好；seenPresets 去重
-				// 保留，撞 key 时先注册者胜出）。
-				for _, preset := range piOmpPresetOptions {
-					if seenPresets[preset.Ref] {
-						continue
-					}
-					entry.Presets = append(entry.Presets, preset)
-					seenPresets[preset.Ref] = true
-				}
-			}
-		}
-		if refs, ok := defaults[string(cliType)]; ok {
-			entry.Defaults = &contract.LaunchDefaults{
-				ProviderRef: refs.ProviderRef, PresetRef: refs.PresetRef, ModelRef: refs.ModelRef,
-				ShellRef: refs.ShellRef, UseHeadroom: refs.UseHeadroom,
-			}
-		}
-		settingsSurface.CLIs = append(settingsSurface.CLIs, entry)
-	}
-	return settingsSurface
-}
-
-// --- M1-A 设备配对/安全 Wails wrappers（design §14.1）---
-
-// CreateRemotePairingWindow 创建配对窗口（code 仅本次返回，不持久/不记录）。
-func (a *App) CreateRemotePairingWindow(confirmTerminalExposure bool) (remote.PairingWindowInfo, error) {
-	return a.Remote.CreatePairingWindow(confirmTerminalExposure)
-}
-
-// GetRemotePairingWindow 返回配对窗口状态（不含 code）。
-func (a *App) GetRemotePairingWindow() (remote.PairingWindowStatus, error) {
-	return a.Remote.GetPairingWindow()
-}
-
-// CancelRemotePairingWindow 按 generation CAS 取消配对窗口。
-func (a *App) CancelRemotePairingWindow(generation uint64) (bool, error) {
-	return a.Remote.CancelPairingWindow(generation)
-}
-
-// ListRemoteDevices 返回已配对设备列表。
-func (a *App) ListRemoteDevices() ([]remote.DeviceInfo, error) {
-	return a.Remote.ListDevices()
-}
-
-// RevokeRemoteDevice 撤销设备（confirm=false 拒绝）。
-func (a *App) RevokeRemoteDevice(deviceID string, confirm bool) (remote.RevokeDeviceResult, error) {
-	if strings.TrimSpace(deviceID) == "" {
-		return remote.RevokeDeviceResult{}, fmt.Errorf("device id required")
-	}
-	return a.Remote.RevokeDevice(deviceID, confirm)
-}
-
-// GetRemoteSecurityHealth 返回有界安全健康快照。
-func (a *App) GetRemoteSecurityHealth() remote.SecurityHealthSnapshot {
-	return a.Remote.GetSecurityHealth()
-}
-
-// AcknowledgeRemoteSecurityHealth 确认一个 closed health code（不 resolve/retry）。
-func (a *App) AcknowledgeRemoteSecurityHealth(code string) (remote.SecurityHealthSnapshot, error) {
-	return a.Remote.AcknowledgeSecurityHealth(code)
-}
-
-// ToggleRemoteServer 启动或停止远程服务器。
-func (a *App) ToggleRemoteServer(enabled bool) error {
-	a.remoteLifecycleMu.Lock()
-	defer a.remoteLifecycleMu.Unlock()
-	if enabled {
-		if err := a.Remote.Start(a.ctx); err != nil {
-			a.Log.Error("remote", "启动远程服务器失败", err.Error())
-			return fmt.Errorf("start remote server: %w", err)
-		}
-		if err := a.Settings.SetRemoteEnabled(true); err != nil {
-			a.Remote.Stop()
-			return fmt.Errorf("persist remote enabled state: %w", err)
-		}
-		// 手动开启成功：清空 Startup 恢复路径可能遗留的 Start 失败记录，避免
-		// 陈旧错误继续点亮自检卡端口横幅（P3-B③）。
-		a.clearLastRemoteStartError()
-		a.Log.Info("remote", "远程服务器已启动", fmt.Sprintf("port=%d", a.Remote.GetPort()))
-	} else {
-		a.Remote.Stop()
-		if err := a.Settings.SetRemoteEnabled(false); err != nil {
-			return fmt.Errorf("persist remote disabled state: %w", err)
-		}
-		a.Log.Info("remote", "远程服务器已停止")
-	}
-	return nil
-}
-
-// SetRemotePort 设置远程服务器端口（需先停止服务器，再设置端口，再启动）。
-func (a *App) SetRemotePort(port int) error {
-	if port < 1024 || port > 65535 {
-		return fmt.Errorf("port %d out of valid range [1024, 65535]", port)
-	}
-	a.remoteLifecycleMu.Lock()
-	defer a.remoteLifecycleMu.Unlock()
-	if err := a.Settings.SetRemotePort(port); err != nil {
-		return err
-	}
-	wasRunning := a.Remote.IsRunning()
-	if wasRunning {
-		a.Remote.Stop()
-	}
-	a.Remote.SetPort(port)
-	a.Log.Info("remote", "端口已更新", fmt.Sprintf("port=%d", port))
-	if wasRunning {
-		if err := a.Remote.Start(a.ctx); err != nil {
-			a.Log.Error("remote", "更换端口后重启服务器失败", err.Error())
-			return fmt.Errorf("restart remote server on port %d: %w", port, err)
-		}
-		a.Log.Info("remote", "远程服务器已在新端口启动", fmt.Sprintf("port=%d", port))
-	}
-	a.Remote.EmitListenConfigurationChanged() // user-initiated change; not Startup restore
-	return nil
-}
-
-// SetRemoteHost 设置远程服务器监听地址（需先停止服务器，再设置地址，再启动）。
-func (a *App) SetRemoteHost(host string) error {
-	a.remoteLifecycleMu.Lock()
-	defer a.remoteLifecycleMu.Unlock()
-	if err := a.Settings.SetRemoteHost(host); err != nil {
-		return err
-	}
-	wasRunning := a.Remote.IsRunning()
-	if wasRunning {
-		a.Remote.Stop()
-	}
-	a.Remote.SetHost(host)
-	a.Log.Info("remote", "监听地址已更新", fmt.Sprintf("host=%s", host))
-	if wasRunning {
-		if err := a.Remote.Start(a.ctx); err != nil {
-			a.Log.Error("remote", "更换地址后重启服务器失败", err.Error())
-			return fmt.Errorf("restart remote server on host %s: %w", host, err)
-		}
-		a.Log.Info("remote", "远程服务器已在新地址启动", fmt.Sprintf("host=%s", host))
-	}
-	a.Remote.EmitListenConfigurationChanged() // user-initiated change; not Startup restore
-	return nil
-}
-
-// SetRemoteEndpoint updates the remote listen host AND port in a single backend
-// transaction (Minor-02): one validation + one settings Save, so a partial
-// failure (host ok, port invalid — or vice-versa) never persists one without the
-// other. The whole stopped-check → live tuple swap → restart sequence runs under
-// remoteLifecycleMu (shared with ToggleRemoteServer) so two concurrent endpoint
-// calls, or an endpoint vs a toggle, cannot interleave and leave the live server
-// on a mixed host:port tuple (R2-Minor-02). The server is stopped/restarted
-// around the in-memory swap exactly like the individual setters, but only if the
-// transactional Save succeeded. The legacy SetRemoteHost/SetRemotePort remain
-// for their existing callers.
-func (a *App) SetRemoteEndpoint(host string, port int) error {
-	a.remoteLifecycleMu.Lock()
-	defer a.remoteLifecycleMu.Unlock()
-	if err := a.Settings.SetRemoteEndpoint(host, port); err != nil {
-		return err
-	}
-	wasRunning := a.Remote.IsRunning()
-	if wasRunning {
-		a.Remote.Stop()
-	}
-	a.Remote.SetHost(host)
-	a.Remote.SetPort(port)
-	a.Log.Info("remote", "监听地址与端口已更新", fmt.Sprintf("host=%s port=%d", host, port))
-	if wasRunning {
-		if err := a.Remote.Start(a.ctx); err != nil {
-			a.Log.Error("remote", "更换地址与端口后重启服务器失败", err.Error())
-			return fmt.Errorf("restart remote server on %s:%d: %w", host, port, err)
-		}
-		a.Log.Info("remote", "远程服务器已在新地址与端口启动", fmt.Sprintf("host=%s port=%d", host, port))
-	}
-	a.Remote.EmitListenConfigurationChanged() // user-initiated change; not Startup restore
-	return nil
-}
-
 // Startup Wails 生命周期钩子：应用启动时加载配置和密钥。
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// 皮肤服务依赖 Wails ctx 弹原生文件选择对话框（PickSkinImage）。
-	a.Skins.SetContext(ctx)
-
 	// Recover durable post-start cleanup ownership before any startup restore or
-	// user mutation can touch Headroom. A recovered admission fail-closes the
-	// fresh coordinator until the identity-verified process reaches terminal.
+	// user mutation can touch shared services. A recovered admission
+	// fail-closes the fresh coordinator until the identity-verified process
+	// reaches terminal.
 	if err := a.recoverExternalCleanups(); err != nil {
-		a.addStartupWarning("检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁 Headroom")
+		a.addStartupWarning("检测到未完成的外部进程清理；请先关闭旧外部终端，再通过恢复确认 API 重新核验并解锁外部进程安全锁定")
 		if a.Log != nil {
 			a.Log.Warn("session", "恢复外部进程清理登记失败", err.Error())
 		}
@@ -2117,6 +974,10 @@ func (a *App) Startup(ctx context.Context) {
 	// 桌面端互联 RC1-5：密钥库就绪后补齐远程客户端域（凭据存储 + 配对服务）。
 	// 不阻断启动：失败置 nil，相关绑定返回明确错误。
 	a.initRemoteClientServices()
+	// Claude 订阅账号轮换启动时序（design §4.5/§6.1）：Config/Keychain/池
+	// 加载 → RecoverAtStartup → 才开放受影响启动入口。失败只关闭受影响
+	// 启动入口并记警告，其他 API 工作流不停用。
+	a.startupRecoverClaudeAccounts()
 	if loadState.configLoaded && loadState.secretsLoaded {
 		if err := a.syncProvidersToHarnesses(); err != nil {
 			a.Log.Warn("provider-sync", "启动时同步 OpenCode/Pi/OMP 提供商失败", err.Error())
@@ -2177,10 +1038,14 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}()
 
-	// 异步恢复 codex 全局 headroom（独立第二实例，8788 + OpenAI 目标）。
-	// 仅当上次退出前开关为开启时才重建；失败仅 Warn 不阻断启动（主功能不依赖它）。
-	// 重建会同时校验/补写 config.toml 的 openai_base_url 标记块，保证 codex 路由一致。
-	go a.restoreCodexGlobalHeadroomOnStartup()
+	// 一次性善后：清除旧版本遗留在 ~/.codex/config.toml 的代理标记块，避免
+	// 死代理地址继续路由 codex 流量。幂等（无标记/文件不存在即 no-op）；失败仅
+	// Warn 不阻断启动。与历史上的启动恢复钩子同位置同时机。
+	go a.cleanupCodexLegacyHeadroomMarkerOnStartup()
+
+	// P2-B：WSL 统一配置管理启动对账（统一管理开启时点火后台扫描，随后推一轮
+	// 保存后补漏；未开启时与现状行为一致）。
+	a.scheduleWSLUnifiedStartupReconcile()
 
 	// 远程 API 仅在用户显式启用后恢复。新安装和没有该设置的旧配置
 	// 默认保持 loopback 且不监听，避免无意暴露到局域网。
@@ -2194,6 +1059,15 @@ func (a *App) Startup(ctx context.Context) {
 	// 重试耗尽则保持持久化 enabled 不变，改为可观察（启动警告 + 状态绑定
 	// lastStartError/enabled/running），自检卡可据此分类提示。
 	a.healRemoteStartupRestore(ctx, remoteEnabled, startAllowed)
+
+	// agent-CLI 本地命令服务（DESIGN.md §3.7）：默认开启；关闭时仅清理陈旧
+	// 端点文件不监听。启动失败记警告不阻断主流程。
+	a.startAgentCLI()
+
+	// agent-CLI 本机分发（DESIGN.md §5 C2）：默认安装 shim 与 agents 技能
+	// （用户清理过的面不装回），每次启动刷新 shim 指向当前可执行文件。
+	// 失败只记日志不阻断启动。
+	a.installAgentCLIDefaults()
 
 	// 启动系统托盘（仅在平台能力允许时）
 	capabilities := a.platformCapabilities()
@@ -2212,9 +1086,17 @@ func (a *App) Startup(ctx context.Context) {
 func (a *App) Shutdown(ctx context.Context) {
 	a.Log.Info("app", "应用关闭中...")
 
+	// P4-F2：先收敛 WSL 统一管理后台循环（等待退出；之后不再有循环侧
+	// 推送调度，防 goroutine 泄漏）。
+	a.stopWSLUnifiedReconcileLoop()
+
 	// RC2：先收尾远程客户端终端长连接（等待读泵退出与 outbox 销毁；
 	// 不依赖网络往返，仅本地关闭）。
 	a.shutdownRemoteClientTerminals()
+
+	// agent-CLI（A1）：先于会话控制栅栏收口本地命令服务——停止监听、令牌
+	// 作废并撤销端点文件（pid 所有权校验），后续不再接受新命令。
+	a.stopAgentCLI()
 
 	// M3-A2 §10.3: authoritative control shutdown fence FIRST — cancels all
 	// device/desktop launch/run permits and current operations, fences run
@@ -2230,7 +1112,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.shutdownExternalOwnershipBounded()
 
 	// 先保存配置和密钥
-	if err := a.SaveAllConfig(); err != nil {
+	if err := a.saveAllConfig(); err != nil {
 		a.Log.Error("app", "关闭时保存配置失败", err.Error())
 	}
 
@@ -2245,19 +1127,7 @@ func (a *App) Shutdown(ctx context.Context) {
 			a.Log.Error("usage", "关闭使用统计失败", err.Error())
 		}
 	}
-	if a.Headroom != nil && a.Headroom.IsRunning() {
-		if err := a.Headroom.Stop(); err != nil {
-			a.Log.Error("app", "关闭 Headroom 失败", err.Error())
-		}
-	}
-	// Stop the independent codex-global headroom (8788) too. Its enabled state is
-	// persisted, so Startup restores it on next launch; we only stop the live
-	// process here. This never touches the claude headroom above.
-	if a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning() {
-		if err := a.CodexHeadroom.Stop(); err != nil {
-			a.Log.Error("app", "关闭 codex 全局 Headroom 失败", err.Error())
-		}
-	}
+	// 后续收尾见 Shutdown 尾部。
 	// External Launcher processes were already handled by the bounded ownership
 	// phase immediately after the authority fence. Embedded PTYs close here.
 	a.Pty.CloseAll()
@@ -2367,1568 +1237,6 @@ func (a *App) shutdownExternalOwnershipBounded() remote.ExternalCleanupShutdownR
 	return report
 }
 
-// stopExternalProcessesForShutdown preserves the Round8 test seam while routing
-// through the bounded Round9 protocol.
-func (a *App) stopExternalProcessesForShutdown() remote.ExternalCleanupShutdownReport {
-	return a.shutdownExternalOwnershipBounded()
-}
-
-func (a *App) validateLaunchMode(mode string) error {
-	return platform.ValidateLaunchRequest(a.platformCapabilities(), mode)
-}
-
-func embeddedDefaultLaunchMode(mode string) session.LaunchMode {
-	launchMode := session.LaunchMode(mode)
-	if launchMode == "" {
-		return session.ModeEmbedded
-	}
-	return launchMode
-}
-
-func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, shellPath string, workDir string, requestedWorkDir string, env []string, args []string) (platform.ResolvedLaunchSpec, error) {
-	if err := a.validateLaunchMode(mode); err != nil {
-		return platform.ResolvedLaunchSpec{}, err
-	}
-	if a.aiProxy != nil {
-		var err error
-		env, err = a.aiProxy.ApplyEnv(env)
-		if err != nil {
-			return platform.ResolvedLaunchSpec{}, err
-		}
-	}
-	req := platform.ResolveRequest{
-		AppType:            string(appType),
-		LaunchMode:         mode,
-		RequestedShellPath: shellPath,
-		WorkDir:            workDir,
-		Env:                env,
-		CLIArgs:            args,
-		PTYCols:            120,
-		PTYRows:            40,
-	}
-	// 自定义环境变量（envvars.json）在 Windows 侧经 MergeWithSystem 直接注入；
-	// WSL 模式下 CLI 跑在发行版内，这些键必须显式进入 WSLENV 转发清单才能跨界
-	//（前缀白名单只覆盖 ANTHROPIC_/OPENAI_/CLAUDE_/CODEX_/PI_/代理）。
-	if a.EnvVars != nil {
-		req.EnvForwardKeys = a.EnvVars.Keys()
-		// P4-A2 per-key 放行门：显式标记 allowPathValue 的键，其盘符路径值
-		// 不再剥离，并在 WSLENV 清单中获得 /p 路径翻译（保留键除外）。
-		req.EnvPathFlagKeys = a.EnvVars.PathAllowKeys()
-	}
-	// WSL 环境变量防线（B3/T6 泛化，1.3.59 PI_* 剥离的统一收口）：会话确实落在
-	// distro 内时，剥离「将经 WSLENV 转发、值为 Windows 盘符路径」的变量（五前缀
-	// + 精确键 + envvars.json 自定义键），必须在 Resolve 内 appendWSLENVForwarding
-	// 拼清单之前完成；剥离结果记 WARN 保持可观测。此处是全部内嵌启动（五 CLI）
-	// 的单一漏斗，pi/omp 原地各一份的旧剥离已并入。P4-A2：显式标记 allowPathValue
-	// 的键豁免剥离，改由转发侧加 /p 路径翻译标志；豁免键记 INFO 保持可观测。
-	// 门条件经 launchTargetsWSLFn（launch_workdir.go）：与 planner.resolveLaunch
-	// 共用同一谓词/接缝，两入口判定永不分叉。
-	if launchTargetsWSLFn(mode, shellPath) {
-		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)
-		if len(allowedPath) > 0 {
-			a.Log.Info("session", "已放行跨界路径值环境变量（per-key 放行 + /p 路径翻译）", strings.Join(allowedPath, ","))
-		}
-		if len(stripped) > 0 {
-			env = kept
-			req.Env = env
-			a.Log.Warn("session", "已剥离携带 Windows 路径值的跨界环境变量", strings.Join(stripped, ","))
-		}
-	}
-	spec, err := a.cliResolver().Resolve(req)
-	if err != nil {
-		return spec, err
-	}
-	// 工作目录定谳（纯目标判据：以解析产出的 spec.BootstrapMode 为准，
-	// 本层零探测）。WSL 目标：Linux 形态请求/默认目录原样保留（wsl.exe
-	// --cd 在目标侧消费），显式非空宿主形态校验失败直接拒绝启动（不静默
-	// 换工程）；非 WSL 目标维持入口宿主链产物（原生回退语义不变）。
-	finalWorkDir, wdErr := resolveLaunchWorkDirForSpec(
-		spec.BootstrapMode == platform.BootstrapWSL, requestedWorkDir, workDir,
-		a.Paths.GetDefaultPath(),
-		func(preserved string) {
-			a.Log.Info("session", "WSL 会话保留请求的 Linux 工作目录（由 wsl.exe --cd 在目标侧消费）", preserved)
-		},
-	)
-	if wdErr != nil {
-		return platform.ResolvedLaunchSpec{}, wdErr
-	}
-	// 最终目录随 spec 返回；调用方同步 recipe，统一激活入口再以该目录
-	// 发布会话记录，避免桌面面板/remote 快照仍指向预留时的宿主回退目录。
-	spec.WorkDir = finalWorkDir
-	return aiproxy.PinProxyEnvironment(spec)
-}
-
-// --- 多终端会话管理 ---
-
-// LaunchSession 启动一个新的终端会话
-func (a *App) LaunchSession(providerName, presetName string, mode string, workDir string, useHeadroom bool, shellPath string) (string, error) {
-	if err := a.Config.RejectPiLoginLaunchRefs(providerName, presetName); err != nil {
-		return "", err
-	}
-	a.Log.Info("session", "启动会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s headroom=%v shell=%s", providerName, presetName, mode, workDir, useHeadroom, shellPath))
-
-	// ---- terminal_presets 桥接 ----
-	// 先尝试用 presetName 作为 terminal_preset 的 stable key 查找新体系
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetAnthropic), presetName)
-	tpFound := tpErr == nil && tp != nil
-	if tpFound {
-		// 新体系中 provider 以 tp.Provider 为准，参数中传入的 providerName 作为 fallback
-		if tpProvider != "" {
-			providerName = tpProvider
-		}
-		a.Log.Info("session", "命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", presetName, tpProvider, tp.Model))
-	}
-
-	// SnapshotProvider：单次读锁内同时拷贝 provider 字段与 Presets map。桥接
-	// 要求 provider 与 presets 同配置代际——GetProvider + GetPresets 两次独立
-	// 加锁之间 SaveProvider/SavePreset 可并发改写，会拼出跨代混合快照（谛听
-	// 终审 Minor-2）；且返回的 Presets 是非 nil 副本，可直接注入桥接条目。
-	provider, err := a.Config.SnapshotProvider(providerName)
-	if err != nil {
-		a.Log.Error("session", "获取提供商失败", err.Error())
-		return "", fmt.Errorf("get provider: %w", err)
-	}
-	// 若命中 terminal preset，将其桥接为旧 config.Preset 注入 provider 快照
-	// 这样后续 BuildOverrides / Launch 走完整旧链路，model + parameters 全部生效
-	if tpFound {
-		converted := config.Preset{
-			Name:        tp.Name,
-			Model:       tp.Model,
-			ModelHaiku:  tp.ModelHaiku,
-			ModelSonnet: tp.ModelSonnet,
-			ModelOpus:   tp.ModelOpus,
-			Parameters:  tp.Parameters,
-		}
-		provider.Presets[presetName] = converted
-		a.Log.Info("session", "已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
-	}
-	if !provider.IsAnthropicCompatible() {
-		a.Log.Error("session", "ClaudeCode 需要 Anthropic 格式提供商", "provider="+providerName)
-		return "", fmt.Errorf("provider %q is not Anthropic-compatible and cannot be used to launch ClaudeCode", providerName)
-	}
-
-	// OAuth 模式（Anthropic）：白板启动，不设置任何代理环境变量
-	// 非 OAuth 模式：正常代理启动，设置 ANTHROPIC_API_KEY 和 ANTHROPIC_BASE_URL
-	var apiKey, keySource string
-	if provider.IsOAuthMode() {
-		// OAuth 模式不需要 API 密钥，使用 Claude Code 原生 OAuth 认证
-		apiKey = ""
-		a.Log.Info("session", "使用 OAuth 认证（白板启动）", "provider="+providerName)
-	} else {
-		apiKey, keySource = a.getProviderAPIKey(providerName, *provider)
-		if apiKey == "" {
-			a.Log.Error("session", "未找到API密钥", "provider="+providerName)
-			return "", fmt.Errorf("no API key found for provider %q", providerName)
-		}
-		a.Log.Info("session", "API密钥已获取",
-			fmt.Sprintf("provider=%s source=%s key=%s len=%d",
-				providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
-	}
-
-	agentTeams := a.Config.GetAgentTeams()
-
-	// 模型名称：由 BuildOverrides 从 provider.Presets[presetName] 中读取
-	// （旧链路或已桥接的 terminal preset 均已注入 provider.Presets）
-	preset, hasPreset := provider.Presets[presetName]
-	model := provider.DefaultModel
-	if hasPreset && preset.Model != "" {
-		model = preset.Model
-	}
-
-	// 确定启动模式
-	launchMode := session.LaunchMode(mode)
-	if launchMode == "" {
-		launchMode = session.ModeTerminal
-	}
-	if err := a.validateLaunchMode(string(launchMode)); err != nil {
-		return "", err
-	}
-
-	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
-	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
-	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
-	//（纯目标判据，零探测）。
-	requestedWorkDir := workDir
-	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
-	if wdErr != nil {
-		return "", wdErr
-	}
-	workDir = resolvedWorkDir
-
-	// R5-002/R6-001: every Headroom-dependent launch crosses the uninstall
-	// admission barrier before Headroom.Start, session creation, resolution, or
-	// PTY/external startup. Embedded launches promote before PTY start; external
-	// launches keep the admission through Launcher startup and atomically promote
-	// it to an opaque external-run lifetime lease before reporting success.
-	var headroomAdmission *remote.SharedLaunchAdmission
-	if useHeadroom {
-		// D1（Headroom×WSL×NAT 启动闸门，桌面链）：launcher 会给 Headroom 会话
-		// 注入 ANTHROPIC_BASE_URL=http://localhost:8787，NAT 模式下 distro 内不可达，
-		// 会话必然静默失败——必须在 Headroom.Start、admission 获取、会话预留与
-		// PTY 启动等任何副作用之前拒绝。mirrored 遵循现有准入策略放行（与
-		// aiproxy.PinProxyEnvironment 同源判定，此处放行不构成连通声明）。
-		// remote/restart 链的对等闸门在 buildClaudePlan（planner 侧）；legacy
-		// remote（/api/sessions 直调本函数）由本闸门覆盖。
-		if err := headroomWSLNetworkAdmission(
-			platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "",
-			os.Environ(),
-		); err != nil {
-			a.Log.Warn("headroom", "已拒绝 Headroom WSL 会话启动（NAT 网络模式）", err.Error())
-			return "", err
-		}
-		if a.isExternalCleanupRecoveryBlocked() {
-			return "", remote.ErrSharedServiceInUse
-		}
-		if a.sharedCoord == nil {
-			return "", remote.ErrSharedServiceInUse
-		}
-		var admissionErr error
-		headroomAdmission, admissionErr = a.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceClaudeHeadroom)
-		if admissionErr != nil {
-			return "", fmt.Errorf("headroom launch admission: %w", admissionErr)
-		}
-		defer func() {
-			a.sharedCoord.ReleaseLaunchAdmission(headroomAdmission)
-		}()
-	}
-
-	// realBackend 是真实 upstream 的 base URL（如 api.anthropic.com）。
-	realBackend := provider.EffectiveBaseURL("anthropic")
-	if useHeadroom {
-		// CLI → headroom 压缩(:8787) → 真实 API
-		if !a.Headroom.IsRunning() {
-			if err := a.Headroom.Start(realBackend); err != nil {
-				a.Log.Error("headroom", "上下文压缩启动失败", err.Error())
-				return "", fmt.Errorf("start headroom: %w", err)
-			}
-			a.Log.Info("headroom", "上下文压缩已启用并生效",
-				fmt.Sprintf("CLI → headroom:127.0.0.1:8787 → %s", realBackend))
-		}
-		a.Launcher.SetHeadroomPort(headroom.DefaultPort)
-	} else {
-		// CLI → 真实 API.
-		//
-		// Single-tenant headroom semantics (documented decision, audit §4.2):
-		// the desktop app runs one shared headroom compression proxy (:8787).
-		// Launching a non-headroom ClaudeCode session intentionally tears the
-		// shared proxy down so the new session talks to the real upstream
-		// directly. This assumes a single active headroom consumer at a time; a
-		// concurrent headroom-dependent session would have its :8787 upstream
-		// cut. The Session/SessionInfo records do not carry a useHeadroom flag,
-		// so the session manager cannot identify headroom-dependent sessions and
-		// an active-session guard is not feasible without expanding the
-		// frontend-visible session contract. We therefore document the
-		// single-tenant assumption here and surface Stop failures instead of
-		// swallowing them (the previous `_ = a.Headroom.Stop()` hid errors).
-		if a.Headroom.IsRunning() {
-			if err := a.Headroom.Stop(); err != nil {
-				a.Log.Warn("headroom", "关闭共享上下文压缩代理失败", err.Error())
-			}
-		}
-		a.Launcher.SetHeadroomPort(0)
-	}
-
-	// Reserve embedded identity hidden; external keeps the legacy local timing but
-	// remains remoteEligible=false in the same Authority owner.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeClaudeCode, providerName, presetName, model, launchMode, workDir)
-	if err != nil {
-		return "", err
-	}
-	authorityCommitted := authorityReservation == nil
-	defer func() {
-		if !authorityCommitted && authorityReservation != nil {
-			a.Sessions.AbortCreate(authorityReservation)
-		}
-	}()
-	a.Log.Info("session", "会话身份已预留", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, model, launchMode))
-
-	// 根据模式选择启动方式
-	if launchMode == session.ModeEmbedded {
-		// 内嵌终端模式：使用 ConPTY，终端渲染在前端 xterm.js 中
-		overrides := a.Launcher.BuildOverrides(*provider, presetName, apiKey, agentTeams)
-
-		// 诊断：记录认证相关的环境变量覆盖
-		for _, authVar := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
-			if v, ok := overrides[authVar]; ok {
-				if v == "" {
-					a.Log.Info("session", "环境变量覆盖", fmt.Sprintf("%s → [删除]", authVar))
-				} else {
-					a.Log.Info("session", "环境变量覆盖", fmt.Sprintf("%s → %s", authVar, secrets.MaskKey(v)))
-				}
-			}
-		}
-
-		// 注入自定义环境变量（自定义 > 系统，再被 overrides 覆盖）
-		baseEnv := a.EnvVars.MergeWithSystem()
-		env := launcher.BuildEnv(baseEnv, overrides)
-
-		// 方案 R：为 embedded claudecode 会话注入 --session-id <uuid>，
-		// 让 Claude Code 用 amagi-codebox 指定的 uuid 写 jsonl（与同 workDir 其他会话区分），
-		// tracker 优先读"自己锁定的 jsonl"消除串扰，仅当锁定 jsonl 停滞才检测同目录最新跟随。
-		claudeSID := uuid.NewString()
-		a.Sessions.SetClaudeSessionID(sess.ID, claudeSID)
-		a.Log.Info("session", "注入 Claude session-id", fmt.Sprintf("id=%s sid=%s", sess.ID, claudeSID))
-
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeClaudeCode, string(launchMode), shellPath, workDir, requestedWorkDir, env, []string{"--session-id", claudeSID})
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			return "", err
-		}
-		workDir = spec.WorkDir
-
-		// M-006: acquire the shared Headroom lease so the
-		// coordinator guard is non-empty while this run is active.
-		var sharedKinds []remote.SharedServiceKind
-		if useHeadroom {
-			sharedKinds = append(sharedKinds, remote.SharedServiceClaudeHeadroom)
-		}
-		recipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
-		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, headroomAdmission, sharedKinds...)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			a.Log.Error("session", "PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-			return "", fmt.Errorf("start pty: %w", err)
-		}
-		authorityCommitted = true
-		a.Sessions.SetPID(sess.ID, pid)
-		a.Log.Info("session", "PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
-
-		// 方案 R：tracker 优先读"自己锁定的 jsonl"（上面注入的 --session-id），
-		// 锁定 jsonl 停滞（用户 /resume 切走）超 60s 才检测同目录最新跟随。
-		// 仅 claudecode 启动（opencode/codex 不写 ~/.claude/projects jsonl）。
-		a.startTitleTracker(sess.ID, workDir)
-
-		// 监控 PTY 进程退出
-		go func(id string) {
-			for a.Pty.IsRunning(id) {
-				select {
-				case <-a.ctx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-			a.Sessions.MarkExited(id)
-			a.releaseSharedLeases(id) // M-006: release shared leases on natural PTY exit
-			a.Log.Info("session", "PTY进程已退出", "id="+id)
-		}(sess.ID)
-
-		return sess.ID, nil
-	}
-
-	// 外部终端/VSCode/Zed 模式：使用 Launcher。R6-001 keeps the
-	// startup admission live until a successful process start can atomically
-	// promote to an opaque external-run dependency lease.
-	external := a.externalSessionLauncher()
-	if external == nil {
-		err := errors.New("external launcher is not initialized")
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	var externalRun *remote.ExternalRunIdentity
-	if headroomAdmission != nil {
-		if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
-			a.Sessions.MarkFailed(sess.ID, storeErr.Error())
-			return "", fmt.Errorf("prepare durable external Claude cleanup: %w", storeErr)
-		}
-		externalRun, err = a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			return "", fmt.Errorf("prepare external Claude run: %w", err)
-		}
-	}
-	startGeneration, startErr := a.captureExternalProcessStartGeneration()
-	if startErr != nil {
-		a.Sessions.MarkFailed(sess.ID, startErr.Error())
-		return "", startErr
-	}
-	a.externalOwnershipMu.Lock()
-	if a.externalShutdown.Load() {
-		a.externalOwnershipMu.Unlock()
-		err := remote.ErrSharedCoordinatorClosed
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	defer a.externalOwnershipMu.Unlock()
-	ownershipKind := remote.SharedServiceKind(0) // no shared dependency
-	if headroomAdmission != nil {
-		ownershipKind = remote.SharedServiceClaudeHeadroom
-	}
-	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
-	defer a.endExternalOwnershipAttempt(attempt)
-	var reservation cleanupstore.Reservation
-	if headroomAdmission != nil {
-		var reserveErr error
-		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceClaudeHeadroom)
-		if reserveErr != nil {
-			a.Sessions.MarkFailed(sess.ID, reserveErr.Error())
-			return "", fmt.Errorf("prepare durable external Claude ownership: %w", reserveErr)
-		}
-		a.markExternalOwnershipReservation(attempt)
-	}
-	if !a.commitExternalProcessStart(attempt, startGeneration) {
-		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
-		a.Sessions.MarkFailed(sess.ID, startErr.Error())
-		return "", startErr
-	}
-	result, err := external.LaunchGuarded(
-		sess.ID, *provider, presetName, apiKey, agentTeams, launchMode, workDir,
-		func() error { return a.authorizeExternalRawStart(attempt, startGeneration) },
-	)
-	if err != nil {
-		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
-			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
-			a.Sessions.MarkFailed(sess.ID, startErr.Error())
-			return "", startErr
-		}
-		completionErr := a.completeExternalProcessReservation(reservation)
-		a.releaseSharedLeases(sess.ID)
-		launchErr := fmt.Errorf("launch claude: %w", err)
-		if completionErr != nil {
-			launchErr = errors.Join(launchErr, completionErr)
-		}
-		a.Sessions.MarkFailed(sess.ID, launchErr.Error())
-		a.Log.Error("session", "进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
-		return "", launchErr
-	}
-	// Register the concrete launcher binding immediately after successful start;
-	// all later compensation uses this exact capability, never PID/session lookup.
-	externalBindingKey, externalBindingRegistered, bindingErr := a.registerExternalProcessEvidence(result)
-	if bindingErr != nil {
-		closeUnregisteredExternalEvidence(context.Background(), result)
-		a.Sessions.MarkFailed(sess.ID, bindingErr.Error())
-		return "", bindingErr
-	}
-	externalAuthorityCommitted := false
-	defer func() {
-		if !externalAuthorityCommitted {
-			a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
-		}
-	}()
-	// Record PID and fsync OS identity immediately after start, before lease
-	// promotion. Successful runs and failed promotions therefore share one
-	// durable ownership chain across graceful Shutdown.
-	a.markExternalOwnershipStarted(attempt)
-	a.Sessions.SetPID(sess.ID, result.PID)
-	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
-		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, reservation, headroomAdmission, external)
-		headroomAdmission = nil
-		a.Sessions.MarkFailed(sess.ID, cleanupErr.Error())
-		return "", cleanupErr
-	}
-	if headroomAdmission != nil {
-		durableRecord, ownershipErr := a.persistExternalProcessOwnership(
-			sess.ID, result.PID, remote.SharedServiceClaudeHeadroom, external,
-		)
-		if ownershipErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, reservation, false, headroomAdmission, external)
-			headroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			a.recordExternalCleanupAbandonment(remote.ExternalCleanupAbandonmentEvent{
-				SessionID:          sess.ID,
-				Kind:               remote.SharedServiceClaudeHeadroom,
-				Reason:             remote.ExternalCleanupAbandonmentDurabilityHandoff,
-				DurableReservation: true,
-			})
-			activationErr := fmt.Errorf("persist external Claude process ownership: %w", ownershipErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceClaudeHeadroom, headroomAdmission); leaseErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, cleanupstore.Reservation{}, true, headroomAdmission, external)
-			headroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			activationErr := fmt.Errorf("activate external Claude headroom lease: %w", leaseErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Claude process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		a.rememberExternalDurableRun(durableRecord)
-	}
-
-	externalRecipe := stableDesktopRecipe(session.AppTypeClaudeCode, workDir, providerName, presetName, model, shellPath, useHeadroom)
-	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	externalAuthorityCommitted = true
-	a.Log.Info("session", "进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
-
-	// 方案 R 降级（external 模式）：Launcher.Launch 不支持注入 --session-id，
-	// ClaudeSessionID 留空，tracker 走方案 P（FindLatestActiveJSONL 取最新 mtime）。
-	// 副作用：external 模式下同 workDir 多会话仍会指向同一最新 jsonl（边缘场景，主上已知）。
-	a.startTitleTracker(sess.ID, workDir)
-
-	// 监控进程退出。Release happens only after the Launcher reports terminal;
-	// delayed observation is conservative (blocks mutation longer, never shorter).
-	monitorCtx := a.ctx
-	if monitorCtx == nil {
-		monitorCtx = context.Background()
-	}
-	go func(id string, lifecycle externalLauncherPort) {
-		for lifecycle.IsRunning(id) {
-			select {
-			case <-monitorCtx.Done():
-				return
-			case <-time.After(a.externalSessionPollInterval()):
-			}
-		}
-		a.Sessions.MarkExited(id)
-		a.releaseSharedLeases(id)
-		a.Log.Info("session", "进程已退出", "id="+id)
-	}(sess.ID, external)
-
-	return sess.ID, nil
-}
-
-// StopSession 停止指定会话
-// M-005: embedded PTY sessions are the control gate's domain — route through
-// the gate and FAIL-CLOSED (never bypass to raw Pty.Close). When the control
-// runtime is nil/not-ready, or the gate denies (including DenySessionNotFound
-// for an unknown PTY session), the stop is rejected rather than falling back to
-// a raw PTY close. External Launcher sessions (terminal/VSCode/Zed — no embedded
-// PTY) remain Launcher-owned: Launcher is their legitimate authority, not a
-// gate bypass.
-func (a *App) StopSession(sessionID string) error {
-	a.Log.Info("session", "停止会话", "id="+sessionID)
-
-	if record, getErr := a.Sessions.Get(sessionID); getErr == nil && (record.Mode == session.ModeEmbedded || record.Mode == session.ModeTerminal) && a.sessionAdapter != nil {
-		if a.control == nil || !a.control.IsReady() {
-			return remote.ErrControlNotReady
-		}
-		ctx := a.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if err := a.sessionAdapter.DesktopStopAuthoritative(ctx, contract.SessionID(sessionID)); err != nil {
-			return err
-		}
-		a.releaseSharedLeases(sessionID)
-		return nil
-	}
-	if a.Pty.IsRunning(sessionID) {
-		if a.control == nil || !a.control.IsReady() {
-			return remote.ErrControlNotReady
-		}
-		ctx := a.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if err := a.control.DesktopStop(ctx, contract.SessionID(sessionID)); err != nil {
-			return err
-		}
-		a.Sessions.MarkStopped(sessionID)
-		a.releaseSharedLeases(sessionID)
-		return nil
-	}
-
-	// Non-PTY external Launcher session: Launcher owns the process (not a gate
-	// bypass). A failed stop retains the lease because the dependency may still
-	// be live; successful/already-terminal stop releases it exactly once.
-	external := a.externalSessionLauncher()
-	if external != nil && external.IsRunning(sessionID) {
-		if err := external.Stop(sessionID); err != nil {
-			a.Log.Error("session", "停止会话失败", fmt.Sprintf("id=%s err=%v", sessionID, err))
-			return err
-		}
-		a.Sessions.MarkStopping(sessionID)
-		if external.IsRunning(sessionID) {
-			// Stop was accepted but Launcher Wait has not proven terminal. Stopping
-			// remains active/non-removable; monitor or cleanup reaper owns the lease.
-			return nil
-		}
-	}
-	a.completeExternalCleanupForSession(sessionID)
-	a.Sessions.MarkStopped(sessionID)
-	a.releaseSharedLeases(sessionID)
-	return nil
-}
-
-// startTitleTracker 启动方案 P 的标题跟踪 goroutine。
-//
-// 仅用于 claudecode 会话（opencode/codex 不写 ~/.claude/projects jsonl）。
-// tracker 退出条件双重保险：
-//  1. a.ctx.Done()（app 关闭）；
-//  2. mgr.GetStatus != Running（会话已被 MarkStopped/MarkExited/MarkFailed）。
-//
-// 不持有外部 cancel 句柄：依赖条件 2 在最多一个轮询周期内自动退出，避免泄漏。
-// homeDir 由 os.UserHomeDir 获取；获取失败时记录日志但不启动 tracker（功能降级，非崩溃）。
-func (a *App) startTitleTracker(amagiSessionID, workDir string) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		a.Log.Warn("session", "标题跟踪跳过：无法获取用户主目录", "err="+err.Error())
-		return
-	}
-	go session.TrackTitle(a.ctx, a.Sessions, amagiSessionID, homeDir, workDir, a.Log)
-}
-
-// stopAllSessionsForShutdown is the unexported shutdown cleanup helper (design
-// §10.3). It is called ONLY from App.Shutdown and never appears in the Wails
-// Bind manifest. The authoritative shutdown fence is
-// ControlRuntime.CloseForShutdown (called from Shutdown).
-func (a *App) stopAllSessionsForShutdown() {
-	ids := a.Sessions.GetRunning()
-	external := a.externalSessionLauncher()
-	for _, id := range ids {
-		if external != nil {
-			if err := external.Stop(id); err != nil || external.IsRunning(id) {
-				continue // terminal owner/lease remains until monitor or reaper receipt
-			}
-		}
-		a.completeExternalCleanupForSession(id)
-		a.Sessions.MarkStopped(id)
-		a.releaseSharedLeases(id)
-	}
-}
-
-// GetSessions 获取所有会话列表
-func (a *App) GetSessions() []session.SessionInfo {
-	return a.Sessions.List()
-}
-
-// RemoveSession 删除已结束的会话记录
-// M-005: route through the control gate so a stopped/running gate-managed
-// session has its PTY closed AND its control tombstone cleaned by the desktop
-// authority (DesktopRemove). FAIL-CLOSED: a running PTY session whose control
-// runtime is unavailable is rejected rather than bypassed to the raw manager.
-// A DenySessionNotFound (the gate does not manage the session) is the signal
-// that the session is external/legacy → manager record cleanup.
-func (a *App) RemoveSession(sessionID string) error {
-	if record, getErr := a.Sessions.Get(sessionID); getErr == nil && (record.Mode == session.ModeEmbedded || record.Mode == session.ModeTerminal) && a.sessionAdapter != nil {
-		if a.control == nil || !a.control.IsReady() {
-			return remote.ErrControlNotReady
-		}
-		ctx := a.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if err := a.sessionAdapter.DesktopRemoveAuthoritative(ctx, contract.SessionID(sessionID)); err != nil {
-			return err
-		}
-		a.removeWebUITracker(sessionID) // Minor6：Remove commit 点同步清理 webui tracker
-		return nil
-	}
-	if a.sessionAdapter == nil && a.control != nil && a.control.IsReady() {
-		ctx := a.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if err := a.control.DesktopRemove(ctx, contract.SessionID(sessionID)); err != nil {
-			if !isControlUnknownSession(err) {
-				return err
-			}
-		} else {
-			a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID))
-			a.releaseSharedLeases(sessionID)
-			a.removeWebUITracker(sessionID) // Minor6
-			return nil
-		}
-	} else if a.Pty.IsRunning(sessionID) {
-		return remote.ErrControlNotReady
-	}
-	// External Launcher / legacy record (PTY not running here): manager cleanup.
-	// Release only after Manager.Remove confirms the record is non-running; a
-	// failed remove must not drop a dependency from a potentially active run.
-	if err := a.Sessions.Remove(sessionID); err != nil {
-		return err
-	}
-	a.Remote.DestroySessionInputLedger(contract.SessionID(sessionID)) // M3-005: manager remove committed
-	a.releaseSharedLeases(sessionID)
-	a.removeWebUITracker(sessionID) // Minor6
-	return nil
-}
-
-// removeWebUITracker 在会话删除 commit 点清理 webui 探测 tracker（Minor6）。
-// WebUI 服务未接线（测试构造）时为空操作。
-func (a *App) removeWebUITracker(sessionID string) {
-	if a.WebUI != nil {
-		a.WebUI.RemoveSession(sessionID)
-	}
-}
-
-// ClearStoppedSessions 清除所有已结束的会话
-// M-005 + R3-005: route control-tombstone cleanup through the desktop authority
-// (desktop authoritative batch semantics) before clearing the session manager,
-// so the batch clear is gate-authorized rather than a raw manager mutation.
-// Stopped sessions have no live PTY; this only removes their control entries.
-//
-// R3-005 fail-closed: control-MANAGED (embedded) stopped sessions are cleared
-// through the gate ONLY when control is ready; if control is nil/not-ready they
-// are SKIPPED (neither control entry nor manager record is touched) so the two
-// stores can never diverge with a dangling control entry. When the Authority
-// adapter is wired, both embedded and external sessions use exact process
-// capabilities and receipt-keyed GC; only isolated legacy mode falls back.
-// Returns the count of records authoritatively cleared.
-func (a *App) ClearStoppedSessions() int {
-	return a.ClearStoppedSessionsDetailed().Cleared
-}
-
-// ClearStoppedSessionFailure is one per-ID failure from either the control Gate
-// or Manager.Remove. Reason is diagnostic text and contains no session content.
-type ClearStoppedSessionFailure struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason"`
-}
-
-// ClearStoppedSessionsResult is the truthful partial result of a batch clear.
-// Cleared/ClearedIDs reflect actual successful Manager.Remove calls only.
-// RetainedIDs includes gate-skipped and manager-failed records; Failed separates
-// operational errors from ordinary skips such as a concurrent restart.
-type ClearStoppedSessionsResult struct {
-	Cleared     int                          `json:"cleared"`
-	ClearedIDs  []string                     `json:"clearedIds"`
-	RetainedIDs []string                     `json:"retainedIds"`
-	Failed      []ClearStoppedSessionFailure `json:"failed"`
-}
-
-// removeStoppedSessionRecord calls the production Manager.Remove unless a test
-// injects the narrow per-ID failure seam above.
-func (a *App) removeStoppedSessionRecord(id string) error {
-	var err error
-	if a.sessionRemove != nil {
-		err = a.sessionRemove(id)
-	} else {
-		err = a.Sessions.Remove(id)
-	}
-	if err != nil {
-		return err
-	}
-	a.Remote.DestroySessionInputLedger(contract.SessionID(id)) // M3-005: manager remove committed (batch clear path)
-	a.releaseSharedLeases(id)
-	a.removeWebUITracker(id) // Minor6：批量清理 commit 点同步清理 webui tracker
-	return nil
-}
-
-// ClearStoppedSessionsDetailed clears stopped sessions and returns a typed
-// partial result. With SessionAuthority wired, every embedded or external ID
-// uses DesktopRemoveAuthoritative; only legacy fallback IDs call Manager.Remove
-// directly. Failures are retained and never counted as cleared.
-func (a *App) ClearStoppedSessionsDetailed() ClearStoppedSessionsResult {
-	result := ClearStoppedSessionsResult{}
-	var eligible []string
-	var controlManaged []string
-	for _, s := range a.Sessions.List() {
-		switch s.Status {
-		case session.StatusRunning:
-			continue
-		case session.StatusStopping:
-			result.RetainedIDs = append(result.RetainedIDs, s.ID)
-			result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: s.ID, Reason: session.ErrSessionStopping.Error()})
-			continue
-		}
-		if a.sessionAdapter != nil && (s.Mode == session.ModeEmbedded || s.Mode == session.ModeTerminal) {
-			controlManaged = append(controlManaged, s.ID)
-		} else if s.Mode == session.ModeEmbedded {
-			controlManaged = append(controlManaged, s.ID)
-		} else {
-			eligible = append(eligible, s.ID)
-		}
-	}
-
-	controlReady := a.control != nil && a.control.IsReady()
-	if len(controlManaged) > 0 {
-		if !controlReady {
-			result.RetainedIDs = append(result.RetainedIDs, controlManaged...)
-		} else {
-			ctx := a.ctx
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			if a.sessionAdapter != nil {
-				for _, id := range controlManaged {
-					if err := a.sessionAdapter.DesktopRemoveAuthoritative(ctx, contract.SessionID(id)); err != nil {
-						result.RetainedIDs = append(result.RetainedIDs, id)
-						result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: err.Error()})
-						continue
-					}
-					a.removeWebUITracker(id) // Minor6：adapter 批量成功路径同样清理 webui tracker
-					result.ClearedIDs = append(result.ClearedIDs, id)
-				}
-			} else {
-				ids := make([]contract.SessionID, len(controlManaged))
-				for i, id := range controlManaged {
-					ids[i] = contract.SessionID(id)
-				}
-				controlResult := a.control.DesktopClearStopped(ctx, ids)
-				for _, perID := range controlResult.Results {
-					id := string(perID.ID)
-					switch perID.Status {
-					case remote.DesktopClearCleared:
-						eligible = append(eligible, id)
-					case remote.DesktopClearErrored:
-						result.RetainedIDs = append(result.RetainedIDs, id)
-						result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: perID.Reason})
-					default:
-						result.RetainedIDs = append(result.RetainedIDs, id)
-					}
-				}
-			}
-		}
-	}
-
-	// R4-005 residual: Manager.Remove is authoritative for the returned count.
-	// A control tombstone may already be gone, but a manager failure is reported
-	// as retained/failed and never converted into a false success.
-	for _, id := range eligible {
-		if err := a.removeStoppedSessionRecord(id); err != nil {
-			result.RetainedIDs = append(result.RetainedIDs, id)
-			result.Failed = append(result.Failed, ClearStoppedSessionFailure{ID: id, Reason: err.Error()})
-			if a.Log != nil {
-				a.Log.Warn("session", "会话管理器清理失败", fmt.Sprintf("id=%s err=%v", id, err))
-			}
-			continue
-		}
-		result.ClearedIDs = append(result.ClearedIDs, id)
-	}
-	result.Cleared = len(result.ClearedIDs)
-	return result
-}
-
-// LaunchCodexSession 启动 Codex CLI 终端会话
-// modelName 非空时通过 -m 参数指定模型；providerID 非空时注入对应服务商的 API Key
-// Codex 进程直接继承用户原始环境中的 Codex home，不做任何隔离或改写。
-func (a *App) LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
-	if err := a.Config.RejectPiLoginLaunchRefs(providerID, modelName); err != nil {
-		return "", err
-	}
-	a.Log.Info("session", "启动 Codex 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
-
-	// ---- terminal_presets 桥接 ----
-	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）
-	var selectedPresetParams *config.Parameters
-	tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset(string(config.TerminalPresetOpenAI), modelName)
-	tpFound := tpErr == nil && tp != nil
-	if tpFound {
-		if tpProvider != "" {
-			providerID = tpProvider
-		}
-		modelName = tp.Model
-		params := tp.Parameters
-		selectedPresetParams = &params
-		a.Log.Info("session", "Codex 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
-	}
-
-	// ---- legacy provider preset fallback ----
-	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
-	// 旧 key 如 "default" 不是模型名，需要从 preset.Model 中解析真实模型名。
-	if !tpFound && providerID != "" {
-		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
-			if preset, ok := provider.Presets[modelName]; ok {
-				params := preset.Parameters
-				selectedPresetParams = &params
-				resolvedModel := preset.Model
-				if resolvedModel == "" {
-					resolvedModel = provider.DefaultModel
-				}
-				a.Log.Info("session", "Codex 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
-				modelName = resolvedModel
-			}
-		}
-	}
-
-	// 确定启动模式
-	launchMode := embeddedDefaultLaunchMode(mode)
-	if err := a.validateLaunchMode(string(launchMode)); err != nil {
-		return "", err
-	}
-
-	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
-	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
-	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
-	//（纯目标判据，零探测）。
-	requestedWorkDir := workDir
-	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
-	if wdErr != nil {
-		return "", wdErr
-	}
-	workDir = resolvedWorkDir
-
-	launchSettings := codexLaunchSettings{
-		Model: normalizeCodexModelName(modelName),
-	}
-
-	// R5-002: when Codex is configured to use global Headroom, acquire the
-	// uninstall admission before config sync, session creation, resolution, or
-	// PTY startup. Persisted Enabled remains true while uninstall has stopped the
-	// process but has not yet removed the marker, closing that drain window too.
-	var codexHeadroomAdmission *remote.SharedLaunchAdmission
-	codexUsesGlobalHeadroom := a.CodexHeadroom != nil && a.CodexHeadroom.IsRunning()
-	if a.Settings != nil && a.Settings.GetCodexGlobalHeadroom().Enabled {
-		codexUsesGlobalHeadroom = true
-	}
-	if codexUsesGlobalHeadroom {
-		// D6（桌面链 advisory）：codex 全局压缩的路由载体是宿主侧
-		// ~/.codex/config.toml 的 openai_base_url 标记块，WSL codex 会话读取
-		// 发行版侧独立配置，压缩不会生效——会话照常直连，但必须让「压缩未
-		// 生效」可见，不默默让用户以为 8788 在压缩。不新增 Codex Headroom
-		// 路由体系；remote 链显式选择压缩的拒绝在 buildCodexPlan。
-		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) && platform.DefaultWSLDistro(nil) != "" {
-			a.Log.Warn("codex", "codex 全局压缩对 WSL 会话不生效", codexHeadroomWSLIneffectiveMsg())
-		}
-		if a.isExternalCleanupRecoveryBlocked() {
-			return "", remote.ErrSharedServiceInUse
-		}
-		if a.sharedCoord == nil {
-			return "", remote.ErrSharedServiceInUse
-		}
-		var admissionErr error
-		codexHeadroomAdmission, admissionErr = a.sharedCoord.AcquireLaunchAdmission(remote.SharedServiceCodexHeadroom)
-		if admissionErr != nil {
-			return "", fmt.Errorf("codex headroom launch admission: %w", admissionErr)
-		}
-		defer func() {
-			a.sharedCoord.ReleaseLaunchAdmission(codexHeadroomAdmission)
-		}()
-	}
-
-	// 构建环境变量注入：若指定了 providerID，根据 Provider 的 Type 注入对应的环境变量。
-	envOverrides := map[string]string{}
-	codexProviderBaseURL := ""
-	injectProviderEnv := func(pid string, provider *config.Provider) {
-		apiKey, _ := a.getProviderAPIKey(pid, *provider)
-		if apiKey == "" {
-			return
-		}
-		if isOpenAIProvider(*provider) {
-			envOverrides["OPENAI_API_KEY"] = apiKey
-			if baseURL := provider.EffectiveBaseURL("openai"); baseURL != "" {
-				envOverrides["OPENAI_BASE_URL"] = baseURL
-				if isCustomCodexOpenAIBaseURL(baseURL) {
-					codexProviderBaseURL = baseURL
-				}
-			}
-		} else {
-			envOverrides["ANTHROPIC_API_KEY"] = apiKey
-			if baseURL := provider.EffectiveBaseURL("anthropic"); baseURL != "" {
-				envOverrides["ANTHROPIC_BASE_URL"] = baseURL
-			}
-		}
-	}
-	if providerID != "" {
-		// v1.3.13 重构时此处 Lock 后从未 Unlock（且持锁提前 return），一次
-		// Codex 启动即永久持有 providerSyncMu，后续 Pi/OMP 启动与配置保存
-		// 全部死锁。改为闭包 + defer 确保所有路径（含校验失败提前返回）解锁。
-		if err := func() error {
-			a.providerSyncMu.Lock()
-			defer a.providerSyncMu.Unlock()
-			provider, err := a.Config.GetProvider(providerID)
-			if err != nil {
-				return fmt.Errorf("resolve Codex provider %q: %w", providerID, err)
-			}
-			if !isOpenAIProvider(*provider) {
-				return fmt.Errorf("Codex provider %q is not OpenAI-compatible", providerID)
-			}
-			launchSettings = resolveCodexLaunchSettings(*provider, launchSettings.Model)
-			injectProviderEnv(providerID, provider)
-			if baseURL := provider.EffectiveBaseURL("openai"); isCustomCodexOpenAIBaseURL(baseURL) && codexProviderBaseURL == "" {
-				return fmt.Errorf("Codex provider %q requires an API key for custom endpoint %s", providerID, baseURL)
-			}
-			return nil
-		}(); err != nil {
-			return "", err
-		}
-	}
-	if selectedPresetParams != nil {
-		applyCodexPresetParameters(&launchSettings, *selectedPresetParams)
-	}
-	launchSettings.ProviderBaseURL = codexProviderBaseURL
-
-	// Embedded identity stays hidden until PTY, Control and H1 activation finish.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeCodex, "codex", providerID, launchSettings.Model, launchMode, workDir)
-	if err != nil {
-		return "", err
-	}
-	authorityCommitted := authorityReservation == nil
-	defer func() {
-		if !authorityCommitted && authorityReservation != nil {
-			a.Sessions.AbortCreate(authorityReservation)
-		}
-	}()
-	a.Log.Info("session", "Codex 会话身份已预留", fmt.Sprintf("id=%s model=%s mode=%s", sess.ID, launchSettings.Model, launchMode))
-
-	// 调试日志：输出 envOverrides 注入情况
-	envKeys := make([]string, 0, len(envOverrides))
-	for k := range envOverrides {
-		envKeys = append(envKeys, k)
-	}
-	a.Log.Info("codex", "envOverrides keys", fmt.Sprintf("%v", envKeys))
-
-	// 内嵌终端模式：使用 ConPTY
-	if launchMode == session.ModeEmbedded {
-		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
-		baseEnv := a.EnvVars.MergeWithSystem()
-		env := launcher.BuildEnv(baseEnv, envOverrides)
-
-		args := buildCodexCLIArgs(launchSettings)
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeCodex, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			return "", err
-		}
-		workDir = spec.WorkDir
-
-		// M-006: a Codex session that routes through the global headroom (8788)
-		// depends on it; acquire a lease so the toggle/uninstall coordinator guard is
-		// non-empty for the run lifetime.
-		var sharedKinds []remote.SharedServiceKind
-		if codexHeadroomAdmission != nil {
-			sharedKinds = append(sharedKinds, remote.SharedServiceCodexHeadroom)
-		}
-		recipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, codexHeadroomAdmission != nil)
-		pid, err := a.launchEmbeddedPTYWithAdmission(authorityReservation, recipe, spec, codexHeadroomAdmission, sharedKinds...)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			a.Log.Error("session", "Codex PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-			return "", fmt.Errorf("start codex pty: %w", err)
-		}
-		authorityCommitted = true
-		a.Sessions.SetPID(sess.ID, pid)
-		a.Log.Info("session", "Codex PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
-
-		go func(id string) {
-			for a.Pty.IsRunning(id) {
-				select {
-				case <-a.ctx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-			a.Sessions.MarkExited(id)
-			a.releaseSharedLeases(id) // M-006: release Codex headroom lease on natural exit
-			a.Log.Info("session", "Codex PTY进程已退出", "id="+id)
-		}(sess.ID)
-
-		return sess.ID, nil
-	}
-
-	// 外部终端/VSCode/Zed 模式：使用 Launcher。Keep the Codex
-	// Headroom admission through startup, then promote before returning success.
-	external := a.externalSessionLauncher()
-	if external == nil {
-		err := errors.New("external launcher is not initialized")
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	var externalRun *remote.ExternalRunIdentity
-	if codexHeadroomAdmission != nil {
-		if storeErr := a.requireExternalCleanupStore(); storeErr != nil {
-			a.Sessions.MarkFailed(sess.ID, storeErr.Error())
-			return "", fmt.Errorf("prepare durable external Codex cleanup: %w", storeErr)
-		}
-		identity, identityErr := a.sharedCoord.MintExternalRunIdentity(contract.SessionID(sess.ID))
-		if identityErr != nil {
-			a.Sessions.MarkFailed(sess.ID, identityErr.Error())
-			return "", fmt.Errorf("prepare external Codex run: %w", identityErr)
-		}
-		externalRun = identity
-	}
-	startGeneration, startErr := a.captureExternalProcessStartGeneration()
-	if startErr != nil {
-		a.Sessions.MarkFailed(sess.ID, startErr.Error())
-		return "", startErr
-	}
-	a.externalOwnershipMu.Lock()
-	if a.externalShutdown.Load() {
-		a.externalOwnershipMu.Unlock()
-		err := remote.ErrSharedCoordinatorClosed
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	defer a.externalOwnershipMu.Unlock()
-	ownershipKind := remote.SharedServiceKind(0) // no shared dependency
-	if codexHeadroomAdmission != nil {
-		ownershipKind = remote.SharedServiceCodexHeadroom
-	}
-	attempt := a.beginExternalOwnershipAttempt(sess.ID, ownershipKind, startGeneration)
-	defer a.endExternalOwnershipAttempt(attempt)
-	var reservation cleanupstore.Reservation
-	if codexHeadroomAdmission != nil {
-		var reserveErr error
-		reservation, reserveErr = a.reserveExternalProcessOwnership(sess.ID, remote.SharedServiceCodexHeadroom)
-		if reserveErr != nil {
-			a.Sessions.MarkFailed(sess.ID, reserveErr.Error())
-			return "", fmt.Errorf("prepare durable external Codex ownership: %w", reserveErr)
-		}
-		a.markExternalOwnershipReservation(attempt)
-	}
-	if !a.commitExternalProcessStart(attempt, startGeneration) {
-		startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
-		a.Sessions.MarkFailed(sess.ID, startErr.Error())
-		return "", startErr
-	}
-	beforeRawStart := func() error { return a.authorizeExternalRawStart(attempt, startGeneration) }
-	var result *launcher.LaunchResult
-	if argsLauncher, ok := external.(codexArgsExternalLauncherPort); ok {
-		result, err = argsLauncher.LaunchCodexArgsGuarded(
-			sess.ID, buildCodexCLIArgs(launchSettings), launchMode, workDir, envOverrides, beforeRawStart,
-		)
-	} else {
-		result, err = external.LaunchCodexGuarded(
-			sess.ID, launchSettings.Model, launchMode, workDir, envOverrides, beforeRawStart,
-		)
-	}
-	if err != nil {
-		if errors.Is(err, remote.ErrSharedCoordinatorClosed) {
-			startErr = a.rejectExternalProcessStartAfterFence(sess.ID, ownershipKind, reservation)
-			a.Sessions.MarkFailed(sess.ID, startErr.Error())
-			return "", startErr
-		}
-		completionErr := a.completeExternalProcessReservation(reservation)
-		a.releaseSharedLeases(sess.ID)
-		launchErr := fmt.Errorf("launch codex: %w", err)
-		if completionErr != nil {
-			launchErr = errors.Join(launchErr, completionErr)
-		}
-		a.Sessions.MarkFailed(sess.ID, launchErr.Error())
-		a.Log.Error("session", "Codex 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, launchErr))
-		return "", launchErr
-	}
-	externalBindingKey, externalBindingRegistered, bindingErr := a.registerExternalProcessEvidence(result)
-	if bindingErr != nil {
-		closeUnregisteredExternalEvidence(context.Background(), result)
-		a.Sessions.MarkFailed(sess.ID, bindingErr.Error())
-		return "", bindingErr
-	}
-	externalAuthorityCommitted := false
-	defer func() {
-		if !externalAuthorityCommitted {
-			a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
-		}
-	}()
-	a.markExternalOwnershipStarted(attempt)
-	a.Sessions.SetPID(sess.ID, result.PID)
-	if a.externalStartGeneration.Load() != startGeneration || a.externalShutdown.Load() {
-		cleanupErr := a.handoffPostCommitShutdownStart(sess.ID, result.PID, ownershipKind, reservation, codexHeadroomAdmission, external)
-		codexHeadroomAdmission = nil
-		a.Sessions.MarkFailed(sess.ID, cleanupErr.Error())
-		return "", cleanupErr
-	}
-	if codexHeadroomAdmission != nil {
-		durableRecord, ownershipErr := a.persistExternalProcessOwnership(
-			sess.ID, result.PID, remote.SharedServiceCodexHeadroom, external,
-		)
-		if ownershipErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, reservation, false, codexHeadroomAdmission, external)
-			codexHeadroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			a.recordExternalCleanupAbandonment(remote.ExternalCleanupAbandonmentEvent{
-				SessionID:          sess.ID,
-				Kind:               remote.SharedServiceCodexHeadroom,
-				Reason:             remote.ExternalCleanupAbandonmentDurabilityHandoff,
-				DurableReservation: true,
-			})
-			activationErr := fmt.Errorf("persist external Codex process ownership: %w", ownershipErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Codex process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		if leaseErr := a.acquireAndRememberExternalSharedLease(sess.ID, externalRun, remote.SharedServiceCodexHeadroom, codexHeadroomAdmission); leaseErr != nil {
-			cleanup := a.registerExternalCleanup(durableRecord, cleanupstore.Reservation{}, true, codexHeadroomAdmission, external)
-			codexHeadroomAdmission = nil
-			stopErr := a.compensateExternalCleanup(cleanup)
-			activationErr := fmt.Errorf("activate external Codex headroom lease: %w", leaseErr)
-			if stopErr != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("compensate external Codex process: %w", stopErr))
-			}
-			a.Sessions.MarkFailed(sess.ID, activationErr.Error())
-			return "", activationErr
-		}
-		a.rememberExternalDurableRun(durableRecord)
-	}
-
-	externalRecipe := stableDesktopRecipe(session.AppTypeCodex, workDir, providerID, "", launchSettings.Model, shellPath, codexHeadroomAdmission != nil)
-	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	externalAuthorityCommitted = true
-	a.Log.Info("session", "Codex 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
-
-	monitorCtx := a.ctx
-	if monitorCtx == nil {
-		monitorCtx = context.Background()
-	}
-	go func(id string, lifecycle externalLauncherPort) {
-		for lifecycle.IsRunning(id) {
-			select {
-			case <-monitorCtx.Done():
-				return
-			case <-time.After(a.externalSessionPollInterval()):
-			}
-		}
-		a.Sessions.MarkExited(id)
-		a.releaseSharedLeases(id)
-		a.Log.Info("session", "Codex 进程已退出", "id="+id)
-	}(sess.ID, external)
-
-	return sess.ID, nil
-}
-
-// LaunchPiSession 启动 Pi 会话：API 服务商写入托管 models.json；
-// pi-login 命名空间的专用预设则使用标准 auth.json 与原生 provider ID，
-// 不生成托管配置或注入认证 token。启动时再检查登录来源，退出登录不回退。
-func (a *App) LaunchPiSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
-	loginPresetRef := modelName
-	login, loginErr := resolvePiLoginLaunch(a.Config, modelName, providerID)
-	if loginErr != nil {
-		return "", loginErr
-	}
-	var loginPreset *config.PiLoginPreset
-	if login != nil {
-		loginPreset = login.Preset
-	}
-	if loginPreset != nil {
-		providerID = config.PiLoginProviderID(loginPreset.Provider)
-		modelName = loginPreset.Model
-	}
-	a.Log.Info("session", "启动 Pi 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
-
-	// ---- terminal_presets 桥接 ----
-	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）。
-	// 回退语义：先查 openai 桶（pi 原生桶，撞名优先），miss 后仅当 anthropic 桶
-	// 预设带 HarnessSync 标记（opt-in）才命中；unmarked anthropic 预设不解析。
-	tpProvider, tp, tpErr := a.Config.ResolvePiOmpTerminalPreset(modelName)
-	tpFound := loginPreset == nil && tpErr == nil && tp != nil
-	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
-	// 供后续写入 pi models.json 的 model 配置与解析 --thinking 级别。
-	var presetParams config.Parameters
-	if tpFound {
-		if tpProvider != "" {
-			providerID = tpProvider
-		}
-		modelName = tp.Model
-		presetParams = tp.Parameters
-		a.Log.Info("session", "Pi 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
-	}
-
-	// ---- legacy provider preset fallback ----
-	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
-	if loginPreset == nil && !tpFound && providerID != "" {
-		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
-			if preset, ok := provider.Presets[modelName]; ok {
-				resolvedModel := preset.Model
-				if resolvedModel == "" {
-					resolvedModel = provider.DefaultModel
-				}
-				a.Log.Info("session", "Pi 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
-				modelName = resolvedModel
-				presetParams = preset.Parameters
-			}
-		}
-	}
-
-	// 确定启动模式
-	launchMode := embeddedDefaultLaunchMode(mode)
-	if err := a.validateLaunchMode(string(launchMode)); err != nil {
-		return "", err
-	}
-
-	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
-	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
-	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
-	//（纯目标判据，零探测）。
-	requestedWorkDir := workDir
-	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
-	if wdErr != nil {
-		return "", wdErr
-	}
-	workDir = resolvedWorkDir
-
-	// WSL 终端模式判定（Bug B）：embedded 模式下解析器会把 WSL shell 的会话
-	// 跑在 distro 内（resolver.go 的 WSL 分支，镜像判定 platform.EmbeddedLaunchTargetsWSL）。
-	// 命中时后续把 models.json 写到 WSL 侧 agent root、剥离 Windows 路径值的
-	// PI_* 环境变量、并探测 fd/ripgrep；非 WSL 路径行为不变。
-	wslDistro := ""
-	if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
-		wslDistro = platform.DefaultWSLDistro(nil)
-		if wslDistro == "" {
-			a.Log.Warn("pi", "WSL shell 会话但无可用发行版，配置仍写 Windows 侧", "")
-		}
-	}
-
-	launchSettings := piLaunchSettings{
-		Model: strings.TrimSpace(modelName),
-	}
-
-	// 构建环境变量注入 + pi models.json 配置写入。
-	//
-	// Pi 从标准用户目录 ~/.pi/agent 读取 models.json 的 providers 配置。
-	// amagi 把当前选中的 provider 翻译成 pi 的一个自定义命名 provider（"amagi-<name>"），
-	// 合并写入 ~/.pi/agent/models.json。启动时显式移除 PI_CODING_AGENT_DIR，
-	// 避免系统或 CodeBox 自定义环境里的旧值又把 Pi 导向独立副本。
-	// 这样 baseURL/api/apiKey 都正确注入，第三方 Anthropic/OpenAI 兼容 provider（如 GLM）
-	// 会正确路由到其真实 endpoint，不再误打 pi 内置 anthropic/openai 的官方地址。
-	//
-	// 与 Claude Code（ANTHROPIC_BASE_URL env）/ Codex（config.toml）/ OpenCode
-	//（OPENCODE_CONFIG_CONTENT env）同构：amagi 的 provider 配置作为通用底层，
-	// 各引擎各自翻译消费。
-	envOverrides := map[string]string{
-		// BuildEnv 约定：空值表示从子进程环境中删除该变量。
-		"PI_CODING_AGENT_DIR": "",
-	}
-	// 内嵌/外部 Pi 会话默认跳过 pi 启动期网络操作（pi.dev 模型目录刷新、
-	// 版本检查、包管理网络）。这些操作在网络或本地代理抖动时会把启动拖到
-	// 数十秒甚至挂起（用户表现为"终端一直加载不完"）；PI_OFFLINE 不影响
-	// 模型推理与 amagi MCP。用户在环境变量面板显式配置 PI_OFFLINE 时尊重其值。
-	if _, explicit := a.EnvVars.Get("PI_OFFLINE"); !explicit {
-		envOverrides["PI_OFFLINE"] = "1"
-	}
-	if loginPreset != nil {
-		launchSettings = piLaunchSettings{Provider: loginPreset.Provider, Model: loginPreset.Model, Thinking: loginPreset.Thinking}
-		// R2：显式钉住 canonical agent root（而非删除 PI_CODING_AGENT_DIR），
-		// 自定义 HOME/USERPROFILE 无法再把 Pi 导向另一份 auth.json。该 overrides
-		// 同时覆盖 embedded（BuildEnv）与 external（Launcher.LaunchPi）两条路径。
-		// A2 解除（主上裁定 2026-10-16）：WSL spec 生成后由
-		// piLoginWSLReAnchorSpec 统一剥离该钉定（Windows 路径跨界是历史垃圾
-		// 目录事故形态），不在 env 构建期分叉——保持镜像/spec 判定不一致时的
-		// 语义确定性（spec 为唯一权威）。
-		for key, value := range piLoginEnvOverrides(login.AgentDir) {
-			envOverrides[key] = value
-		}
-		// 登录预设 contextWindow 覆写：Pi 登录模型没有预设参数面，窗口只能经
-		// models.json 的 modelOverrides 注入（providers.<provider>.modelOverrides
-		// .<model>.contextWindow，深合并保留兄弟配置）。写 canonical root 后，
-		// Leader 与 amagi 子 agent（PI_CODING_AGENT_DIR 透传）读同一份生效。
-		// 与后台 provider sync 互斥（同一 models.json 读改写）；失败仅告警不阻断
-		//（回退 Pi 内置目录窗口，启动语义不受影响）。
-		a.providerSyncMu.Lock()
-		overrideErr := launcher.UpsertPiLoginModelOverride(login.AgentDir, loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow)
-		a.providerSyncMu.Unlock()
-		if overrideErr != nil {
-			a.Log.Warn("pi", "写入登录预设 contextWindow 覆写失败（回退 Pi 内置窗口）", overrideErr.Error())
-		} else if loginPreset.ContextWindow > 0 {
-			a.Log.Info("pi", "登录预设 contextWindow 覆写已写入", fmt.Sprintf("provider=%s model=%s contextWindow=%d -> %s/models.json",
-				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, login.AgentDir))
-		}
-	}
-	// P3-S1 启动 lazy：WSL API-provider 会话在构建/写入前先经协调器分发托管
-	// models.json（旧 distro 不重装即获得托管更新；损坏目标在此阻断，后续
-	// overlay 的宽松 merge 不再触碰损坏文件）。登录路径的托管分发并入 A2
-	// 闸门同一供给运行（defaultRunWSLLoginSupply）。
-	if wslDistro != "" && loginPreset == nil && providerID != "" {
-		if err := a.runWSLManagedModelsAtLaunch(wslDistro); err != nil {
-			a.Log.Error("pi", "WSL 托管 provider 配置分发阻断启动", err.Error())
-			return "", err
-		}
-	}
-	if loginPreset == nil && providerID != "" {
-		// 与 LaunchCodexSession/LaunchOmpSession 对称：models.json 写入与后台
-		// provider sync（syncProvidersToHarnessesLocked）互斥，防止并发改写。
-		// 锁纪律（S1 diting F1）：临界区整体收进 writePiProviderModelsAtLaunch
-		//（内部 defer Unlock）——任何 return 路径（含 WSL 构建失败阻断）不再
-		// 泄漏锁；v1.3.13 事故同位置的结构性防再犯。
-		var writeErr error
-		launchSettings, writeErr = a.writePiProviderModelsAtLaunch(providerID, launchSettings, presetParams, wslDistro, envOverrides)
-		if writeErr != nil {
-			return "", writeErr
-		}
-	}
-
-	// Preserve the login stable key for desktop restart, not just its resolved model.
-	if loginPreset != nil {
-		modelName = loginPresetRef
-	}
-	// Embedded identity stays hidden until its exact PTY run is active.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypePi, "pi", providerID, launchSettings.Model, launchMode, workDir)
-	if err != nil {
-		return "", err
-	}
-	authorityCommitted := authorityReservation == nil
-	defer func() {
-		if !authorityCommitted && authorityReservation != nil {
-			a.Sessions.AbortCreate(authorityReservation)
-		}
-	}()
-	a.Log.Info("session", "Pi 会话身份已预留", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
-
-	// 调试日志：输出 envOverrides 注入情况
-	envKeys := make([]string, 0, len(envOverrides))
-	for k := range envOverrides {
-		envKeys = append(envKeys, k)
-	}
-	a.Log.Info("pi", "envOverrides keys", fmt.Sprintf("%v", envKeys))
-
-	// 内嵌终端模式：使用 ConPTY
-	if launchMode == session.ModeEmbedded {
-		// T-1.5：为 embedded pi 注入 webui 端口（契约 v1.0.2 §7.2 通道 1）。
-		// 仅 appType=pi 的本路径注入，不影响其他 CLI 与外部终端模式。
-		// 分配失败不阻断启动：扩展无 env 时自选端口并写注册表（§7.2 通道 2），
-		// codebox 探测侧走注册表回退发现。
-		webuiPort := 0
-		if p, pErr := webui.AllocateFreePort(); pErr == nil {
-			webuiPort = p
-			envOverrides["AMAGI_WEBUI_PORT"] = strconv.Itoa(p)
-		} else {
-			a.Log.Warn("webui", "webui 空闲端口分配失败，走注册表回退发现", pErr.Error())
-		}
-
-		// v1.0.2：生成每会话 capability token 并经 AMAGI_WEBUI_TOKEN 注入；
-		// 与端口注入解耦（端口分配失败也注入 token——扩展自选端口仍强制校验，
-		// 探测侧可从注册表条目补读）。生成失败不阻断启动，探测退化为无 token。
-		webuiToken := ""
-		if tok, tErr := webui.GenerateToken(); tErr == nil {
-			webuiToken = tok
-			envOverrides["AMAGI_WEBUI_TOKEN"] = tok
-		} else {
-			a.Log.Warn("webui", "webui capability token 生成失败，探测不带 token", tErr.Error())
-		}
-
-		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
-		baseEnv := a.EnvVars.MergeWithSystem()
-		env := launcher.BuildEnv(baseEnv, envOverrides)
-		if wslDistro != "" {
-			// Windows 路径值变量的剥离已上移到 resolveEmbeddedLaunchSpec（全引擎
-			// 统一 WSL 防线，覆盖五前缀 + 精确键 + 自定义键）。
-			// fd/ripgrep 一次探测 + WARN（PI_OFFLINE=1 保留转发，避免 pi 启动时联网
-			// 下载工具卡住；缺工具时给出安装引导）。
-			a.warnWSLSearchToolsOnce(wslDistro)
-		}
-
-		args := []string{}
-		if launchSettings.Provider != "" {
-			args = append(args, "--provider", launchSettings.Provider)
-		}
-		if launchSettings.Model != "" {
-			args = append(args, "--model", launchSettings.Model)
-		}
-		if launchSettings.Thinking != "" {
-			args = append(args, "--thinking", launchSettings.Thinking)
-		}
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypePi, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			return "", err
-		}
-		workDir = spec.WorkDir
-
-		if loginPreset != nil {
-			if spec.BootstrapMode == platform.BootstrapWSL {
-				// A2 闸门解除（主上裁定 2026-10-16，推翻 docs/developer/
-				// pi-login-providers.md 「WSL 拒绝」旧契约）：WSL 会话消费 distro
-				// 内凭据副本。放行前先经 wslsupply 协调器做惰性同步校验（Windows 侧
-				// auth.json ↔ distro 双向新者为准；失败降级/报错语义见
-				// syncWSLPiLoginAuthAtLaunch），再以 WSL 锚定变体重锚（载荷只剩
-				// env -u 重锚，P3-S0 起桌面/remote 共用同一执行边界）。
-				if err := a.syncWSLPiLoginAuthAtLaunch(wslDistro); err != nil {
-					a.Sessions.MarkFailed(sess.ID, err.Error())
-					return "", err
-				}
-				spec = piLoginWSLReAnchorSpec(spec, login.AgentDir)
-			} else {
-				// R3：POSIX shell startup 文件在 CLI 之前运行，可能重导出覆盖变量；
-				// 在最终执行边界重新锚定 canonical root 并剥离凭据。
-				spec = piLoginReAnchorSpec(spec, login.AgentDir)
-			}
-		}
-		recipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
-		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			a.Log.Error("session", "Pi PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-			return "", fmt.Errorf("start pi pty: %w", err)
-		}
-		authorityCommitted = true
-		a.Sessions.SetPID(sess.ID, pid)
-		a.Log.Info("session", "Pi PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
-		// T-1.5：注册 webui 探测（携带注入端口、pid 与 v1.0.2 token，供
-		// /api/info 探测与注册表回退匹配；webuiPort=0 表示纯注册表发现）。
-		a.WebUI.RegisterSession(sess.ID, pid, webuiPort, webuiToken)
-
-		go func(id string) {
-			for a.Pty.IsRunning(id) {
-				select {
-				case <-a.ctx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-			a.Sessions.MarkExited(id)
-			a.WebUI.Invalidate(id)
-			a.Log.Info("session", "Pi PTY进程已退出", "id="+id)
-		}(sess.ID)
-
-		return sess.ID, nil
-	}
-
-	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.LaunchPi(sess.ID, launchSettings.Provider, launchSettings.Model, launchSettings.Thinking, launchMode, workDir, envOverrides)
-	if err != nil {
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		a.Log.Error("session", "Pi 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-		return "", fmt.Errorf("launch pi: %w", err)
-	}
-	externalBindingKey, externalBindingRegistered, err := a.registerExternalProcessEvidence(result)
-	if err != nil {
-		closeUnregisteredExternalEvidence(context.Background(), result)
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	externalRecipe := stableDesktopRecipe(session.AppTypePi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
-	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
-		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-
-	a.Sessions.SetPID(sess.ID, result.PID)
-	a.Log.Info("session", "Pi 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
-
-	go func(id string) {
-		for a.Launcher.IsRunning(id) {
-			select {
-			case <-a.ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-		}
-		a.Sessions.MarkExited(id)
-		a.Log.Info("session", "Pi 进程已退出", "id="+id)
-	}(sess.ID)
-
-	return sess.ID, nil
-}
-
-// syncWSLPiLoginAuthAtLaunch 是 WSL Pi 登录会话的启动闸门（A2 主上裁定
-// 2026-10-16；P3-S0 起改经 wslsupply 协调器，判定语义与日志文案不变）：
-// 放行前先做惰性同步校验。语义：
-//   - 同步成功（Copied/Fresh）→ 放行；
-//   - 同步失败但 distro 侧已有（可能陈旧的）auth.json 副本 → 记 WARN 降级
-//     放行（旧凭据可能仍可用）；
-//   - 同步失败且 distro 侧无副本（或状态不可探明）→ 中文报错拒绝启动
-//     （C5：保留错误路径文案中文化）；
-//   - Windows 侧 auth.json 缺失 → 登录失效语义（正常路径下
-//     resolvePiLoginLaunch→RequirePiLogin 已先行拒绝，此处只兑容启动中途
-//     退出登录的极端时序）。
-//
-// distro 为空时重深一次 DefaultWSLDistro（B6 类镜像/spec 分叉兑底）；
-// 供给经 runWSLLoginSupplyFn 接缝满入（统一 TargetRef/Apply 原语），单测可
-// 替换；闸门判定与 remote effect 共用 verdictForWSLLoginSupply（两链路一致）。
-func (a *App) syncWSLPiLoginAuthAtLaunch(distro string) error {
-	if strings.TrimSpace(distro) == "" {
-		distro = platform.DefaultWSLDistro(nil)
-	}
-	res, err := runWSLLoginSupplyFn(context.Background(), a.WSLSupply, distro)
-	verdict := verdictForWSLLoginSupply(res, err)
-	if verdict.launchErr != nil {
-		return verdict.launchErr
-	}
-	if verdict.warn {
-		a.Log.Warn("pi", verdict.message, verdict.detail)
-	} else if verdict.info {
-		a.Log.Info("pi", verdict.message, verdict.detail)
-	}
-	return nil
-}
-
 // markWSLSupplyDirty 在 providerSync/配置保存事件后向 WSL 供给状态发布来源
 // revision（P3-S0 空实现位：只落 desired revision，不探测不调度；S1 接真实
 // 分发）。失败仅告警，绝不阻塞宿主保存——「宿主保存成功」与「WSL 已同步」
@@ -3961,1741 +1269,6 @@ func (a wslsupplySupplyLog) Warn(scope, msg, detail string) {
 	}
 }
 
-// errStringForLog 把 error 转为日志 detail 字符串（nil → 空串）。
-func errStringForLog(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
-// LaunchOmpSession 启动一个新的 Oh My Pi (omp) 会话（完整复刻 LaunchPiSession）。
-//
-// omp 与 pi 同源：同样的 --provider/--model/--thinking CLI 契约、同样的
-// PI_CODING_AGENT_DIR agent 根重定位、同样的会话 JSONL 结构。差异：
-//   - agent 根为 ~/.omp/agent（defaultOmpAgentDir），models.yml 为 YAML 格式；
-//   - 模型选择走 --model provider/model（--provider 为 legacy 仍可用）；
-//   - 插件管理由 internal/ompplugin 服务承载（omp plugin list --json + 写操作
-//     CLI，npm 与 marketplace 双源，接线见 bind_list.go）。
-//
-// 主链路：terminal_presets 桥接（type "omp"）→ 写 ~/.omp/agent/models.yml
-// （BuildOmpModelsConfig + MergeOmpModelsConfig + WriteOmpAgentConfig，成功则
-// Provider=amagi-<name>，失败回退 ompProviderMapping）→ embedded/terminal 双模式。
-func (a *App) LaunchOmpSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
-	if err := a.Config.RejectPiLoginLaunchRefs(providerID, modelName); err != nil {
-		return "", err
-	}
-	a.Log.Info("session", "启动 omp 会话请求", fmt.Sprintf("model=%s provider=%s mode=%s workDir=%s shell=%s", modelName, providerID, mode, workDir, shellPath))
-
-	// ---- terminal_presets 桥接 ----
-	// modelName 可能是 terminal_preset 的 stable key（形如 "provider/presetName"）。
-	// 回退语义：先查 openai 桶（omp 原生桶，撞名优先），miss 后仅当 anthropic 桶
-	// 预设带 HarnessSync 标记（opt-in）才命中；unmarked anthropic 预设不解析。
-	tpProvider, tp, tpErr := a.Config.ResolvePiOmpTerminalPreset(modelName)
-	tpFound := tpErr == nil && tp != nil
-	// presetParams 收集命中的预设参数（contextWindow/thinking/effort/maxTokens），
-	// 供后续写入 omp models.yml 的 model 配置与解析 --thinking 级别。
-	var presetParams config.Parameters
-	if tpFound {
-		if tpProvider != "" {
-			providerID = tpProvider
-		}
-		modelName = tp.Model
-		presetParams = tp.Parameters
-		a.Log.Info("session", "omp 命中 terminal_preset", fmt.Sprintf("key=%s provider=%s model=%s", modelName, tpProvider, tp.Model))
-	}
-
-	// ---- legacy provider preset fallback ----
-	// 若未命中新体系，且 providerID 非空，检查是否是旧的 provider.Presets key。
-	if !tpFound && providerID != "" {
-		if provider, pErr := a.Config.GetProvider(providerID); pErr == nil {
-			if preset, ok := provider.Presets[modelName]; ok {
-				resolvedModel := preset.Model
-				if resolvedModel == "" {
-					resolvedModel = provider.DefaultModel
-				}
-				a.Log.Info("session", "omp 命中旧 provider preset", fmt.Sprintf("key=%s presetModel=%s defaultModel=%s -> resolved=%s", modelName, preset.Model, provider.DefaultModel, resolvedModel))
-				modelName = resolvedModel
-				presetParams = preset.Parameters
-			}
-		}
-	}
-
-	// 确定启动模式
-	launchMode := embeddedDefaultLaunchMode(mode)
-	if err := a.validateLaunchMode(string(launchMode)); err != nil {
-		return "", err
-	}
-
-	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
-	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
-	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
-	//（纯目标判据，零探测）。
-	requestedWorkDir := workDir
-	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
-	if wdErr != nil {
-		return "", wdErr
-	}
-	workDir = resolvedWorkDir
-
-	// WSL 终端模式判定（与 LaunchPiSession 对称，见其注释）。
-	wslDistro := ""
-	if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
-		wslDistro = platform.DefaultWSLDistro(nil)
-		if wslDistro == "" {
-			a.Log.Warn("omp", "WSL shell 会话但无可用发行版，配置仍写 Windows 侧", "")
-		}
-	}
-
-	launchSettings := ompLaunchSettings{
-		Model: strings.TrimSpace(modelName),
-	}
-
-	// 构建环境变量注入 + omp models.yml 配置写入。
-	//
-	// omp 从标准用户目录 ~/.omp/agent 读取 models.yml 的 providers 配置。
-	// amagi 把当前选中的 provider 翻译成 omp 的一个自定义命名 provider（"amagi-<name>"），
-	// 合并写入 ~/.omp/agent/models.yml。启动时显式移除 PI_CODING_AGENT_DIR，
-	// 避免系统或 CodeBox 自定义环境里的旧值又把 omp 导向独立副本
-	//（实测：PI_CODING_AGENT_DIR 只重定位会话目录，models.yml 始终从默认根读取）。
-	envOverrides := map[string]string{
-		// BuildEnv 约定：空值表示从子进程环境中删除该变量。
-		"PI_CODING_AGENT_DIR": "",
-	}
-	// 与 Pi 会话同理：跳过 omp 启动期网络操作（目录刷新/版本检查），避免网络
-	// 抖动时启动挂起；不影响模型推理。omp 与 pi 同源，读取同名环境变量。
-	if _, explicit := a.EnvVars.Get("PI_OFFLINE"); !explicit {
-		envOverrides["PI_OFFLINE"] = "1"
-	}
-	if providerID != "" {
-		// 临界区整体收进 writeOmpProviderModelsAtLaunch（与 Pi 的
-		// writePiProviderModelsAtLaunch 对称，D5）：WSL 路径构建/写入失败均阻断，
-		// 不静默回退丢自定义 baseURL 的 ompProviderMapping 兜底。
-		var ompWriteErr error
-		launchSettings, ompWriteErr = a.writeOmpProviderModelsAtLaunch(providerID, launchSettings, presetParams, wslDistro, envOverrides)
-		if ompWriteErr != nil {
-			return "", ompWriteErr
-		}
-	}
-
-	// Embedded identity stays hidden until its exact PTY run is active.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOhMyPi, "omp", providerID, launchSettings.Model, launchMode, workDir)
-	if err != nil {
-		return "", err
-	}
-	authorityCommitted := authorityReservation == nil
-	defer func() {
-		if !authorityCommitted && authorityReservation != nil {
-			a.Sessions.AbortCreate(authorityReservation)
-		}
-	}()
-	a.Log.Info("session", "omp 会话身份已预留", fmt.Sprintf("id=%s provider=%s model=%s mode=%s", sess.ID, launchSettings.Provider, launchSettings.Model, launchMode))
-
-	// 调试日志：输出 envOverrides 注入情况
-	envKeys := make([]string, 0, len(envOverrides))
-	for k := range envOverrides {
-		envKeys = append(envKeys, k)
-	}
-	a.Log.Info("omp", "envOverrides keys", fmt.Sprintf("%v", envKeys))
-
-	// 内嵌终端模式：使用 ConPTY
-	if launchMode == session.ModeEmbedded {
-		// 注入自定义环境变量（自定义 > 系统，再被 envOverrides 覆盖）
-		baseEnv := a.EnvVars.MergeWithSystem()
-		env := launcher.BuildEnv(baseEnv, envOverrides)
-		if wslDistro != "" {
-			// 与 LaunchPiSession 对称：Windows 路径值剥离已上移到
-			// resolveEmbeddedLaunchSpec；此处保留 fd/rg 探测。
-			a.warnWSLSearchToolsOnce(wslDistro)
-		}
-
-		args := []string{}
-		if launchSettings.Provider != "" {
-			args = append(args, "--provider", launchSettings.Provider)
-		}
-		if launchSettings.Model != "" {
-			args = append(args, "--model", launchSettings.Model)
-		}
-		if launchSettings.Thinking != "" {
-			args = append(args, "--thinking", launchSettings.Thinking)
-		}
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOhMyPi, string(launchMode), shellPath, workDir, requestedWorkDir, env, args)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			return "", err
-		}
-		workDir = spec.WorkDir
-
-		recipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
-		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			a.Log.Error("session", "omp PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-			return "", fmt.Errorf("start omp pty: %w", err)
-		}
-		authorityCommitted = true
-		a.Sessions.SetPID(sess.ID, pid)
-		a.Log.Info("session", "omp PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
-
-		go func(id string) {
-			for a.Pty.IsRunning(id) {
-				select {
-				case <-a.ctx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-			a.Sessions.MarkExited(id)
-			a.Log.Info("session", "omp PTY进程已退出", "id="+id)
-		}(sess.ID)
-
-		return sess.ID, nil
-	}
-
-	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	result, err := a.Launcher.LaunchOmp(sess.ID, launchSettings.Provider, launchSettings.Model, launchSettings.Thinking, launchMode, workDir, envOverrides)
-	if err != nil {
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		a.Log.Error("session", "omp 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-		return "", fmt.Errorf("launch omp: %w", err)
-	}
-	externalBindingKey, externalBindingRegistered, err := a.registerExternalProcessEvidence(result)
-	if err != nil {
-		closeUnregisteredExternalEvidence(context.Background(), result)
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	externalRecipe := stableDesktopRecipe(session.AppTypeOhMyPi, workDir, providerID, modelName, launchSettings.Model, shellPath, false)
-	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
-		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-
-	a.Sessions.SetPID(sess.ID, result.PID)
-	a.Log.Info("session", "omp 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
-
-	go func(id string) {
-		for a.Launcher.IsRunning(id) {
-			select {
-			case <-a.ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-		}
-		a.Sessions.MarkExited(id)
-		a.Log.Info("session", "omp 进程已退出", "id="+id)
-	}(sess.ID)
-
-	return sess.ID, nil
-}
-
-func normalizeCodexModelName(modelName string) string {
-	trimmed := strings.TrimSpace(modelName)
-	lower := strings.ToLower(trimmed)
-	if strings.HasSuffix(lower, "[1m]") {
-		trimmed = strings.TrimSpace(trimmed[:len(trimmed)-len("[1m]")])
-	}
-	return trimmed
-}
-
-// syncCodexConfigModel updates the top-level model in an existing Codex config.toml
-// and removes amagi-managed provider state so official Codex login can recover.
-func syncCodexConfigModel(model string) error {
-	codexHome, err := platform.CodexHomeDir(os.Environ())
-	if err != nil {
-		return fmt.Errorf("get Codex home: %w", err)
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-	return syncCodexConfigFile(configPath, codexConfigSyncOptions{Model: model, CleanupManagedConfig: true})
-}
-
-func syncCodexCustomProviderConfig(model, baseURL, wireAPI string) error {
-	codexHome, err := platform.CodexHomeDir(os.Environ())
-	if err != nil {
-		return fmt.Errorf("get Codex home: %w", err)
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-	return syncCodexCustomProviderConfigFile(configPath, model, baseURL, wireAPI)
-}
-
-func syncCodexCustomProviderConfigFile(configPath, model, baseURL, wireAPI string) error {
-	if strings.TrimSpace(model) == "" {
-		return fmt.Errorf("codex model is empty")
-	}
-	if strings.TrimSpace(baseURL) == "" {
-		return fmt.Errorf("codex provider base_url is empty")
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("create codex config dir: %w", err)
-	}
-	return syncCodexConfigFile(configPath, codexConfigSyncOptions{
-		Model:                model,
-		ModelProvider:        codexModelProviderName,
-		ProviderBaseURL:      baseURL,
-		WireAPI:              wireAPI,
-		EnsureCustomProvider: true,
-		ForceAPILogin:        true,
-	})
-}
-
-func syncCodexConfigFile(configPath string, opts codexConfigSyncOptions) error {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) || !opts.EnsureCustomProvider {
-			return fmt.Errorf("read config.toml: %w", err)
-		}
-	}
-	rendered, err := renderCodexConfig(data, configPath, opts)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, rendered, 0644)
-}
-
-// renderCodexConfig is the pure Codex TOML transform shared by desktop writes
-// and the transactional remote executor. The caller owns durable file I/O.
-func renderCodexConfig(data []byte, configPath string, opts codexConfigSyncOptions) ([]byte, error) {
-	content := string(data)
-	lines := []string{}
-	if content != "" {
-		lines = strings.Split(content, "\n")
-	}
-
-	if opts.EnsureCustomProvider {
-		lines = removeCodexManagedProviderSection(lines, opts.ModelProvider)
-		topLevelAssignments := []string{
-			"model = " + strconv.Quote(opts.Model),
-			"model_provider = " + strconv.Quote(opts.ModelProvider),
-		}
-		if opts.ForceAPILogin {
-			topLevelAssignments = append(topLevelAssignments, "forced_login_method = "+strconv.Quote("api"))
-		}
-		lines = syncCodexTopLevelAssignments(lines, topLevelAssignments, true)
-		lines = appendCodexCustomProviderSection(lines, opts.ModelProvider, opts.ProviderBaseURL, opts.WireAPI)
-	} else {
-		if opts.CleanupManagedConfig {
-			lines = cleanupCodexManagedProviderConfig(lines, codexModelProviderName)
-		}
-		updated := syncCodexTopLevelAssignments(lines, []string{"model = " + strconv.Quote(opts.Model)}, false)
-		if countTopLevelAssignment(updated, "model") == 0 {
-			return nil, fmt.Errorf("top-level model field not found in %s", configPath)
-		}
-		lines = updated
-	}
-	return []byte(strings.Join(lines, "\n")), nil
-}
-
-func syncCodexTopLevelAssignments(lines []string, assignmentLines []string, insertMissing bool) []string {
-	wanted := make(map[string]string, len(assignmentLines))
-	order := make([]string, 0, len(assignmentLines))
-	seen := make(map[string]bool, len(assignmentLines))
-	for _, assignment := range assignmentLines {
-		key, ok := tomlAssignmentKey(strings.TrimSpace(assignment))
-		if !ok {
-			continue
-		}
-		wanted[key] = assignment
-		order = append(order, key)
-	}
-
-	updated := make([]string, 0, len(lines)+len(assignmentLines)+1)
-	inTopLevel := true
-	insertMissingBeforeSection := func() {
-		if !insertMissing {
-			return
-		}
-		for _, key := range order {
-			if !seen[key] {
-				updated = append(updated, wanted[key])
-				seen[key] = true
-			}
-		}
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if inTopLevel && isTomlTableHeader(trimmed) {
-			insertMissingBeforeSection()
-			inTopLevel = false
-		}
-
-		if inTopLevel {
-			if key, ok := tomlAssignmentKey(trimmed); ok {
-				if replacement, exists := wanted[key]; exists {
-					if seen[key] {
-						continue
-					}
-					updated = append(updated, replacement)
-					seen[key] = true
-					continue
-				}
-			}
-		}
-
-		updated = append(updated, line)
-	}
-
-	insertMissingBeforeSection()
-	return trimTrailingEmptyLines(updated)
-}
-
-func removeCodexManagedProviderSection(lines []string, modelProvider string) []string {
-	if modelProvider == "" {
-		return lines
-	}
-	providerHeader := "[model_providers." + modelProvider + "]"
-	providerSubHeaderPrefix := "[model_providers." + modelProvider + "."
-	updated := make([]string, 0, len(lines))
-	skipOwnedBlock := false
-	skipProviderSection := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "# === amagi-codebox-inject-start ===" {
-			skipOwnedBlock = true
-			continue
-		}
-		if skipOwnedBlock {
-			if trimmed == "# === amagi-codebox-inject-end ===" {
-				skipOwnedBlock = false
-			}
-			continue
-		}
-		if isTomlTableHeader(trimmed) {
-			if trimmed == providerHeader || strings.HasPrefix(trimmed, providerSubHeaderPrefix) {
-				skipProviderSection = true
-				continue
-			}
-			skipProviderSection = false
-		}
-		if skipProviderSection {
-			continue
-		}
-		updated = append(updated, line)
-	}
-	return trimTrailingEmptyLines(updated)
-}
-
-func cleanupCodexManagedProviderConfig(lines []string, modelProvider string) []string {
-	if modelProvider == "" {
-		return lines
-	}
-	managedTopLevelProvider := topLevelAssignmentValueEquals(lines, "model_provider", modelProvider)
-
-	lines = removeCodexManagedProviderSection(lines, modelProvider)
-	updated := make([]string, 0, len(lines))
-	inTopLevel := true
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if inTopLevel && isTomlTableHeader(trimmed) {
-			inTopLevel = false
-		}
-		if inTopLevel {
-			if key, ok := tomlAssignmentKey(trimmed); ok {
-				switch key {
-				case "model_provider":
-					if tomlAssignmentValueEquals(trimmed, modelProvider) {
-						continue
-					}
-				case "forced_login_method":
-					if managedTopLevelProvider && tomlAssignmentValueEquals(trimmed, "api") {
-						continue
-					}
-				}
-			}
-		}
-		updated = append(updated, line)
-	}
-	return trimTrailingEmptyLines(updated)
-}
-
-func topLevelAssignmentValueEquals(lines []string, key, value string) bool {
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if isTomlTableHeader(trimmed) {
-			return false
-		}
-		if gotKey, ok := tomlAssignmentKey(trimmed); ok && gotKey == key {
-			return tomlAssignmentValueEquals(trimmed, value)
-		}
-	}
-	return false
-}
-
-func tomlAssignmentValueEquals(trimmedLine, value string) bool {
-	idx := strings.Index(trimmedLine, "=")
-	if idx == -1 {
-		return false
-	}
-	rawValue := strings.TrimSpace(trimmedLine[idx+1:])
-	if rawValue == "" {
-		return false
-	}
-	if rawValue[0] == '"' || rawValue[0] == '\'' {
-		quote := rawValue[0]
-		for i := 1; i < len(rawValue); i++ {
-			if quote == '"' && rawValue[i] == '\\' {
-				i++
-				continue
-			}
-			if rawValue[i] == quote {
-				literal := rawValue[:i+1]
-				if quote == '\'' {
-					return literal[1:len(literal)-1] == value
-				}
-				unquoted, err := strconv.Unquote(literal)
-				return err == nil && unquoted == value
-			}
-		}
-	}
-	if commentIdx := strings.Index(rawValue, "#"); commentIdx != -1 {
-		rawValue = strings.TrimSpace(rawValue[:commentIdx])
-	}
-	if unquoted, err := strconv.Unquote(rawValue); err == nil {
-		return unquoted == value
-	}
-	return strings.Trim(rawValue, "\"'") == value
-}
-
-// codexWireAPI 把 provider 侧的 wire_api 归一化为 Codex config.toml / -c 覆盖
-// 的合法值：仅 "chat"（trim+小写后）走 Chat Completions，其余（未设置、
-// "responses"、非法值）一律返回 "responses" —— 与既有硬编码 wire_api="responses"
-// 的 legacy 行为完全一致，保证未设置时零变化。
-func codexWireAPI(wireAPI string) string {
-	if strings.ToLower(strings.TrimSpace(wireAPI)) == config.WireAPIChat {
-		return config.WireAPIChat
-	}
-	return config.WireAPIResponses
-}
-
-func appendCodexCustomProviderSection(lines []string, modelProvider, baseURL, wireAPI string) []string {
-	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
-		lines = append(lines, "")
-	}
-	lines = append(lines,
-		"# === amagi-codebox-inject-start ===",
-		"[model_providers."+modelProvider+"]",
-		"name = "+strconv.Quote(modelProvider),
-		"base_url = "+strconv.Quote(baseURL),
-		"env_key = "+strconv.Quote("OPENAI_API_KEY"),
-		"requires_openai_auth = false",
-		"wire_api = "+strconv.Quote(codexWireAPI(wireAPI)),
-		"# === amagi-codebox-inject-end ===",
-	)
-	return lines
-}
-
-// --- Codex global headroom openai_base_url marker block ---
-//
-// syncCodexGlobalHeadroomConfig writes or removes the top-level openai_base_url
-// assignment that routes codex desktop traffic through the independent
-// codex-global headroom proxy (port 8788). It is intentionally separate from
-// syncCodexConfigFile / syncCodexCustomProviderConfigFile:
-//
-//   - It uses a distinct marker pair (amagi-headroom-global-start/-end) so the
-//     provider-section cleanup (removeCodexManagedProviderSection /
-//     cleanupCodexManagedProviderConfig) never strips it, and so a model-only
-//     sync (syncCodexConfigModel) leaves the openai_base_url intact.
-//   - It edits the file surgically (line-based) to preserve every other config
-//     key (plugins / marketplaces / mcp_servers / profiles / ...).
-//   - It backs up the previous content to config.toml.bak.<ts> before writing.
-//
-// enabled=true inserts/refreshes the block; enabled=false removes it. Both paths
-// are idempotent: re-running with the same state is a no-op (apart from a fresh
-// backup when content actually changes).
-func syncCodexGlobalHeadroomConfig(enabled bool, port int) error {
-	codexHome, err := platform.CodexHomeDir(os.Environ())
-	if err != nil {
-		return fmt.Errorf("get Codex home: %w", err)
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-
-	previous, err := os.ReadFile(configPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("read codex config.toml: %w", err)
-		}
-		// No config yet. Only create one when enabling; disabling is a no-op.
-		if !enabled {
-			return nil
-		}
-		previous = nil
-	}
-
-	content := string(previous)
-	lines := splitTomlLinesSafe(content)
-	originalJoined := strings.Join(lines, "\n")
-
-	lines = removeCodexGlobalHeadroomBlock(lines)
-	if enabled {
-		if port <= 0 {
-			port = CodexGlobalHeadroomDefaultPort
-		}
-		lines = insertCodexGlobalHeadroomBlock(lines, port)
-	}
-
-	updatedJoined := strings.Join(lines, "\n")
-	if updatedJoined == originalJoined {
-		// Idempotent no-op: avoid touching mtimes / writing a backup when the
-		// desired state is already present.
-		return nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("create codex config dir: %w", err)
-	}
-	return writeCodexConfigWithBackup(configPath, []byte(updatedJoined), previous)
-}
-
-// removeCodexGlobalHeadroomBlock strips the amagi-headroom-global marker block
-// (inclusive of both marker lines and any lines between them). It is a no-op
-// when the block is absent and is safe to run on config that also contains the
-// amagi-codebox-inject block (the markers are distinct).
-func removeCodexGlobalHeadroomBlock(lines []string) []string {
-	updated := make([]string, 0, len(lines))
-	skip := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == codexGlobalHeadroomMarkerStart {
-			skip = true
-			continue
-		}
-		if skip {
-			if trimmed == codexGlobalHeadroomMarkerEnd {
-				skip = false
-			}
-			continue
-		}
-		updated = append(updated, line)
-	}
-	// A removed block often leaves a doubled blank line behind; collapse only
-	// runs of 2+ blanks introduced around the removed region without touching
-	// intentional spacing elsewhere is overkill -- trimTrailingEmptyLines keeps
-	// the tail tidy which is the only place a dangling blank survives.
-	return trimTrailingEmptyLines(updated)
-}
-
-// insertCodexGlobalHeadroomBlock inserts a fresh marker block containing the
-// top-level openai_base_url assignment. The block is placed at the end of the
-// top-level region (immediately before the first [section] header) so the
-// assignment stays top-level in TOML terms; when the file has no section it is
-// appended at the end. An existing stray top-level openai_base_url outside any
-// marker block is removed first to avoid a duplicate key (TOML forbids
-// duplicate top-level keys).
-func insertCodexGlobalHeadroomBlock(lines []string, port int) []string {
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
-	block := []string{
-		codexGlobalHeadroomMarkerStart,
-		"openai_base_url = " + strconv.Quote(baseURL),
-		codexGlobalHeadroomMarkerEnd,
-	}
-
-	// Drop any pre-existing top-level openai_base_url so we never emit a
-	// duplicate top-level key (which would make the TOML invalid).
-	cleaned := make([]string, 0, len(lines))
-	inTopLevel := true
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if inTopLevel && isTomlTableHeader(trimmed) {
-			inTopLevel = false
-		}
-		if inTopLevel {
-			if key, ok := tomlAssignmentKey(trimmed); ok && key == "openai_base_url" {
-				continue
-			}
-		}
-		cleaned = append(cleaned, line)
-	}
-
-	// Find the index of the first section header and insert the block just
-	// before it; fall back to appending at the end when there is no section.
-	insertAt := len(cleaned)
-	inTopLevel = true
-	for i, line := range cleaned {
-		trimmed := strings.TrimSpace(line)
-		if inTopLevel && isTomlTableHeader(trimmed) {
-			insertAt = i
-			break
-		}
-		if isTomlTableHeader(trimmed) {
-			inTopLevel = false
-		}
-	}
-
-	out := make([]string, 0, len(cleaned)+len(block)+2)
-	out = append(out, cleaned[:insertAt]...)
-	// Separate the block from preceding top-level content with a blank line when
-	// there is content above and it is not already blank.
-	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
-		out = append(out, "")
-	}
-	out = append(out, block...)
-	out = append(out, cleaned[insertAt:]...)
-	return out
-}
-
-// splitTomlLinesSafe normalizes CR/CRLF to LF and splits into lines. Unlike the
-// codexplugin variant it never returns nil for empty input (returns an empty
-// slice) so downstream join logic is uniform.
-func splitTomlLinesSafe(content string) []string {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-	return strings.Split(content, "\n")
-}
-
-// writeCodexConfigWithBackup writes next to path, backing up previous to
-// path.bak.<YYYYMMDDHHMMSS_msec>_<rand4> first (only when previous is non-empty).
-// The timestamp carries millisecond precision plus a short random suffix so two
-// writes within the same second (or even same millisecond) do not silently
-// overwrite each other's backup. It matches the codexplugin.writeConfigWithBackup
-// contract but lives in package main so the global-headroom config layer does
-// not depend on internal/codexplugin internals. Mode preserves the existing file
-// mode (default 0600).
-func writeCodexConfigWithBackup(path string, next []byte, previous []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create codex config dir: %w", err)
-	}
-	if len(previous) > 0 {
-		backupPath := fmt.Sprintf("%s.bak.%s.%s", path, time.Now().Format("20060102150405.000"), randHexSuffix(4))
-		if err := os.WriteFile(backupPath, previous, 0600); err != nil {
-			return fmt.Errorf("backup codex config.toml: %w", err)
-		}
-	}
-	mode := os.FileMode(0600)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config.toml.*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temporary codex config: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(next); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temporary codex config: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temporary codex config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temporary codex config: %w", err)
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		return fmt.Errorf("chmod temporary codex config: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace codex config.toml: %w", err)
-	}
-	cleanup = false
-	return nil
-}
-
-// randHexSuffix returns a short random hex string of byteLen*2 hex characters
-// (e.g. byteLen=4 -> 8 hex chars). It is used to disambiguate config backups
-// that land within the same clock millisecond. On any read error it falls back
-// to a fixed string so the caller never fails solely because the suffix could
-// not be generated.
-func randHexSuffix(byteLen int) string {
-	if byteLen <= 0 {
-		byteLen = 4
-	}
-	b := make([]byte, byteLen)
-	if _, err := rand.Read(b); err != nil {
-		return "00000000"[:byteLen*2]
-	}
-	return hex.EncodeToString(b)
-}
-
-// removeCodexGlobalHeadroomConfig is the package-level disable entry used by the
-// envcheck uninstall hook (stopAllHeadroomForUninstall) which does not have
-// access to the App-bound wrapper. It removes the marker block best-effort and
-// is idempotent.
-func removeCodexGlobalHeadroomConfig() error {
-	return syncCodexGlobalHeadroomConfig(false, 0)
-}
-
-// stopAllHeadroomForUninstall is the headroom stopper injected into envcheck so
-// CleanHeadroom terminates BOTH proxy child processes before the shared venv is
-// removed. On Windows a running headroom.exe inside the venv is locked by the OS
-// and os.RemoveAll would fail; stopping both instances first avoids that. When
-// the codex-global switch was persisted on, it also clears the openai_base_url
-// marker block and persistence so codex does not keep pointing at the removed
-// proxy (a dead openai_base_url would break codex until manually fixed).
-//
-// R3-002: when the coordinator rejects because active sessions hold headroom
-// leases, this returns envcheck.ErrHeadroomInUse (wrapping the coordinator
-// detail) so CleanHeadroom treats it as a FATAL rejection and aborts BEFORE the
-// venv is removed. Plain stop failures (process already dead, etc.) remain
-// best-effort and non-fatal. Individual failures are logged.
-func (a *App) stopAllHeadroomForUninstall() (error, func()) {
-	if a.isExternalCleanupRecoveryBlocked() {
-		return fmt.Errorf("%w: %w", envcheck.ErrHeadroomInUse, remote.ErrSharedServiceInUse), func() {}
-	}
-	// M-006 / R3-002: consult the coordinator BEFORE tearing down shared headroom.
-	// R4-002 (TOCTOU): instead of two instantaneous LeaseCount checks (which left a
-	// window for a concurrent launch to acquire a lease before RemoveAll), this
-	// enters a SINGLE install-drain critical section on the SharedServiceCoordinator
-	// that blocks new AcquireForRun for BOTH headroom kinds, confirms both are
-	// lease-free, and stays held until CleanHeadroom finishes the venv removal. It
-	// returns (stopErr, releaseDrain): releaseDrain releases the drain and is
-	// invoked by CleanHeadroom via defer after RemoveAll (or on abort). When
-	// existing leases are present, it returns ErrHeadroomInUse (fatal) plus the
-	// releaseDrain (still set so the caller releases the drain it entered).
-	release := func() {} // default no-op when coordinator is absent
-	if a.sharedCoord != nil {
-		empty := a.sharedCoord.BeginHeadroomUninstallDrain()
-		release = a.sharedCoord.EndHeadroomUninstallDrain
-		if !empty {
-			cn := a.sharedCoord.LeaseCount(remote.SharedServiceClaudeHeadroom)
-			xn := a.sharedCoord.LeaseCount(remote.SharedServiceCodexHeadroom)
-			if a.Log != nil {
-				a.Log.Warn("headroom", "卸载联动拒绝：仍有活跃会话占用 headroom", fmt.Sprintf("claude=%d codex=%d", cn, xn))
-			}
-			return fmt.Errorf("%w: %w", envcheck.ErrHeadroomInUse, remote.ErrSharedServiceInUse), release
-		}
-	}
-	var firstErr error
-	logErr := func(scope string, err error) {
-		if err == nil {
-			return
-		}
-		if a.Log != nil {
-			a.Log.Warn("headroom", scope, err.Error())
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-	if a.Headroom != nil {
-		logErr("卸载联动：停止 claude 会话级 headroom 失败", a.Headroom.Stop())
-	}
-	if a.CodexHeadroom != nil {
-		logErr("卸载联动：停止 codex 全局 headroom 失败", a.CodexHeadroom.Stop())
-	}
-	// Only tear down the codex-global config/persistence when the toggle was on;
-	// otherwise this is a plain uninstall of the claude-side headroom.
-	if a.Settings != nil && a.Settings.GetCodexGlobalHeadroom().Enabled {
-		logErr("卸载联动：清理 codex 全局 openai_base_url 失败", removeCodexGlobalHeadroomConfig())
-		logErr("卸载联动：清除 codex 全局 headroom 持久化失败", a.Settings.SetCodexGlobalHeadroom(false, "", 0))
-	}
-	return firstErr, release
-}
-
-func countTopLevelAssignment(lines []string, key string) int {
-	count := 0
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if isTomlTableHeader(trimmed) {
-			return count
-		}
-		if got, ok := tomlAssignmentKey(trimmed); ok && got == key {
-			count++
-		}
-	}
-	return count
-}
-
-func trimTrailingEmptyLines(lines []string) []string {
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
-}
-
-func tomlAssignmentKey(trimmedLine string) (string, bool) {
-	if trimmedLine == "" || strings.HasPrefix(trimmedLine, "#") {
-		return "", false
-	}
-	idx := strings.Index(trimmedLine, "=")
-	if idx == -1 {
-		return "", false
-	}
-	key := strings.TrimSpace(trimmedLine[:idx])
-	if key == "" {
-		return "", false
-	}
-	return key, true
-}
-
-func isTomlTableHeader(trimmedLine string) bool {
-	return strings.HasPrefix(trimmedLine, "[")
-}
-
-func isCustomCodexOpenAIBaseURL(baseURL string) bool {
-	trimmed := strings.TrimSpace(baseURL)
-	if trimmed == "" {
-		return false
-	}
-	parseTarget := trimmed
-	if !strings.Contains(parseTarget, "://") {
-		parseTarget = "https://" + parseTarget
-	}
-	parsed, err := url.Parse(parseTarget)
-	if err != nil || parsed.Host == "" {
-		normalized := strings.TrimRight(strings.ToLower(trimmed), "/")
-		return normalized != "https://api.openai.com" && normalized != "https://api.openai.com/v1" && normalized != "api.openai.com" && normalized != "api.openai.com/v1"
-	}
-	if strings.ToLower(parsed.Hostname()) != codexOfficialOpenAIAPIHost {
-		return true
-	}
-	path := strings.TrimRight(strings.ToLower(parsed.EscapedPath()), "/")
-	return path != "" && path != "/v1"
-}
-
-// isOpenAIProvider reports whether the provider uses the OpenAI-compatible API.
-// Delegates to the Provider's dual-format compatibility method.
-func isOpenAIProvider(p config.Provider) bool {
-	return p.IsOpenAICompatible()
-}
-
-func appendUniqueNonEmpty(values []string, candidates ...string) []string {
-	seen := make(map[string]struct{}, len(values)+len(candidates))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-	}
-	for _, candidate := range candidates {
-		trimmed := strings.TrimSpace(strings.ToLower(candidate))
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		values = append(values, trimmed)
-		seen[trimmed] = struct{}{}
-	}
-	return values
-}
-
-func legacyProviderAPIKeyCandidates(provider config.Provider) []string {
-	candidates := []string{}
-	preferred := provider.PreferredFormat()
-	if preferred != "" {
-		candidates = appendUniqueNonEmpty(candidates, preferred)
-	}
-	if provider.IsAnthropicCompatible() {
-		candidates = appendUniqueNonEmpty(candidates, "anthropic")
-	}
-	if provider.IsOpenAICompatible() {
-		candidates = appendUniqueNonEmpty(candidates, "openai")
-	}
-	return candidates
-}
-
-func legacyProviderAPIKeyCandidatesForFormat(format string) []string {
-	candidates := []string{}
-	switch strings.TrimSpace(strings.ToLower(format)) {
-	case "anthropic":
-		candidates = appendUniqueNonEmpty(candidates, "anthropic", "openai")
-	case "openai":
-		candidates = appendUniqueNonEmpty(candidates, "openai", "anthropic")
-	default:
-		candidates = appendUniqueNonEmpty(candidates, "anthropic", "openai")
-	}
-	return candidates
-}
-
-func (a *App) getProviderAPIKeyWithLegacyCandidates(providerName string, legacyCandidates []string) (string, string) {
-	if key, source := a.Secrets.GetAPIKeyWithFallback(providerName); key != "" {
-		return key, source
-	}
-	for _, format := range legacyCandidates {
-		if key, err := a.Secrets.GetAPIKey(providerName + ":" + format); err == nil {
-			trimmed := strings.TrimSpace(key)
-			if trimmed != "" {
-				return trimmed, "legacy:" + format
-			}
-		}
-	}
-	return "", ""
-}
-
-// getProviderAPIKey 读取指定 provider 的统一 API key。
-// 新模型优先读取 providerName；若缺失，再兼容旧命名 providerName:anthropic / providerName:openai。
-// 返回 (apiKey, source)。
-func (a *App) getProviderAPIKey(providerName string, provider config.Provider) (string, string) {
-	return a.getProviderAPIKeyWithLegacyCandidates(providerName, legacyProviderAPIKeyCandidates(provider))
-}
-
-// getProviderAPIKeyForFormat 读取指定格式下可用的统一 API key。
-// 新模型优先读取 providerName；若缺失，再兼容旧命名 providerName:format。
-// 若指定格式的 legacy key 不存在，会继续尝试另一种 legacy key，确保旧数据可读。
-func (a *App) getProviderAPIKeyForFormat(providerName, format string) (string, string) {
-	return a.getProviderAPIKeyWithLegacyCandidates(providerName, legacyProviderAPIKeyCandidatesForFormat(format))
-}
-
-func buildProviderFromExportProvider(ep config.ExportProvider) config.Provider {
-	return ep.ToProvider()
-}
-
-func selectImportedProviderAPIKey(ep config.ExportProvider) string {
-	return ep.UnifiedAPIKey()
-}
-
-func buildExportProvider(provider config.Provider, apiKey string) config.ExportProvider {
-	return config.BuildExportProvider(provider, apiKey)
-}
-
-func (a *App) saveImportedProviderAPIKey(providerName, apiKey string) error {
-	trimmed := strings.TrimSpace(apiKey)
-	if trimmed == "" {
-		return nil
-	}
-	if err := a.Secrets.SetAPIKey(providerName, trimmed); err != nil {
-		return err
-	}
-	_ = a.Secrets.DeleteAPIKey(providerName + ":anthropic")
-	_ = a.Secrets.DeleteAPIKey(providerName + ":openai")
-	return nil
-}
-
-func resolveCodexLaunchSettings(provider config.Provider, requestedModel string) codexLaunchSettings {
-	normalizedModel := normalizeCodexModelName(requestedModel)
-	settings := codexLaunchSettings{
-		Model: normalizedModel,
-	}
-	// 接口协议选择透传：OpenAI 子块缺失或未设置时 EffectiveWireAPI 返回 ""，
-	// 下游 codexWireAPI 兑底为 responses，维持 legacy 行为零变化。
-	settings.WireAPI = provider.OpenAI.EffectiveWireAPI()
-
-	if normalizedModel == "" {
-		normalizedModel = normalizeCodexModelName(provider.DefaultModel)
-		settings.Model = normalizedModel
-	}
-
-	var matchedPreset *config.Preset
-	requestedRaw := strings.TrimSpace(requestedModel)
-	for _, preset := range provider.Presets {
-		presetModel := strings.TrimSpace(preset.Model)
-		if requestedRaw != "" && presetModel == requestedRaw {
-			presetCopy := preset
-			matchedPreset = &presetCopy
-			break
-		}
-	}
-	if matchedPreset == nil && normalizedModel != "" {
-		for _, preset := range provider.Presets {
-			if normalizeCodexModelName(preset.Model) == normalizedModel {
-				presetCopy := preset
-				matchedPreset = &presetCopy
-				break
-			}
-		}
-	}
-
-	if matchedPreset != nil {
-		if normalizedPresetModel := normalizeCodexModelName(matchedPreset.Model); normalizedPresetModel != "" {
-			settings.Model = normalizedPresetModel
-		}
-		applyCodexPresetParameters(&settings, matchedPreset.Parameters)
-	}
-
-	return settings
-}
-
-func applyCodexPresetParameters(settings *codexLaunchSettings, params config.Parameters) {
-	if settings == nil {
-		return
-	}
-	settings.ReasoningEffort = strings.TrimSpace(params.ReasoningEffort)
-	if params.ContextWindow != nil {
-		settings.ModelContextWindow = params.ContextWindow.ModelContextWindow
-		settings.AutoCompactLimit = params.ContextWindow.AutoCompactTokenLimit
-	}
-}
-
-// buildCodexCLIArgs maps CodeBox presets onto documented Codex per-process
-// config overrides. Keeping these settings on the command line ensures one
-// session's preset does not rewrite the user's persistent defaults.
-func buildCodexCLIArgs(settings codexLaunchSettings) []string {
-	args := make([]string, 0, 8)
-	if settings.Model != "" {
-		args = append(args, "-m", settings.Model)
-	}
-	if settings.ReasoningEffort != "" {
-		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(settings.ReasoningEffort))
-	}
-	if settings.ModelContextWindow > 0 {
-		args = append(args, "-c", "model_context_window="+strconv.Itoa(settings.ModelContextWindow))
-	}
-	if settings.AutoCompactLimit > 0 {
-		args = append(args, "-c", "model_auto_compact_token_limit="+strconv.Itoa(settings.AutoCompactLimit))
-	}
-	if settings.ProviderBaseURL != "" {
-		providerConfig := "{name=" + strconv.Quote(codexModelProviderName) +
-			",base_url=" + strconv.Quote(settings.ProviderBaseURL) +
-			",env_key=" + strconv.Quote("OPENAI_API_KEY") +
-			",requires_openai_auth=false,wire_api=" + strconv.Quote(codexWireAPI(settings.WireAPI)) + "}"
-		args = append(args,
-			"-c", "model_provider="+strconv.Quote(codexModelProviderName),
-			"-c", "forced_login_method="+strconv.Quote("api"),
-			"-c", "model_providers."+codexModelProviderName+"="+providerConfig,
-		)
-	}
-	return args
-}
-
-// writePiProviderModelsAtLaunch 承担 LaunchPiSession 的 providerSyncMu 临界区：
-// 构建 + 合并写入 models.json（WSL/Windows 两侧）+ API key env 兜底注入，返回
-// 可能更新的 launchSettings。provider 不可读时原样返回（既有行为）。WSL 路径
-// 错误两种，均阻断启动（S1 构建失败 + D5 写入失败，调用方直接上抛）；
-// Windows 路径维持既有回退语义。
-//
-// 锁纪律（S1 diting F1）：本函数是临界区的唯一形态，defer Unlock 保证全部
-// return 路径释放锁——修复前 WSL 构建失败分支在 Lock/Unlock 区间内直接
-// return，providerSyncMu 永久持有，此后 provider 保存/Pi 启动/SaveOpenCodeConfig
-// 全部挂死。
-func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunchSettings, presetParams config.Parameters, wslDistro string, envOverrides map[string]string) (piLaunchSettings, error) {
-	a.providerSyncMu.Lock()
-	defer a.providerSyncMu.Unlock()
-
-	provider, err := a.Config.GetProvider(providerID)
-	if err != nil {
-		return settings, nil // provider 不可读：不改 settings、不注入 env（既有行为）
-	}
-	settings = resolvePiLaunchSettings(*provider, settings.Model, presetParams)
-	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
-
-	// 合并写入 pi 标准 agent 目录的 models.json。
-	// 成功写入时改写 settings.Provider 为 amagi-<name>；Windows 路径失败则回退
-	// piProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/写入
-	// 失败均阻断（见下方分支，不静默换非等价身份）。presetParams 透传
-	// contextWindow/maxTokens/thinking 到 pi model 配置。presetModels：该 provider
-	// 在 openai 公共预设桶（pi/omp 消费的桶）下的全部预设模型。启动写入是托管
-	// 条目的整体替换语义，漏注会把统一同步写入的同 provider 其他预设模型挤掉。
-	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
-	if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, settings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-		// WSL 模式：pi 在 distro 内运行，配置必须落到 WSL 侧 agent root
-		//（Windows 侧文件对 WSL 内的 pi 不可见）；非 WSL 路径行为不变。
-		wroteProvider := false
-		if wslDistro != "" {
-			// 保留 WSL 侧 models.json 中已有 provider（merge 在
-			// WriteWSLPiAgentConfig 内能对 UNC 路径完成），原子写 + chmod 补偿。
-			wslAgentDir, wErr := launcher.WriteWSLPiAgentConfig(wslDistro, piCfg)
-			if wErr == nil {
-				wroteProvider = true
-				a.Log.Info("pi", "已写入 pi models.json (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.json",
-					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
-			} else {
-				// D5：WSL 路径写入失败与构建失败同判阻断——piProviderMapping
-				// 回退会丢自定义 baseURL，distro 内 pi 将以第三方 key 误打官方
-				// endpoint（401/错误计费面）。典型诱因：distro 停机 / 9P 异常。
-				return settings, wslPiProviderWriteError(providerID, wErr)
-			}
-		} else {
-			agentDir := defaultPiAgentDir()
-			// 保留用户 models.json 中已有的 provider 和其他顶层配置，
-			// 当次 amagi 生成的同名 provider 优先。
-			piCfg = launcher.MergePiAgentConfig(piCfg, agentDir)
-			writeErr := launcher.WritePiAgentConfig(agentDir, piCfg)
-			if writeErr == nil {
-				wroteProvider = true
-				a.Log.Info("pi", "已写入 pi models.json", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.json",
-					launcher.PiProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
-			} else {
-				a.Log.Warn("pi", "写入 pi models.json 失败，回退内置 provider", writeErr.Error())
-			}
-		}
-		if wroteProvider {
-			settings.Provider = launcher.PiProviderID(providerID)
-		} else {
-			settings.Provider, _ = piProviderMapping(*provider)
-		}
-	} else {
-		// P3-S1（已批准的行为变更，WSL 路径）：当前选中 provider 不可构建 →
-		// 阻断该启动（中文报错，不静默换默认模型——piProviderMapping 会丢
-		// baseURL 误打官方 endpoint，非等价回退）。Windows 路径维持既有回退
-		// 语义（不在本批写面内）。
-		if wslDistro != "" {
-			return settings, wslPiProviderBuildError(providerID, cfgErr)
-		}
-		a.Log.Warn("pi", "生成 pi models.json 失败，回退内置 provider", cfgErr.Error())
-		settings.Provider, _ = piProviderMapping(*provider)
-	}
-
-	// 冗余兜底：注入对应 API Key env var（与 OpenCode 的双路注入一致）。
-	// pi 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
-	if apiKey != "" {
-		if _, apiKeyEnv := piProviderMapping(*provider); apiKeyEnv != "" {
-			envOverrides[apiKeyEnv] = apiKey
-		}
-	}
-	return settings, nil
-}
-
-// wslPiProviderBuildError 是 WSL 路径「选中 provider 不可构建 → 阻断启动」的
-// 中文报错（P3-S1 已批准语义：不静默换默认模型）。独立成函数供单测钉文案。
-func wslPiProviderBuildError(providerID string, cfgErr error) error {
-	return fmt.Errorf("无法构建 Pi 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
-}
-
-// wslPiProviderWriteError 是 WSL 路径「选中 provider 写入失败 → 阻断启动」的
-// 中文报错（D5：与构建失败同判，不静默回退会丢自定义 baseURL 的
-// piProviderMapping 兜底）。独立成函数供单测钉文案。
-func wslPiProviderWriteError(providerID string, writeErr error) error {
-	return fmt.Errorf("无法写入 Pi 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
-}
-
-// writeOmpProviderModelsAtLaunch 承担 LaunchOmpSession 的 providerSyncMu 临界区
-// （与 writePiProviderModelsAtLaunch 对称，D5）：构建 + 写入 models.yml
-// （WSL/Windows 两侧）+ API key env 兜底注入，返回可能更新的 launchSettings。
-// provider 不可读时原样返回（既有行为）。WSL 路径构建/写入失败均阻断（D5：
-// omp 与 pi 同判——ompProviderMapping 回退会丢自定义 baseURL，distro 内 omp
-// 将以第三方 key 误打官方 endpoint）；Windows 路径维持既有回退语义。
-// 锁纪律同 Pi：defer Unlock 保证全部 return 路径释放锁。
-func (a *App) writeOmpProviderModelsAtLaunch(providerID string, launchSettings ompLaunchSettings, presetParams config.Parameters, wslDistro string, envOverrides map[string]string) (ompLaunchSettings, error) {
-	a.providerSyncMu.Lock()
-	defer a.providerSyncMu.Unlock()
-
-	provider, err := a.Config.GetProvider(providerID)
-	if err != nil {
-		return launchSettings, nil // provider 不可读：不改 settings、不注入 env（既有行为）
-	}
-	launchSettings = resolveOmpLaunchSettings(*provider, launchSettings.Model, presetParams)
-	apiKey, _ := a.getProviderAPIKey(providerID, *provider)
-
-	// 合并写入 omp 标准 agent 目录的 models.yml。成功写入时改写
-	// launchSettings.Provider 为 amagi-<name>；Windows 路径失败则回退
-	// ompProviderMapping 旧兜底（保持向后兼容，不阻断启动）；WSL 路径构建/
-	// 写入失败均阻断（不静默换非等价身份）。presetModels 同 Pi：取该 provider
-	// 在 openai 公共预设桶下的全部预设模型（启动写入是托管条目整体替换语义，
-	// 漏注会把统一同步写入的同 provider 其他预设模型挤掉）。
-	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
-	if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
-		// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
-		//（与 LaunchPiSession 的 WriteWSLPiAgentConfig 对称）；非 WSL 路径不变。
-		wroteProvider := false
-		if wslDistro != "" {
-			wslAgentDir, wErr := launcher.WriteWSLOmpAgentConfig(wslDistro, ompCfg)
-			if wErr == nil {
-				wroteProvider = true
-				a.Log.Info("omp", "已写入 omp models.yml (WSL)", fmt.Sprintf("provider=%s baseURL=%s distro=%s -> %s/models.yml",
-					launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), wslDistro, wslAgentDir))
-			} else {
-				// D5：WSL 路径写入失败阻断（与 Pi 同判），不回退丢 baseURL 的兜底。
-				return launchSettings, wslOmpProviderWriteError(providerID, wErr)
-			}
-		} else {
-			agentDir := defaultOmpAgentDir()
-			// 保留用户 models.yml 中已有的 provider 和其他顶层配置，
-			// 当次 amagi 生成的同名 provider 优先。
-			pompCfg := launcher.MergeOmpModelsConfig(ompCfg, agentDir)
-			writeErr := launcher.WriteOmpAgentConfig(agentDir, pompCfg)
-			if writeErr == nil {
-				wroteProvider = true
-				a.Log.Info("omp", "已写入 omp models.yml", fmt.Sprintf("provider=%s baseURL=%s -> %s/models.yml",
-					launcher.OmpProviderID(providerID), provider.EffectiveBaseURL(""), agentDir))
-			} else {
-				a.Log.Warn("omp", "写入 omp models.yml 失败，回退内置 provider", writeErr.Error())
-			}
-		}
-		if wroteProvider {
-			launchSettings.Provider = launcher.OmpProviderID(providerID)
-		} else {
-			launchSettings.Provider, _ = ompProviderMapping(*provider)
-		}
-	} else {
-		// D5：WSL 路径构建失败阻断（与 Pi 的 wslPiProviderBuildError 同判）。
-		if wslDistro != "" {
-			return launchSettings, wslOmpProviderBuildError(providerID, cfgErr)
-		}
-		a.Log.Warn("omp", "生成 omp models.yml 失败，回退内置 provider", cfgErr.Error())
-		launchSettings.Provider, _ = ompProviderMapping(*provider)
-	}
-
-	// 冗余兜底：注入对应 API Key env var（与 OpenCode/Pi 的双路注入一致）。
-	// omp 自定义 provider 已内嵌 apiKey，这里仅作为额外保险。
-	if apiKey != "" {
-		if _, apiKeyEnv := ompProviderMapping(*provider); apiKeyEnv != "" {
-			envOverrides[apiKeyEnv] = apiKey
-		}
-	}
-	return launchSettings, nil
-}
-
-// wslOmpProviderBuildError / wslOmpProviderWriteError 是 WSL 路径「选中
-// provider 构建/写入失败 → 阻断启动」的中文报错（D5：与 Pi 同判，不静默回退
-// 丢自定义 baseURL 的 ompProviderMapping 兜底）。独立成函数供单测钉文案。
-func wslOmpProviderBuildError(providerID string, cfgErr error) error {
-	return fmt.Errorf("无法构建 omp 供应商 %q 的模型配置：%v；本次未启动，未改用默认模型", providerID, cfgErr)
-}
-
-func wslOmpProviderWriteError(providerID string, writeErr error) error {
-	return fmt.Errorf("无法写入 omp 供应商 %q 的 WSL 侧模型配置：%v；本次未启动，未改用默认模型", providerID, writeErr)
-}
-
-// piProviderMapping 把 amagi Provider 映射成 Pi 的内置 provider 名 + 对应 API Key env var。
-//
-// 注意：这是**回退路径**，仅当 LaunchPiSession 未能生成 pi models.json 时使用。
-// 主路径是 launcher.BuildPiModelsConfig + WritePiAgentConfig，会把 amagi provider
-// 翻译成 pi 的自定义命名 provider（"amagi-<name>"，含完整 baseURL/api/apiKey），
-// 合并到 Pi 的标准 ~/.pi/agent/models.json 后加载。
-//
-// 此回退映射把第三方 Anthropic/OpenAI 兼容 provider 粗略归到 pi 内置的
-// anthropic/openai，会丢失自定义 baseURL（导致第三方 provider 误打官方 endpoint），
-// 因此仅作兜底，不应作为常态路径。
-func piProviderMapping(p config.Provider) (piProvider, apiKeyEnv string) {
-	if p.IsAnthropicCompatible() {
-		return "anthropic", "ANTHROPIC_API_KEY"
-	}
-	if p.IsOpenAICompatible() {
-		return "openai", "OPENAI_API_KEY"
-	}
-	return "", ""
-}
-
-// wslSearchToolsWarnOnce 保证 fd/ripgrep 缺失提示每个进程生命周期只打一次
-// （探测本身在 platform.WSLSearchToolStatus 内按 distro 缓存，不会重复 fork
-// wsl.exe）。
-var wslSearchToolsWarnOnce sync.Once
-
-// warnWSLSearchToolsOnce 在 WSL 模式启动 pi/omp 会话时探测 distro 内的
-// fd/fdfind 与 ripgrep（PI_OFFLINE=1 下 pi 不会联网自下载，缺失即文件搜索
-// 能力降级）。缺失时打 WARN 给出安装引导；不做 apt 安装（需 sudo，范围外）。
-// 无会话启动期 warning UI 通道，日志 WARN 为本仓库既有可感知手段。
-func (a *App) warnWSLSearchToolsOnce(distro string) {
-	distro = strings.TrimSpace(distro)
-	if distro == "" {
-		return
-	}
-	tools := platform.WSLSearchToolStatus(distro)
-	if tools.FD && tools.Ripgrep {
-		return
-	}
-	missing := make([]string, 0, 2)
-	if !tools.FD {
-		missing = append(missing, "fd")
-	}
-	if !tools.Ripgrep {
-		missing = append(missing, "ripgrep")
-	}
-	wslSearchToolsWarnOnce.Do(func() {
-		a.Log.Warn("wsl", "WSL 内缺少 fd/ripgrep，pi/omp 的文件搜索能力受限",
-			fmt.Sprintf("[CodeBox] distro=%s 缺少 %s。可在 WSL 内执行: sudo apt install fd-find ripgrep", distro, strings.Join(missing, "/")))
-	})
-}
-
-// resolvePiLaunchSettings 解析 Pi 会话启动参数：确定 provider / model / thinking。
-// requestedModel 为空时回退到 provider.DefaultModel。
-// params.ReasoningEffort（low/medium/high/xhigh/max）直接作为 pi 的 --thinking 级别，
-// 两者值域兼容；若 Thinking.Type=="disabled" 则强制 off。
-//
-// 返回的 Provider 是初始猜测（piProviderMapping 的内置 provider 名）；
-// LaunchPiSession 在成功写入 pi models.json 后会用 "amagi-<name>" 覆盖它。
-func resolvePiLaunchSettings(provider config.Provider, requestedModel string, params config.Parameters) piLaunchSettings {
-	model := strings.TrimSpace(requestedModel)
-	piProvider, _ := piProviderMapping(provider)
-	if model == "" {
-		model = strings.TrimSpace(provider.DefaultModel)
-	}
-	thinking := strings.TrimSpace(params.ReasoningEffort)
-	// Thinking.Type=disabled 显式关闭思考（pi 用 off）。
-	// 注意：只有 ReasoningEffort 为空且 Thinking 显式 disabled 时才映射 off，
-	// 避免 disabled + 某个 effort 值的歧义（effort 优先）。
-	if thinking == "" && params.Thinking != nil && params.Thinking.Type == "disabled" {
-		thinking = "off"
-	}
-	return piLaunchSettings{
-		Provider: piProvider,
-		Model:    model,
-		Thinking: thinking,
-	}
-}
-
-// ompProviderMapping 把 amagi Provider 映射成 omp 的内置 provider 名 + 对应 API Key env var。
-//
-// 注意：这是**回退路径**，仅当 LaunchOmpSession 未能生成 omp models.yml 时使用。
-// 主路径是 launcher.BuildOmpModelsConfig + WriteOmpAgentConfig，会把 amagi provider
-// 翻译成 omp 的自定义命名 provider（"amagi-<name>"，含完整 baseURL/api/apiKey），
-// 合并到 omp 的标准 ~/.omp/agent/models.yml 后加载。
-//
-// 此回退映射把第三方 Anthropic/OpenAI 兼容 provider 粗略归到 omp 内置的
-// anthropic/openai，会丢失自定义 baseURL（导致第三方 provider 误打官方 endpoint），
-// 因此仅作兜底，不应作为常态路径（复刻 piProviderMapping）。
-func ompProviderMapping(p config.Provider) (ompProvider, apiKeyEnv string) {
-	if p.IsAnthropicCompatible() {
-		return "anthropic", "ANTHROPIC_API_KEY"
-	}
-	if p.IsOpenAICompatible() {
-		return "openai", "OPENAI_API_KEY"
-	}
-	return "", ""
-}
-
-// resolveOmpLaunchSettings 解析 omp 会话启动参数：确定 provider / model / thinking
-// （复刻 resolvePiLaunchSettings）。
-// requestedModel 为空时回退到 provider.DefaultModel。
-// params.ReasoningEffort（low/medium/high/xhigh/max）直接作为 omp 的 --thinking 级别，
-// 两者值域兼容；若 Thinking.Type=="disabled" 则强制 off。
-//
-// 返回的 Provider 是初始猜测（ompProviderMapping 的内置 provider 名）；
-// LaunchOmpSession 在成功写入 omp models.yml 后会用 "amagi-<name>" 覆盖它。
-func resolveOmpLaunchSettings(provider config.Provider, requestedModel string, params config.Parameters) ompLaunchSettings {
-	model := strings.TrimSpace(requestedModel)
-	ompProvider, _ := ompProviderMapping(provider)
-	if model == "" {
-		model = strings.TrimSpace(provider.DefaultModel)
-	}
-	thinking := strings.TrimSpace(params.ReasoningEffort)
-	// Thinking.Type=disabled 显式关闭思考（omp 用 off）。
-	// 注意：只有 ReasoningEffort 为空且 Thinking 显式 disabled 时才映射 off，
-	// 避免 disabled + 某个 effort 值的歧义（effort 优先）。
-	if thinking == "" && params.Thinking != nil && params.Thinking.Type == "disabled" {
-		thinking = "off"
-	}
-	return ompLaunchSettings{
-		Provider: ompProvider,
-		Model:    model,
-		Thinking: thinking,
-	}
-}
-
-// GetProvidersByType 返回指定类型的 Provider 列表（type 为 "openai" 或 "anthropic"）
-// 使用双格式兼容方法判断 Provider 类型。
-func (a *App) GetProvidersByType(providerType string) map[string]config.Provider {
-	allProviders := a.Config.GetProviders()
-	result := make(map[string]config.Provider)
-	for name, p := range allProviders {
-		switch providerType {
-		case "openai":
-			if p.IsOpenAICompatible() {
-				result[name] = p
-			}
-		case "anthropic":
-			if p.IsAnthropicCompatible() {
-				result[name] = p
-			}
-		}
-	}
-	return result
-}
-
-// SetPluginSubItemEnabled 设置插件子项启用/禁用状态
-// pluginId: 插件 ID
-// subItemType: 子项类型（skill/hook/command/agent/mcp）
-// subItemId: 子项名称
-// enabled: 是否启用
-func (a *App) SetPluginSubItemEnabled(pluginId string, subItemType string, subItemId string, enabled bool) error {
-	a.Log.Info("plugin", "设置插件子项状态", fmt.Sprintf("plugin=%s type=%s id=%s enabled=%v", pluginId, subItemType, subItemId, enabled))
-
-	// Claude 与 Codex 插件 ID 都使用 `name@marketplace` 格式（见 plugin/service.go 与
-	// codexplugin/helpers.go 的 splitPluginID），不能用 strings.Contains(@) 区分。
-	// 改为查询 Claude 已安装插件注册表：命中则派 Claude service，否则派 Codex service。
-	if a.isClaudePlugin(pluginId) {
-		return a.Plugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
-	}
-	return a.CodexPlugins.SetPluginSubItemEnabled(pluginId, subItemType, subItemId, enabled)
-}
-
-// isClaudePlugin 判断 pluginId 是否为 Claude 引擎下已安装的插件。
-// 以 Claude 注册表（~/.claude/plugins/installed_plugins.json，经 plugin.Service 抽象）
-// 为单一真相源，避免基于字符串启发式误判。
-func (a *App) isClaudePlugin(pluginId string) bool {
-	if a.Plugins == nil {
-		return false
-	}
-	plugins, err := a.Plugins.GetInstalledPlugins()
-	if err != nil {
-		// 读注册表失败时保守按非 Claude 处理（落到 Codex 分派），并告警暴露。
-		// 注意：Codex SetPluginSubItemEnabled 当前只记日志返回 nil，若实际为 Claude
-		// 插件而注册表读取失败，开关会静默不生效，故必须记日志可观测。
-		if a.Log != nil {
-			a.Log.Warn("plugin", "读取 Claude 已安装插件列表失败，按 Codex 引擎分派", fmt.Sprintf("pluginId=%s err=%v", pluginId, err))
-		}
-		return false
-	}
-	for i := range plugins {
-		if plugins[i].ID == pluginId {
-			return true
-		}
-	}
-	return false
-}
-
-// LaunchOpenCode 启动 OpenCode 终端会话。
-// 双轨兼容：优先查 opencode_presets（新模型），回退到 terminal_presets.opencode（旧模型）。
-func (a *App) LaunchOpenCode(providerName string, presetName string, mode string, workDir string, shellPath string) (string, error) {
-	if err := a.Config.RejectPiLoginLaunchRefs(providerName, presetName); err != nil {
-		return "", err
-	}
-	a.Log.Info("session", "启动 OpenCode 会话请求", fmt.Sprintf("provider=%s preset=%s mode=%s workDir=%s shell=%s", providerName, presetName, mode, workDir, shellPath))
-
-	envOverrides := map[string]string{}
-	var provider *config.Provider
-
-	// ============================================================
-	// 轨道 1（新模型）：opencode_presets
-	// ============================================================
-	if presetName != "" {
-		if ocPreset, err := a.Config.GetOpenCodePreset(presetName); err == nil && ocPreset != nil {
-			a.Log.Info("session", "OpenCode 命中 opencode_preset（新模型）", fmt.Sprintf("key=%s name=%s bindings=%d", presetName, ocPreset.Name, len(ocPreset.Bindings)))
-
-			// 构建 getAPIKey 函数：按 binding 的 local_provider + format 读取 secrets
-			getAPIKey := func(localProvider, _ string) (string, error) {
-				if local, err := a.Config.GetProvider(localProvider); err == nil && local != nil {
-					key, _ := a.getProviderAPIKey(localProvider, *local)
-					return key, nil
-				}
-				key, _ := a.getProviderAPIKeyWithLegacyCandidates(localProvider, legacyProviderAPIKeyCandidatesForFormat(""))
-				return key, nil
-			}
-
-			// 构建 getProvider 函数：读取本地 Provider 配置（用于推导格式和注入 baseURL/organization）
-			getProvider := func(providerName string) (*config.Provider, error) {
-				return a.Config.GetProvider(providerName)
-			}
-
-			// 用新模型构建运行时配置
-			ocOverrides, err := launcher.BuildOpenCodeEnvOverridesFromPreset(*ocPreset, getAPIKey, getProvider)
-			if err != nil {
-				a.Log.Error("session", "构建 OpenCode 配置失败（新模型）", err.Error())
-				return "", fmt.Errorf("build opencode config from preset: %w", err)
-			}
-			envOverrides = ocOverrides
-
-			// 新模型下 providerName 无意义，session 中记录 preset key
-			providerName = "opencode-preset:" + presetName
-
-			// 验证 bindings 中本地 provider 是否存在
-			for ocProvID, binding := range ocPreset.Bindings {
-				if binding.LocalProvider != "" {
-					if _, pErr := a.Config.GetProvider(binding.LocalProvider); pErr != nil {
-						a.Log.Warn("session", "binding 引用的本地 provider 不存在", fmt.Sprintf("binding=%s localProvider=%s err=%v", ocProvID, binding.LocalProvider, pErr))
-						// 不直接阻断，但记录警告
-					}
-				}
-			}
-
-			goto launchCommon
-		}
-	}
-
-	// ============================================================
-	// 轨道 2（旧模型回退）：terminal_presets.opencode
-	// ============================================================
-	{
-		// 当 presetName 为空时，不注入任何 preset 配置，让 OpenCode 读取全局配置
-		if presetName == "" {
-			a.Log.Info("session", "OpenCode 使用全局配置（preset 为空）", fmt.Sprintf("provider=%s", providerName))
-		} else {
-			// presetName 可能是 terminal_preset 的 stable key
-			tpProvider, tp, tpErr := a.Config.ResolveTerminalPreset("opencode", presetName)
-			tpFound := tpErr == nil && tp != nil
-			if tpFound {
-				if tpProvider != "" {
-					providerName = tpProvider
-				}
-				a.Log.Info("session", "OpenCode 命中 terminal_preset（旧模型回退）", fmt.Sprintf("key=%s provider=%s model=%s hasCfg=%v", presetName, tpProvider, tp.Model, len(tp.OpenCodeCfg) > 0))
-			}
-
-			if providerName != "" {
-				// SnapshotProvider：单次读锁内 provider+presets 同代快照（同
-				// LaunchSession 桥接，谛听终审 Minor-2），Presets 为非 nil 副本。
-				loadedProvider, err := a.Config.SnapshotProvider(providerName)
-				if err != nil {
-					a.Log.Error("session", "获取 OpenCode 提供商失败", err.Error())
-					return "", fmt.Errorf("get opencode provider: %w", err)
-				}
-				provider = loadedProvider
-
-				// 若命中 terminal preset，桥接为旧 config.Preset 注入 provider 快照
-				if tpFound {
-					converted := config.Preset{
-						Name:           tp.Name,
-						Model:          tp.Model,
-						Parameters:     tp.Parameters,
-						OpenCodeConfig: tp.OpenCodeCfg,
-					}
-					provider.Presets[presetName] = converted
-					a.Log.Info("session", "OpenCode 已桥接 terminal_preset 到 provider.Presets", fmt.Sprintf("key=%s model=%s", presetName, tp.Model))
-				}
-
-				apiKey, keySource := a.getProviderAPIKey(providerName, *provider)
-				if apiKey == "" {
-					a.Log.Error("session", "未找到 OpenCode API 密钥", "provider="+providerName)
-					return "", fmt.Errorf("no API key found for provider %q", providerName)
-				}
-
-				// 基于 Provider + Preset（含桥接后的 terminal preset）生成 OPENCODE_CONFIG_CONTENT 注入
-				ocOverrides, err := launcher.BuildOpenCodeEnvOverrides(providerName, *provider, presetName, apiKey)
-				if err != nil {
-					a.Log.Error("session", "构建 OpenCode 配置失败", err.Error())
-					return "", fmt.Errorf("build opencode config: %w", err)
-				}
-				envOverrides = ocOverrides
-
-				a.Log.Info("session", "OpenCode API 密钥已获取",
-					fmt.Sprintf("provider=%s source=%s key=%s len=%d",
-						providerName, keySource, secrets.MaskKey(apiKey), len(apiKey)))
-			}
-		} // else 结束：presetName != "" 的情况
-	} // 轨道2 结束
-
-launchCommon:
-	// 确定启动模式
-	launchMode := embeddedDefaultLaunchMode(mode)
-	if err := a.validateLaunchMode(string(launchMode)); err != nil {
-		return "", err
-	}
-
-	// 工作目录单一校验/回退 choke point（launch_workdir.go）：
-	// Clean+Abs+Stat 验证；无效时回退默认目录 → 用户 Home（原生目标/会话
-	// 记录/外部终端模式的权威值）。WSL 目标的最终目录不在此定谳：原始请求
-	// 随 spec 交给 resolveEmbeddedLaunchSpec，由 spec.BootstrapMode 后置定谳
-	//（纯目标判据，零探测）。
-	requestedWorkDir := workDir
-	resolvedWorkDir, wdErr := a.resolveLaunchWorkDir(workDir)
-	if wdErr != nil {
-		return "", wdErr
-	}
-	workDir = resolvedWorkDir
-
-	sessionProvider := "opencode"
-	if providerName != "" {
-		sessionProvider = providerName
-	}
-
-	// Embedded identity stays hidden until its exact PTY run is active.
-	sess, authorityReservation, err := a.reserveLaunchSession(session.AppTypeOpenCode, sessionProvider, presetName, "", launchMode, workDir)
-	if err != nil {
-		return "", err
-	}
-	authorityCommitted := authorityReservation == nil
-	defer func() {
-		if !authorityCommitted && authorityReservation != nil {
-			a.Sessions.AbortCreate(authorityReservation)
-		}
-	}()
-	a.Log.Info("session", "OpenCode 会话身份已预留", fmt.Sprintf("id=%s mode=%s", sess.ID, launchMode))
-
-	// 根据模式选择启动方式
-	if launchMode == session.ModeEmbedded {
-		// 内嵌终端模式：使用 ConPTY
-		baseEnv := a.EnvVars.MergeWithSystem()
-		env := launcher.BuildEnv(baseEnv, envOverrides)
-		// WSL 模式（证据 T4）：opencode 跑在 distro 内，OPENCODE_CONFIG_CONTENT
-		// 不在 WSLENV 转发面——env 载体天然缺席，会话会以无 provider 的默认配置
-		// 启动。修复：把同一份 runtime config 写入 distro 内
-		// ~/.config/opencode/amagi-codebox.json，并经 OPENCODE_CONFIG（Linux 路径值，
-		// 在转发面内，必须在 resolveEmbeddedLaunchSpec 之前进入 env 才会被拼进
-		// WSLENV 清单）指向它；opencode 以附加配置层加载该文件（实测 v1.17.18：
-		// global → OPENCODE_CONFIG → 项目级 → CONTENT，不顶替用户全局配置）。
-		// P3-S1 失败语义变更（已批准）：选中模型配置不可安全落地 → 启动失败
-		//（不再无 provider 静默启动）；写入前对 mcp 段做确定性形态检查
-		//（npx.cmd→npx 仅验证过才映射；Windows exe/ps1/盘符参数不生成假可用
-		// 条目；HTTP/远程保留 URL；distro 全局同名默认保留本地）。
-		if platform.EmbeddedLaunchTargetsWSL(string(launchMode), shellPath, nil) {
-			wslDistro := platform.DefaultWSLDistro(nil)
-			cfgJSON := strings.TrimSpace(envOverrides["OPENCODE_CONFIG_CONTENT"])
-			if cfgJSON != "" {
-				launchErr := fmt.Errorf("OpenCode 模型配置无法写入 WSL：未找到可用发行版（OPENCODE_CONFIG_CONTENT 不跨界）；本次未启动，不再以无 provider 配置静默启动")
-				if wslDistro == "" {
-					a.Sessions.MarkFailed(sess.ID, launchErr.Error())
-					return "", launchErr
-				}
-				var runtimeCfg map[string]any
-				if uErr := json.Unmarshal([]byte(cfgJSON), &runtimeCfg); uErr != nil {
-					launchErr = fmt.Errorf("解析 OpenCode 运行时配置失败，无法安全写入 WSL：%v；本次未启动，不再以无 provider 配置静默启动", uErr)
-					a.Sessions.MarkFailed(sess.ID, launchErr.Error())
-					return "", launchErr
-				}
-				linuxPath, prepErr := a.prepareWSLOpenCodeLayer(wslDistro, runtimeCfg)
-				if prepErr != nil {
-					a.Sessions.MarkFailed(sess.ID, prepErr.Error())
-					return "", prepErr
-				}
-				env = launcher.BuildEnv(env, map[string]string{"OPENCODE_CONFIG": linuxPath})
-				a.Log.Info("session", "已写入 OpenCode 配置 (WSL)", fmt.Sprintf("distro=%s -> %s", wslDistro, linuxPath))
-			}
-		}
-
-		spec, err := a.resolveEmbeddedLaunchSpec(session.AppTypeOpenCode, string(launchMode), shellPath, workDir, requestedWorkDir, env, nil)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			return "", err
-		}
-		workDir = spec.WorkDir
-
-		recipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
-		pid, err := a.launchEmbeddedPTY(authorityReservation, recipe, spec)
-		if err != nil {
-			a.Sessions.MarkFailed(sess.ID, err.Error())
-			a.Log.Error("session", "OpenCode PTY启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-			return "", fmt.Errorf("start opencode pty: %w", err)
-		}
-		authorityCommitted = true
-		a.Sessions.SetPID(sess.ID, pid)
-		a.Log.Info("session", "OpenCode PTY进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, pid))
-
-		go func(id string) {
-			for a.Pty.IsRunning(id) {
-				select {
-				case <-a.ctx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-			a.Sessions.MarkExited(id)
-			a.Log.Info("session", "OpenCode PTY进程已退出", "id="+id)
-		}(sess.ID)
-
-		return sess.ID, nil
-	}
-
-	// 外部终端/VSCode/Zed 模式：使用 Launcher
-	var apiKey string
-	if provider != nil {
-		apiKey, _ = a.getProviderAPIKey(sessionProvider, *provider)
-	}
-	result, err := a.Launcher.LaunchOpenCode(sess.ID, launchMode, workDir, envOverrides, "", provider, presetName, apiKey)
-	if err != nil {
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		a.Log.Error("session", "OpenCode 进程启动失败", fmt.Sprintf("id=%s err=%v", sess.ID, err))
-		return "", fmt.Errorf("launch opencode: %w", err)
-	}
-	externalBindingKey, externalBindingRegistered, err := a.registerExternalProcessEvidence(result)
-	if err != nil {
-		closeUnregisteredExternalEvidence(context.Background(), result)
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-	externalRecipe := stableDesktopRecipe(session.AppTypeOpenCode, workDir, sessionProvider, presetName, "", shellPath, false)
-	if err := a.finalizeExternalAuthority(sess.ID, result, externalBindingKey, externalBindingRegistered, externalRecipe); err != nil {
-		a.compensateExternalProcessEvidence(context.Background(), result, externalBindingKey, externalBindingRegistered)
-		a.Sessions.MarkFailed(sess.ID, err.Error())
-		return "", err
-	}
-
-	a.Sessions.SetPID(sess.ID, result.PID)
-	a.Log.Info("session", "OpenCode 进程已启动", fmt.Sprintf("id=%s pid=%d", sess.ID, result.PID))
-
-	go func(id string) {
-		for a.Launcher.IsRunning(id) {
-			select {
-			case <-a.ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-		}
-		a.Sessions.MarkExited(id)
-		a.Log.Info("session", "OpenCode 进程已退出", "id="+id)
-	}(sess.ID)
-
-	return sess.ID, nil
-}
-
 // --- 路径管理（前端绑定） ---
 
 // BrowseDirectory 打开系统目录选择对话框
@@ -5709,16 +1282,8 @@ func (a *App) BrowseDirectory() (string, error) {
 	return dir, nil
 }
 
-// --- 原有兼容方法 ---
-
-// QuickLaunch 兼容原有接口（使用终端模式）
-func (a *App) QuickLaunch(providerName, presetName string, useHeadroom bool) error {
-	_, err := a.LaunchSession(providerName, presetName, "terminal", "", useHeadroom, "")
-	return err
-}
-
-// SaveAllConfig 保存配置和密钥到磁盘。
-func (a *App) SaveAllConfig() error {
+// saveAllConfig 保存配置和密钥到磁盘。
+func (a *App) saveAllConfig() error {
 	state := a.getPersistentLoadState()
 	var saveErrs []error
 
@@ -5851,572 +1416,6 @@ func (a *App) GetStartupWarnings() []string {
 	return out
 }
 
-func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {
-	return a.Updater.CheckForUpdate()
-}
-
-func (a *App) DownloadAndApplyUpdate() error {
-	return a.Updater.DownloadAndApply(func(downloaded, total int64) {
-		wailsRuntime.EventsEmit(a.ctx, "update:progress", map[string]any{
-			"downloaded": downloaded,
-			"total":      total,
-		})
-	})
-}
-
-// GetGitHubToken 返回当前配置的 GitHub Token。
-func (a *App) GetGitHubToken() string {
-	return a.Settings.GetGitHubToken()
-}
-
-// SetGitHubToken 保存 GitHub Token 并同步到 Updater。
-func (a *App) SetGitHubToken(token string) error {
-	if err := a.Settings.SetGitHubToken(token); err != nil {
-		return err
-	}
-	a.Updater.SetToken(token)
-	return nil
-}
-
-// --- 日志系统 API ---
-
-// GetLogs 获取日志条目（支持过滤）
-func (a *App) GetLogs(level string, source string, keyword string, limit int) []logging.Entry {
-	return a.Log.GetEntries(level, source, keyword, limit)
-}
-
-// GetLogSources 获取所有日志来源
-func (a *App) GetLogSources() []string {
-	return a.Log.GetSources()
-}
-
-// GetLogFiles 获取日志文件列表
-func (a *App) GetLogFiles() []string {
-	return a.Log.GetLogFiles()
-}
-
-// GetLogFileContent 获取日志文件内容
-func (a *App) GetLogFileContent(filename string) (string, error) {
-	return a.Log.GetLogFileContent(filename)
-}
-
-// ClearLogs 清除内存日志
-func (a *App) ClearLogs() {
-	a.Log.ClearEntries()
-	a.Log.Info("app", "内存日志已清除")
-}
-
-// ExportLogs 导出日志为JSON
-func (a *App) ExportLogs() (string, error) {
-	return a.Log.ExportJSON()
-}
-
-// --- PTY 终端 API ---
-
-// PtyWrite 向内嵌终端写入数据（前端键盘输入）。data 为 base64 编码。
-// M-005: fail-closed — when the control runtime is not ready the write is
-// rejected rather than falling back to the raw PTY service (design §6.3 C-01:
-// every mutation must go through the Gate). The control runtime is created in
-// the App constructor and MarkReady runs in Startup before any embedded PTY is
-// created, so this only rejects writes during the startup/shutdown window.
-func (a *App) PtyWrite(sessionID string, data string) error {
-	if a.control == nil || !a.control.IsReady() {
-		return remote.ErrControlNotReady
-	}
-	raw, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
-		return fmt.Errorf("decode base64: %w", err)
-	}
-	return a.control.DesktopInput(a.ctx, contract.SessionID(sessionID), raw)
-}
-
-// PtyWriteLarge 向内嵌终端分块写入大量数据（用于长文本粘贴）。data 为 base64 编码。
-// 内部将数据拆分为 1KB 小块逐步写入，避免 ConPTY 缓冲区溢出截断。
-// M-005: fail-closed (see PtyWrite).
-func (a *App) PtyWriteLarge(sessionID string, data string) error {
-	if a.control == nil || !a.control.IsReady() {
-		return remote.ErrControlNotReady
-	}
-	raw, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
-		return fmt.Errorf("decode base64: %w", err)
-	}
-	return a.control.DesktopPasteChunk(a.ctx, contract.SessionID(sessionID), raw)
-}
-
-// SaveClipboardImage 将 base64 编码的 PNG 保存为私有临时文件，返回文件绝对路径。
-// 用于处理 Windows 截图工具截图后粘贴到终端的场景。
-func (a *App) SaveClipboardImage(base64Data string) (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return "", fmt.Errorf("decode base64: %w", err)
-	}
-	filePath, err := writeClipboardImage(raw)
-	if err != nil {
-		return "", err
-	}
-	a.Log.Info("app", "剪贴板图片已保存", filePath)
-	return filePath, nil
-}
-
-func writeClipboardImage(raw []byte) (string, error) {
-	if len(raw) == 0 {
-		return "", errors.New("clipboard image is empty")
-	}
-	if len(raw) > maxClipboardImageBytes {
-		return "", fmt.Errorf("clipboard image exceeds %d MiB limit", maxClipboardImageBytes/(1024*1024))
-	}
-	if len(raw) < len(pngSignature) || !bytes.Equal(raw[:len(pngSignature)], pngSignature) {
-		return "", errors.New("clipboard image must be a PNG")
-	}
-
-	file, err := os.CreateTemp("", "amagi-codebox-clipboard-*.png")
-	if err != nil {
-		return "", fmt.Errorf("create temp image: %w", err)
-	}
-	filePath := file.Name()
-	succeeded := false
-	defer func() {
-		if !succeeded {
-			_ = file.Close()
-			_ = os.Remove(filePath)
-		}
-	}()
-	if err := file.Chmod(0o600); err != nil {
-		return "", fmt.Errorf("set temp image permissions: %w", err)
-	}
-	if _, err := file.Write(raw); err != nil {
-		return "", fmt.Errorf("write temp image: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("close temp image: %w", err)
-	}
-	succeeded = true
-	return filePath, nil
-}
-
-// PtyResize 调整内嵌终端尺寸
-// M-005: fail-closed (see PtyWrite).
-func (a *App) PtyResize(sessionID string, cols, rows int) error {
-	if a.control == nil || !a.control.IsReady() {
-		return remote.ErrControlNotReady
-	}
-	return a.control.DesktopPassiveResize(a.ctx, contract.SessionID(sessionID), cols, rows)
-}
-
-// GetOutputHistorySnapshot returns a JSON-encoded snapshot of the output history
-// along with the emitSeq and the current run token/version at snapshot time.
-// The JSON structure is:
-//
-//	{"data": "<base64-encoded bytes>", "seq": <uint64>, "runToken": "<opaque>", "runVersion": "<decimal>"}
-//
-// Frontend uses the seq to deduplicate live events: any live event with
-// seq <= the returned seq is already contained in the history snapshot.
-// runToken/runVersion enable A3's strict run-scoped filtering (design §8.6.1).
-func (a *App) GetOutputHistorySnapshot(sessionID string) (string, error) {
-	data, seq, err := a.Pty.GetOutputHistoryWithSeq(sessionID)
-	if err != nil {
-		return "", err
-	}
-	if a.control != nil {
-		return a.control.Projector().FormatSnapshotJSON(contract.SessionID(sessionID), data, seq)
-	}
-	result := struct {
-		Data string `json:"data"`
-		Seq  uint64 `json:"seq"`
-	}{
-		Data: base64.StdEncoding.EncodeToString(data),
-		Seq:  seq,
-	}
-	b, err := json.Marshal(result)
-	if err != nil {
-		return "", fmt.Errorf("marshal history snapshot: %w", err)
-	}
-	return string(b), nil
-}
-
-// GetPtyDimensions 返回指定 PTY 会话的当前尺寸。
-// 实现 remote.DimensionsProvider 接口。
-func (a *App) GetPtyDimensions(sessionID string) (cols, rows int, err error) {
-	return a.Pty.GetPtyDimensions(sessionID)
-}
-
-// OpenFileInEditor 使用系统默认程序打开指定文件。
-// filePath 可以是绝对路径或相对路径；line 参数保留兼容但不使用（系统默认程序通常不支持行号定位）。
-func (a *App) OpenFileInEditor(filePath string, line int) error {
-	_ = line
-	// 先验证文件是否存在，避免打开不存在的路径时创建空文件
-	if _, err := os.Stat(filePath); err != nil {
-		a.Log.Debug("app", "文件不存在，跳过打开", filePath)
-		return fmt.Errorf("file not found: %s", filePath)
-	}
-	if err := a.fileOpener().Open(filePath); err != nil {
-		a.Log.Warn("app", "打开文件失败", fmt.Sprintf("file=%s err=%v", filePath, err))
-		return fmt.Errorf("open file %q: %w", filePath, err)
-	}
-	a.Log.Info("app", "系统默认程序打开文件", filePath)
-	return nil
-}
-
-// --- 诊断 API ---
-
-// GetKeyDiagnostics 返回所有提供商的密钥来源诊断信息
-func (a *App) GetKeyDiagnostics() map[string]map[string]string {
-	providers := a.Config.GetProviderNames()
-	return a.Secrets.GetKeyDiagnostics(providers)
-}
-
-// ExportConfigToFile 将所有可移植配置合并导出为 JSON 文件。
-// 通过系统对话框让用户选择保存位置；导出文件仅对当前用户可读。
-func (a *App) ExportConfigToFile() (string, error) {
-	a.portableConfigMu.Lock()
-	defer a.portableConfigMu.Unlock()
-
-	// 优先弹出保存对话框，避免配置快照中的慢速系统服务（例如 macOS
-	// 钥匙串授权）让用户误以为按钮没有响应。
-	savePath, err := wailsRuntime.SaveFileDialog(a.ctx, wailsRuntime.SaveDialogOptions{
-		Title:           "导出完整配置",
-		DefaultFilename: "amagi-codebox-complete-config.json",
-		Filters: []wailsRuntime.FileFilter{
-			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("open save dialog: %w", err)
-	}
-
-	// 用户取消了对话框
-	if savePath == "" {
-		a.Log.Info("app", "用户取消了配置导出")
-		return "", nil
-	}
-
-	a.Log.Info("app", "开始导出配置")
-	exportCfg, err := a.buildCompleteExportConfig()
-	if err != nil {
-		return "", err
-	}
-
-	data, err := json.MarshalIndent(exportCfg, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal export config: %w", err)
-	}
-	data = append(data, '\n')
-
-	// atomic 写入用户选择的路径
-	if err := atomicWriteFile(savePath, data); err != nil {
-		return "", fmt.Errorf("write export file: %w", err)
-	}
-	a.Log.Info("app", "配置已导出", savePath)
-
-	return savePath, nil
-}
-
-// ImportConfigFromFile 通过文件选择对话框导入 JSON 配置文件。
-// v2 文件采用完整快照替换语义；v1 文件继续按旧协议兼容导入。
-func (a *App) ImportConfigFromFile() (string, error) {
-	a.portableConfigMu.Lock()
-	defer a.portableConfigMu.Unlock()
-	a.Log.Info("app", "开始导入配置")
-
-	// 弹出文件选择对话框
-	filePath, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "导入配置",
-		Filters: []wailsRuntime.FileFilter{
-			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("open file dialog: %w", err)
-	}
-
-	// 用户取消了对话框
-	if filePath == "" {
-		a.Log.Info("app", "用户取消了配置导入")
-		return "", nil
-	}
-
-	// 读取文件内容
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", fmt.Errorf("read file: %w", err)
-	}
-
-	exportCfg, exportRaw, err := decodeConfigExport(data)
-	if err != nil {
-		return "", err
-	}
-
-	if exportRaw.Portable != nil {
-		portable, err := decodePortableConfig(exportCfg.Portable)
-		if err != nil {
-			return "", err
-		}
-		if err := a.applyCompleteConfig(exportCfg, portable, exportRaw.OpenCodePresets != nil); err != nil {
-			return "", fmt.Errorf("import complete config: %w", err)
-		}
-		msg := fmt.Sprintf("完整配置导入成功：%d 个提供商。请重启应用以载入全部设置", len(exportCfg.Providers))
-		a.Log.Info("app", msg, filePath)
-		return msg, nil
-	}
-
-	// 遍历 providers 并导入
-	importCount := 0
-	for name, ep := range exportCfg.Providers {
-		if err := a.saveImportedProviderAPIKey(name, selectImportedProviderAPIKey(ep)); err != nil {
-			a.Log.Warn("app", "保存 provider API key 失败", fmt.Sprintf("provider=%s err=%v", name, err))
-		}
-
-		provider := buildProviderFromExportProvider(ep)
-
-		if err := a.Config.SaveProvider(name, provider); err != nil {
-			return "", fmt.Errorf("save provider %q: %w", name, err)
-		}
-
-		importCount++
-	}
-
-	// 导入 AgentTeams 配置（如果存在）
-	if exportCfg.AgentTeams.TeammateMode != "" || exportCfg.AgentTeams.Enabled {
-		if err := a.Config.SetAgentTeams(exportCfg.AgentTeams); err != nil {
-			a.Log.Warn("app", "导入 AgentTeams 配置失败", err.Error())
-		}
-	}
-
-	// 导入 preset 快照。
-	// 为避免 omitempty / 字段缺失导致旧数据残留，nil 视为空快照。
-	hasExplicitOpenCodeSnapshot := exportRaw.OpenCodePresets != nil
-	if err := a.Config.ReplaceImportedPresetSnapshots(exportCfg.TerminalPresets, exportCfg.OpenCodePresets, hasExplicitOpenCodeSnapshot); err != nil {
-		a.Log.Warn("app", "导入 preset 快照失败", err.Error())
-	} else {
-		a.Log.Info("app", "preset 快照已导入")
-	}
-	if err := a.Secrets.Save(); err != nil {
-		return "", fmt.Errorf("save imported provider secrets: %w", err)
-	}
-	if err := a.syncProvidersToHarnesses(); err != nil {
-		return "", a.providerSyncError("提供商配置导入", err)
-	}
-
-	msg := fmt.Sprintf("成功导入 %d 个提供商配置", importCount)
-	a.Log.Info("app", msg, filePath)
-	return msg, nil
-}
-
-// GetProviderExportJSON 返回指定提供商的配置（含 API key）的格式化 JSON 字符串，
-// 供前端 JSON 编辑功能使用。
-// 支持双格式结构导出，同时保留旧字段兼容。
-func (a *App) GetProviderExportJSON(providerName string) (string, error) {
-	provider, err := a.Config.GetProvider(providerName)
-	if err != nil {
-		return "", fmt.Errorf("get provider %q: %w", providerName, err)
-	}
-
-	apiKey, _ := a.getProviderAPIKey(providerName, *provider)
-	ep := buildExportProvider(*provider, apiKey)
-
-	data, err := json.MarshalIndent(ep, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal provider JSON: %w", err)
-	}
-	return string(data), nil
-}
-
-// SaveProviderFromJSON 将前端传入的 JSON 字符串解析后保存到指定提供商，
-// 若 APIKey 有变更则同步更新密钥存储。
-// 支持双格式结构导入，同时兼容旧 JSON 格式。
-// API key 不会写入 CodeBox 的 models.json；为了让独立 harness 可直接使用统一
-// provider，它会同步到权限为 0600 的 harness provider 配置。各 harness 自己的认证
-// 存储（OpenCode auth.json、Pi auth.json、OMP agent.db）不会被修改。
-func (a *App) SaveProviderFromJSON(providerName string, jsonStr string) error {
-	trimmedName := strings.TrimSpace(providerName)
-	if trimmedName == "" || trimmedName != providerName || strings.Contains(trimmedName, "/") {
-		return fmt.Errorf("invalid provider name %q: must be non-empty, trimmed, and must not contain '/'", providerName)
-	}
-	var ep config.ExportProvider
-	if err := json.Unmarshal([]byte(jsonStr), &ep); err != nil {
-		return fmt.Errorf("invalid JSON format: %w", err)
-	}
-	var requestOptions struct {
-		ClearAPIKey bool `json:"clear_api_key"`
-	}
-	if err := json.Unmarshal([]byte(jsonStr), &requestOptions); err != nil {
-		return fmt.Errorf("invalid JSON format: %w", err)
-	}
-
-	apiKey := selectImportedProviderAPIKey(ep)
-	secretsChanged := false
-	if requestOptions.ClearAPIKey {
-		a.deleteProviderAPIKeys(providerName)
-		secretsChanged = true
-	} else if strings.TrimSpace(apiKey) != "" {
-		if err := a.saveImportedProviderAPIKey(providerName, apiKey); err != nil {
-			return fmt.Errorf("save provider API key for %q: %w", providerName, err)
-		}
-		secretsChanged = true
-	}
-
-	provider := buildProviderFromExportProvider(ep)
-
-	if err := a.Config.SaveProvider(providerName, provider); err != nil {
-		return fmt.Errorf("save provider %q: %w", providerName, err)
-	}
-	if secretsChanged {
-		if err := a.Secrets.Save(); err != nil {
-			return fmt.Errorf("provider saved but API key persistence failed: %w", err)
-		}
-	}
-	if err := a.syncProvidersToHarnesses(); err != nil {
-		return a.providerSyncError("提供商配置", err)
-	}
-
-	a.Log.Info("app", "已从 JSON 保存提供商配置", providerName)
-	return nil
-}
-
-// UpdateProvider 统一编辑提供商入口：支持改名 + 属性更新 + 密钥更新。
-//   - oldName == newName：仅更新属性，复用 SaveProviderFromJSON 路径（零副作用）。
-//   - oldName != newName（改名）：先 config 迁移（RenameProvider 原子写盘），
-//     再覆盖新属性（SaveProvider），最后 secrets 密钥迁移并显式落盘。
-//
-// providerJSON 为完整的 ExportProvider JSON（含可编辑属性与可选 API Key）。
-// API Key 为空表示"保持不变"——后端会迁移旧密钥到新 name。
-//
-// 失败降级（设计 4.6）：config 已原子写成功后 secrets.Save 失败时，不回滚 config，
-// 返回带友好提示的 error，用户重新填写密钥即可。
-func (a *App) UpdateProvider(oldName, newName string, providerJSON string) error {
-	// —— 1. 校验（持锁前，不依赖 config 状态）——
-	if oldName == "" {
-		return errors.New("provider name is required")
-	}
-	trimmedNew := strings.TrimSpace(newName)
-	if trimmedNew == "" {
-		return errors.New("provider name is required")
-	}
-	if strings.Contains(trimmedNew, "/") {
-		return fmt.Errorf("invalid provider name %q: must not contain '/'", trimmedNew)
-	}
-	newName = trimmedNew
-
-	// —— 2. 解析 ExportProvider JSON ——
-	var ep config.ExportProvider
-	if err := json.Unmarshal([]byte(providerJSON), &ep); err != nil {
-		return fmt.Errorf("invalid JSON format: %w", err)
-	}
-
-	// —— 3. 分流：未改名走现成路径 ——
-	if oldName == newName {
-		return a.SaveProviderFromJSON(newName, providerJSON)
-	}
-
-	// —— 改名分支 ——
-	// 3a. 预读旧密钥（config 改动前读取，确保可读）。
-	// 只读 secrets cache（统一 key + legacy 回退），不查环境变量——环境变量不可迁移。
-	oldKey := ""
-	if oldProv, err := a.Config.GetProvider(oldName); err == nil && oldProv != nil {
-		oldKey = a.readStoredProviderAPIKey(oldName, *oldProv)
-	}
-
-	// 3b. config 迁移（原子写盘）
-	if err := a.Config.RenameProvider(oldName, newName); err != nil {
-		return err
-	}
-
-	// 3c. 覆盖新属性（此时 newName 已存在，upsert）。
-	// 复用 buildProviderFromExportProvider，保持 JSON 结构与现有路径一致。
-	newProvider := buildProviderFromExportProvider(ep)
-	if err := a.Config.SaveProvider(newName, newProvider); err != nil {
-		// config 已改名（步骤 3b 成功），属性未更新——不回滚，前端可重试。
-		a.Log.Warn("app", "provider 改名后属性覆盖失败，可重试", oldName+" -> "+newName+": "+err.Error())
-		return fmt.Errorf("rename succeeded but save new properties failed: %w", err)
-	}
-
-	// 3d. secrets 迁移（三分支）
-	newKey := selectImportedProviderAPIKey(ep)
-	secretsChanged := false
-	switch {
-	case newKey != "":
-		// 用户填了新密钥：写入 newName 的统一 key。
-		if err := a.Secrets.SetAPIKey(newName, newKey); err != nil {
-			return fmt.Errorf("set new API key for %q: %w", newName, err)
-		}
-		secretsChanged = true
-		// 删除 oldName 的所有密钥条目（统一 key + legacy）。
-		a.deleteProviderAPIKeys(oldName)
-	case oldKey != "":
-		// 用户未填新密钥（保持不变）：迁移旧密钥到 newName。
-		if err := a.Secrets.SetAPIKey(newName, oldKey); err != nil {
-			return fmt.Errorf("migrate API key to %q: %w", newName, err)
-		}
-		a.deleteProviderAPIKeys(oldName)
-		secretsChanged = true
-	}
-	// newKey 空 且 oldKey 空：无密钥可迁，跳过。
-
-	// 3e. secrets 落盘（仅在发生变更时）
-	if secretsChanged {
-		if err := a.Secrets.Save(); err != nil {
-			// 设计 4.6：config 已一致，secrets 内存 cache 已改但 Save 失败。
-			// 不回滚 config（反向操作风险更高）。降级为提示用户重填密钥。
-			a.Log.Warn("app", "provider 改名后密钥落盘失败，请重新填写密钥",
-				oldName+" -> "+newName+": "+err.Error())
-			return fmt.Errorf("config renamed but secrets save failed: %w; please re-enter API key for %s", err, newName)
-		}
-	}
-	if err := a.syncProvidersToHarnesses(); err != nil {
-		return a.providerSyncError("提供商配置", err)
-	}
-
-	a.Log.Info("app", "provider 已改名", oldName+" -> "+newName)
-	return nil
-}
-
-// readStoredProviderAPIKey 读取 provider 在 secrets cache 中的统一密钥，
-// 回退到 legacy providerName:format 命名。不查询环境变量（环境变量不可迁移）。
-func (a *App) readStoredProviderAPIKey(providerName string, provider config.Provider) string {
-	if key, _ := a.Secrets.GetAPIKey(providerName); strings.TrimSpace(key) != "" {
-		return strings.TrimSpace(key)
-	}
-	for _, format := range legacyProviderAPIKeyCandidates(provider) {
-		if key, err := a.Secrets.GetAPIKey(providerName + ":" + format); err == nil {
-			if trimmed := strings.TrimSpace(key); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
-	return ""
-}
-
-// deleteProviderAPIKeys 删除指定 provider 在 secrets cache 中的所有密钥条目，
-// 包含统一 key（providerName）与 legacy 命名（providerName:anthropic / providerName:openai）。
-// 用于改名后清理旧 name 的残留，避免 secrets.enc 出现指向已不存在 provider 的孤儿条目。
-func (a *App) deleteProviderAPIKeys(providerName string) {
-	_ = a.Secrets.DeleteAPIKey(providerName)
-	_ = a.Secrets.DeleteAPIKey(providerName + ":anthropic")
-	_ = a.Secrets.DeleteAPIKey(providerName + ":openai")
-}
-
-// DeleteProvider 删除指定服务商配置。
-func (a *App) DeleteProvider(name string) error {
-	if name == "" {
-		return errors.New("provider name is required")
-	}
-	if err := a.Config.DeleteProvider(name); err != nil {
-		return err
-	}
-	var deleteErrs []error
-	if a.Secrets != nil {
-		a.deleteProviderAPIKeys(name)
-		if err := a.Secrets.Save(); err != nil {
-			deleteErrs = append(deleteErrs, fmt.Errorf("provider deleted but secret cleanup failed: %w", err))
-		}
-	}
-	if err := a.syncProvidersToHarnesses(); err != nil {
-		deleteErrs = append(deleteErrs, a.providerSyncError("提供商删除", err))
-	}
-	return errors.Join(deleteErrs...)
-}
-
 // atomicWriteFile atomically writes a user-private export. It uses an
 // exclusive temporary file instead of a predictable .tmp path and preserves
 // 0600 permissions after replacement because exports can contain API keys.
@@ -6479,349 +1478,6 @@ func defaultOmpAgentDir() string {
 		return filepath.Join(".omp", "agent")
 	}
 	return filepath.Join(home, ".omp", "agent")
-}
-
-// headroomVenvBinSubdir returns the platform-specific bin directory inside
-// the CodeBox-managed headroom venv. Used at wiring time to inject the same
-// directory into both envcheck.Service and headroom.HeadroomService.
-func headroomVenvBinSubdir(venvDir string) string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(venvDir, "Scripts")
-	}
-	return filepath.Join(venvDir, "bin")
-}
-
-// --- URL 历史 API ---
-
-// GetUrlHistory 获取指定Provider的URL历史
-func (a *App) GetUrlHistory(providerID string) ([]string, error) {
-	return a.Config.GetUrlHistory(providerID)
-}
-
-// AddUrlToHistory 添加URL到历史记录（自动去重并调整到最前）
-func (a *App) AddUrlToHistory(providerID, url string) error {
-	return a.Config.AddUrlToHistory(providerID, url)
-}
-
-// RemoveUrlFromHistory 从历史记录中删除指定URL
-func (a *App) RemoveUrlFromHistory(providerID, url string) error {
-	return a.Config.RemoveUrlFromHistory(providerID, url)
-}
-
-// --- 自定义环境变量 API ---
-
-// GetEnvVars 返回所有自定义环境变量
-func (a *App) GetEnvVars() ([]envvars.EnvVar, error) {
-	return a.EnvVars.GetAll(), nil
-}
-
-// SetEnvVar 设置单个自定义环境变量（不存在则新增，存在则更新）
-func (a *App) SetEnvVar(key, value string) error {
-	return a.EnvVars.Set(key, value)
-}
-
-// SetEnvVarPathAllow 设置/取消单个自定义环境变量的「路径值跨界放行」标记
-// （P4-A2 per-key 放行门）。开启后该键的 Windows 盘符路径值不再被 WSL 启动链
-// 剥离，并经 WSLENV /p 标志跨界翻译为 /mnt 路径；保留键（WSLENV/PATH/PATHEXT）
-// 拒绝。值本身不变，仅翻转标记并持久化到 envvars.json。
-func (a *App) SetEnvVarPathAllow(key string, allow bool) error {
-	return a.EnvVars.SetPathAllow(key, allow)
-}
-
-// DeleteEnvVar 删除指定 key 的自定义环境变量
-func (a *App) DeleteEnvVar(key string) error {
-	return a.EnvVars.Delete(key)
-}
-
-// ImportEnvVars 从 JSON 字符串导入自定义环境变量（全量替换）
-func (a *App) ImportEnvVars(jsonStr string) error {
-	return a.EnvVars.Import(jsonStr)
-}
-
-// ExportEnvVars 导出自定义环境变量为 JSON 字符串
-func (a *App) ExportEnvVars() (string, error) {
-	return a.EnvVars.Export()
-}
-
-// GetEnvVarsJSON 获取所有自定义环境变量的 JSON 格式（供 JSON 编辑器使用）
-func (a *App) GetEnvVarsJSON() (string, error) {
-	return a.EnvVars.GetJSON()
-}
-
-// SaveEnvVarsJSON 从 JSON 字符串保存自定义环境变量（供 JSON 编辑器使用）
-func (a *App) SaveEnvVarsJSON(jsonStr string) error {
-	return a.EnvVars.SaveJSON(jsonStr)
-}
-
-// ExportEnvVarsToFile 弹出保存对话框，将自定义环境变量导出到用户选择的 JSON 文件。
-func (a *App) ExportEnvVarsToFile() error {
-	data, err := a.EnvVars.Export()
-	if err != nil {
-		return fmt.Errorf("export envvars: %w", err)
-	}
-
-	savePath, err := wailsRuntime.SaveFileDialog(a.ctx, wailsRuntime.SaveDialogOptions{
-		Title:           "导出环境变量",
-		DefaultFilename: "envvars.json",
-		Filters: []wailsRuntime.FileFilter{
-			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("open save dialog: %w", err)
-	}
-	if savePath == "" {
-		return nil // 用户取消
-	}
-
-	if err := atomicWriteFile(savePath, []byte(data+"\n")); err != nil {
-		return fmt.Errorf("write envvars file: %w", err)
-	}
-	a.Log.Info("app", "环境变量已导出", savePath)
-	return nil
-}
-
-// ImportEnvVarsFromFile 弹出打开对话框，从用户选择的 JSON 文件导入自定义环境变量（全量替换）。
-func (a *App) ImportEnvVarsFromFile() error {
-	filePath, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "导入环境变量",
-		Filters: []wailsRuntime.FileFilter{
-			{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("open file dialog: %w", err)
-	}
-	if filePath == "" {
-		return nil // 用户取消
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("read file: %w", err)
-	}
-
-	// 剥离 UTF-8 BOM（Windows 编辑器可能在文件开头添加 BOM）
-	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
-		data = data[3:]
-	}
-
-	if err := a.EnvVars.Import(string(data)); err != nil {
-		return fmt.Errorf("import envvars: %w", err)
-	}
-	a.Log.Info("app", "环境变量已导入", filePath)
-	return nil
-}
-
-// GetEnvVarsGlobalSyncStatus 返回环境变量全局同步状态
-func (a *App) GetEnvVarsGlobalSyncStatus() envvars.GlobalSyncStatus {
-	return a.EnvVars.GetGlobalSyncStatus()
-}
-
-// SetEnvVarsGlobalSyncEnabled 开启或关闭环境变量全局同步
-func (a *App) SetEnvVarsGlobalSyncEnabled(enabled bool) (envvars.GlobalSyncStatus, error) {
-	return a.EnvVars.SetGlobalSyncEnabled(enabled)
-}
-
-// --- 全局 OpenCode 配置 API ---
-
-// GetOpenCodeConfig 读取全局 OpenCode 配置文件内容（JSON 文本）。
-// 若文件不存在则返回默认空配置；若文件内容非法 JSON 则原样返回供用户修正。
-func (a *App) GetOpenCodeConfig() (string, error) {
-	return a.OpenCodeConfig.GetOpenCodeConfig()
-}
-
-// SaveOpenCodeConfig 校验并保存全局 OpenCode 配置文件。
-// content 必须为合法 JSON，否则返回错误。
-// 保存采用原子写入（先写临时文件再 rename），避免损坏。
-func (a *App) SaveOpenCodeConfig(content string) error {
-	if !a.providerSyncEnabled {
-		return a.OpenCodeConfig.SaveOpenCodeConfig(content)
-	}
-	a.providerSyncMu.Lock()
-	defer a.providerSyncMu.Unlock()
-	if err := a.OpenCodeConfig.SaveOpenCodeConfig(content); err != nil {
-		return err
-	}
-	return a.syncProvidersToHarnessesLocked()
-}
-
-// GetOpenCodeConfigPath 返回全局 OpenCode 配置文件的绝对路径，供前端展示。
-func (a *App) GetOpenCodeConfigPath() (string, error) {
-	return a.OpenCodeConfig.GetOpenCodeConfigPath()
-}
-
-// --- Pi (amagi-pi) 配置 API ---
-
-// GetAmagiConfig 读取 pi 的 amagi.json 配置内容（JSON 文本）。
-func (a *App) GetAmagiConfig() (string, error) {
-	return a.PiConfig.GetAmagiConfig()
-}
-
-// SaveAmagiConfig 校验并保存 amagi.json（原子写入）。保存后向 WSL 供给发布
-// 来源变更（P3-S2：pi-config 标脏，驱动异步推送/下次启动补漏）。
-func (a *App) SaveAmagiConfig(content string) error {
-	err := a.PiConfig.SaveAmagiConfig(content)
-	if err == nil {
-		a.markWSLSupplyDirty(wslsupply.DirtySourcePiConfig)
-	}
-	return err
-}
-
-// GetAmagiConfigPath 返回 amagi.json 的绝对路径，供前端展示。
-func (a *App) GetAmagiConfigPath() (string, error) {
-	return a.PiConfig.GetAmagiConfigPath()
-}
-
-// GetPiModelCatalog 读取 models.json 抽取 provider→model 目录（只读，不含密钥），
-// 供前端可视化配置的下拉关联使用。
-func (a *App) GetPiModelCatalog() (string, error) {
-	return a.PiConfig.GetPiModelCatalog()
-}
-
-// GetPiModelsConfig 读取 pi 的 models.json 注册表全文（含 apiKey，本地文件）。
-func (a *App) GetPiModelsConfig() (string, error) {
-	return a.PiConfig.GetModelsConfig()
-}
-
-// SavePiModelsConfig 校验并保存 models.json（原子写入）。保存后向 WSL 供给
-// 发布 pi-config 来源变更（P3-S2：amagi 引用诊断的比对宇宙随之变化）。
-func (a *App) SavePiModelsConfig(content string) error {
-	err := a.PiConfig.SaveModelsConfig(content)
-	if err == nil {
-		a.markWSLSupplyDirty(wslsupply.DirtySourcePiConfig)
-	}
-	return err
-}
-
-// GetPiModelsConfigPath 返回 models.json 的绝对路径，供前端展示。
-func (a *App) GetPiModelsConfigPath() (string, error) {
-	return a.PiConfig.GetModelsConfigPath()
-}
-
-// GetPiAuthConfig 读取 pi 的 auth.json 提供商凭据全文（含明文密钥，仅本地编辑用）。
-func (a *App) GetPiAuthConfig() (string, error) {
-	return a.PiConfig.GetAuthConfig()
-}
-
-// SavePiAuthConfig 校验并保存 auth.json（原子写入）。
-func (a *App) SavePiAuthConfig(content string) error {
-	return a.PiConfig.SaveAuthConfig(content)
-}
-
-// GetPiAuthConfigPath 返回 auth.json 的绝对路径，供前端展示。
-func (a *App) GetPiAuthConfigPath() (string, error) {
-	return a.PiConfig.GetAuthConfigPath()
-}
-
-// --- OMP (oh-my-pi) 配置 API ---
-
-// GetOmpConfig 读取 omp 的 config.yml 配置内容（YAML 文本）。
-func (a *App) GetOmpConfig() (string, error) {
-	return a.OmpConfig.GetOmpConfig()
-}
-
-// SaveOmpConfig 校验并保存 config.yml（原子写入）。
-func (a *App) SaveOmpConfig(content string) error {
-	return a.OmpConfig.SaveOmpConfig(content)
-}
-
-// GetOmpConfigPath 返回 config.yml 的绝对路径，供前端展示。
-func (a *App) GetOmpConfigPath() (string, error) {
-	return a.OmpConfig.GetOmpConfigPath()
-}
-
-// GetOmpModelCatalog 读取 models.yml 抽取 provider→model 目录（只读，不含密钥），
-// 供前端可视化配置的下拉关联使用。
-func (a *App) GetOmpModelCatalog() (string, error) {
-	return a.OmpConfig.GetOmpModelCatalog()
-}
-
-// GetOmpModelsConfig 读取 omp 的 models.yml 注册表全文（含 apiKey，本地文件）。
-func (a *App) GetOmpModelsConfig() (string, error) {
-	return a.OmpConfig.GetModelsConfig()
-}
-
-// SaveOmpModelsConfig 校验并保存 models.yml（原子写入）。
-func (a *App) SaveOmpModelsConfig(content string) error {
-	return a.OmpConfig.SaveModelsConfig(content)
-}
-
-// GetOmpModelsConfigPath 返回 models.yml 的绝对路径，供前端展示。
-func (a *App) GetOmpModelsConfigPath() (string, error) {
-	return a.OmpConfig.GetModelsConfigPath()
-}
-
-// --- 终端预设 API ---
-
-// GetTerminalPresets 获取指定终端类型的所有预设。
-func (a *App) GetTerminalPresets(terminalType string) (map[string]config.TerminalPreset, error) {
-	return a.Config.GetTerminalPresets(terminalType)
-}
-
-// SaveTerminalPreset 保存指定终端类型的预设。
-func (a *App) SaveTerminalPreset(terminalType string, presetName string, preset config.TerminalPreset) error {
-	if err := a.Config.SaveTerminalPreset(terminalType, presetName, preset); err != nil {
-		return err
-	}
-	return a.providerSyncError("公共预设", a.syncProvidersToHarnesses())
-}
-
-// DeleteTerminalPreset 删除指定终端类型的预设。
-func (a *App) DeleteTerminalPreset(terminalType string, presetName string) error {
-	if err := a.Config.DeleteTerminalPreset(terminalType, presetName); err != nil {
-		return err
-	}
-	return a.providerSyncError("公共预设", a.syncProvidersToHarnesses())
-}
-
-// MigrateProviderPresetsToTerminal 将旧的 provider.presets 迁移到 terminal_presets。
-// 返回 (迁移数量, error)。
-func (a *App) MigrateProviderPresetsToTerminal() (int, error) {
-	count, _, err := a.Config.MigrateProviderPresetsToTerminal()
-	return count, err
-}
-
-// GetMergedTerminalPresets 返回指定终端类型的合并预设列表（新体系优先，旧体系回退）。
-func (a *App) GetMergedTerminalPresets(terminalType string) ([]config.MergedTerminalPreset, error) {
-	return a.Config.GetMergedTerminalPresets(terminalType)
-}
-
-// ResolveTerminalPreset 按 terminal type + key 解析出 terminal preset 的详情。
-// 返回值: (providerName, model, hasOpenCodeCfg, openCodeCfgJSON, found)
-func (a *App) ResolveTerminalPreset(terminalType string, key string) (string, string, string, bool) {
-	provName, tp, err := a.Config.ResolveTerminalPreset(terminalType, key)
-	if err != nil || tp == nil {
-		return "", "", "", false
-	}
-	ocCfg := ""
-	if len(tp.OpenCodeCfg) > 0 {
-		ocCfg = string(tp.OpenCodeCfg)
-	}
-	return provName, tp.Model, ocCfg, true
-}
-
-// --- 已保存工作目录 API ---
-
-// GetSavedWorkDirs 获取已保存的工作目录列表。
-func (a *App) GetSavedWorkDirs() ([]settings.WorkDirEntry, error) {
-	return a.Settings.GetSavedWorkDirs(), nil
-}
-
-// AddSavedWorkDir 添加工作目录（去重，按 path 去重；label 空则用路径末段），返回最新列表。
-func (a *App) AddSavedWorkDir(path string, label string) ([]settings.WorkDirEntry, error) {
-	if err := a.Settings.AddSavedWorkDir(path, label); err != nil {
-		return nil, err
-	}
-	return a.Settings.GetSavedWorkDirs(), nil
-}
-
-// RemoveSavedWorkDir 移除工作目录，返回最新列表。
-func (a *App) RemoveSavedWorkDir(path string) ([]settings.WorkDirEntry, error) {
-	if err := a.Settings.RemoveSavedWorkDir(path); err != nil {
-		return nil, err
-	}
-	return a.Settings.GetSavedWorkDirs(), nil
 }
 
 // ===== Shared Extensions (共用中心) =====
@@ -6897,23 +1553,9 @@ func (a *App) ImportSharedSkillFromDir(dirPath string) (ImportSharedSkillResult,
 	return wrapSkillImport(skills, err)
 }
 
-// DeleteSharedSkill 删除公共 skill（先按 Deployed 清单回收各目标引擎，再删
-// 仓库目录与 registry 条目）。Missing 条目的清理入口也是它。
-func (a *App) DeleteSharedSkill(name string) error {
-	return a.sharedExt.DeleteSharedSkill(name)
-}
-
-// SetSharedSkillEnabled 启用/禁用公共 skill：true→分发到全部 Targets，
-// false→回收全部 Deployed；幂等。
-func (a *App) SetSharedSkillEnabled(name string, enabled bool) error {
-	return a.sharedExt.SetSharedSkillEnabled(name, enabled)
-}
-
-// SetSharedSkillTargets 设置公共 skill 的目标引擎（diff 分发/回收；
-// Enabled=false 时只存不分发）。
-func (a *App) SetSharedSkillTargets(name string, targets []sharedext.Engine) error {
-	return a.sharedExt.SetSharedSkillTargets(name, targets)
-}
+// SetSharedSkillTargets 已在 P6 合并中移除：与远端 app_sharedskills.go 的
+// ~/.agents 共用技能门面同名冲突，且该透传冗余（前端 api/sharedExt.ts
+// 直接消费 sharedext/Service 绑定）。
 
 // GetSharedMCPServers 返回公共 MCP server 清单。签名无 error（任务契约）：
 // 失败时记日志返回空。
@@ -7046,9 +1688,10 @@ func (a *App) ReadTextFile(path string) (string, error) {
 // 配置读取失败等都是可容忍的降级场景）。
 //
 // 覆盖现状（P4 后）：
-//   - claude：skills + 子项禁用（GetPluginDetail 已把 plugin-subitems.json
-//     合并进 detail.SubItems）；插件级 Enabled 不映射（claude settings
-//     enabledPlugins 缺省语义不确定，避免误标，交内建 TTL/刷新）；
+//   - claude：skills + 子项禁用投影（远端 1.3.144 stash 机制：禁用 skill 物理移
+//     入 stash，detail.Skills 只含现存启用态；被 stash 的 skill 聚合条目自然
+//     消失）；插件级 Enabled 不映射（claude settings enabledPlugins 缺省语义
+//     不确定，避免误标，交内建 TTL/刷新）；
 //   - codex：skills + 插件级禁用映射（config.toml enabled=false → 全部
 //     skill 标记停用）；子项级禁用无存储（CLI/配置均无该机制，探测证据
 //     见 P4 报告）→ 空；
@@ -7065,6 +1708,9 @@ func (a *App) buildSharedSkillProviders() []sharedext.PluginSkillsProvider {
 	providers = append(providers, a.sharedSkillProvidersOpenCode()...)
 	providers = append(providers, a.sharedSkillProvidersPi()...)
 	providers = append(providers, a.sharedSkillProvidersOmp()...)
+	// P6 交汇点：共用插件市场部署到 ~/.agents/skills 的技能作为聚合来源
+	//（origin 语义为 plugin，Engine=market 供前端区分徽章与禁删文案）。
+	providers = append(providers, a.sharedSkillProvidersMarket()...)
 	return providers
 }
 
@@ -7093,9 +1739,11 @@ func (a *App) sharedSkillProvidersClaude() []sharedext.PluginSkillsProvider {
 }
 
 // claudePluginSkillsProvider 把 Claude 插件详情映射为聚合 provider（纯函数）。
-// detail.SubItems 的 skill 子项 Enabled=false 即用户级禁用
-// （plugin-subitems.json 记录，GetPluginDetail 已合并），转换为 sharedext
-// 约定的 "skill/<name>" 键。
+// 远端 1.3.144 起 Claude 子项启停为「文件系统即真相」：禁用 skill/command/agent
+// = 物理移入 stash（~/.amagi-codebox/plugin-subitems-stash），MCP = 条目移出
+// .mcp.json。因此 detail.Skills 只含现存（启用态）skill；被 stash 的 skill
+// 从聚合视图自然消失（P6 融合裁定），SubItemsDisabled 反映 stash 条目的
+// 禁用态（与仍可见条目取交集后为空，保留投影以防未来扫描面包含 stash 视图）。
 func claudePluginSkillsProvider(installed plugin.InstalledPlugin, detail *plugin.PluginDetail) sharedext.PluginSkillsProvider {
 	skills := make([]sharedext.PluginSkill, 0, len(detail.Skills))
 	for _, sk := range detail.Skills {
@@ -7306,4 +1954,71 @@ func ompPluginSkillsProvider(installed ompplugin.Plugin, detail *ompplugin.Plugi
 		Skills:           skills,
 		SubItemsDisabled: disabled,
 	}
+}
+
+// sharedSkillProvidersMarket 收集共用插件市场部署到 ~/.agents/skills 的技能
+// 作为聚合来源（P6 交汇点）。sharedmarket 无部署记录持久化（DeployReport
+// 一次性返回），此处按「市场清单可部署技能名 ∩ ~/.agents 现存目录」推导
+// 已部署条目：skills/<name> 在位 = 已部署启用，skills-disabled/<name> 在位
+// = 已部署但被停用（sharedskills 启停语义：两目录间搬移）。只读推导，
+// 不写任何文件；市场不可读时降级为空并记日志（与五引擎 provider 同策略）。
+// Engine 用 "market" 标识（非五引擎；前端据此显示「插件市场」徽章、禁删、
+// 卸载归共用市场子页管理）。
+func (a *App) sharedSkillProvidersMarket() []sharedext.PluginSkillsProvider {
+	if a.SharedMarkets == nil {
+		return nil
+	}
+	markets, err := a.SharedMarkets.List()
+	if err != nil {
+		a.Log.Warn("sharedext", "读取共用市场清单失败，市场来源聚合降级为空", err.Error())
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		a.Log.Warn("sharedext", "解析用户主目录失败，市场来源聚合降级为空", err.Error())
+		return nil
+	}
+	skillsRoot := filepath.Join(home, ".agents", "skills")
+	disabledRoot := filepath.Join(home, ".agents", "skills-disabled")
+	out := make([]sharedext.PluginSkillsProvider, 0, 8)
+	for _, m := range markets {
+		for _, p := range m.Plugins {
+			if p.ExternalSource {
+				continue // 外部引用插件无法本地枚举技能，无部署面
+			}
+			skills := make([]sharedext.PluginSkill, 0, len(p.Skills))
+			disabled := make(map[string]bool)
+			for _, name := range p.Skills {
+				switch {
+				case marketSkillDeployed(filepath.Join(skillsRoot, name)):
+					skills = append(skills, sharedext.PluginSkill{Name: name, Description: p.Description})
+				case marketSkillDeployed(filepath.Join(disabledRoot, name)):
+					skills = append(skills, sharedext.PluginSkill{Name: name, Description: p.Description})
+					disabled["skill/"+name] = true
+				}
+			}
+			if len(skills) == 0 {
+				continue
+			}
+			out = append(out, sharedext.PluginSkillsProvider{
+				Engine:           sharedext.Engine("market"),
+				PluginID:         p.Name + "@" + m.Name,
+				PluginName:       p.Name,
+				Skills:           skills,
+				SubItemsDisabled: disabled,
+			})
+		}
+	}
+	return out
+}
+
+// marketSkillDeployed 判断目录存在且非空（部署产物是含 SKILL.md 的目录；
+// 空目录/残留文件不算已部署，避免误标）。
+func marketSkillDeployed(dir string) bool {
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
 }

@@ -3,7 +3,7 @@
   挂载于 Provider Center → CLI 独立配置 → Pi → Agent 配置。
   布局（provider-center-layout-redesign §4.3）：导航即标题——不再有 h2 / subtitle；
   一行 EditorToolbar（路径胶囊 / 合法状态 / 模式切换 / 保存）；卡片顺序
-  角色模型（含分层策略）→ 上下文压缩 → MCP 路由 → 并发限制；常显说明只留「当前状态语义 /
+  角色模型（含分层策略）→ 执行中咨询 → 上下文压缩 → MCP 路由 → 并发限制；常显说明只留「当前状态语义 /
   操作后果」，其余收进 InfoTip（文案与处置见 design §5.2 T07–T29）。
   可视化模式：profile 选择、agents.{role}.model 三级下拉（provider → model →
   thinking level，数据来自 pi 模型目录）、统一压缩模型、MCP 路由编辑（含 v2.8.2 mcp.leader）。
@@ -30,9 +30,10 @@
         <template #status>
           <button v-if="compactionError && mode === 'visual' && activeSection !== 'compaction'" type="button" class="pac-error-link" @click="selectSection('compaction')">上下文压缩待修正</button>
           <span v-else-if="compactionError && mode !== 'visual'" class="pac-error-link">上下文压缩待修正</span>
+          <button v-if="codemodeError && mode === 'visual' && activeSection !== 'codemode'" type="button" class="pac-error-link" @click="selectSection('codemode')">CodeMode 待修正</button>
         </template>
         <template #actions>
-          <Segmented v-model="modeModel" :options="MODE_OPTIONS" variant="pill" />
+          <Segmented v-model="modeModel" :options="EDITOR_MODE_OPTIONS" variant="pill" />
           <AppButton variant="primary" size="small" :disabled="saving" @click="handleSave">
             {{ saving ? '保存中...' : '保存配置' }}
           </AppButton>
@@ -100,6 +101,14 @@
               </AppButton>
             </div>
           </div>
+        </EditorSection>
+
+        <EditorSection v-if="visited.advisor" v-show="activeSection === 'advisor'" :active="activeSection === 'advisor'" section-id="advisor" title="执行中咨询" code="advisor" meta="异步建议返回原会话">
+          <PiAdvisorConfig :value="configData.advisor" :catalog="catalog" @change="updateAdvisor" />
+        </EditorSection>
+
+        <EditorSection v-if="visited.codemode" v-show="activeSection === 'codemode'" :active="activeSection === 'codemode'" section-id="codemode" title="CodeMode" code="codemode" meta="工具组合与默认值">
+          <PiCodemodeConfig :value="configData.codemode" @change="updateCodemode" />
         </EditorSection>
 
         <!--
@@ -362,6 +371,8 @@
 </template>
 
 <script setup lang="ts">
+import PiCodemodeConfig from './PiCodemodeConfig.vue';
+import { validateCodemodeConfig } from './piCodemode';
 import { ref, computed, onMounted, watch } from 'vue';
 import { getAmagiConfig, saveAmagiConfig, getAmagiConfigPath, getPiModelCatalog } from '../../api/piConfig';
 import { useToast } from '../../composables/useToast';
@@ -380,6 +391,8 @@ import { PI_SECTIONS, type EditorNavigationProps, type EditorNavigationSnapshot 
 import ConfigContentGroup from './ConfigContentGroup.vue';
 import StringListEditor from './StringListEditor.vue';
 import ModelSpecSelector from './ModelSpecSelector.vue';
+import PiAdvisorConfig from './PiAdvisorConfig.vue';
+import { validateAdvisorConfig } from './piAdvisor';
 import { useModelCatalog } from './useModelCatalog';
 import { applyMcpListMode, mcpListModeOf, type McpListMode } from './mcpListMode';
 import {
@@ -390,14 +403,35 @@ import {
   cleanConcurrencyConfig,
   buildProviderDropdownOptions,
   buildModelDropdownOptions,
+  type ConcurrencyConfig,
 } from './piConcurrency';
+import { isJsonRecord } from './jsonTypes';
+import { EDITOR_MODE_OPTIONS, copyConfigPath, genId } from './editorUtils';
+
+interface PiAgentConfigEntry {
+  model?: string;
+  [k: string]: unknown;
+}
+
+interface PiMcpConfig {
+  leader?: unknown;
+  default?: unknown;
+  agents?: Record<string, string[]>;
+  [k: string]: unknown;
+}
+
+interface PiAmagiConfigData {
+  profile?: string;
+  agents?: Record<string, PiAgentConfigEntry>;
+  mcp?: PiMcpConfig;
+  concurrency?: ConcurrencyConfig;
+  compaction?: unknown;
+  advisor?: unknown;
+  codemode?: unknown;
+  [k: string]: unknown;
+}
 
 const { showSuccess, showError } = useToast();
-
-const MODE_OPTIONS = [
-  { value: 'visual', label: '可视化' },
-  { value: 'json', label: 'JSON' },
-];
 
 const PROFILE_OPTIONS = [
   { value: 'tiered', label: 'tiered（分层默认）' },
@@ -469,7 +503,7 @@ const mode = ref<'visual' | 'json'>('visual');
 const jsonContent = ref('');
 const jsonError = ref('');
 const configPath = ref('');
-const configData = ref<Record<string, any>>({});
+const configData = ref<PiAmagiConfigData>({});
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const activeSection = ref(props.sectionId || 'agents');
@@ -491,21 +525,16 @@ const customModelKeys = ref<Set<string>>(new Set());
 const providerRowIds = ref<Record<string, string>>({});
 const modelRowIds = ref<Record<string, string>>({});
 
-let rowIdSeq = 0;
-function genConcurrencyRowId(prefix: string) {
-  return `${prefix}-${++rowIdSeq}-${Date.now().toString(36)}`;
-}
-
 function getProviderRowId(key: string): string {
   if (!providerRowIds.value[key]) {
-    providerRowIds.value[key] = genConcurrencyRowId('p-row');
+    providerRowIds.value[key] = genId('p-row');
   }
   return providerRowIds.value[key];
 }
 
 function getModelRowId(key: string): string {
   if (!modelRowIds.value[key]) {
-    modelRowIds.value[key] = genConcurrencyRowId('m-row');
+    modelRowIds.value[key] = genId('m-row');
   }
   return modelRowIds.value[key];
 }
@@ -521,6 +550,7 @@ const agentRows = computed<AgentRow[]>(() => {
 
 const compactionMode = computed(() => compactionModeOf(configData.value.compaction));
 const compactionModel = computed(() => compactionModelOf(configData.value.compaction));
+const codemodeError = computed(() => validateCodemodeConfig(configData.value));
 const compactionError = computed(() => validateCompactionConfig(configData.value));
 const lubanModel = computed(() => {
   const model = configData.value.agents?.luban?.model;
@@ -736,12 +766,12 @@ function parseJsonToConfig() {
     return;
   }
   try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isJsonRecord(parsed)) {
       jsonError.value = '配置根必须是 JSON 对象';
       return;
     }
-    configData.value = parsed;
+    configData.value = parsed as PiAmagiConfigData;
     compactionDraft.value = compactionModelOf(parsed.compaction);
     jsonError.value = '';
     syncMcpUiModesFromConfig();
@@ -856,14 +886,16 @@ function addMcpAgent() {
 
 function renameMcpAgent(oldRole: string, newRole: string) {
   const trimmed = newRole.trim();
-  const agents = configData.value.mcp?.agents;
-  if (!trimmed || trimmed === oldRole || !agents || agents[trimmed]) return;
+  const mcp = configData.value.mcp;
+  const agents = mcp?.agents;
+  if (!mcp || !trimmed || trimmed === oldRole || !agents || agents[trimmed]) return;
   const entries = Object.keys(agents).map((k) => [k === oldRole ? trimmed : k, agents[k]] as const);
-  configData.value.mcp.agents = Object.fromEntries(entries);
+  mcp.agents = Object.fromEntries(entries);
   serialize();
 }
 
 function updateMcpAgentServers(role: string, raw: string) {
+  if (!configData.value.mcp?.agents) return;
   const servers = raw.split(',').map((s) => s.trim()).filter(Boolean);
   configData.value.mcp.agents[role] = servers;
   serialize();
@@ -917,7 +949,7 @@ function cleanEmptyLimits() {
   }
 }
 
-function updateConcurrencyDefault(v: any) {
+function updateConcurrencyDefault(v: unknown) {
   const c = ensureConcurrency();
   c.default = normalizeLimitInput(v);
   serialize();
@@ -984,7 +1016,7 @@ function renameConcurrencyProvider(oldKey: string, newKey: string) {
     return;
   }
   const entries = Object.keys(providers).map((k) => [k === oldKey ? trimmed : k, providers[k]] as const);
-  configData.value.concurrency.providers = Object.fromEntries(entries);
+  ensureConcurrency().providers = Object.fromEntries(entries);
   if (customProviderKeys.value.has(oldKey)) {
     customProviderKeys.value.delete(oldKey);
     customProviderKeys.value.add(trimmed);
@@ -997,7 +1029,7 @@ function renameConcurrencyProvider(oldKey: string, newKey: string) {
   serialize();
 }
 
-function updateConcurrencyProviderLimit(key: string, val: any) {
+function updateConcurrencyProviderLimit(key: string, val: unknown) {
   if (!configData.value.concurrency?.providers) return;
   configData.value.concurrency.providers[key] = normalizeLimitInput(val);
   // 中间态输入过程中不调用 cleanEmptyLimits/cleanupConcurrency，绝不删键不删行
@@ -1075,7 +1107,7 @@ function renameConcurrencyModel(oldKey: string, newKey: string) {
     return;
   }
   const entries = Object.keys(models).map((k) => [k === oldKey ? trimmed : k, models[k]] as const);
-  configData.value.concurrency.models = Object.fromEntries(entries);
+  ensureConcurrency().models = Object.fromEntries(entries);
   if (customModelKeys.value.has(oldKey)) {
     customModelKeys.value.delete(oldKey);
     customModelKeys.value.add(trimmed);
@@ -1088,7 +1120,7 @@ function renameConcurrencyModel(oldKey: string, newKey: string) {
   serialize();
 }
 
-function updateConcurrencyModelLimit(key: string, val: any) {
+function updateConcurrencyModelLimit(key: string, val: unknown) {
   if (!configData.value.concurrency?.models) return;
   configData.value.concurrency.models[key] = normalizeLimitInput(val);
   // 中间态输入过程中不调用 cleanEmptyLimits/cleanupConcurrency，绝不删键不删行
@@ -1105,7 +1137,16 @@ function removeConcurrencyModel(key: string) {
   }
 }
 
+function updateAdvisor(value: unknown) { if (value === undefined) delete configData.value.advisor; else configData.value.advisor = value; serialize(); }
+
+function updateCodemode(value: unknown) { if (value === undefined) delete configData.value.codemode; else configData.value.codemode = value; serialize(); }
+
 async function handleSave() {
+  const codemodeError = validateCodemodeConfig(configData.value);
+  if (codemodeError) { showError(codemodeError); return; }
+  const advisorError = validateAdvisorConfig(configData.value);
+  if (advisorError) { showError(advisorError); return; }
+
   if (jsonError.value) {
     showError('JSON 格式错误，无法保存');
     return;
@@ -1134,14 +1175,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 const modeModel = computed({
@@ -1158,7 +1193,7 @@ const modeModel = computed({
   },
 });
 
-const navigationItems = computed(() => PI_SECTIONS.map(s => ({ ...s, invalid: s.id === 'compaction' && !!compactionError.value })));
+const navigationItems = computed(() => PI_SECTIONS.map(s => ({ ...s, invalid: (s.id === 'compaction' && !!compactionError.value) || (s.id === 'codemode' && !!codemodeError.value) })));
 const localGroups = computed(() => [{ id: 'pi', items: navigationItems.value.map(s => ({ ...s, disabled: loading.value || !!error.value || mode.value !== 'visual' })) }]);
 const navigationSnapshot = computed<EditorNavigationSnapshot>(() => ({ owner: props.navOwner, phase: loading.value ? 'loading' : error.value ? 'error' : 'ready', mode: mode.value === 'visual' ? 'visual' : 'source', activeId: activeSection.value, items: navigationItems.value }));
 watch(navigationSnapshot, snapshot => emit('navigation-change', snapshot), { immediate: true });

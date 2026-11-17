@@ -16,8 +16,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { config } from '../../wailsjs/go/models';
 import { GetProviders } from '../../wailsjs/go/config/ConfigService';
-import { HasAPIKey } from '../../wailsjs/go/secrets/SecretsService';
-import { DeleteProvider } from '../../wailsjs/go/main/App';
+import { DeleteProvider, HasProviderAPIKey as HasAPIKey } from '../../wailsjs/go/main/App';
 import {
   getMergedTerminalPresets,
   getOpenCodeConfig,
@@ -51,10 +50,10 @@ export interface ProviderEntry {
 }
 
 function hasAnthropic(p: Provider): boolean {
-  return !!(p && (p as any).anthropic && (p as any).anthropic.enabled);
+  return Boolean(p?.anthropic?.enabled);
 }
 function hasOpenAI(p: Provider): boolean {
-  return !!(p && (p as any).openai && (p as any).openai.enabled);
+  return Boolean(p?.openai?.enabled);
 }
 
 export const useProviderStore = defineStore('provider', () => {

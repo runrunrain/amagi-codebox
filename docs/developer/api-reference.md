@@ -14,9 +14,9 @@
 
 Amagi CodeBox 的前后端通信基于 Wails v2 绑定。事实链路：
 
-1. `main.go` 的 `wails.Run` 在 `Bind` 字段调用 `buildWailsBindList(app)`（`bind_list.go`），返回 **21 个绑定 = App + 20 个服务**（Config、Secrets、Paths、Log、Settings、Updater、Plugins、CodexPlugins、OpenCodePlugins、PiPlugins、OmpPlugins、OpenCodeConfig、PiConfig、OmpConfig、AgentProfiles、EnvCheck、Usage、WebUI、Skins、GitAssist）。精确清单见 [./architecture.md#绑定主干-21-个绑定](./architecture.md#绑定主干-21-个绑定)。
+1. `main.go` 的 `wails.Run` 在 `Bind` 字段调用 `buildWailsBindList(app)`（`bind_list.go`），返回 **15 个绑定 = App + 14 个服务**（Config、Paths、Settings、Plugins、CodexPlugins、OpenCodePlugins、PiPlugins、OmpPlugins、PiConfig、AgentProfiles、Usage、WebUI、Skins、GitAssist）；`Pty` 与收口后的 `Secrets`、`EnvCheck`、`Log`、`Updater`、`OmpConfig`、`OpenCodeConfig` 共 7 个原始服务均排除在 Bind 之外，由 `App` 暴露门控/窄门面。精确清单见 [./architecture.md#绑定主干-15-个绑定](./architecture.md#绑定主干-15-个绑定)。
 2. 被绑定 struct 的**导出方法**（首字母大写）在 `wails dev` / `wails build` 时自动生成 TS 绑定，落到 `frontend/wailsjs/go/<go-package>/<Struct>.{js,d.ts}`；参数/返回值涉及的 Go struct 类型集中到 `frontend/wailsjs/go/models.ts`。
-3. 前端 `frontend/src/api/*.ts`（27 个文件）把这些原始绑定包装为类型化、带 `callApi` 错误处理的函数；Pinia store（10 个）与 Vue 组件只消费包装层，不直接碰 `wailsjs/`。
+3. 前端 `frontend/src/api/*.ts`（33 个文件）把这些原始绑定包装为类型化、带 `callApi` 错误处理的函数；Pinia store（14 个）与 Vue 组件只消费包装层，不直接碰 `wailsjs/`。
 
 数据流：
 
@@ -38,10 +38,11 @@ internal/<pkg>/*           （服务实现）
 
 绑定表面不是自由演进的——`bind_manifest_test.go` 用反射把它冻成了硬断言：
 
-- **原始 `pty.Service` / `headroom.HeadroomService` 永不入 Bind 列表**（设计 §6.3 C-01）。终端写/缩放走 `App.PtyWrite`/`PtyWriteLarge`/`PtyResize`，headroom 变更走 `App.Headroom*` 门面（lease 守卫）。
-- **`App` 上不得出现原始旁路**：`StopAllSessions`、`GetOutputHistory`、`Register/Unregister*Callback`，以及任何含 `WriteRaw`/`ResizeRaw`/`CloseSession`/`CloseAll` 片段的方法名。
-- **门控门面必须恰好存在**：`appGatedMutationMethods` 清单（`PtyWrite`/`PtyResize`/`StopSession`/`RemoveSession`/`ClearStoppedSessions` 等）缺失即测试失败（M-005）。
-- **新增非会话变更方法**（如 `ConfirmExternalCleanupRecovery`、`SetCodexGlobalHeadroom`）必须在 `appClassifiedNonSessionMutations` 表中登记门控语义，使表面漂移可评审。
+- **7 个原始服务永不入 Bind 列表**（设计 §6.3 C-01 与 Phase 1–4 表面收敛）：`pty.Service` / `secrets.SecretsService` / `envcheck.Service` / `logging.Service` / `updater.Service` / `ompconfig.Service` / `opencodeconfig.Service`。终端写/缩放走 `App.PtyWrite`/`PtyWriteLarge`/`PtyResize`，密钥查询走 `App.HasProviderAPIKey` / `GetProviderAPIKey`，其余领域均走 `App` 上的窄门面。
+- **`App` 上不得出现原始旁路或已收口内部方法**：`StopAllSessions`、`GetOutputHistory`、`Register/Unregister*Callback`，任何含 `WriteRaw`/`ResizeRaw`/`CloseSession`/`CloseAll` 片段的方法名，以及已迁至 `remoteAppAdapter` 或下线/内部化的 `QuickLaunch`、`GetEnvCheckOperationState`、`GetEnvCheckStatus`、`GetConfigService`、`GetPathsService`、`GetSettingsService`、`GetSessionWebUI`、`ProbeSessionWebUI`、`SaveAllConfig`、`GetKeyDiagnostics`、`ClearStoppedSessionsDetailed`、`GetLaunchCompensationDebts`、`RetryLaunchCompensationDebt`。
+- **门控门面必须恰好存在**：`appGatedMutationMethods` 清单（`PtyWrite`/`PtyResize`/`StopSession`/`RemoveSession`/`ClearStoppedSessions` 等）及 `HasProviderAPIKey`/`GetProviderAPIKey` 缺失即测试失败（M-005）。
+- **新增非会话变更方法**（如 `ConfirmExternalCleanupRecovery`、`SetSharedSkillEnabled`、`BeginClaudeAccountEnrollment` 等）必须在 `appClassifiedNonSessionMutations` 表中登记门控语义，使表面漂移可评审。
+- **已收口/下线的服务方法不得回流**：`skins.Service` 不得导出 `SetContext`（已改为 `skins.NewServiceWithContext` 注入读取回调）；`ConfigService` 的 `Set*`/`Record*`/`Replace*` 注入回写面受 `configServiceAcceptedMutationSurface` 清单冻结；已清理的 `ConfigService.SetAllTerminalPresets`、`ConfigService.DeleteOpenCodePreset`、`piplugin.Service.WindowsEntryFilters`（改用包级 `EntryFiltersFor`）、`usage.Service.RecordForce`（改用内部 `recordForceInternal`）及 `SecretsService` 的 dead shim（保留 `GetAllProviders` 仅服务 `agentcli` 调用方）均已退出绑定面。
 
 因此新增/删除/重命名绑定方法时，`go test . -run TestBindManifest` 是必须过的门；需要扩面时同步更新该测试的登记表。
 
@@ -108,15 +109,13 @@ export async function listProviderTags(providerType: string): Promise<string[]> 
 - `npm --prefix frontend run build`：`vue-tsc --noEmit` 通过。
 - `wails dev` 在 UI 里实际调用新方法，确认返回与错误路径。
 
-## 内部桥接方法：GetSettingsService / GetConfigService / GetPathsService
+## 远程内部桥接：`remoteAppAdapter`（替代 App 服务 Getter）
 
-`App` 上这三个 getter **主要供远程层内部桥接**（`remote.AppInterface`，让 `remote.Server` 在进程内直接持有服务实例，不走 JS 绑定往返）。
+早期 `App` 上暴露的 `GetSettingsService` / `GetConfigService` / `GetPathsService`、`SaveAllConfig`、`GetKeyDiagnostics`、`GetSessionWebUI`、`ProbeSessionWebUI` 已从 `*App` 绑定面移除，改由 `main` 包中的未导出适配器 `remoteAppAdapter`（`a.remoteAdapter()`）实现 `remote.AppInterface`，让 `remote.Server` 在进程内直接持有服务引用与内部能力，同时避免 Wails 为这些内部桥接方法生成前端 TS 绑定。
 
-副作用：它们是 App 导出方法，Wails 也会生成 TS 绑定。前端确实可以用它们拿服务对象句柄再调方法——`frontend/src/api/provider.ts` 就用 `GetConfigService()` 拿代理句柄并缓存，且按实际调用面显式声明 `ConfigServiceHandle` 接口（生成的 `models.ts` 中服务类不携带方法签名）。
-
-开发指引：
-- 常规新增前端能力**优先**直接在服务 struct 上加导出方法走标准绑定。
-- 只在确实需要把整个服务对象交给 JS 复用时（如批量 CRUD）才用 getter 模式。
+对应变化：
+- 前端如需调用已绑定服务（如 `ConfigService`）上的方法，直接从 `frontend/wailsjs/go/<pkg>/<Struct>` 导入函数即可（例如 `frontend/src/api/provider.ts` 直接导入 `config/ConfigService` 的 `GetProvider`/`GetPresets`/`SavePreset`/`DeletePreset`），不再通过 `App.GetConfigService()` 获取服务句柄。
+- 常规新增前端能力**优先**在已绑定的服务 struct 上加导出方法（或对未绑定内部服务在 `App` 上加窄门面），不要重新向 `*App` 添加返回原始服务指针的导出 getter。
 
 ## 远程控制 API（HTTP/WebSocket，独立通道）
 

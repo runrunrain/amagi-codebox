@@ -480,13 +480,6 @@ type AuthorityFenceReceipt struct {
 	WriteGeneration    uint64
 }
 
-// noopFencer does nothing (used when no authority fencer is wired).
-type noopFencer struct{}
-
-func (noopFencer) FenceSubscriptionWrites(SubscriptionFenceToken, interface{}) AuthorityFenceReceipt {
-	return AuthorityFenceReceipt{}
-}
-
 // enqueue appends an event to the queue. Returns false if the queue is full.
 func (s *causalHubSubscription) enqueue(event contract.KnownServerEvent, ordinal SessionEventOrdinal) bool {
 	s.mu.Lock()

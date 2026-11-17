@@ -106,7 +106,7 @@
               <div v-for="k in row.extraKeys" :key="k" class="ace-extra-item">
                 <div class="ace-extra-key">{{ k }}</div>
                 <VisualValueEditor
-                  :model-value="data[row.name]?.[k]"
+                  :model-value="entryField(row.name, k)"
                   @update:model-value="setEntryField(row.name, k, $event)"
                 />
               </div>
@@ -161,6 +161,17 @@
       </div>
     </template>
     </div>
+
+    <ConfirmDialog
+      v-model:open="showDeleteDialog"
+      title="删除认证条目"
+      :message="pendingDeleteName ? `确认删除 ${pendingDeleteName} 的认证条目？` : ''"
+      danger
+      confirm-text="删除"
+      cancel-text="取消"
+      @confirm="confirmRemoveEntry"
+      @cancel="clearPendingDelete"
+    />
   </div>
 </template>
 
@@ -178,10 +189,13 @@ import EmptyState from '../ui/EmptyState.vue';
 import StatusBanner from '../ui/StatusBanner.vue';
 import EditorToolbar from '../ui/EditorToolbar.vue';
 import InfoTip from '../ui/InfoTip.vue';
+import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import VisualValueEditor from './VisualValueEditor.vue';
 import EditorSection from '../ui/EditorSection.vue';
 import SectionNav from '../ui/SectionNav.vue';
 import { pageSectionId, type EditorNavigationProps, type EditorNavigationSnapshot } from './configNavigation';
+import { isJsonRecord, type JsonRecord } from './jsonTypes';
+import { copyConfigPath } from './editorUtils';
 const props = withDefaults(defineProps<EditorNavigationProps>(), { navigation: 'local', navOwner: '' });
 const emit = defineEmits<{ 'navigation-change': [snapshot: EditorNavigationSnapshot] }>();
 const editorRoot = ref<HTMLElement | null>(null);
@@ -211,10 +225,22 @@ const mode = ref<'visual' | 'source'>('visual');
 const sourceContent = ref('');
 const parseError = ref('');
 const configPath = ref('');
-const data = ref<Record<string, any>>({});
+const data = ref<JsonRecord>({});
 const catalogProviders = ref<{ name: string; hasAuth?: boolean }[]>([]);
 const newName = ref('');
 const newKey = ref('');
+const showDeleteDialog = ref(false);
+const pendingDeleteName = ref('');
+const pendingDeleteRestoreFocus = ref(false);
+
+watch(showDeleteDialog, (open) => {
+  if (!open) clearPendingDelete();
+});
+
+function entryField(name: string, key: string): unknown {
+  const e = data.value[name];
+  return isJsonRecord(e) ? e[key] : undefined;
+}
 
 interface AuthRow {
   uiId: string;
@@ -229,16 +255,17 @@ interface AuthRow {
 
 const entries = computed<AuthRow[]>(() =>
   Object.keys(data.value).map((name) => {
-    const entry = data.value[name];
-    const type = typeof entry?.type === 'string' ? entry.type : '';
+    const raw = data.value[name];
+    const entry = isJsonRecord(raw) ? raw : null;
+    const type = entry && typeof entry.type === 'string' ? entry.type : '';
     const kind: AuthRow['kind'] =
       type === 'api_key' ? 'api_key' : type === 'oauth' ? 'oauth' : 'other';
     const extraKeys =
-      kind === 'api_key' && entry && typeof entry === 'object'
+      kind === 'api_key' && entry
         ? Object.keys(entry).filter((k) => k !== 'type' && k !== 'key')
         : [];
     let expiresText = '';
-    if (kind === 'oauth' && typeof entry?.expires === 'number') {
+    if (kind === 'oauth' && entry && typeof entry.expires === 'number') {
       const d = new Date(entry.expires);
       expiresText = Number.isNaN(d.getTime()) ? String(entry.expires) : d.toLocaleString();
     }
@@ -247,9 +274,9 @@ const entries = computed<AuthRow[]>(() =>
       name,
       kind,
       typeLabel: type || '未知类型',
-      key: typeof entry?.key === 'string' ? entry.key : '',
+      key: entry && typeof entry.key === 'string' ? entry.key : '',
       extraKeys,
-      accountId: typeof entry?.accountId === 'string' ? entry.accountId : '',
+      accountId: entry && typeof entry.accountId === 'string' ? entry.accountId : '',
       expiresText,
     };
   })
@@ -314,8 +341,8 @@ function parseSource() {
     return;
   }
   try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isJsonRecord(parsed)) {
       throw new Error('root must be an object');
     }
     data.value = parsed;
@@ -345,15 +372,15 @@ function renameEntry(oldName: string, newNameValue: string) {
   serialize();
 }
 
-function setEntryField(name: string, key: string, value: any) {
+function setEntryField(name: string, key: string, value: unknown) {
   const entry = data.value[name];
-  if (!entry || typeof entry !== 'object') return;
+  if (!isJsonRecord(entry)) return;
   entry[key] = value;
   data.value = { ...data.value };
   serialize();
 }
 
-function setEntry(name: string, value: any) {
+function setEntry(name: string, value: unknown) {
   data.value[name] = value;
   data.value = { ...data.value };
   serialize();
@@ -361,7 +388,7 @@ function setEntry(name: string, value: any) {
 
 function updateApiKey(name: string, key: string) {
   const entry = data.value[name];
-  if (!entry || typeof entry !== 'object') return;
+  if (!isJsonRecord(entry)) return;
   if (key === '') {
     delete entry.key; // 留空 = 移除密钥字段
   } else {
@@ -371,12 +398,25 @@ function updateApiKey(name: string, key: string) {
   serialize();
 }
 
+function clearPendingDelete() {
+  pendingDeleteName.value = '';
+  pendingDeleteRestoreFocus.value = false;
+}
+
 function removeEntry(name: string) {
-  if (!confirm(`确认删除 ${name} 的认证条目？`)) return;
+  pendingDeleteName.value = name;
+  pendingDeleteRestoreFocus.value = !!editorRoot.value?.contains(document.activeElement);
+  showDeleteDialog.value = true;
+}
+
+function confirmRemoveEntry() {
+  const name = pendingDeleteName.value;
+  const restoreFocus = pendingDeleteRestoreFocus.value;
+  clearPendingDelete();
+  if (!name || !(name in data.value)) return;
   const index = entries.value.findIndex(row => row.name === name);
   const successor = entries.value[index + 1] || entries.value[index - 1];
   const removedId = entryId(name);
-  const restoreFocus = !!editorRoot.value?.contains(document.activeElement);
   delete data.value[name];
   entryIdByName.delete(name);
   data.value = { ...data.value };
@@ -418,14 +458,8 @@ async function handleSave() {
   }
 }
 
-async function copyPath() {
-  if (!configPath.value) return;
-  try {
-    await navigator.clipboard.writeText(configPath.value);
-    showSuccess('路径已复制到剪贴板');
-  } catch {
-    showError('复制失败');
-  }
+function copyPath() {
+  return copyConfigPath(configPath.value, { showSuccess, showError });
 }
 
 function handleModeChange(newMode: 'visual' | 'source') {

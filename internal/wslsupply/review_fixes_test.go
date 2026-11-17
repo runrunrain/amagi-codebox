@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -67,7 +66,7 @@ const legacyVisionCopy = `{"version":1,"api_key":"SYNTHETIC-OLD-COPY"}`
 func newVisionCoordinator(t *testing.T, vision func() ([]byte, error)) (*Coordinator, *fakeProbes) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(NewVisionExportAdapter(&stubSharedSource{vision: vision, modality: func() ([]byte, error) { return nil, nil }}))
 	return c, fp
 }
@@ -183,8 +182,10 @@ func TestReviewFixPR01LegacySensitiveRiskPending(t *testing.T) {
 		if res := runUnit(t, c2, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
 			t.Fatalf("publish: %+v", res.Results[0])
 		}
-		if !c2.LegacySensitiveCopyPending("Ubuntu") {
-			// 发布后风险已由当前受管状态接管（标记清除是合法终态）。
+		// 发布后风险已由当前受管状态接管（与上一子测试同语义：成功写入必须
+		// 接管并清除 v1 遗留风险标记；下文继续验证撤回后的风险状态）。
+		if c2.LegacySensitiveCopyPending("Ubuntu") {
+			t.Fatal("successful publish must take over the legacy risk marker before withdrawal")
 		}
 		// 关闭宿主导出 → 撤回确认副本移除 → 无任何遗留风险。
 		c3, _ := newVisionCoordinator(t, func() ([]byte, error) { return nil, os.ErrNotExist })
@@ -508,11 +509,11 @@ type reviewAdapter struct {
 	source func() []byte
 }
 
-func (a *reviewAdapter) Unit() UnitID            { return UnitID("pi/review") }
-func (a *reviewAdapter) Policy() Policy          { return PolicyTrackedProjection }
-func (a *reviewAdapter) Sensitive() bool         { return false }
-func (a *reviewAdapter) RequiresConsent() bool   { return false }
-func (a *reviewAdapter) Files() []string         { return []string{a.rel} }
+func (a *reviewAdapter) Unit() UnitID          { return UnitID("pi/review") }
+func (a *reviewAdapter) Policy() Policy        { return PolicyTrackedProjection }
+func (a *reviewAdapter) Sensitive() bool       { return false }
+func (a *reviewAdapter) RequiresConsent() bool { return false }
+func (a *reviewAdapter) Files() []string       { return []string{a.rel} }
 func (a *reviewAdapter) Plan(_ SupplyRequest, s *Snapshot, _ *StateEntry) (PlannedUnit, error) {
 	m, _ := s.File(a.rel)
 	return PlannedUnit{Action: ActionWriteProjection, RelPath: a.rel, ExpectedTargetHash: m.Hash}, nil
@@ -653,7 +654,7 @@ func TestReviewFixPR04SetUnitSelectionTargetsResolvedGeneration(t *testing.T) {
 // content-committed-state-unpersisted；内存不冒充已持久化；写入内容保留。
 func TestReviewFixPR05StateSaveFailureNotApplied(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte {
 		// 候选生成（提交前）后、登记落盘前把清单路径换成目录（rename 确定失败）。
 		_ = os.Remove(c.state.path)
@@ -725,11 +726,11 @@ func TestReviewFixPR06SnapshotDeepCopyIsolation(t *testing.T) {
 }
 
 // TestReviewFixPR06ConcurrentPlanApplyNoRace：并发 Plan（读快照）与 Apply
-//（写状态）——修复前 TestCompensateApplySerialized 报真实数据竞争（write
+// （写状态）——修复前 TestCompensateApplySerialized 报真实数据竞争（write
 // upsertEntry vs read entryFor）；此处再钉一个直接读写对，配合 -race。
 func TestReviewFixPR06ConcurrentPlanApplyNoRace(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	var content atomicValue
 	content.Store([]byte(`{"rev":1}`))
 	c.RegisterProjection(&reviewAdapter{rel: "prefs.json", source: func() []byte {
@@ -789,36 +790,38 @@ func (a *atomicValue) Load() any {
 // PR07：取消贯通 skill/resource takeover 与目录提交
 // ---------------------------------------------------------------------------
 
-// TestReviewFixPR07CanceledSkillTakeoverZeroWrites（反例：phase-review-cancel-repro.go）。
+// TestReviewFixPR07CanceledSkillTakeoverZeroWrites（反例：phase-review-cancel-repro.go；
+// 原技能单元驱动已随 P3-S3 退役，改用同一接管原语的 claude 资源目录单元承载）。
 func TestReviewFixPR07CanceledSkillTakeoverZeroWrites(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "host")
-	if err := os.MkdirAll(filepath.Join(src, "demo"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "commands", "demo"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "demo", "SKILL.md"), []byte("# synthetic skill\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "commands", "demo", "SKILL.md"), []byte("# synthetic resource\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scope := NewSkillsScope(src, DefaultSkillsScanLimits())
-	scope.Scan()
 	fp := &fakeProbes{uncRoot: filepath.Join(root, "target"),
 		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "fixture", OK: true}}
-	c := newCoordinatorWith(t, fp, nil)
-	c.RegisterSkills(scope)
-	unit := SkillUnitID("demo")
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, unit); err != nil {
+	c := newCoordinatorWith(t, fp)
+	c.RegisterResources(NewResourceScope(CLIClaude, ResourceLayout{
+		HostRoot: src, DirUnits: []string{"commands"}, TargetPrefix: ".claude/",
+	}, DefaultSkillsScanLimits()))
+	c.resourceScope(CLIClaude).Scan()
+	unit := ResourceUnitID(CLIClaude, "commands/demo")
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIClaude, unit); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res, err := c.TakeOverUnit(ctx, "Ubuntu", CLICommon, unit, "")
+	res, err := c.TakeOverUnit(ctx, "Ubuntu", CLIClaude, unit, "")
 	if err != nil {
 		t.Fatalf("TakeOverUnit: %v", err)
 	}
 	if res.Outcome != UnitBlocked || res.Detail != "context-canceled" {
 		t.Fatalf("canceled takeover must be blocked, got %+v", res)
 	}
-	if _, serr := os.Lstat(filepath.Join(fp.uncRoot, "home/u/.agents/skills/demo/SKILL.md")); serr == nil {
+	if _, serr := os.Lstat(filepath.Join(fp.uncRoot, "home/u/.claude/commands/demo/SKILL.md")); serr == nil {
 		t.Fatal("canceled takeover must not write the target tree")
 	}
 }
@@ -827,7 +830,7 @@ func TestReviewFixPR07CanceledSkillTakeoverZeroWrites(t *testing.T) {
 // 受取消门约束（等锁后检查覆盖；RunUnits 主循环既有 SA16 逐单元检查）。
 func TestReviewFixPR07CanceledResourceTakeoverAndUnits(t *testing.T) {
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+	c := newCoordinatorWith(t, fp)
 	c.RegisterProjection(&reviewAdapter{rel: "review.json", source: func() []byte { return []byte(`{"v":1}`) }})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

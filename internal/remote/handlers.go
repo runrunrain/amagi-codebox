@@ -152,14 +152,13 @@ func (s *Server) handleLaunchSession(w http.ResponseWriter, r *http.Request) {
 		PresetName   string `json:"presetName"`
 		Mode         string `json:"mode"`
 		WorkDir      string `json:"workDir"`
-		UseHeadroom  bool   `json:"useHeadroom"`
 		ShellPath    string `json:"shellPath"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	id, err := s.app.LaunchSession(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.UseHeadroom, body.ShellPath)
+	id, err := s.app.LaunchSession(body.ProviderName, body.PresetName, body.Mode, body.WorkDir, body.ShellPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -510,7 +509,7 @@ func buildLaunchPresetOptions(configSvc *config.ConfigService, terminalType stri
 
 // buildPiOmpLaunchPresetOptions 返回 pi/omp 启动选择面的预设列表：openai
 // 公共桶（pi/omp 原生桶）全量在前，anthropic 桶中带 HarnessSync 标记
-//（opt-in 加入 pi/omp 托管同步）的预设附加在后；撞 key 时 openai 先注册
+// （opt-in 加入 pi/omp 托管同步）的预设附加在后；撞 key 时 openai 先注册
 // 胜出。目前由 handleGetLaunchMeta 的 Pi section 消费（OMP 无 legacy
 // section）；v1 移动端的合并面在根包 buildRemoteLaunchSettings。
 func buildPiOmpLaunchPresetOptions(configSvc *config.ConfigService) []launchPresetOption {

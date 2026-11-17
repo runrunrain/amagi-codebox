@@ -46,13 +46,13 @@ func TestEnumerateOmpSessionFilesSingleRoot(t *testing.T) {
 // while unprefixed providers pass through unchanged.
 func TestNormalizeOmpProvider(t *testing.T) {
 	cases := map[string]string{
-		"amagi-glm":    "glm",
-		"amagi-kimi":   "kimi",
-		"anthropic":    "anthropic", // 内置 provider 原样
-		"openai":       "openai",
-		"":             "",
-		"amagi-":       "amagi-", // 前缀剥除后为空 -> 原样（避免空 bucket）
-		"my-provider":  "my-provider",
+		"amagi-glm":   "glm",
+		"amagi-kimi":  "kimi",
+		"anthropic":   "anthropic", // 内置 provider 原样
+		"openai":      "openai",
+		"":            "",
+		"amagi-":      "amagi-", // 前缀剥除后为空 -> 原样（避免空 bucket）
+		"my-provider": "my-provider",
 	}
 	for raw, want := range cases {
 		if got := normalizeOmpProvider(raw); got != want {

@@ -2,7 +2,7 @@ import { reactive } from 'vue';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warn';
 
-export interface Toast {
+interface Toast {
   id: number;
   message: string;
   type: ToastType;

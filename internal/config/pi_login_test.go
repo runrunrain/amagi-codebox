@@ -29,7 +29,7 @@ func TestPiLoginPresetPersistenceAndIsolation(t *testing.T) {
 	if err := loaded.Load(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := loaded.ResolvePiLoginPreset(key)
+	got, err := loaded.resolvePiLoginPreset(key)
 	if err != nil || *got != p {
 		t.Fatalf("persisted: %v %v", got, err)
 	}
@@ -64,7 +64,7 @@ func TestPiLoginPresetPersistenceAndIsolation(t *testing.T) {
 	}
 	snapshot, _ := loaded.GetPiLoginPresets()
 	delete(snapshot, key)
-	if _, err := loaded.ResolvePiLoginPreset(key); err != nil {
+	if _, err := loaded.resolvePiLoginPreset(key); err != nil {
 		t.Fatal("returned map mutates service")
 	}
 	if err := loaded.DeletePiLoginPreset(key); err != nil {
@@ -73,7 +73,7 @@ func TestPiLoginPresetPersistenceAndIsolation(t *testing.T) {
 	if err := loaded.Load(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loaded.ResolvePiLoginPreset(key); err == nil {
+	if _, err := loaded.resolvePiLoginPreset(key); err == nil {
 		t.Fatal("deleted preset resurrected")
 	}
 }
@@ -141,7 +141,7 @@ func TestPiLoginClassificationOrdinaryProviderStableKeys(t *testing.T) {
 			t.Fatalf("public key %s rejected: %v", key, err)
 		}
 	}
-	if _, err := svc.ResolvePiLoginPreset("pi-login/Daily"); err == nil {
+	if _, err := svc.resolvePiLoginPreset("pi-login/Daily"); err == nil {
 		t.Fatal("public key resolved as login preset")
 	}
 	// 登录来源 id 与已存登录 key 的拒绝语义保持。
@@ -233,7 +233,7 @@ func TestPiLoginPresetContextWindowValidationAndPersistence(t *testing.T) {
 	if err := loaded.Load(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := loaded.ResolvePiLoginPreset(PiLoginPresetKey(p.Provider, p.Name))
+	got, err := loaded.resolvePiLoginPreset(PiLoginPresetKey(p.Provider, p.Name))
 	if err != nil || got.ContextWindow != 256000 {
 		t.Fatalf("reload contextWindow = %v (%v), want 256000", got, err)
 	}

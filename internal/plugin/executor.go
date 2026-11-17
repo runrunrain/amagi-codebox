@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// runCLI 是只读 CLI 查询的统一入口：测试通过 execCLI 字段注入替身，
+// 生产环境（execCLI 为 nil）走真实 executeClaudeCommand。写操作不经此入口。
+func (s *Service) runCLI(args ...string) (*CommandResult, error) {
+	if s.execCLI != nil {
+		return s.execCLI(args...)
+	}
+	return s.executeClaudeCommand(args...)
+}
+
 func (s *Service) executeClaudeCommand(args ...string) (*CommandResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

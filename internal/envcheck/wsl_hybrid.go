@@ -29,8 +29,6 @@ const (
 // wslSessionCommands maps the CLITools that can launch inside WSL to the bare
 // command names a WSL session resolves (resolver cliCandidates[0] per app
 // type). Order fixes the probe script order (map iteration is random).
-// Headroom is absent on purpose: it is a CodeBox-managed Windows-side proxy
-// and is never launched inside WSL.
 var wslSessionCommands = []struct {
 	tool CLITool
 	cmd  string

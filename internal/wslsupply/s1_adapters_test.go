@@ -1,8 +1,8 @@
 package wslsupply
 
-// s1_adapters_test.go — S1 托管面适配器（pi/managed-models、shared/vision-export、
-// shared/modality-kb）与同意门的行为钉子。全部经注入的假探测面与桩源运行，
-// 不触达真实 WSL。
+// s1_adapters_test.go — S1 托管面适配器（shared/vision-export、shared/
+// modality-kb）与同意门的行为钉子（pi/managed-models 已退役）。全部经注入的
+// 假探测面与桩源运行，不触达真实 WSL。
 
 import (
 	"context"
@@ -11,50 +11,28 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"amagi-codebox/internal/launcher"
 )
 
-// stubPiSource 是 PiManagedModelsSource 桩（可变期望集）。
-type stubPiSource struct {
-	mu  atomic.Value // PiManagedModelsSpec
-	err bool
-}
 type stubSharedSource struct {
 	vision   func() ([]byte, error)
 	modality func() ([]byte, error)
 }
 
-func (s *stubPiSource) DesiredPiManagedModels() PiManagedModelsSpec {
-	if s.err {
-		return PiManagedModelsSpec{}
-	}
-	return s.mu.Load().(PiManagedModelsSpec)
-}
-func (s *stubPiSource) set(spec PiManagedModelsSpec) { s.mu.Store(spec) }
-
 func (s *stubSharedSource) VisionExportBytes() ([]byte, error) { return s.vision() }
 func (s *stubSharedSource) ModalityKBBytes() ([]byte, error)   { return s.modality() }
 
-// newS1Coordinator 构造带 S1 适配器的协调器（假探测面 + 桩源）。
-func newS1Coordinator(t *testing.T) (*Coordinator, *fakeProbes, *stubPiSource, *stubSharedSource) {
+// newS1Coordinator 构造带 shared 适配器的协调器（假探测面 + 桩源）。
+func newS1Coordinator(t *testing.T) (*Coordinator, *fakeProbes, *stubSharedSource) {
 	t.Helper()
 	fp := newFakeProbes(t)
-	c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
-	piSrc := &stubPiSource{}
-	piSrc.set(PiManagedModelsSpec{Providers: map[string]any{}, RetainProviders: []string{}, LoginOverrides: []PiLoginModelOverrideSpec{}})
+	c := newCoordinatorWith(t, fp)
 	sharedSrc := &stubSharedSource{
 		vision:   func() ([]byte, error) { return nil, os.ErrNotExist },
 		modality: func() ([]byte, error) { return nil, nil },
 	}
-	c.RegisterProjection(NewPiManagedModelsAdapter(piSrc))
 	c.RegisterProjection(NewVisionExportAdapter(sharedSrc))
 	c.RegisterProjection(NewModalityKBAdapter(sharedSrc))
-	return c, fp, piSrc, sharedSrc
-}
-
-func piModelsFile(fp *fakeProbes) string {
-	return filepath.Join(fp.uncRoot, "home/u/.pi/agent/models.json")
+	return c, fp, sharedSrc
 }
 
 func runUnit(t *testing.T, c *Coordinator, cli CLI, unit UnitID) RunResult {
@@ -67,130 +45,6 @@ func runUnit(t *testing.T, c *Coordinator, cli CLI, unit UnitID) RunResult {
 }
 
 // ---------------------------------------------------------------------------
-// pi/managed-models
-// ---------------------------------------------------------------------------
-
-func TestPiManagedModelsPublishAndMerge(t *testing.T) {
-	c, fp, piSrc, _ := newS1Coordinator(t)
-	// 旧 distro（S0 前播种树）：已有非 amagi provider、未知顶层字段与旧 amagi 条目。
-	os.MkdirAll(filepath.Dir(piModelsFile(fp)), 0o700)
-	os.WriteFile(piModelsFile(fp), []byte(`{
-  "providers": {
-    "user-own": {"baseUrl": "https://user.example"},
-    "amagi-stale": {"baseUrl": "https://stale.example"}
-  },
-  "equivalence": {"keep": true}
-}`), 0o600)
-
-	piSrc.set(PiManagedModelsSpec{
-		Providers: map[string]any{"providers": map[string]any{
-			"amagi-new": map[string]any{"baseUrl": "https://new.example", "apiKey": "k"},
-		}},
-		RetainProviders: []string{},
-		LoginOverrides:  []PiLoginModelOverrideSpec{{Provider: "openai", Model: "gpt-5.2", ContextWindow: 400000}},
-	})
-	res := runUnit(t, c, CLIPi, UnitPiManagedModels)
-	if res.Results[0].Outcome != UnitApplied {
-		t.Fatalf("existing unrecorded target must merge (ManagedNamespace), got %+v", res.Results)
-	}
-	raw, _ := os.ReadFile(piModelsFile(fp))
-	body := string(raw)
-	for _, want := range []string{`"user-own"`, `"keep": true`, `"amagi-new"`, `"contextWindow": 400000`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("merged models.json missing %s:\n%s", want, body)
-		}
-	}
-	if strings.Contains(body, "amagi-stale") {
-		t.Fatalf("removed managed provider must be pruned:\n%s", body)
-	}
-
-	// 无变化第二次运行：UnitFresh + 零 chmod（零写入）。
-	chmodBefore := atomic.LoadInt32(&fp.chmodCalls)
-	res = runUnit(t, c, CLIPi, UnitPiManagedModels)
-	if res.Results[0].Outcome != UnitFresh {
-		t.Fatalf("unchanged source+target must be fresh, got %+v", res.Results)
-	}
-	if got := atomic.LoadInt32(&fp.chmodCalls); got != chmodBefore {
-		t.Fatalf("unchanged run must not write (chmod calls %d -> %d)", chmodBefore, got)
-	}
-}
-
-func TestPiManagedModelsCorruptTargetRefused(t *testing.T) {
-	c, fp, piSrc, _ := newS1Coordinator(t)
-	os.MkdirAll(filepath.Dir(piModelsFile(fp)), 0o700)
-	corrupt := []byte(`{"providers": {"broken"`)
-	os.WriteFile(piModelsFile(fp), corrupt, 0o600)
-	piSrc.set(PiManagedModelsSpec{Providers: map[string]any{"providers": map[string]any{
-		"amagi-x": map[string]any{"baseUrl": "u"},
-	}}})
-	res := runUnit(t, c, CLIPi, UnitPiManagedModels)
-	if res.Results[0].Outcome != UnitFailed || res.Results[0].Detail != "target-corrupt" {
-		t.Fatalf("corrupt target must fail with target-corrupt, got %+v", res.Results)
-	}
-	got, _ := os.ReadFile(piModelsFile(fp))
-	if string(got) != string(corrupt) {
-		t.Fatal("corrupt file must be retained verbatim (never overwritten)")
-	}
-}
-
-func TestPiManagedModelsPartialBuildFailureRetains(t *testing.T) {
-	c, fp, piSrc, _ := newS1Coordinator(t)
-	piSrc.set(PiManagedModelsSpec{
-		Providers: map[string]any{"providers": map[string]any{
-			"amagi-good": map[string]any{"baseUrl": "https://good.example"},
-		}},
-		RetainProviders: []string{"amagi-bad"},
-		BuildErrors:     []string{`provider "bad" 构建失败，保留 WSL 侧旧条目: boom`},
-	})
-	// 首写建立基线。
-	runUnit(t, c, CLIPi, UnitPiManagedModels)
-	// 第二轮：amagi-bad 仍构建失败、amagi-good 内容变化。
-	piSrc.set(PiManagedModelsSpec{
-		Providers: map[string]any{"providers": map[string]any{
-			"amagi-good": map[string]any{"baseUrl": "https://good2.example"},
-		}},
-		RetainProviders: []string{"amagi-bad"},
-		BuildErrors:     []string{`provider "bad" 构建失败，保留 WSL 侧旧条目: boom2`},
-	})
-	res := runUnit(t, c, CLIPi, UnitPiManagedModels)
-	if res.Results[0].Outcome != UnitApplied {
-		t.Fatalf("partial build failure must not fail the unit, got %+v", res.Results)
-	}
-	if !strings.Contains(res.Results[0].Detail, "amagi-bad") && !strings.Contains(res.Results[0].Detail, "构建失败") {
-		t.Fatalf("build failures must surface in result detail: %q", res.Results[0].Detail)
-	}
-	raw, _ := os.ReadFile(piModelsFile(fp))
-	if !strings.Contains(string(raw), "amagi-good") {
-		t.Fatal("healthy provider must still be written")
-	}
-}
-
-func TestPiManagedModelsExternalEditStillMerges(t *testing.T) {
-	// ManagedNamespace：目标被外部修改不冻结——合并保留外部内容，恢复命名空间。
-	c, fp, piSrc, _ := newS1Coordinator(t)
-	piSrc.set(PiManagedModelsSpec{Providers: map[string]any{"providers": map[string]any{
-		"amagi-x": map[string]any{"baseUrl": "https://x1"},
-	}}})
-	runUnit(t, c, CLIPi, UnitPiManagedModels)
-	// 外部编辑（新增用户 provider + 破坏 amagi 条目）。
-	os.WriteFile(piModelsFile(fp), []byte(`{"providers": {
-		"user-late": {"baseUrl": "https://late.example"},
-		"amagi-x": {"baseUrl": "https://tampered.example"}
-	}}`), 0o600)
-	res := runUnit(t, c, CLIPi, UnitPiManagedModels)
-	if res.Results[0].Outcome != UnitApplied {
-		t.Fatalf("managed namespace must not freeze on external edit, got %+v", res.Results)
-	}
-	raw, _ := os.ReadFile(piModelsFile(fp))
-	if !strings.Contains(string(raw), "user-late") || !strings.Contains(string(raw), "https://x1") {
-		t.Fatalf("merge must preserve external content and restore owned namespace:\n%s", raw)
-	}
-	if strings.Contains(string(raw), "tampered") {
-		t.Fatalf("owned namespace entry must be restored:\n%s", raw)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // shared/vision-export
 // ---------------------------------------------------------------------------
 
@@ -199,7 +53,7 @@ func visionFile(fp *fakeProbes) string {
 }
 
 func TestVisionExportConsentFlow(t *testing.T) {
-	c, fp, _, sharedSrc := newS1Coordinator(t)
+	c, fp, sharedSrc := newS1Coordinator(t)
 	content := `{"version":1,"updated_at":"2026-10-16T10:00:00Z","models":[{"id":"p/m","api_key":"sk-secret"}]}`
 	sharedSrc.vision = func() ([]byte, error) { return []byte(content), nil }
 
@@ -257,7 +111,7 @@ func TestVisionExportConsentFlow(t *testing.T) {
 }
 
 func TestVisionExportHandEditFreezesAndWithdrawalUnconfirmed(t *testing.T) {
-	c, fp, _, sharedSrc := newS1Coordinator(t)
+	c, fp, sharedSrc := newS1Coordinator(t)
 	content := `{"version":1,"updated_at":"t1","models":[{"id":"p/m","api_key":"sk-secret"}]}`
 	sharedSrc.vision = func() ([]byte, error) { return []byte(content), nil }
 	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
@@ -284,7 +138,7 @@ func TestVisionExportHandEditFreezesAndWithdrawalUnconfirmed(t *testing.T) {
 }
 
 func TestVisionExportUnmanagedExistingFrozen(t *testing.T) {
-	c, fp, _, sharedSrc := newS1Coordinator(t)
+	c, fp, sharedSrc := newS1Coordinator(t)
 	sharedSrc.vision = func() ([]byte, error) {
 		return []byte(`{"version":1,"updated_at":"t","models":[]}`), nil
 	}
@@ -312,7 +166,7 @@ func modalityFile(fp *fakeProbes) string {
 }
 
 func TestModalityKBGapFillAndConflicts(t *testing.T) {
-	c, fp, _, sharedSrc := newS1Coordinator(t)
+	c, fp, sharedSrc := newS1Coordinator(t)
 	host := `{"version":1,"updated_at":"t1","models":{"glm-5.2":{"vision":true,"video":false,"source":"probe"},"GPT/X":{"vision":true}}}`
 	sharedSrc.modality = func() ([]byte, error) { return []byte(host), nil }
 
@@ -360,22 +214,22 @@ func TestModalityKBGapFillAndConflicts(t *testing.T) {
 }
 
 func TestGrantUnitConsentValidations(t *testing.T) {
-	c, _, _, _ := newS1Coordinator(t)
-	// 非同意面单元拒绝。
-	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIPi, UnitPiManagedModels); err == nil {
+	c, _, _ := newS1Coordinator(t)
+	// 非同意面单元拒绝（未注册的任意单元不接受授权）。
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLIPi, "pi/some-unit"); err == nil {
 		t.Fatal("non-consent unit must be rejected")
 	}
 	// 身份不可解析 → 拒绝（不落登记）。
 	bad := newFakeProbes(t)
 	bad.identity.OK = false
-	c2 := newCoordinatorWith(t, bad, nil)
+	c2 := newCoordinatorWith(t, bad)
 	if err := c2.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err == nil {
 		t.Fatal("unresolvable target must reject consent")
 	}
 }
 
 func TestGetStatusExposesConsentedFlag(t *testing.T) {
-	c, _, _, sharedSrc := newS1Coordinator(t)
+	c, _, sharedSrc := newS1Coordinator(t)
 	sharedSrc.vision = func() ([]byte, error) { return []byte(`{"version":1,"models":[]}`), nil }
 	runUnit(t, c, CLICommon, UnitSharedVisionExport) // awaiting-consent 记入 checked
 	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {

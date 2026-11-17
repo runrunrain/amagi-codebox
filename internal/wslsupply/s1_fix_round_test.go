@@ -6,6 +6,7 @@ package wslsupply
 //   - F3：跨代（distro 重装）重新同意不继承旧代 hash——首次发布成功而非
 //     local-deletion-frozen；
 //   - F4：检查时间按 CLI 作用域记录（pi 作用域探测不再错配 shared 面板）。
+//     （pi-login-presets / managed-models 相关断言已随 Pi 供给退役改写。）
 
 import (
 	"context"
@@ -13,8 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"amagi-codebox/internal/launcher"
 )
 
 func markDirtyOrFail(t *testing.T, c *Coordinator, source string, rev uint64) {
@@ -24,35 +23,20 @@ func markDirtyOrFail(t *testing.T, c *Coordinator, source string, rev uint64) {
 	}
 }
 
-// TestDirtySourcesClearedAfterFullSuccess（F2）：providers 来源需全部三个托管
-// 单元成功才清除；pi-login-presets 只需 managed-models；单元阻断时保留。
+// TestDirtySourcesClearedAfterFullSuccess（F2）：providers 来源需全部滋养单元
+// （视觉清单 + 学习层）成功才清除；单元阻断时保留（旧 pi-login-presets 分支
+// 已随 Pi 供给退役）。
 func TestDirtySourcesClearedAfterFullSuccess(t *testing.T) {
-	c, _, piSrc, sharedSrc := newS1Coordinator(t)
-	piSrc.set(PiManagedModelsSpec{Providers: map[string]any{"providers": map[string]any{
-		"amagi-x": map[string]any{"baseUrl": "u"},
-	}}})
+	c, _, sharedSrc := newS1Coordinator(t)
 	sharedSrc.vision = func() ([]byte, error) { return []byte(`{"version":1,"updated_at":"t","models":[]}`), nil }
 
 	markDirtyOrFail(t, c, DirtySourceProviders, 1)
-	markDirtyOrFail(t, c, DirtySourcePiLoginPresets, 2)
-
-	// pi 作用域成功：pi-login-presets 清除；providers 保留（vision/modality 未跑）。
-	if res := runUnit(t, c, CLIPi, UnitPiManagedModels); res.Results[0].Outcome != UnitApplied {
-		t.Fatalf("managed-models run: %+v", res.Results)
-	}
-	st := c.GetStatus("Ubuntu", CLIPi)
-	if _, still := st.PendingSources[DirtySourcePiLoginPresets]; still {
-		t.Fatalf("pi-login-presets must clear after managed-models success: %v", st.PendingSources)
-	}
-	if _, still := st.PendingSources[DirtySourceProviders]; !still {
-		t.Fatal("providers must stay pending until vision/modality also succeed")
-	}
 
 	// 未同意的 vision 阻断：providers 仍保留。
 	if res := runUnit(t, c, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitBlocked {
 		t.Fatalf("unconsented vision must block: %+v", res.Results)
 	}
-	st = c.GetStatus("Ubuntu", CLICommon)
+	st := c.GetStatus("Ubuntu", CLICommon)
 	if _, still := st.PendingSources[DirtySourceProviders]; !still {
 		t.Fatal("providers must stay pending while vision is blocked")
 	}
@@ -75,28 +59,32 @@ func TestDirtySourcesClearedAfterFullSuccess(t *testing.T) {
 
 // TestDirtySourcesKeptOnFailure（F2）：单元失败保留标记（下次补漏后再清）。
 func TestDirtySourcesKeptOnFailure(t *testing.T) {
-	c, fp, piSrc, _ := newS1Coordinator(t)
-	piSrc.set(PiManagedModelsSpec{Providers: map[string]any{"providers": map[string]any{
-		"amagi-x": map[string]any{"baseUrl": "u"},
-	}}})
-	markDirtyOrFail(t, c, DirtySourcePiLoginPresets, 1)
-	// 写失败注入：chmod 补偿恒败（managed-models 敏感 → fail closed）。
+	c, fp, sharedSrc := newS1Coordinator(t)
+	sharedSrc.vision = func() ([]byte, error) { return []byte(`{"version":1,"updated_at":"t","models":[]}`), nil }
+	markDirtyOrFail(t, c, DirtySourceProviders, 1)
+	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
+		t.Fatal(err)
+	}
+	// 写失败注入：chmod 补偿恒败（vision 敏感 → fail closed）。
 	fp.chmodErr = errBoom("wsl.exe dead")
-	res := runUnit(t, c, CLIPi, UnitPiManagedModels)
+	res := runUnit(t, c, CLICommon, UnitSharedVisionExport)
 	if res.Results[0].Outcome != UnitFailed {
 		t.Fatalf("injected failure must fail the unit: %+v", res.Results)
 	}
-	st := c.GetStatus("Ubuntu", CLIPi)
-	if _, still := st.PendingSources[DirtySourcePiLoginPresets]; !still {
+	st := c.GetStatus("Ubuntu", CLICommon)
+	if _, still := st.PendingSources[DirtySourceProviders]; !still {
 		t.Fatal("failed unit must keep its dirty source pending")
 	}
-	// 恢复后重跑成功 → 清除（补漏收敛）。
+	// 恢复后重跑成功 → 清除（补漏收敛；modality 同批补齐）。
 	fp.chmodErr = nil
-	if res := runUnit(t, c, CLIPi, UnitPiManagedModels); res.Results[0].Outcome != UnitApplied {
+	if res := runUnit(t, c, CLICommon, UnitSharedVisionExport); res.Results[0].Outcome != UnitApplied {
 		t.Fatalf("retry run: %+v", res.Results)
 	}
-	st = c.GetStatus("Ubuntu", CLIPi)
-	if _, still := st.PendingSources[DirtySourcePiLoginPresets]; still {
+	if res := runUnit(t, c, CLICommon, UnitSharedModalityKB); res.Results[0].Outcome != UnitApplied {
+		t.Fatalf("modality fill: %+v", res.Results)
+	}
+	st = c.GetStatus("Ubuntu", CLICommon)
+	if _, still := st.PendingSources[DirtySourceProviders]; still {
 		t.Fatalf("retry success must clear the dirty source: %v", st.PendingSources)
 	}
 }
@@ -109,7 +97,7 @@ func (e errBoom) Error() string { return string(e) }
 // （generation 变化）→ 重新同意 → 新代首次发布成功（不继承旧代 lastWritten
 // 而误判 local-deletion-frozen）。
 func TestGrantUnitConsentCrossGeneration(t *testing.T) {
-	c, fp, _, sharedSrc := newS1Coordinator(t)
+	c, fp, sharedSrc := newS1Coordinator(t)
 	content := `{"version":1,"updated_at":"t1","models":[{"id":"p/m","api_key":"k"}]}`
 	sharedSrc.vision = func() ([]byte, error) { return []byte(content), nil }
 	if err := c.GrantUnitConsent(context.Background(), "Ubuntu", CLICommon, UnitSharedVisionExport); err != nil {
@@ -161,7 +149,7 @@ func TestGrantUnitConsentCrossGeneration(t *testing.T) {
 // TestGetStatusPerCLICheckTime（F4）：检查时间按 CLI 作用域——pi 探测不点亮
 // shared 的 Checked；shared 探测后各自持有时 own 时间。
 func TestGetStatusPerCLICheckTime(t *testing.T) {
-	c, _, _, _ := newS1Coordinator(t)
+	c, _, _ := newS1Coordinator(t)
 	piTarget, err := c.ResolveTarget(context.Background(), "Ubuntu", CLIPi)
 	if err != nil {
 		t.Fatal(err)
@@ -190,5 +178,4 @@ func TestGetStatusPerCLICheckTime(t *testing.T) {
 		t.Fatal("shared scope must be checked after its own inspect")
 	}
 
-	_ = launcher.SyncWSLPiLoginAuthFresh // 文档化：A2 链不受 per-CLI 检查时间影响（判定在适配器内）
 }

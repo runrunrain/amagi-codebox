@@ -14,7 +14,7 @@ func TestNetworkPolicyRejectsAllExternalLaunchKindsBeforeSpawn(t *testing.T) {
 	calls := 0
 	s.SetNetworkEnv(func(env []string) ([]string, error) { calls++; return nil, sentinel })
 	provider := config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true, BaseURL: "https://api.anthropic.com"}, Presets: map[string]config.Preset{"test": {Name: "test", Model: "model"}}}
-	_, claude := s.LaunchGuarded("claude", provider, "test", "key", config.AgentTeamsConfig{}, session.ModeTerminal, t.TempDir(), nil)
+	_, claude := s.LaunchGuarded("claude", provider, "test", "key", config.AgentTeamsConfig{}, session.ModeTerminal, t.TempDir(), nil, nil)
 	_, codex := s.LaunchCodexArgsGuarded("codex", nil, session.ModeTerminal, t.TempDir(), nil, nil)
 	_, pi := s.LaunchPi("pi", "anthropic", "model", "", session.ModeTerminal, t.TempDir(), nil)
 	_, omp := s.LaunchOmp("omp", "openai", "model", "", session.ModeTerminal, t.TempDir(), nil)

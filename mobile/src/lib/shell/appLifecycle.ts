@@ -17,7 +17,7 @@
  */
 import { NATIVE_PLUGIN_PENDING_DETAIL, currentGate } from './capability'
 
-export type LifecycleUnavailableReason = 'not-native' | 'native-pending-shell'
+type LifecycleUnavailableReason = 'not-native' | 'native-pending-shell'
 
 /** 前后台恢复能力探测结果。Web 回落即 visibilitychange。 */
 export type LifecycleCapability =

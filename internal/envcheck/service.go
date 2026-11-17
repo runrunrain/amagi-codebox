@@ -2,7 +2,6 @@ package envcheck
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -47,11 +46,6 @@ type EnvCheckService interface {
 	// The method parameter specifies which installation to clean (npm or native).
 	// After cleaning, it verifies that Claude Code is no longer installed.
 	CleanClaudeCode(method InstallMethod) (*InstallResult, error)
-
-	// CleanHeadroom removes the CodeBox-managed Headroom venv directory.
-	// After cleaning, it re-checks the tool status so the cached snapshot
-	// reflects the removal.
-	CleanHeadroom() (*InstallResult, error)
 }
 
 // Service implements EnvCheckService.
@@ -61,32 +55,25 @@ type Service struct {
 	versionCache  map[CLITool]latestVersionCacheEntry
 	processRunner platform.ProcessRunner
 
-	// headroomVenvDir is the absolute path to the CodeBox-managed Python
-	// virtual environment used to install and run headroom-ai. Injected at
-	// construction time (see SetHeadroomVenvDir). When empty, headroom
-	// detection/install falls back to PATH-only behaviour.
-	headroomVenvDir string
-
-	// headroomStopper, when set via SetHeadroomStopper, is invoked by the
-	// CleanHeadroom public entry before the venv directory is removed. It
-	// terminates the headroom proxy child process so Windows can release the
-	// locked headroom.exe inside the venv (RemoveAll would otherwise fail).
-	// The callback returns (stopErr, releaseDrain): releaseDrain, when non-nil,
-	// releases any install-drain critical section acquired by the stopper
-	// (R4-002) and MUST be invoked by CleanHeadroom after the venv removal
-	// completes or aborts. The stopErr is non-fatal unless it wraps
-	// ErrHeadroomInUse. Nil (the zero value) means no stopper is wired and
-	// CleanHeadroom skips the stop step (backwards compatible with tests).
-	headroomStopper func() (error, func())
-
 	// wslSearchToolsInstaller, when set via SetWSLSearchToolsInstaller, is
 	// invoked by the SolutionInstallWslSearchTools fix action to install
 	// fd-find + ripgrep into the default WSL distro (app wiring adapts
 	// wslsetup.Service.InstallSearchTools into envcheck's InstallResult shape).
 	// Nil (the zero value, e.g. tests / non-Windows wiring) means no installer
 	// is wired and the fix action returns an explicit error instead of panicking.
-	// Mirrors the SetHeadroomStopper injection pattern.
+	// Mirrors the SetWSLSearchToolsInstaller injection pattern.
 	wslSearchToolsInstaller func() (*InstallResult, error)
+
+	// wslCLISync, when set via SetWSLCLISync, is invoked by attachWSLSync
+	// after a SUCCESSFUL Windows-side install/update of a managed CLI, so the
+	// same operation also installs/upgrades the CLI inside the default WSL
+	// distro (install/upgrade two-sided linkage). app.go wiring adapts
+	// App.syncCLIToWSL (app_wsl_cli_sync.go), which gates on distro
+	// availability + shell=wsl/already-installed and dispatches to
+	// wslsetup Install/Update. envcheck never imports wslsetup — same
+	// injection rationale as wslSearchToolsInstaller. Nil (zero value, tests /
+	// non-Windows wiring) means no linkage and attachWSLSync is a no-op.
+	wslCLISync func(tool CLITool, kind OperationKind) *WSLSyncResult
 
 	// Async operation state
 	opMu    sync.Mutex
@@ -99,31 +86,20 @@ type Service struct {
 	npmAvailable   bool
 	npmResolvedErr error // error message when npm is not available
 
-	// pythonAvailability caches a runnable Python 3.10+ runtime for Headroom.
-	// It is populated once per service lifetime and records the selected path so
-	// venv creation cannot accidentally fall back to macOS's unsupported system
-	// Python 3.9 after a compatible Homebrew/pyenv runtime was found.
-	pythonOnce               sync.Once
-	pythonAvailable          bool
-	pythonPath               string
-	pythonVersion            string
-	pythonVersionUnsupported bool
-	pythonResolvedErr        error // error message when no supported Python is available
-
 	// WSL 混合架构探测缓存（C7）：登录 shell 内批量 `command -v` 的解析结果，
-	// TTL 缓存保证一次 CheckAll（六次 CheckOne）最多拉起一次 wsl.exe。见
+	// TTL 缓存保证一次 CheckAll（五次 CheckOne）最多拉起一次 wsl.exe。见
 	// wsl_hybrid.go。
 	wslHybridMu        sync.Mutex
 	wslHybridPaths     map[string]string
 	wslHybridFetchedAt time.Time
 
-	// probeMu 串行化 npm/python 可用性探测缓存（npmOnce/npmAvailable/...
-	// 与 pythonOnce/...）的读写。resetNPMCache 会在运行期整体替换 sync.Once
-	// 并清空结果字段，而 populateCanInstall/ensureNPMAvailable 等检测路径在
-	// 并发 goroutine 上执行 Once.Do 并读取同一批字段；无锁时这构成对
-	// sync.Once 内部状态的并发读写（数据竞争，-race 可复现）。
-	// probeMu 不在 s.mu/opMu 内层获取，探测子进程（最长数秒）期间持锁的
-	// 阻塞语义与 sync.Once.Do 本身的并发阻塞语义一致，无新增死锁面。
+	// probeMu 串行化 npm 可用性探测缓存（npmOnce/npmAvailable/...）的读写。
+	// resetNPMCache 会在运行期整体替换 sync.Once 并清空结果字段，而
+	// populateCanInstall/ensureNPMAvailable 等检测路径在并发 goroutine 上执行
+	// Once.Do 并读取同一批字段；无锁时这构成对 sync.Once 内部状态的并发读写
+	// （数据竞争，-race 可复现）。probeMu 不在 s.mu/opMu 内层获取，探测子进程
+	// （最长数秒）期间持锁的阻塞语义与 sync.Once.Do 本身的并发阻塞语义一致，
+	// 无新增死锁面。
 	probeMu sync.Mutex
 }
 
@@ -145,35 +121,6 @@ func NewServiceWithRunner(runner platform.ProcessRunner) *Service {
 	}
 }
 
-// SetHeadroomVenvDir injects the CodeBox-managed headroom venv directory. The
-// directory is derived from defaultConfigDir() at app wiring time and shared
-// with the headroom.HeadroomService so detection, install, launch and uninstall
-// all target the same venv. Must be called before the first CheckOne/Install.
-func (s *Service) SetHeadroomVenvDir(dir string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.headroomVenvDir = strings.TrimSpace(dir)
-}
-
-// SetHeadroomStopper injects the callback used to stop the headroom proxy
-// child process before CleanHeadroom removes the venv directory. This is
-// required on Windows where a running headroom.exe inside the venv is locked
-// by the OS and os.RemoveAll would fail. Wiring (app.go) injects a callback
-// that ALSO acquires the SharedServiceCoordinator install-drain (R4-002) so a
-// concurrent launch cannot obtain a headroom lease whose venv dependency is
-// about to be deleted. The callback returns (stopErr, releaseDrain): the
-// releaseDrain callback MUST be invoked by CleanHeadroom after the venv removal
-// to release the drain.
-//
-// The injected callback's stopErr is treated as best-effort by CleanHeadroom
-// (a not-running proxy is a valid state) unless it wraps ErrHeadroomInUse
-// (fatal: active leases). Must be called before CleanHeadroom.
-func (s *Service) SetHeadroomStopper(fn func() (error, func())) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.headroomStopper = fn
-}
-
 // SetWSLSearchToolsInstaller 注入 WSL 搜索工具（fd-find + ripgrep）安装回调，
 // 由 install_wsl_search_tools 修复动作经 runInstallWSLSearchTools 调用。app.go
 // 装配时把 wslsetup.Service.InstallSearchTools 适配成 envcheck.InstallResult
@@ -183,6 +130,49 @@ func (s *Service) SetWSLSearchToolsInstaller(fn func() (*InstallResult, error)) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.wslSearchToolsInstaller = fn
+}
+
+// SetWSLCLISync 注入「Windows 侧安装/升级成功 → 同步 WSL 侧 CLI」回调
+// （安装/升级双侧联动，direction §2.2）。app.go 装配时把 App.syncCLIToWSL
+// 注入；nil 安全（未注入时 attachWSLSync 是 no-op，测试/非 Windows 装配
+// 均不受影响）。与 SetWSLSearchToolsInstaller 同样的 setter 线程安全范式
+// （s.mu 写锁，读取走 RLock），必须在首次 Install/Update 之前调用。
+func (s *Service) SetWSLCLISync(fn func(tool CLITool, kind OperationKind) *WSLSyncResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.wslCLISync = fn
+}
+
+// attachWSLSync 在 Windows 侧 install/update 成功后，把 WSL 侧同步作为
+// 同一操作的最后一步执行（direction §2.2）：
+//   - Windows 失败（err != nil / result == nil / !result.Success）不触发，
+//     WSL 字段保持 nil；
+//   - 非 install/update kind（uninstall 等）不触发；
+//   - 回调未注入时不触发（nil 安全）；
+//   - reporter 非 nil 时先上报 OperationStepWSLSync（异步操作内经既有轮询
+//     可见「正在同步到 WSL」），再执行回调并把结果写进 result.WSL。
+//     回调返回 nil 视为「本次不涉及 WSL」（例如无可用发行版）。
+//
+// 调用点：runOperation（异步全链）、serializedInstallOrUpdate 与
+// serializedInstallOrUpdateWithMethod（同步链，不传 reporter）。调用方
+// 不得持有 opMu（reporter 内部会取锁）。
+func (s *Service) attachWSLSync(tool CLITool, kind OperationKind, result *InstallResult, err error, reporter progressReporter) {
+	if err != nil || result == nil || !result.Success {
+		return
+	}
+	if kind != OperationKindInstall && kind != OperationKindUpdate {
+		return
+	}
+	s.mu.RLock()
+	fn := s.wslCLISync
+	s.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	if reporter != nil {
+		reporter.report(OperationStepWSLSync, "正在同步到 WSL…", progressWSLSync)
+	}
+	result.WSL = fn(tool, kind)
 }
 
 // CheckAll checks every supported CLI tool and updates the in-memory cache.
@@ -269,9 +259,6 @@ func (s *Service) CheckOne(tool CLITool) (*CheckStatus, error) {
 	case ToolOmp:
 		status, err := s.checkOmp()
 		return s.finishToolCheck(status, err)
-	case ToolHeadroom:
-		status, err := s.checkHeadroom()
-		return s.finishToolCheck(status, err)
 	}
 	return nil, fmt.Errorf("envcheck CheckOne not implemented for tool: %s", tool)
 }
@@ -303,12 +290,6 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 	}
 
 	npmAvailable, npmResolvedErr := s.ensureNPMAvailabilityCached()
-
-	// Headroom is a pip-distributed Python package; it does not depend on npm.
-	if status.Tool == ToolHeadroom {
-		s.populateHeadroomCanInstall(status)
-		return
-	}
 
 	// Compute per-method install availability for Claude Code.
 	if status.Tool == ToolClaudeCode {
@@ -383,69 +364,6 @@ func (s *Service) populateCanInstall(status *CheckStatus) {
 	}
 }
 
-// populateHeadroomCanInstall fills CanInstall / CanInstallByMethod /
-// InstallBlockedReason for the Headroom tool. Headroom is installed into a
-// CodeBox-managed venv, so availability is probed through python3 (the ability
-// to create a venv) rather than the npm or pip cache.
-func (s *Service) populateHeadroomCanInstall(status *CheckStatus) {
-	if status == nil {
-		return
-	}
-	_, pythonAvailable, pythonVersionUnsupported, pythonResolvedErr := s.cachedPythonProbeState()
-
-	status.CanInstallByMethod = map[string]bool{
-		"venv": pythonAvailable,
-	}
-	status.CanInstall = pythonAvailable
-
-	if status.CanInstall {
-		// For installed tools with errors, offer a reinstall/repair solution.
-		if status.Installed && strings.TrimSpace(status.Error) != "" {
-			status.Solutions = append(status.Solutions, ResolutionAction{
-				Type:        SolutionInstallTool,
-				Description: fmt.Sprintf("Reinstall %s to repair the broken installation", displayToolName(status.Tool)),
-				Tool:        status.Tool,
-				PackageName: headroomPackageName,
-			})
-		}
-		return
-	}
-
-	if pythonResolvedErr != nil {
-		status.InstallBlockedReason = pythonResolvedErr.Error()
-	}
-	if !status.Installed || strings.TrimSpace(status.Error) != "" {
-		issueCode := "python_not_found"
-		message := "python3 is required to install Headroom but is not available"
-		if pythonVersionUnsupported {
-			issueCode = "python_version_unsupported"
-			message = "Headroom requires Python 3.10 or newer"
-		}
-		status.Issues = append(status.Issues, CheckIssue{
-			Severity: SeverityError,
-			Code:     issueCode,
-			Message:  message,
-			Detail:   status.InstallBlockedReason,
-			Solutions: []ResolutionAction{
-				{
-					Type:            SolutionFixPath,
-					Description:     "Fix PATH to include the Python directory",
-					Tool:            status.Tool,
-					RequiresConfirm: true,
-					IsPrimary:       true,
-				},
-			},
-		})
-		status.Solutions = append(status.Solutions, ResolutionAction{
-			Type:            SolutionFixPath,
-			Description:     "Fix PATH to include Python",
-			Tool:            status.Tool,
-			RequiresConfirm: true,
-			IsPrimary:       true,
-		})
-	}
-}
-
 // ensureNPMAvailabilityCached 在 probeMu 保护下执行一次性 npm 探测并返回
 // 缓存结果（可用性 + 不可用原因）。所有运行期读取 npm 探测缓存的路径都必须
 // 经过本方法（或 ensureNPMAvailable 的慢路径），禁止裸读 s.npmAvailable /
@@ -457,18 +375,6 @@ func (s *Service) ensureNPMAvailabilityCached() (bool, error) {
 		s.probeNPMAvailability()
 	})
 	return s.npmAvailable, s.npmResolvedErr
-}
-
-// cachedPythonProbeState 在 probeMu 保护下执行一次性 python 探测，返回缓存的
-// （解释器路径、可用性、是否“找到但版本不支持”、不可用原因）。语义同
-// ensureNPMAvailabilityCached，见其注释。
-func (s *Service) cachedPythonProbeState() (path string, available bool, versionUnsupported bool, resolvedErr error) {
-	s.probeMu.Lock()
-	defer s.probeMu.Unlock()
-	s.pythonOnce.Do(func() {
-		s.probePythonAvailability()
-	})
-	return s.pythonPath, s.pythonAvailable, s.pythonVersionUnsupported, s.pythonResolvedErr
 }
 
 func (s *Service) cacheToolStatus(status *CheckStatus) {
@@ -551,13 +457,6 @@ func (s *Service) checkLatestVersion(tool CLITool) (string, error) {
 		return s.npmPackageVersion(piNPMPackageName)
 	case ToolOmp:
 		return s.npmPackageVersion(ompNPMPackageName)
-	case ToolHeadroom:
-		// Headroom is distributed via pip, and there is no reliable single
-		// pip command that returns the latest published version across pip
-		// versions. Rather than fabricate a value or make a flaky network
-		// call, report that latest-version detection is unsupported; callers
-		// (enrichWithLatestVersion) treat this as "no update info available".
-		return "", fmt.Errorf("latest version check is not supported for %s", tool)
 	default:
 		return "", fmt.Errorf("unsupported CLI tool: %s", tool)
 	}
@@ -637,6 +536,11 @@ func (s *Service) serializedInstallOrUpdate(tool CLITool, operation installOpera
 		_, _ = s.CheckOne(tool)
 	}
 
+	// 安装/升级双侧联动（同步链，direction §2.2）：Windows 成功后追加 WSL
+	// 同步步骤；不传 reporter（占位操作态即将被清除，步骤上报无观察面），
+	// 结果仅经返回值 result.WSL 暴露给同步调用方。不得在持有 opMu 时调用。
+	s.attachWSLSync(tool, OperationKind(operation), result, err, nil)
+
 	// Clear the operation state so the gate is released.
 	s.opMu.Lock()
 	s.current = nil
@@ -654,13 +558,13 @@ func (s *Service) GetCachedStatus() *OverallStatus {
 
 // SupportedTools returns the stable checking order for all managed CLI tools.
 func SupportedTools() []CLITool {
-	return []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp, ToolHeadroom}
+	return []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp}
 }
 
 // IsValidCLITool reports whether tool is supported by EnvCheck.
 func IsValidCLITool(tool CLITool) bool {
 	switch tool {
-	case ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp, ToolHeadroom:
+	case ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp:
 		return true
 	default:
 		return false
@@ -847,30 +751,6 @@ func comparePrereleaseIdentifier(current string, latest string) int {
 	return 0
 }
 
-func versionParts(version string) []int {
-	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
-	if idx := strings.IndexAny(version, "-+"); idx >= 0 {
-		version = version[:idx]
-	}
-	if version == "" {
-		return nil
-	}
-	parts := strings.Split(version, ".")
-	numbers := make([]int, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			numbers = append(numbers, 0)
-			continue
-		}
-		number, err := strconv.Atoi(part)
-		if err != nil {
-			break
-		}
-		numbers = append(numbers, number)
-	}
-	return numbers
-}
-
 // ---------------------------------------------------------------------------
 // Async operation management
 // ---------------------------------------------------------------------------
@@ -880,17 +760,6 @@ var ErrBusy = fmt.Errorf("another install or update operation is in progress")
 
 // ErrAlreadyRunning is returned when the same tool+kind operation is already running.
 var ErrAlreadyRunning = fmt.Errorf("this operation is already running")
-
-// ErrHeadroomInUse is the typed rejection returned by CleanHeadroom when the
-// injected headroom stopper reports the shared headroom is still in use by
-// active sessions (R3-002 / PG-06). CleanHeadroom aborts BEFORE the venv
-// directory is removed so an active run's dependency is never deleted out from
-// under it. Callers surface this to the desktop confirm/reject flow (the UI
-// shows "still in use by N sessions" instead of a generic success). The
-// injected stopper is expected to wrap this sentinel (errors.Is) when it wants
-// CleanHeadroom to treat the failure as a fatal in-use rejection rather than a
-// best-effort stop failure.
-var ErrHeadroomInUse = errors.New("headroom is in use by active sessions")
 
 // StartInstallTool starts an asynchronous install operation for the given tool.
 // It returns immediately with the initial OperationState. The actual work runs in
@@ -1004,7 +873,7 @@ func (s *Service) runOperation(op *OperationState, method ClaudeInstallMethod) {
 	switch {
 	case op.Kind == OperationKindUninstall:
 		// Generic ownership-checked uninstall for the non-Claude agents;
-		// Claude/Headroom keep their dedicated sync flows.
+		// Claude keeps its dedicated sync flows.
 		result, err = s.uninstallToolWithProgress(op.Tool, reporter)
 	case op.Tool == ToolClaudeCode && op.Kind == OperationKindInstall && method != ClaudeInstallAuto:
 		result, err = s.installClaudeCodeWithMethodProgress(method, reporter)
@@ -1023,6 +892,13 @@ func (s *Service) runOperation(op *OperationState, method ClaudeInstallMethod) {
 		_, cacheErr := s.CheckOne(op.Tool)
 		cacheRefreshed = cacheErr == nil
 	}
+
+	// 安装/升级双侧联动：Windows 成功后在同一操作内追加 WSL 同步步骤
+	// （direction §2.2）。操作保持 running 直到本步结束，复用同一操作槽与
+	// 同一套前端轮询；结果写 result.WSL（含 skipped/failed，均不改变
+	// OperationState.Status 仍只表示 Windows 侧的语义）。不得在持有 opMu
+	// 时调用（reporter 内部取锁）。
+	s.attachWSLSync(op.Tool, op.Kind, result, err, reporter)
 
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -1168,83 +1044,6 @@ func (s *Service) serializedCleanClaudeCode(method InstallMethod) (*InstallResul
 	return result, err
 }
 
-// CleanHeadroom removes the CodeBox-managed Headroom venv directory. It
-// acquires the same operation gate used by install/update so that overlapping
-// operations cannot race against a stale environment snapshot. Before the
-// venv directory is removed, it invokes the injected headroom stopper (see
-// SetHeadroomStopper) so the headroom proxy child process is terminated first
-// -- this is required on Windows where a running headroom.exe inside the venv
-// is locked by the OS and os.RemoveAll would fail.
-//
-// R3-002: if the stopper returns an error wrapping ErrHeadroomInUse (the shared
-// headroom is still depended on by active sessions), CleanHeadroom ABORTS before
-// the venv is removed and returns ErrHeadroomInUse so the desktop confirm/reject
-// flow can surface the rejection. A plain stop failure (e.g. process already
-// dead) remains best-effort and non-fatal: the venv removal still proceeds.
-func (s *Service) CleanHeadroom() (*InstallResult, error) {
-	s.opMu.Lock()
-	if s.current != nil && s.current.Status == OperationStatusRunning {
-		s.opMu.Unlock()
-		return nil, ErrBusy
-	}
-	now := time.Now()
-	s.current = &OperationState{
-		ID:        fmt.Sprintf("sync-uninstall-headroom-%d", s.opSeq.Add(1)),
-		Tool:      ToolHeadroom,
-		Kind:      OperationKindUninstall,
-		Status:    OperationStatusRunning,
-		Step:      OperationStepPrecheck,
-		Message:   "Starting Headroom uninstall...",
-		StartedAt: now,
-		UpdatedAt: now,
-	}
-	s.opMu.Unlock()
-
-	// Stop the headroom proxy before removing the venv. On Windows the running
-	// headroom.exe lives inside the venv and is locked by the OS, so os.RemoveAll
-	// would fail with "Access is denied" if the proxy were still running.
-	//
-	// R3-002: a stopper error wrapping ErrHeadroomInUse is a FATAL rejection
-	// (active sessions depend on the shared venv) — abort BEFORE removing the
-	// venv so an in-flight run's dependency is never deleted. Any other stopper
-	// error stays best-effort (the proxy may have died independently).
-	// R4-002: the stopper returns a releaseDrain callback that releases the
-	// SharedServiceCoordinator install-drain; it is held across the venv removal
-	// (deferred) so a concurrent launch cannot obtain a headroom lease whose
-	// dependency is being deleted.
-	stopFn := s.headroomStopper
-	if stopFn != nil {
-		stopErr, releaseDrain := stopFn()
-		if releaseDrain != nil {
-			defer releaseDrain()
-		}
-		if stopErr != nil {
-			if errors.Is(stopErr, ErrHeadroomInUse) {
-				s.invalidateVersionCache(ToolHeadroom)
-				_, _ = s.CheckOne(ToolHeadroom)
-				s.opMu.Lock()
-				s.current = nil
-				s.opMu.Unlock()
-				return nil, ErrHeadroomInUse
-			}
-			// Non-fatal stop failure: fall through to venv removal.
-		}
-	}
-
-	result, err := s.cleanHeadroom()
-
-	// Refresh synchronously before releasing the operation gate so callers see
-	// the post-uninstall status.
-	s.invalidateVersionCache(ToolHeadroom)
-	_, _ = s.CheckOne(ToolHeadroom)
-
-	s.opMu.Lock()
-	s.current = nil
-	s.opMu.Unlock()
-
-	return result, err
-}
-
 // InstallClaudeCodeWithMethod installs Claude Code using a specific method.
 // The method is passed as a parameter to the install pipeline, avoiding
 // shared mutable state and ensuring thread safety.
@@ -1287,6 +1086,11 @@ func (s *Service) serializedInstallOrUpdateWithMethod(method ClaudeInstallMethod
 		s.invalidateVersionCache(ToolClaudeCode)
 		_, _ = s.CheckOne(ToolClaudeCode)
 	}
+
+	// 安装/升级双侧联动（同步链，direction §2.2）：Claude 指定通道安装成功后
+	// 追加 WSL 同步；不传 reporter，结果经返回值 result.WSL 暴露。不得在
+	// 持有 opMu 时调用。
+	s.attachWSLSync(ToolClaudeCode, OperationKindInstall, result, err, nil)
 
 	s.opMu.Lock()
 	s.current = nil

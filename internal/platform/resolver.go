@@ -14,7 +14,7 @@ const (
 	BootstrapShellInline   LaunchBootstrapMode = "shell-inline"
 	BootstrapShellAttach   LaunchBootstrapMode = "shell-attach"
 	// BootstrapWSL runs the CLI inside a WSL distro. The PTY layer builds the
-	// `wsl.exe -d <distro> --cd <workdir> -- bash -lic '<cli>; exec bash -li'`
+	// `wsl.exe -d <distro> --cd <workdir> --exec bash -lic '<cli>; exec bash -li'`
 	// command line; the CLI is resolved by the Linux PATH inside WSL, not by the
 	// Windows resolver, and injected env crosses the boundary via WSLENV.
 	BootstrapWSL LaunchBootstrapMode = "wsl"
@@ -65,6 +65,11 @@ type ResolvedLaunchSpec struct {
 	PTYRows        int                 `json:"ptyRows"`
 	ProcessPolicy  ProcessPolicy       `json:"processPolicy"`
 	Diagnostics    LaunchDiagnostics   `json:"diagnostics"`
+	// WSLWorkDirPreflightResolved 表示 WorkDir 已由启动预检融合探测
+	//（WSLLaunchPreflightProbe）定谳为 distro 内绝对物理路径——单次启动 RPC
+	// 作用域内传递（App 层预检成功后置位），pty 启动据此跳过重复的目录定谳
+	// 探测。false（remote/restart/旧调用）保持原探测路径不变。
+	WSLWorkDirPreflightResolved bool `json:"wslWorkDirPreflightResolved,omitempty"`
 }
 
 type ResolveRequest struct {
@@ -149,7 +154,12 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		}
 		if wslShell != nil && strings.EqualFold(wslShell.Key, "wsl") {
 			cliName := cliCandidates[0]
-			wslEnv := appendWSLENVForwardingWithPaths(append([]string(nil), resolvedEnv...), request.EnvForwardKeys, request.EnvPathFlagKeys)
+			// AMAGI_WIN_*：Windows 根目录事实（/p 翻译），供 WSL 内工具定位 Windows
+			// 原生程序；在剥离防线之后注入，不受盘符路径剥离影响。
+			rootedEnv, rootKeys := appendWSLWindowsRoots(resolvedEnv)
+			forwardKeys := append(append([]string(nil), request.EnvForwardKeys...), rootKeys...)
+			pathFlagKeys := append(append([]string(nil), request.EnvPathFlagKeys...), rootKeys...)
+			wslEnv := appendWSLENVForwardingWithPaths(rootedEnv, forwardKeys, pathFlagKeys)
 			spec := ResolvedLaunchSpec{
 				AppType:       request.AppType,
 				LaunchMode:    request.LaunchMode,

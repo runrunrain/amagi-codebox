@@ -22,15 +22,15 @@ export const ERROR_CODE_SERVICE_DOWN = 'service.down' as const;
 export const ERROR_CODE_AUTH_UNPAIRED = 'auth.unpaired' as const;
 export const ERROR_CODE_AUTH_WINDOW_EXPIRED = 'auth.window_expired' as const;
 export const ERROR_CODE_AUTH_REVOKED = 'auth.revoked' as const;
-export const ERROR_CODE_SESSION_NOT_FOUND = 'session.not_found' as const;
+const ERROR_CODE_SESSION_NOT_FOUND = 'session.not_found' as const;
 export const ERROR_CODE_SESSION_LAUNCH_FAILED = 'session.launch_failed' as const;
 export const ERROR_CODE_CONTROL_BUSY = 'control.busy' as const;
 export const ERROR_CODE_CONTROL_FORBIDDEN = 'control.forbidden' as const;
-export const ERROR_CODE_HISTORY_GAP = 'history.gap' as const;
+const ERROR_CODE_HISTORY_GAP = 'history.gap' as const;
 export const ERROR_CODE_RATE_LIMITED = 'rate.limited' as const;
 export const ERROR_CODE_BAD_REQUEST = 'bad_request' as const;
 
-export type KnownErrorCode =
+type KnownErrorCode =
   | typeof ERROR_CODE_NET_UNREACHABLE
   | typeof ERROR_CODE_SERVICE_DOWN
   | typeof ERROR_CODE_AUTH_UNPAIRED
@@ -64,7 +64,7 @@ export const KNOWN_ERROR_CODES = [
 ] as const;
 
 // --- Action hints ---
-export type KnownActionHint =
+type KnownActionHint =
   | 'retry'
   | 'check-desktop'
   | 're-pair'
@@ -78,11 +78,7 @@ export type ActionHint = ExtensibleString<KnownActionHint>;
 export const KNOWN_ACTION_HINTS = [
   'retry', 'check-desktop', 're-pair', 'request-control', 'continue-from-latest', 'upgrade-client',
 ] as const;
-
-/** Structured detail keys used by v1. */
-export const DETAIL_KEY_REASON = 'reason' as const;
 export const DETAIL_REASON_UNSUPPORTED_API_VERSION = 'unsupported_api_version' as const;
-export const DETAIL_KEY_CLI_TYPE = 'cliType' as const;
 
 /**
  * APIError is the unified REST error body. requestId is REQUIRED and equals
@@ -95,11 +91,4 @@ export interface ApiError {
   message: string;
   actionHint: ActionHint;
   details?: Record<string, unknown>;
-}
-
-/** Version-mismatch detail payload (design I-11): bad_request + details. */
-export interface UnsupportedAPIVersionDetails {
-  reason: typeof DETAIL_REASON_UNSUPPORTED_API_VERSION;
-  receivedApiVersion?: string;
-  supportedApiVersions: string[];
 }

@@ -22,6 +22,10 @@ export function ListDirectories(arg1) {
   return window['go']['paths']['PathsService']['ListDirectories'](arg1);
 }
 
+export function ListWSLDirectories(arg1, arg2) {
+  return window['go']['paths']['PathsService']['ListWSLDirectories'](arg1, arg2);
+}
+
 export function Load() {
   return window['go']['paths']['PathsService']['Load']();
 }

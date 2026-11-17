@@ -38,12 +38,8 @@ func (p transactionPlanner) BuildPlan(_ context.Context, req launchplan.BuildReq
 	effects := make([]launchplan.EffectSpec, 0, 4)
 	var admissions []launchplan.SharedAdmissionSpec
 	if p.shared {
-		fingerprint := sharedFingerprintForHeadroom("claude-headroom", "https://shared.example/v1", 8787)
-		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fingerprint})
-		effects = append(effects, launchplan.EffectSpec{Kind: launchplan.EffectHeadroomStart, Shared: &launchplan.SharedStartSpec{
-			Service: launchplan.SharedClaudeHeadroom, ConfigFingerprint: fingerprint,
-			UpstreamURL: "https://shared.example/v1", ListenPort: 8787,
-		}})
+		fingerprint := sharedServiceFingerprint("transaction-credentials", "https://shared.example/v1", 1)
+		admissions = append(admissions, launchplan.SharedAdmissionSpec{Service: launchplan.SharedClaudeCredentials, ConfigFingerprint: fingerprint})
 	}
 	secretBuffers := make([][]byte, 0, 1)
 	if p.config {
@@ -68,7 +64,7 @@ func (p transactionPlanner) BuildPlan(_ context.Context, req launchplan.BuildReq
 		launchplan.EffectSpec{Kind: launchplan.EffectBootstrapWrite, Bootstrap: &launchplan.BootstrapWriteSpec{StartupCommand: string(req.CLIType) + " --model model"}},
 	)
 	plan := &launchplan.Plan{
-		Recipe:     launchplan.StableRecipe{CLIType: req.CLIType, Workdir: workdir, ProviderRef: "transaction", ModelRef: "model", UseHeadroom: p.shared},
+		Recipe:     launchplan.StableRecipe{CLIType: req.CLIType, Workdir: workdir, ProviderRef: "transaction", ModelRef: "model"},
 		Admissions: admissions, Effects: effects, Secrets: launchplan.NewEphemeralSecretBundle(secretBuffers...),
 	}
 	if err := plan.Validate(); err != nil {
@@ -219,14 +215,14 @@ type transactionHarness struct {
 }
 
 func newTransactionHarness(t *testing.T, pty *transactionPTY) *transactionHarness {
-	return newTransactionHarnessWithHeadroom(t, pty, nil)
+	return newTransactionHarnessWithPlanner(t, pty, transactionPlanner{})
 }
 
-func newTransactionHarnessWithHeadroom(t *testing.T, pty *transactionPTY, headroomService *fakeHeadroomService) *transactionHarness {
-	return newTransactionHarnessWithPlanner(t, pty, transactionPlanner{shared: headroomService != nil}, headroomService)
+func newTransactionHarnessShared(t *testing.T, pty *transactionPTY) *transactionHarness {
+	return newTransactionHarnessWithPlanner(t, pty, transactionPlanner{shared: true})
 }
 
-func newTransactionHarnessWithPlanner(t *testing.T, pty *transactionPTY, planner launchplan.Planner, headroomService *fakeHeadroomService) *transactionHarness {
+func newTransactionHarnessWithPlanner(t *testing.T, pty *transactionPTY, planner launchplan.Planner) *transactionHarness {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", t.TempDir())
@@ -242,7 +238,7 @@ func newTransactionHarnessWithPlanner(t *testing.T, pty *transactionPTY, planner
 	)
 	adapter.SetSessionAuthority(manager, registry, planner)
 	executor := newAppLaunchExecutor(launchExecutorDeps{
-		pty: pty, headroom: headroomService, sharedCoord: coord, debts: launchplan.NewCompensationDebtRegistry(),
+		pty: pty, sharedCoord: coord, debts: launchplan.NewCompensationDebtRegistry(),
 	})
 	adapter.SetLaunchExecutor(executor, coord)
 	h := &transactionHarness{
@@ -358,7 +354,7 @@ func TestProductionPiOmpCreateExecutesCredentialConfigArgvAndBootstrap(t *testin
 				}
 				return nil
 			}
-			h := newTransactionHarnessWithPlanner(t, pty, planner, nil)
+			h := newTransactionHarnessWithPlanner(t, pty, planner)
 			principal := remote.DevicePrincipal{DeviceID: contract.DeviceID("device-production-" + string(cli)), DeviceName: "phone"}
 			created, adapterErr := h.adapter.CreateSession(context.Background(), contract.RequestID("request-production-"+string(cli)), principal, contract.CreateSessionRequest{CLIType: cli})
 			if adapterErr != nil {
@@ -655,7 +651,7 @@ func TestProductionRestartProcessEffectFailuresPublishNoNewReceipt(t *testing.T)
 
 func TestProductionRestartConfigFailurePublishesNoNewReceipt(t *testing.T) {
 	pty := newTransactionPTY(t)
-	h := newTransactionHarnessWithPlanner(t, pty, transactionPlanner{config: true}, nil)
+	h := newTransactionHarnessWithPlanner(t, pty, transactionPlanner{config: true})
 	principal := remote.DevicePrincipal{DeviceID: "device-restart-config", DeviceName: "phone"}
 	created, adapterErr := h.adapter.CreateSession(context.Background(), "request-config-create", principal, contract.CreateSessionRequest{CLIType: contract.CLITypeClaudeCode})
 	if adapterErr != nil {
@@ -679,42 +675,9 @@ func TestProductionRestartConfigFailurePublishesNoNewReceipt(t *testing.T) {
 	}
 }
 
-func TestProductionRestartSharedVerificationFailureReleasesOldGeneration(t *testing.T) {
-	pty := newTransactionPTY(t)
-	headroomService := &fakeHeadroomService{}
-	h := newTransactionHarnessWithHeadroom(t, pty, headroomService)
-	principal := remote.DevicePrincipal{DeviceID: "device-restart-shared-fail", DeviceName: "phone"}
-	created, adapterErr := h.adapter.CreateSession(context.Background(), "request-shared-fail-create", principal, contract.CreateSessionRequest{CLIType: contract.CLITypeClaudeCode})
-	if adapterErr != nil {
-		t.Fatal(adapterErr)
-	}
-	sid := created.Detail.ID
-	acquireTransactionControl(t, h, principal, sid, "shared-fail-connection")
-	before, _ := h.manager.RemoteSnapshotByID(string(sid))
-	headroomService.mu.Lock()
-	headroomService.backendURL = "https://externally-mutated.example/v1"
-	headroomService.mu.Unlock()
-	if _, adapterErr = h.adapter.RestartSession(context.Background(), "request-shared-fail-restart", principal, sid); adapterErr == nil {
-		t.Fatal("restart shared verification failure returned success")
-	}
-	after, err := h.manager.RemoteSnapshotByID(string(sid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.ownersMu.Lock()
-	ownerCount := len(h.owners)
-	h.ownersMu.Unlock()
-	pty.mu.Lock()
-	starts, active, closes := len(pty.startSpecs), len(pty.current), pty.closeCount
-	pty.mu.Unlock()
-	if after.Revisions.Run != before.Revisions.Run || after.State != session.AuthorityUnavailable || h.registry.Count() != 0 || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 0 || ownerCount != 0 || starts != 1 || active != 0 || closes != 1 {
-		t.Fatalf("shared failure leaked/published: before=%#v after=%#v registry=%d promoted=%d owners=%d starts/active/closes=%d/%d/%d", before, after, h.registry.Count(), h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom), ownerCount, starts, active, closes)
-	}
-}
-
 func TestProductionSharedLeaseExactRestartAndStaleExit(t *testing.T) {
 	pty := newTransactionPTY(t)
-	h := newTransactionHarnessWithHeadroom(t, pty, &fakeHeadroomService{})
+	h := newTransactionHarnessShared(t, pty)
 	appOwner := &App{sharedCoord: h.coord, sharedLeases: make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)}
 	h.adapter.SetSharedLeaseTransfer(appOwner.prepareSharedLeaseTransfer, appOwner.releaseSharedLeasesExact)
 	h.runtime.Projector().SetRunTerminalCleanup(appOwner.releaseSharedLeasesExact)
@@ -725,7 +688,7 @@ func TestProductionSharedLeaseExactRestartAndStaleExit(t *testing.T) {
 	}
 	sid := created.Detail.ID
 	before, _ := h.manager.RemoteSnapshotByID(string(sid))
-	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 1 {
+	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 1 {
 		t.Fatal("create did not promote exactly one shared lease")
 	}
 	acquireTransactionControl(t, h, principal, sid, "shared-restart-connection")
@@ -733,8 +696,8 @@ func TestProductionSharedLeaseExactRestartAndStaleExit(t *testing.T) {
 		t.Fatal(adapterErr)
 	}
 	after, _ := h.manager.RemoteSnapshotByID(string(sid))
-	if after.Revisions.Run <= before.Revisions.Run || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 1 {
-		t.Fatalf("restart shared invariant: run %d→%d, promoted=%d", before.Revisions.Run, after.Revisions.Run, h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom))
+	if after.Revisions.Run <= before.Revisions.Run || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 1 {
+		t.Fatalf("restart shared invariant: run %d→%d, promoted=%d", before.Revisions.Run, after.Revisions.Run, h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials))
 	}
 	appOwner.sharedLeaseMu.Lock()
 	ownerCount := len(appOwner.sharedLeases)
@@ -750,11 +713,11 @@ func TestProductionSharedLeaseExactRestartAndStaleExit(t *testing.T) {
 	oldHandle, newHandle := pty.runHandles[0], pty.runHandles[1]
 	pty.mu.Unlock()
 	h.runtime.Projector().OfferExit(oldHandle, 23, true)
-	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 1 {
+	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 1 {
 		t.Fatal("stale old-run exit released the replacement generation")
 	}
 	h.runtime.Projector().OfferExit(newHandle, 0, false)
-	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 0 {
+	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 0 {
 		t.Fatal("current natural exit retained the exact shared lease")
 	}
 	appOwner.sharedLeaseMu.Lock()
@@ -767,7 +730,7 @@ func TestProductionSharedLeaseExactRestartAndStaleExit(t *testing.T) {
 
 func TestProductionSharedLeaseConcurrentRestartAndOldNaturalExit(t *testing.T) {
 	pty := newTransactionPTY(t)
-	h := newTransactionHarnessWithHeadroom(t, pty, &fakeHeadroomService{})
+	h := newTransactionHarnessShared(t, pty)
 	principal := remote.DevicePrincipal{DeviceID: "device-shared-concurrent", DeviceName: "phone"}
 	created, adapterErr := h.adapter.CreateSession(context.Background(), "request-concurrent-create", principal, contract.CreateSessionRequest{CLIType: contract.CLITypeClaudeCode})
 	if adapterErr != nil {
@@ -817,14 +780,14 @@ func TestProductionSharedLeaseConcurrentRestartAndOldNaturalExit(t *testing.T) {
 		ownerEpoch = key.RunEpoch
 	}
 	h.ownersMu.Unlock()
-	if ownerCount != 1 || ownerEpoch != after.Revisions.Run || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 1 || h.registry.Count() != 1 {
-		t.Fatalf("concurrent transfer state owners/epoch/promoted/registry=%d/%d/%d/%d, run=%d", ownerCount, ownerEpoch, h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom), h.registry.Count(), after.Revisions.Run)
+	if ownerCount != 1 || ownerEpoch != after.Revisions.Run || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 1 || h.registry.Count() != 1 {
+		t.Fatalf("concurrent transfer state owners/epoch/promoted/registry=%d/%d/%d/%d, run=%d", ownerCount, ownerEpoch, h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials), h.registry.Count(), after.Revisions.Run)
 	}
 }
 
 func TestProductionSharedLeaseStopThenRestartReacquiresNewGeneration(t *testing.T) {
 	pty := newTransactionPTY(t)
-	h := newTransactionHarnessWithHeadroom(t, pty, &fakeHeadroomService{})
+	h := newTransactionHarnessShared(t, pty)
 	appOwner := &App{sharedCoord: h.coord, sharedLeases: make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)}
 	h.adapter.SetSharedLeaseTransfer(appOwner.prepareSharedLeaseTransfer, appOwner.releaseSharedLeasesExact)
 	h.runtime.Projector().SetRunTerminalCleanup(appOwner.releaseSharedLeasesExact)
@@ -839,8 +802,8 @@ func TestProductionSharedLeaseStopThenRestartReacquiresNewGeneration(t *testing.
 	if _, adapterErr = h.adapter.StopSession(context.Background(), "request-stop-before-restart", principal, sid); adapterErr != nil {
 		t.Fatal(adapterErr)
 	}
-	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 0 || h.registry.Count() != 1 {
-		t.Fatalf("stop promoted/closed-capability registry = %d/%d, want 0/1", h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom), h.registry.Count())
+	if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 0 || h.registry.Count() != 1 {
+		t.Fatalf("stop promoted/closed-capability registry = %d/%d, want 0/1", h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials), h.registry.Count())
 	}
 	restarted, adapterErr := h.adapter.RestartSession(context.Background(), "request-restart-after-stop", principal, sid)
 	if adapterErr != nil {
@@ -857,8 +820,8 @@ func TestProductionSharedLeaseStopThenRestartReacquiresNewGeneration(t *testing.
 		ownerEpoch = key.RunEpoch
 	}
 	appOwner.sharedLeaseMu.Unlock()
-	if restarted.Detail.State != contract.SessionStateRunning || after.Revisions.Run <= before.Revisions.Run || h.registry.Count() != 1 || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 1 || ownerCount != 1 || ownerEpoch != after.Revisions.Run {
-		t.Fatalf("stop→restart state/run/registry/promoted/owner=%s/%d→%d/%d/%d/%d@%d", restarted.Detail.State, before.Revisions.Run, after.Revisions.Run, h.registry.Count(), h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom), ownerCount, ownerEpoch)
+	if restarted.Detail.State != contract.SessionStateRunning || after.Revisions.Run <= before.Revisions.Run || h.registry.Count() != 1 || h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 1 || ownerCount != 1 || ownerEpoch != after.Revisions.Run {
+		t.Fatalf("stop→restart state/run/registry/promoted/owner=%s/%d→%d/%d/%d/%d@%d", restarted.Detail.State, before.Revisions.Run, after.Revisions.Run, h.registry.Count(), h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials), ownerCount, ownerEpoch)
 	}
 }
 
@@ -866,7 +829,7 @@ func TestProductionSharedLeaseExactStopAndRemove(t *testing.T) {
 	for _, operation := range []string{"stop", "remove"} {
 		t.Run(operation, func(t *testing.T) {
 			pty := newTransactionPTY(t)
-			h := newTransactionHarnessWithHeadroom(t, pty, &fakeHeadroomService{})
+			h := newTransactionHarnessShared(t, pty)
 			appOwner := &App{sharedCoord: h.coord, sharedLeases: make(map[remote.SharedLeaseOwnerKey]*remote.SharedDependencyLease)}
 			h.adapter.SetSharedLeaseTransfer(appOwner.prepareSharedLeaseTransfer, appOwner.releaseSharedLeasesExact)
 			h.runtime.Projector().SetRunTerminalCleanup(appOwner.releaseSharedLeasesExact)
@@ -888,8 +851,8 @@ func TestProductionSharedLeaseExactStopAndRemove(t *testing.T) {
 			if operation == "stop" {
 				wantRegistry = 1 // closed exact capability remains for Remove/Restart
 			}
-			if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom) != 0 || h.registry.Count() != wantRegistry {
-				t.Fatalf("%s promoted lease/registry = %d/%d, want 0/%d", operation, h.coord.PromotedLeaseCount(remote.SharedServiceClaudeHeadroom), h.registry.Count(), wantRegistry)
+			if h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials) != 0 || h.registry.Count() != wantRegistry {
+				t.Fatalf("%s promoted lease/registry = %d/%d, want 0/%d", operation, h.coord.PromotedLeaseCount(remote.SharedServiceClaudeCredentials), h.registry.Count(), wantRegistry)
 			}
 			appOwner.sharedLeaseMu.Lock()
 			ownerCount := len(appOwner.sharedLeases)

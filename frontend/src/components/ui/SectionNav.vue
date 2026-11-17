@@ -33,13 +33,19 @@
     <p v-if="notice" class="sn-notice">{{ notice }}</p>
   </nav>
 </template>
-<script lang="ts">let navSeq = 0;</script>
+<script lang="ts">
+let navSeq = 0;
+function nextNavSeq(): number {
+  navSeq += 1;
+  return navSeq;
+}
+</script>
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
 import type { SectionNavGroup, SectionNavItem } from '../provider/configNavigation';
 const props = defineProps<{ groups: SectionNavGroup[]; currentId: string; branchId?: string; label: string; controlsId: string; notice?: string }>();
 const emit = defineEmits<{ select: [id: string] }>();
-const instanceId = `section-nav-${++navSeq}`;
+const instanceId = `section-nav-${nextNavSeq()}`;
 const descriptionId = (id: string) => `${instanceId}-${encodeURIComponent(id)}`;
 const descriptionText = (item: SectionNavItem) => [item.meta, item.invalid ? '需修正' : ''].filter(Boolean).join('；');
 const nav = ref<HTMLElement | null>(null);

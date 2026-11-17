@@ -11,6 +11,7 @@ func TestNormalizeToolKey(t *testing.T) {
 		"OpenCode":    "opencode",
 		"open-code":   "opencode",
 		"codex":       "codex",
+		"OMP":         "omp", // lowercase passthrough covers Oh My Pi
 		"unknown":     "unknown",
 	}
 	for in, want := range cases {
@@ -28,6 +29,8 @@ func TestPackageForTool(t *testing.T) {
 		"codex":       "@openai/codex",
 		"pi":          "@earendil-works/pi-coding-agent",
 		"Pi":          "@earendil-works/pi-coding-agent",
+		"omp":         "@oh-my-pi/pi-coding-agent",
+		"OMP":         "@oh-my-pi/pi-coding-agent",
 	}
 	for in, want := range cases {
 		got, ok := packageForTool(in)
@@ -37,6 +40,30 @@ func TestPackageForTool(t *testing.T) {
 	}
 	if _, ok := packageForTool("nope"); ok {
 		t.Errorf("packageForTool(nope) should be !ok")
+	}
+}
+
+// TestAllFiveCLIsMapped pins the五 CLI coverage requirement: every key in the
+// canonical order resolves to a distinct npm package, and omp (the historical
+// B7 exclusion, superseded by the Windows/WSL unified-management requirement)
+// is present.
+func TestAllFiveCLIsMapped(t *testing.T) {
+	if len(cliToolOrder) != 5 {
+		t.Fatalf("cliToolOrder has %d entries, want 5", len(cliToolOrder))
+	}
+	seen := map[string]bool{}
+	for _, key := range cliToolOrder {
+		pkg, ok := packageForTool(key)
+		if !ok || pkg == "" {
+			t.Errorf("cliToolOrder key %q has no npm package", key)
+		}
+		if seen[pkg] {
+			t.Errorf("duplicate npm package %q across CLI keys", pkg)
+		}
+		seen[pkg] = true
+	}
+	if _, ok := packageForTool("omp"); !ok {
+		t.Error("omp must be installable into WSL (five-CLI coverage)")
 	}
 }
 
@@ -79,18 +106,39 @@ func TestBashSingleQuote(t *testing.T) {
 	}
 }
 
-// TestGetStatusUnavailableOffWindowsOrNoDistro verifies the stub/no-distro path
-// returns Available=false with a reason (the Windows path with a real distro is
-// covered by the real-machine verification, not unit tests).
-func TestGetStatusReason(t *testing.T) {
+// TestUnsupportedPlatformContract pins the off-Windows behavior for every
+// public method: a nil runner (explicitly injected so the test is
+// deterministic on Windows hosts too) must yield structured failures — never
+// a Go error for supported tools, and the plain error for unknown tools
+// BEFORE the platform check, mirroring the historical stub order.
+func TestUnsupportedPlatformContract(t *testing.T) {
+	injectRunner(t, nil)
 	svc := NewService(nil)
-	st := svc.GetStatus()
-	if st.Available {
-		// On a machine WITH a usable distro this may be true; only assert the
-		// contract shape (no panic, tools list shape) rather than a fixed value.
-		return
+
+	if st := svc.GetStatus(); st.Available || st.Reason != errInstallUnsupported {
+		t.Errorf("GetStatus() = %+v, want unavailable with %q", st, errInstallUnsupported)
 	}
-	if st.Reason == "" {
-		t.Errorf("unavailable status must carry a reason")
+
+	res, err := svc.InstallTool("pi")
+	if err != nil || res.Success || res.Error != errInstallUnsupported {
+		t.Errorf("InstallTool(pi) = %+v, %v; want structured %q failure", res, err, errInstallUnsupported)
+	}
+	res, err = svc.UpdateTool("pi")
+	if err != nil || res.Success || res.Error != errUpdateUnsupported {
+		t.Errorf("UpdateTool(pi) = %+v, %v; want structured %q failure", res, err, errUpdateUnsupported)
+	}
+	sres, err := svc.InstallSearchTools()
+	if err != nil || sres.Success || sres.Error != errInstallUnsupported || sres.Tool != SearchToolsKey {
+		t.Errorf("InstallSearchTools() = %+v, %v; want structured unsupported failure", sres, err)
+	}
+
+	// Unknown tools are rejected with a Go error regardless of platform.
+	for _, bad := range []string{"nope", ""} {
+		if _, err := svc.InstallTool(bad); err == nil {
+			t.Errorf("InstallTool(%q) must return an error for unknown tools", bad)
+		}
+		if _, err := svc.UpdateTool(bad); err == nil {
+			t.Errorf("UpdateTool(%q) must return an error for unknown tools", bad)
+		}
 	}
 }

@@ -9,7 +9,7 @@
  *     编号选项（Yes/No 语义）→ 按钮组；单行 (y/n)/[Y/n] → 是/否按钮。
  *   · option 选项菜单：≥2 个连续编号行（1. / 2. …）且不构成权限确认 →
  *     单选即答（点按发送 "<n>\r"）。
- *   · tool 工具调用：复用 parser/matchers/toolMatcher 的 isToolBlock 检测与
+ *   · tool 工具调用：复用 lib/toolMatcher 的 isToolBlock 检测与
  *     buildToolBlock 清洗（不重写匹配规则，避免漂移）。
  *   · error 错误：行首 ✗/×/Error 或含 failed/Traceback → danger 左边条 +
  *     原因 + 下一步（按内容关键词给可执行指引）。
@@ -25,7 +25,7 @@
  */
 
 import { hasAnsi, stripAnsi } from '../utils/stripAnsi';
-import { buildToolBlock, isToolBlock } from '../parser/matchers/toolMatcher';
+import { buildToolBlock, isToolBlock } from './toolMatcher';
 import type { AppType } from '../types/terminal';
 import type { SessionState } from './contract';
 
@@ -33,7 +33,7 @@ import type { SessionState } from './contract';
 // 渲染条目类型（七类内容组件 + 用户指令 + 边界/缺口标记）
 // ---------------------------------------------------------------------------
 
-export type TimelineItemKind =
+type TimelineItemKind =
   | 'user'
   | 'prompt-action'
   | 'option'
@@ -45,13 +45,13 @@ export type TimelineItemKind =
   | 'boundary'
   | 'gap';
 
-export interface TimelineItemBase {
+interface TimelineItemBase {
   id: string;
   kind: TimelineItemKind;
 }
 
 /** 可答选项：label 展示；input 为发送给会话的完整载荷（编号选项含回车，y/n 为单按键）。 */
-export interface AnswerOption {
+interface AnswerOption {
   key: string;
   label: string;
   input: string;

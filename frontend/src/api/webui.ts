@@ -5,7 +5,6 @@
  */
 
 import {
-  GetWebUIStatus,
   ProbeWebUI,
   OpenWebPlane,
 } from '../../wailsjs/go/webui/Service';
@@ -14,12 +13,6 @@ import { webui } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
 
 export type WebUIStatus = webui.Status;
-export type WebUIState = WebUIStatus['state'];
-
-/** 读取缓存的会话 webui 状态（非阻塞，不发起探测）。 */
-export function getWebUIStatus(sessionId: string): Promise<WebUIStatus> {
-  return callApi('[api.webui.getWebUIStatus]', () => GetWebUIStatus(sessionId));
-}
 
 /** 执行一轮 /api/info 探测并返回最新状态（前端按 0.5–1s 轮询，契约 §4.1）。 */
 export function probeWebUI(sessionId: string): Promise<WebUIStatus> {

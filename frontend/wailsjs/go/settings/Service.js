@@ -10,8 +10,12 @@ export function AddShellPath(arg1) {
   return window['go']['settings']['Service']['AddShellPath'](arg1);
 }
 
-export function GetCodexGlobalHeadroom() {
-  return window['go']['settings']['Service']['GetCodexGlobalHeadroom']();
+export function GetAgentCLIEnabled() {
+  return window['go']['settings']['Service']['GetAgentCLIEnabled']();
+}
+
+export function GetClaudeWebUIEnabled() {
+  return window['go']['settings']['Service']['GetClaudeWebUIEnabled']();
 }
 
 export function GetCommitSummaryPreset() {
@@ -98,8 +102,12 @@ export function Save() {
   return window['go']['settings']['Service']['Save']();
 }
 
-export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
-  return window['go']['settings']['Service']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
+export function SetAgentCLIEnabled(arg1) {
+  return window['go']['settings']['Service']['SetAgentCLIEnabled'](arg1);
+}
+
+export function SetClaudeWebUIEnabled(arg1) {
+  return window['go']['settings']['Service']['SetClaudeWebUIEnabled'](arg1);
 }
 
 export function SetCommitSummaryPreset(arg1) {

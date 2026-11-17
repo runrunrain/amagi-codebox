@@ -26,7 +26,7 @@ func TestR3_005_ClearStopped_ControlManagedFailClosedWhenControlUnavailable(t *t
 	emb := app.Sessions.Create(session.AppTypeClaudeCode, "p", "preset", "model", session.ModeEmbedded, "")
 	app.Sessions.MarkStopped(emb.ID)
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, skipped := result.Cleared, result.RetainedIDs
 	if cleared != 0 {
 		t.Fatalf("control-managed stopped session must NOT be cleared when control unavailable: cleared=%d", cleared)
@@ -49,7 +49,7 @@ func TestR3_005_ClearStopped_ControlManagedClearedWhenControlReady(t *testing.T)
 	wireTestControl(t, app)
 	sid := registerGateSession(t, app) // embedded + stopped + gate entry
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, skipped := result.Cleared, result.RetainedIDs
 	if cleared != 1 {
 		t.Fatalf("expected 1 cleared, got %d (skipped=%v)", cleared, skipped)
@@ -77,7 +77,7 @@ func TestR3_005_ClearStopped_LegacyTerminalAlwaysEligible(t *testing.T) {
 	term := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(term.ID)
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, skipped := result.Cleared, result.RetainedIDs
 	if cleared != 1 {
 		t.Fatalf("legacy terminal session should be cleared even without control: cleared=%d", cleared)
@@ -102,7 +102,7 @@ func TestR3_005_ClearStopped_MixedBatchPartialClear(t *testing.T) {
 	term := app.Sessions.Create(session.AppTypeCodex, "codex", "", "gpt-5", session.ModeTerminal, t.TempDir())
 	app.Sessions.MarkStopped(term.ID)
 
-	result := app.ClearStoppedSessionsDetailed()
+	result := app.clearStoppedSessionsDetailed()
 	cleared, skipped := result.Cleared, result.RetainedIDs
 	if cleared != 1 {
 		t.Fatalf("only the legacy terminal session should be cleared: cleared=%d", cleared)
@@ -121,6 +121,6 @@ func TestR3_005_ClearStopped_MixedBatchPartialClear(t *testing.T) {
 
 // Compile-time assertion that the typed detailed method exists on App and the
 // remote result type is exported (guards against accidental API removal).
-var _ = func(a *App) ClearStoppedSessionsResult { return a.ClearStoppedSessionsDetailed() }
+var _ = func(a *App) ClearStoppedSessionsResult { return a.clearStoppedSessionsDetailed() }
 var _ remote.DesktopClearStoppedResult
 var _ contract.SessionID

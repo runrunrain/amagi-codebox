@@ -139,15 +139,6 @@ func parseWSLVerboseListLine(line string) (name, state string, version int, ok b
 	return name, state, version, true
 }
 
-// resetWSLDistroVersionCacheForTest clears the version-probe cache.
-func resetWSLDistroVersionCacheForTest() {
-	wslDistroVersionCacheMu.Lock()
-	defer wslDistroVersionCacheMu.Unlock()
-	wslDistroVersionCacheDone = false
-	wslDistroVersionCache = nil
-	wslDistroStateCache = nil
-}
-
 // availableWSLDistros returns the usable (non-reserved) WSL distributions, cached
 // after the first successful probe. A probe error yields an empty list (treated
 // as "no usable distro" so callers fall back to pwsh/cmd).
@@ -201,18 +192,9 @@ func DefaultWSLDistro(env []string) string {
 	return distros[0]
 }
 
-// resetWSLDistroCacheForTest clears the probe cache so tests can re-run with a
-// different injected lister.
-func resetWSLDistroCacheForTest() {
-	wslDistroCacheMu.Lock()
-	defer wslDistroCacheMu.Unlock()
-	wslDistroCacheDone = false
-	wslDistroCache = nil
-}
-
 // --- WSL2 网络模式探测（.wslconfig，只读） ---
 //
-// AI 代理分流、Headroom、系统代理的统一入口都监听宿主回环（127.0.0.1）。WSL2
+// AI 代理分流、系统代理的统一入口都监听宿主回环（127.0.0.1）。WSL2
 // 默认 NAT 模式下 distro 内的 127.0.0.1 指向发行版自身，宿主回环不可达；
 // mirrored 模式（%USERPROFILE%\.wslconfig 的 [wsl2] 段 networkingMode=mirrored）
 // 下 localhost 双向互通，回环入口对 WSL 会话自然可用。本节只读配置文件，不
@@ -434,6 +416,11 @@ var wslENVForwardPrefixes = []string{
 // OPENCODE_CONFIG_CONTENT). The env-content carrier OPENCODE_CONFIG_CONTENT
 // has no OPENCODE_ prefix in the whitelist and never crosses the boundary,
 // which is exactly why the path carrier exists (evidence T4).
+// AMAGI_WEBUI_PORT/AMAGI_WEBUI_TOKEN：pi Web UI 壳集成的端口与 capability
+// token 注入（internal/webui，契约 v1.0.2 §7.2 通道 1）。不转发则 distro 内
+// 的 pi 扩展自选端口 + 自生成 token，且注册表写在 distro 内 ~/.pi（Windows 侧
+// 探测读不到），CodeBox 永远发现不了 Web 平面。只放行这两个精确键，不开放
+// AMAGI_ 前缀（避免 AMAGI_CODEBOX_AI_PROXY 等内部标记泄漏进 Linux 环境）。
 // ALL_PROXY/all_proxy（m-5）：socks 类 scheme 与仅认 ALL_PROXY 的实现依赖它；
 // aiproxy 分流注入同时携带两键，缺它则 distro 内只见 HTTP(S)_PROXY/NO_PROXY。
 // 其值是 URL，经 ShouldForwardToWSL 命中后路径值剥离判据自动生效。
@@ -447,6 +434,9 @@ var wslENVForwardExact = map[string]struct{}{
 	"ALL_PROXY":       {},
 	"all_proxy":       {},
 	"OPENCODE_CONFIG": {},
+
+	"AMAGI_WEBUI_PORT":  {},
+	"AMAGI_WEBUI_TOKEN": {},
 }
 
 // ShouldForwardToWSL reports whether an env key would be listed by

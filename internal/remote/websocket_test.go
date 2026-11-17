@@ -57,7 +57,7 @@ func (a *websocketTestApp) GetSessions() []session.SessionInfo { return nil }
 func (a *websocketTestApp) GetSession(sessionID string) (session.SessionInfo, error) {
 	return session.SessionInfo{}, errors.New("not implemented")
 }
-func (a *websocketTestApp) LaunchSession(providerName, presetName string, mode string, workDir string, useHeadroom bool, shellPath string) (string, error) {
+func (a *websocketTestApp) LaunchSession(providerName, presetName string, mode string, workDir string, shellPath string) (string, error) {
 	return "", errors.New("not implemented")
 }
 func (a *websocketTestApp) LaunchCodexSession(modelName string, providerID string, mode string, workDir string, shellPath string) (string, error) {
@@ -109,7 +109,7 @@ func (a *websocketTestApp) ProbeSessionWebUI(string) (SessionWebUIInfo, bool) {
 // remote resize frame does not call PtyResize (desktop remains geometry owner).
 func TestWebSocketLegacyInputOnlyNoOutputBypass(t *testing.T) {
 	app := newWebsocketTestApp()
-	srv := NewServer(0, app, logging.NewService(t.TempDir()), embed.FS{})
+	srv := NewServer(0, app, newTestLogService(t), embed.FS{})
 	srv.SetPtyBridge(app) // M3-A2: unbound PTY bridge (design §8.6.3)
 	t.Cleanup(srv.log.Close)
 
@@ -195,4 +195,18 @@ func TestServerMsgSerializesOutputCompatibilityFields(t *testing.T) {
 			t.Fatalf("output frame %s missing fragment %s", jsonText, fragment)
 		}
 	}
+}
+
+// serverMsg 服务端→客户端帧格式（legacy 兼容；M-003 后 /ws/terminal 不再产生
+// output/structured-part/exit/dimensions 帧，类型保留供测试与序列化兼容）。
+type serverMsg struct {
+	Type               string           `json:"type"`                         // "output" | "structured-part" | "exit" | "dimensions"
+	Data               string           `json:"data,omitempty"`               // base64（output 类型）
+	Seq                uint64           `json:"seq,omitempty"`                // output / structured-part 关联序号
+	History            bool             `json:"history,omitempty"`            // output 是否为连接建立时的历史快照
+	StructuredExpected bool             `json:"structuredExpected,omitempty"` // 新客户端用于延迟 raw fallback
+	Part               *structured.Part `json:"part,omitempty"`               // structured-part 类型
+	ExitCode           int              `json:"exitCode,omitempty"`           // exit 类型
+	Cols               int              `json:"cols,omitempty"`               // dimensions 类型
+	Rows               int              `json:"rows,omitempty"`               // dimensions 类型
 }

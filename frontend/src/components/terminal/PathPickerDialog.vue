@@ -134,15 +134,18 @@
  * 链、展开下一层、有序勾选。本组件只负责挂载模型 + 渲染 + Esc 关闭 + 焦点。
  */
 import { nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { listDirectories } from '../../api/paths'
+import { listDirectories, sessionListDirectories } from '../../api/paths'
 import { getDrvFSAdvisories } from '../../api/drvfsAdvisory'
-import { PathPickerModel, chipLabelOf } from './pathPickerModel'
+import { PathPickerModel, chipLabelOf, createSessionPathLoader } from './pathPickerModel'
 import { drvfsHintFor } from './drvfsHint'
 
 const props = defineProps<{
   visible: boolean
   /** 当前会话工作目录（用于推导初始 root）。 */
   workDir: string
+  /** 当前会话 ID：非空时经 App 会话 facade 列目录（WSL 内嵌会话 → 目标
+   * distro 目录树；空/缺省回退原生入口，独立使用场景行为不变）。 */
+  sessionId?: string
 }>()
 
 const emit = defineEmits<{
@@ -152,8 +155,13 @@ const emit = defineEmits<{
 
 const dialogRef = ref<HTMLElement | null>(null)
 
-// reactive 包装纯模型实例：字段/Set 访问自动响应式，模板直绑。
-const model = reactive(new PathPickerModel(listDirectories))
+// reactive 包装纯模型实例：字段/Set 访问自动响应式，模板直绑。加载器经
+// createSessionPathLoader 会话感知分派（sessionId 缺省回退原生入口）。
+const model = reactive(
+  new PathPickerModel(
+    createSessionPathLoader(props.sessionId, { listDirectories, sessionListDirectories }),
+  ),
+)
 
 // ---- 失败处关联提示：Linux 形态声明时按需拉取 DrvFS advisory（best-effort）
 // 拉取失败静默降级为不展示，不掩盖主错误。

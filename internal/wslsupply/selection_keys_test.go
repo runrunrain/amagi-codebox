@@ -125,7 +125,7 @@ func TestSelectionEmptyWithdrawsManagedEntries(t *testing.T) {
 }
 
 // TestSelectionPreviewReflectsFullKeyState — 预览面 Selected 与后端选择语义一致
-//（全路径键选中；同名叶不误标）。
+// （全路径键选中；同名叶不误标）。
 func TestSelectionPreviewReflectsFullKeyState(t *testing.T) {
 	c, _, src, _ := newS4CodexCoordinator(t)
 	src.toml = []byte("[mcp_servers.x]\nurl = \"https://x.example/sse\"\n\n[profiles.x]\nmodel = \"gpt-5-mini\"\n")

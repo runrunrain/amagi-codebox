@@ -1,88 +1,114 @@
 <template>
   <div class="omp-plugin-panel">
-    <LoadingState v-if="initialLoading" message="加载 OMP 插件中..." />
+    <!-- 首屏门控为 store 派生（契约 §6.5：loading/loadError/installed 均在 store，SSR 可断言） -->
+    <LoadingState v-if="showInitialLoading" message="加载 OMP 插件中..." />
     <ErrorState
-      v-else-if="store.loadError"
+      v-else-if="showFatalError"
       :message="store.loadError"
-      :on-retry="loadPackages"
+      :on-retry="handleRefresh"
     />
 
     <template v-else>
-      <div v-if="warnings.length" class="status-banner warning">
-        <span>{{ warnings.join('；') }}</span>
-        <AppButton variant="ghost" size="small" @click="loadPackages">重试</AppButton>
-      </div>
+      <!-- ① 诊断横幅：warnings 恒走横幅；有数据后的 refresh 失败（loadError）并入 errors -->
+      <DiagnosticBanner :errors="diagnosticErrors" :warnings="warnings" />
 
-      <div class="scope-note">
-        <div>
-          <strong>OMP 插件 / OMP Plugins</strong>
-          <p>OMP 插件通过官方 omp CLI 管理（npm 包 / GitHub 源 / marketplace 引用 / 本地路径）。变更后需重启 omp 会话或执行 /reload-plugins 生效。/ Managed via the official omp CLI (npm packages / GitHub sources / marketplace references / local paths). Restart the omp session or run /reload-plugins to apply changes.</p>
-        </div>
-        <div class="header-actions">
-          <AppButton variant="ghost" size="small" :disabled="loading" @click="loadPackages">
+      <!-- ② 资源计数标签行：OMP 无市场/子项数据，仅「插件」单标签 + 本地搜索 -->
+      <CountTabs
+        v-model="activeTab"
+        v-model:search-value="searchQuery"
+        :tabs="tabs"
+        search-placeholder="搜索插件名称或描述"
+      />
+
+      <!-- ③ 工具栏 -->
+      <ListToolbar title="已安装" :count="filtered.length" :loading="loading">
+        <template #actions>
+          <AppButton variant="ghost" size="small" :disabled="loading" @click="handleRefresh">
             {{ loading ? '刷新中…' : '刷新' }}
           </AppButton>
           <AppButton variant="primary" size="small" @click="openInstallDialog">
             安装插件
           </AppButton>
+        </template>
+      </ListToolbar>
+
+      <!-- ④ 内容区：list ⇄ detail（面板本地状态，契约 §2） -->
+      <template v-if="view === 'list'">
+        <div v-if="filtered.length" class="omp-rows">
+          <PluginRow
+            v-for="plugin in filtered"
+            :key="plugin.id"
+            :name="plugin.name"
+            :description="plugin.description"
+            :badges="rowBadges(plugin)"
+            :enabled="plugin.enabled"
+            switch-visible
+            :switch-disabled="isRowMutating(plugin.id)"
+            :active="activeId === plugin.id"
+            @click="openDetail(plugin)"
+            @toggle="(value) => handleRowToggle(plugin, value)"
+          />
+        </div>
+        <EmptyStateCard
+          v-else
+          title="暂无 OMP 插件"
+          description="点击『安装插件』，输入 npm 包名、GitHub 源、marketplace 引用或本地路径"
+        >
+          <template #primary>
+            <AppButton variant="primary" size="small" @click="openInstallDialog">安装插件</AppButton>
+          </template>
+        </EmptyStateCard>
+      </template>
+
+      <!-- 详情态：居中窄单列二级详情页（← 返回列表 + 「OMP › 名称」面包屑）。
+           OMP 无二级详情接口，点行即用列表数据渲染（契约 §6.5） -->
+      <div v-else-if="activePlugin" class="detail-page">
+        <div class="detail-column">
+          <button type="button" class="detail-back" @click="closeDetail">← 返回列表</button>
+          <DetailHeader
+            :breadcrumb="[{ label: 'OMP', clickable: true }, { label: activePlugin.name }]"
+            :title="activePlugin.name"
+            :badges="detailBadges"
+            @back="closeDetail"
+          >
+            <template #actions>
+              <AppButton
+                v-if="!activePlugin.enabled"
+                variant="primary"
+                size="small"
+                :disabled="mutating"
+                @click="handleEnable(activePlugin)"
+              >
+                {{ mutating ? '处理中…' : '启用' }}
+              </AppButton>
+              <AppButton
+                v-else
+                variant="primary"
+                size="small"
+                :disabled="mutating"
+                @click="handleUpgrade(activePlugin)"
+              >
+                {{ mutating ? '处理中…' : '升级' }}
+              </AppButton>
+              <AppButton
+                variant="danger"
+                size="small"
+                :disabled="mutating"
+                @click="openUninstallDialog(activePlugin)"
+              >
+                卸载
+              </AppButton>
+            </template>
+          </DetailHeader>
+          <p v-if="activePlugin.description" class="omp-detail-desc">
+            {{ activePlugin.description }}
+          </p>
+          <MetaGrid :items="metaItems" />
         </div>
       </div>
-
-      <div class="panel-header">
-        <div class="header-title">
-          <h2>已安装</h2>
-          <span class="count-badge">{{ installed.length }}</span>
-        </div>
-      </div>
-
-      <div v-if="installed.length" class="plugin-list">
-        <div v-for="plugin in installed" :key="plugin.id" class="plugin-item">
-          <div class="plugin-main">
-            <div class="plugin-name-row">
-              <span class="plugin-name">{{ plugin.name }}</span>
-              <div class="plugin-badges">
-                <Badge type="source" :text="kindLabel(plugin.kind)" variant="muted" />
-                <Badge v-if="plugin.version" type="ver" :text="`v${plugin.version}`" />
-                <Badge v-if="plugin.scope" type="tag" :text="plugin.scope" variant="muted" />
-              </div>
-            </div>
-            <p v-if="plugin.description" class="plugin-description">
-              {{ truncate(plugin.description, 120) }}
-            </p>
-            <p v-if="plugin.installPath" class="plugin-path">{{ plugin.installPath }}</p>
-          </div>
-          <div class="plugin-actions">
-            <AppButton
-              variant="ghost"
-              size="small"
-              :disabled="mutating"
-              @click="handleToggleEnabled(plugin)"
-            >
-              {{ mutating ? '处理中…' : (plugin.enabled ? '禁用' : '启用') }}
-            </AppButton>
-            <AppButton variant="ghost" size="small" :disabled="mutating" @click="handleUpgrade(plugin)">
-              {{ mutating ? '处理中…' : '升级' }}
-            </AppButton>
-            <AppButton
-              variant="danger"
-              size="small"
-              :disabled="mutating"
-              @click="openUninstallDialog(plugin)"
-            >
-              卸载
-            </AppButton>
-          </div>
-        </div>
-      </div>
-
-      <EmptyState
-        v-else
-        icon="⊘"
-        title="暂无 OMP 插件"
-        description="点击「安装插件」，输入 npm 包名、GitHub 源、marketplace 引用或本地路径"
-      />
     </template>
 
+    <!-- 安装对话框（契约 §6.5：保留） -->
     <Dialog
       v-model:open="showInstallDialog"
       title="安装 OMP 插件"
@@ -123,44 +149,183 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useOmpPluginStore } from '../../stores/ompPlugin';
 import type { OmpPlugin } from '../../api/ompPlugin';
 import AppButton from '../ui/AppButton.vue';
-import Badge from '../ui/Badge.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import Dialog from '../ui/Dialog.vue';
-import EmptyState from '../ui/EmptyState.vue';
 import ErrorState from '../ui/ErrorState.vue';
 import LoadingState from '../ui/LoadingState.vue';
+import CountTabs from './ui/CountTabs.vue';
+import DetailHeader from './ui/DetailHeader.vue';
+import DiagnosticBanner from './ui/DiagnosticBanner.vue';
+import EmptyStateCard from './ui/EmptyStateCard.vue';
+import ListToolbar from './ui/ListToolbar.vue';
+import MetaGrid from './ui/MetaGrid.vue';
+import PluginRow from './ui/PluginRow.vue';
+import type { CountTabItem, PluginBadgeDescriptor } from './pluginViewTypes';
 import { useToast } from '../../composables/useToast';
-import { truncate } from '../../utils/format';
 
 const store = useOmpPluginStore();
-const { installed, warnings, loading } = storeToRefs(store);
+const { installed, warnings, loading, loadError } = storeToRefs(store);
 const { showSuccess, showError } = useToast();
 
-const initialLoading = ref(true);
+// ---- 面板本地视图状态（契约 §2：OMP 仅 list ⇄ detail，不进 plugin store） ----
+type PanelView = 'list' | 'detail';
+const view = ref<PanelView>('list');
+const activeId = ref<string | null>(null);
+const activeTab = ref('plugins');
+const searchQuery = ref('');
+
+// ---- 首屏门控（store 派生，契约 §6.5 双形态） ----
+const showInitialLoading = computed(
+  () => loading.value && installed.value.length === 0 && !loadError.value,
+);
+const showFatalError = computed(() => !!loadError.value && installed.value.length === 0);
+// 首次加载失败（空列表）由整页 ErrorState 承担；有数据后的刷新失败走诊断横幅
+const diagnosticErrors = computed<string[]>(() =>
+  installed.value.length > 0 && loadError.value ? [loadError.value] : [],
+);
+
+const tabs = computed<CountTabItem[]>(() => [
+  { key: 'plugins', label: '插件', count: installed.value.length },
+]);
+
+// 搜索为面板本地过滤（契约 §7：filteredBySearch 不进 store），作用于名称与描述
+const filtered = computed(() => {
+  const keyword = searchQuery.value.trim().toLowerCase();
+  if (!keyword) return installed.value;
+  return installed.value.filter(
+    (plugin) =>
+      plugin.name.toLowerCase().includes(keyword) ||
+      (plugin.description ?? '').toLowerCase().includes(keyword),
+  );
+});
+
+function kindLabel(kind: OmpPlugin['kind']): string {
+  return kind === 'marketplace' ? 'marketplace' : 'npm';
+}
+
+function rowBadges(plugin: OmpPlugin): PluginBadgeDescriptor[] {
+  const badges: PluginBadgeDescriptor[] = [
+    { text: kindLabel(plugin.kind), type: 'source', variant: 'muted' },
+  ];
+  if (plugin.version) badges.push({ text: `v${plugin.version}`, type: 'ver' });
+  return badges;
+}
+
+// ---- 详情态（列表数据渲染，无二级接口） ----
+const activePlugin = computed(
+  () => installed.value.find((plugin) => plugin.id === activeId.value) ?? null,
+);
+
+const detailBadges = computed<PluginBadgeDescriptor[]>(() => {
+  const plugin = activePlugin.value;
+  if (!plugin) return [];
+  const badges: PluginBadgeDescriptor[] = [
+    { text: kindLabel(plugin.kind), type: 'source', variant: 'muted' },
+  ];
+  if (plugin.version) badges.push({ text: `v${plugin.version}`, type: 'ver' });
+  if (plugin.scope) badges.push({ text: plugin.scope, type: 'scope' });
+  return badges;
+});
+
+interface MetaViewItem {
+  label: string;
+  value: string;
+  mono?: boolean;
+}
+
+const metaItems = computed<MetaViewItem[]>(() => {
+  const plugin = activePlugin.value;
+  if (!plugin) return [];
+  const items: MetaViewItem[] = [
+    { label: '引用 ID', value: plugin.id, mono: true },
+    { label: '类型', value: kindLabel(plugin.kind) },
+  ];
+  if (plugin.version) items.push({ label: '版本', value: plugin.version });
+  if (plugin.scope) items.push({ label: '作用域', value: plugin.scope });
+  if (plugin.installPath) items.push({ label: '安装路径', value: plugin.installPath });
+  if (plugin.enabledFeatures?.length) {
+    items.push({ label: '启用特性', value: plugin.enabledFeatures.join('、') });
+  }
+  return items;
+});
+
+function openDetail(plugin: OmpPlugin) {
+  activeId.value = plugin.id;
+  view.value = 'detail';
+}
+
+function closeDetail() {
+  view.value = 'list';
+  activeId.value = null;
+}
+
+// ---- 写操作 ----
 const mutating = ref(false);
+// 行内开关仅禁用当前行（契约 §10.8）；详情按钮保持全局禁用
+const rowMutatingIds = ref(new Set<string>());
+
+function isRowMutating(id: string): boolean {
+  return rowMutatingIds.value.has(id);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function handleRefresh() {
+  // refresh 内部 catch 写 loadError（整页 ErrorState / 诊断横幅），不向上抛
+  await store.refresh(true);
+}
+
+async function handleRowToggle(plugin: OmpPlugin, value: boolean) {
+  if (isRowMutating(plugin.id)) return;
+  rowMutatingIds.value.add(plugin.id);
+  try {
+    const result = await store.setEnabled(plugin.id, value);
+    showSuccess(result.output || (value ? 'OMP 插件已启用' : 'OMP 插件已禁用'));
+  } catch (error) {
+    showError(`${value ? '启用' : '禁用'}失败：${errorMessage(error)}`);
+  } finally {
+    rowMutatingIds.value.delete(plugin.id);
+  }
+}
+
+async function handleEnable(plugin: OmpPlugin) {
+  if (mutating.value) return;
+  mutating.value = true;
+  try {
+    const result = await store.setEnabled(plugin.id, true);
+    showSuccess(result.output || 'OMP 插件已启用');
+  } catch (error) {
+    showError(`启用失败：${errorMessage(error)}`);
+  } finally {
+    mutating.value = false;
+  }
+}
+
+async function handleUpgrade(plugin: OmpPlugin) {
+  if (mutating.value) return;
+  mutating.value = true;
+  try {
+    const result = await store.upgrade(plugin.id);
+    showSuccess(result.output || 'OMP 插件已升级');
+  } catch (error) {
+    showError(`升级失败：${errorMessage(error)}`);
+  } finally {
+    mutating.value = false;
+  }
+}
+
+// ---- 安装 / 卸载对话框 ----
 const showInstallDialog = ref(false);
 const showUninstallDialog = ref(false);
 const installSpec = ref('');
 const uninstallTarget = ref<OmpPlugin | null>(null);
-
-function kindLabel(kind: OmpPlugin['kind']) {
-  return kind === 'marketplace' ? 'marketplace' : 'npm';
-}
-
-async function loadPackages() {
-  // 首次挂载与错误重试统一走 Loading 态，避免 loadError 清空瞬间闪回主区
-  initialLoading.value = true;
-  try {
-    await store.refresh(true);
-  } finally {
-    initialLoading.value = false;
-  }
-}
 
 function openInstallDialog() {
   installSpec.value = '';
@@ -176,33 +341,7 @@ async function handleInstall() {
     showInstallDialog.value = false;
     showSuccess(result.output || 'OMP 插件安装成功');
   } catch (error) {
-    showError(`安装失败：${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    mutating.value = false;
-  }
-}
-
-async function handleToggleEnabled(plugin: OmpPlugin) {
-  if (mutating.value) return;
-  mutating.value = true;
-  try {
-    const result = await store.setEnabled(plugin.id, !plugin.enabled);
-    showSuccess(result.output || (plugin.enabled ? 'OMP 插件已禁用' : 'OMP 插件已启用'));
-  } catch (error) {
-    showError(`${plugin.enabled ? '禁用' : '启用'}失败：${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    mutating.value = false;
-  }
-}
-
-async function handleUpgrade(plugin: OmpPlugin) {
-  if (mutating.value) return;
-  mutating.value = true;
-  try {
-    const result = await store.upgrade(plugin.id);
-    showSuccess(result.output || 'OMP 插件已升级');
-  } catch (error) {
-    showError(`升级失败：${error instanceof Error ? error.message : String(error)}`);
+    showError(`安装失败：${errorMessage(error)}`);
   } finally {
     mutating.value = false;
   }
@@ -221,150 +360,101 @@ async function handleUninstall() {
     const result = await store.uninstall(target.id);
     showUninstallDialog.value = false;
     uninstallTarget.value = null;
+    closeDetail();
     showSuccess(result.output || 'OMP 插件已卸载');
   } catch (error) {
-    showError(`卸载失败：${error instanceof Error ? error.message : String(error)}`);
+    showError(`卸载失败：${errorMessage(error)}`);
   } finally {
     mutating.value = false;
   }
 }
 
-onMounted(loadPackages);
+onMounted(() => {
+  void store.refresh(true);
+});
+
+// 契约 §8：面板交互断言走 expose 的 handler（node 环境不派发 DOM 事件）
+defineExpose({
+  view,
+  activeId,
+  searchQuery,
+  showInstallDialog,
+  showUninstallDialog,
+  installSpec,
+  handleRefresh,
+  openInstallDialog,
+  handleInstall,
+  handleRowToggle,
+  openDetail,
+  closeDetail,
+  handleEnable,
+  handleUpgrade,
+  openUninstallDialog,
+  handleUninstall,
+});
 </script>
 
 <style scoped>
+/* 根间距与 PluginInstalledPanel/PluginMarketPanel 对齐（14px，跨面板一致） */
 .omp-plugin-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
-.status-banner,
-.scope-note {
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.status-banner.warning {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 8%, var(--card));
-}
-
-.scope-note {
+.omp-rows {
   background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-card);
+  padding: 6px;
 }
 
-.scope-note strong {
-  font-size: 14px;
-  color: var(--label);
+/* 描述完整多行显示（不截断、不加省略号）：ui/PluginRow 不可改，面板 scoped :deep 覆盖 */
+.omp-rows :deep(.plugin-row) {
+  align-items: flex-start;
 }
 
-.scope-note p,
-.install-form p {
-  margin: 5px 0 0;
-  font-size: 12px;
-  color: var(--secondary);
+.omp-rows :deep(.plugin-row-desc) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
-.header-actions,
-.plugin-actions,
-.plugin-badges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.panel-header,
-.header-title {
-  display: flex;
-  align-items: center;
-}
-
-.panel-header {
-  justify-content: space-between;
-}
-
-.header-title {
-  justify-content: flex-start;
-  gap: 8px;
-}
-
-.header-title h2 {
-  margin: 0;
-}
-
-.count-badge {
-  min-width: 22px;
-  text-align: center;
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 11px;
-  background: var(--control);
-  color: var(--secondary);
-}
-
-.plugin-list {
+/* 详情页：居中窄单列（约 720px，左右留白） */
+.detail-page {
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
-.plugin-item {
+.detail-column {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  background: var(--card);
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  padding: 14px 16px;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.plugin-main {
-  min-width: 0;
-  flex: 1;
+.detail-back {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--accent);
 }
 
-.plugin-name-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+.detail-back:hover {
+  text-decoration: underline;
 }
 
-.plugin-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--label);
-}
-
-.plugin-badges {
-  flex-wrap: wrap;
-}
-
-.plugin-description,
-.plugin-path {
-  margin: 7px 0 0;
-  font-size: 12px;
+.omp-detail-desc {
+  margin: 0;
+  font-size: 13px;
   color: var(--secondary);
-  line-height: 1.5;
-}
-
-.plugin-path {
-  font-size: 11px;
-  color: var(--tertiary);
-  font-family: var(--mono);
-  overflow-wrap: anywhere;
-}
-
-.plugin-actions {
-  flex-shrink: 0;
-  padding-top: 2px;
+  line-height: 1.6;
 }
 
 .install-form {
@@ -378,6 +468,12 @@ onMounted(loadPackages);
   font-weight: 600;
 }
 
+.install-form p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: var(--secondary);
+}
+
 .module-input {
   border: 1px solid var(--separator);
   border-radius: 8px;
@@ -389,15 +485,5 @@ onMounted(loadPackages);
 .module-input:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-@media (max-width: 900px) {
-  .plugin-item {
-    flex-direction: column;
-  }
-
-  .plugin-actions {
-    width: 100%;
-  }
 }
 </style>

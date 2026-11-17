@@ -44,26 +44,6 @@ type DashboardDefaults struct {
 	PiShell           string `json:"piShell"`
 	OmpMode           string `json:"ompMode"`
 	OmpShell          string `json:"ompShell"`
-	UseHeadroom       bool   `json:"useHeadroom"`
-	// CodexGlobalHeadroom enables a second, independent headroom instance that
-	// compresses Codex desktop traffic globally. Unlike UseHeadroom (which is a
-	// per-claude-session toggle on port 8787 with an Anthropic target), this
-	// toggle drives a persistent 8788 instance with an OpenAI target and rewrites
-	// ~/.codex/config.toml's top-level openai_base_url. defaultSettings leaves
-	// these zero so a fresh install starts with the feature off.
-	CodexGlobalHeadroom       bool   `json:"codexGlobalHeadroom"`
-	CodexGlobalHeadroomTarget string `json:"codexGlobalHeadroomTarget"`
-	CodexGlobalHeadroomPort   int    `json:"codexGlobalHeadroomPort"`
-}
-
-// CodexGlobalHeadroomState is the frontend-facing snapshot of the Codex global
-// headroom toggle. It bundles the three persisted DashboardDefaults fields so
-// callers (the App bound method) can read/return them atomically without
-// touching the full DashboardDefaults struct.
-type CodexGlobalHeadroomState struct {
-	Enabled bool   `json:"enabled"`
-	Target  string `json:"target"`
-	Port    int    `json:"port"`
 }
 
 // RemoteLaunchDefaultV1 persists only non-sensitive desktop launch references.
@@ -74,7 +54,6 @@ type RemoteLaunchDefaultV1 struct {
 	PresetRef   string `json:"presetRef,omitempty"`
 	ModelRef    string `json:"modelRef,omitempty"`
 	ShellRef    string `json:"shellRef,omitempty"`
-	UseHeadroom bool   `json:"useHeadroom,omitempty"`
 }
 
 // TerminalSettings 终端设置
@@ -171,14 +150,24 @@ type AppSettings struct {
 	GitHubToken            string                           `json:"githubToken"`
 	// CommitSummaryPreset 指定 AI 提交总结使用的终端预设，格式 "provider/preset名"；
 	// 空 = 未设置（gitassist.SummarizeDiff 据此报错引导用户去设置页选择）。
-	CommitSummaryPreset string              `json:"commitSummaryPreset,omitempty"`
-	Skin                SkinSettings        `json:"skin"`
+	CommitSummaryPreset string       `json:"commitSummaryPreset,omitempty"`
+	Skin                SkinSettings `json:"skin"`
 	// WebPlaneSkin 会话 Web 平面（pi webui 内嵌 iframe）配色方向："dark"（缺省，
 	// 深底浅字，与终端深墨底一致）或 "light"（浅底深字）。空/未知值按 dark
 	// 处理（fail-safe；零值即默认，老 settings.json 无需迁移）。移动端（远程
 	// 控制）宿主固定浅色，不经此设置。
-	WebPlaneSkin        string              `json:"webPlaneSkin,omitempty"`
-	SystemProxy         SystemProxySettings `json:"systemProxy"`
+	WebPlaneSkin string              `json:"webPlaneSkin,omitempty"`
+	SystemProxy  SystemProxySettings `json:"systemProxy"`
+	// AgentCLIEnabled 控制 agent-CLI 本地命令服务（DESIGN.md §3.7，默认 true，
+	// 同 feishu-sync cli.enabled）。指针三态：nil（老 settings.json 无该键）
+	// = 默认 true；显式 false = 用户关闭。bool 零值无法区分“未写入”与
+	// “显式关闭”，故不用裸 bool。与 RemoteEnabled 无关联（独立开关）。
+	AgentCLIEnabled *bool `json:"agentCLIEnabled,omitempty"`
+	// ClaudeWebUIEnabled 控制 Claude Code 会话的 Web 平面（claude-webui 设计
+	// §8，默认 true）。照 AgentCLIEnabled 的指针三态：nil（老 settings.json
+	// 无该键）= 默认 true；显式 false = 用户关闭。该开关只在会话启动时读取，
+	// 运行中翻转不影响已起平面（WSL/外部终端会话始终无平面，与开关无关）。
+	ClaudeWebUIEnabled *bool `json:"claudeWebUIEnabled,omitempty"`
 }
 
 func defaultSettings() *AppSettings {
@@ -283,6 +272,9 @@ func (s *Service) Load() error {
 	if cfg.RemotePort <= 0 {
 		cfg.RemotePort = 8680
 	}
+	// AgentCLIEnabled 无需归一：nil（老文件无键）本身就是“默认 true”的
+	// 持久化形态（指针三态），显式 true/false 原样保留。
+	// ClaudeWebUIEnabled 同理（claude-webui 设计 §8，nil = 默认 true）。
 	normalizeDashboardDefaults(&cfg.Dashboard)
 	s.settings = &cfg
 	return nil
@@ -407,69 +399,11 @@ func (s *Service) GetDashboardDefaults() DashboardDefaults {
 	return s.settings.Dashboard
 }
 
-// SetDashboardDefaults replaces the persisted dashboard defaults. The three
-// CodexGlobal* fields (CodexGlobalHeadroom / CodexGlobalHeadroomTarget /
-// CodexGlobalHeadroomPort) are owned exclusively by SetCodexGlobalHeadroom and
-// MUST NOT be touched here: the frontend persistDefaults path (useDashboardState
-// + useSessionLaunch) only reads the cached value once at init and would
-// otherwise replay a stale (typically false) value back through this method on
-// every session launch or dashboard save, silently disabling the codex-global
-// headroom and leaving config.toml pointing at a dead 8788 proxy. We therefore
-// ignore whatever the caller supplied for those three fields and re-pin them to
-// the currently persisted values before swapping DashboardDefaults in.
+// SetDashboardDefaults replaces the persisted dashboard defaults.
 func (s *Service) SetDashboardDefaults(d DashboardDefaults) error {
 	s.mu.Lock()
 	normalizeDashboardDefaults(&d)
-	// Preserve the codex-global headroom fields owned by SetCodexGlobalHeadroom.
-	// 不信任入参中的这三个字段：它们由 SetCodexGlobalHeadroom 独占管理。
-	d.CodexGlobalHeadroom = s.settings.Dashboard.CodexGlobalHeadroom
-	d.CodexGlobalHeadroomTarget = s.settings.Dashboard.CodexGlobalHeadroomTarget
-	d.CodexGlobalHeadroomPort = s.settings.Dashboard.CodexGlobalHeadroomPort
 	s.settings.Dashboard = d
-	s.mu.Unlock()
-	return s.Save()
-}
-
-// --- Codex Global Headroom ---
-//
-// These accessors read/write the three CodexGlobal* fields that live on
-// DashboardDefaults. They mirror the Get/SetDashboardDefaults lock+Save
-// pattern so the App bound method can toggle the feature without round-tripping
-// the full DashboardDefaults struct (which would risk clobbering unrelated
-// dashboard state).
-
-// GetCodexGlobalHeadroom returns the persisted Codex global headroom toggle.
-// A zero-value state (Enabled=false) means the feature is off.
-//
-// Footgun warning / 调用约束：本方法只读持久化，不反映运行态，也不读 config.toml。
-// 前端应通过 App.GetCodexGlobalHeadroom（含 running 状态）获取快照，不要直接绑定本方法。
-func (s *Service) GetCodexGlobalHeadroom() CodexGlobalHeadroomState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return CodexGlobalHeadroomState{
-		Enabled: s.settings.Dashboard.CodexGlobalHeadroom,
-		Target:  s.settings.Dashboard.CodexGlobalHeadroomTarget,
-		Port:    s.settings.Dashboard.CodexGlobalHeadroomPort,
-	}
-}
-
-// SetCodexGlobalHeadroom persists the Codex global headroom toggle. When
-// disabling, target/port are cleared so no stale configuration survives.
-//
-// Footgun warning / 调用约束：本方法只写持久化，不启动/停止代理，也不写 ~/.codex/config.toml。
-// 直接调用会导致持久化与运行态/config 不一致。前端必须通过 App.SetCodexGlobalHeadroom，
-// 由 App 层完成 StartForOpenAI/Stop + syncCodexGlobalHeadroomConfig + 持久化的原子编排。
-// 本方法导出仅因 App 跨包调用需要；wails 会把它暴露给前端生成绑定，但前端不应直接调用。
-func (s *Service) SetCodexGlobalHeadroom(enabled bool, target string, port int) error {
-	s.mu.Lock()
-	s.settings.Dashboard.CodexGlobalHeadroom = enabled
-	if enabled {
-		s.settings.Dashboard.CodexGlobalHeadroomTarget = target
-		s.settings.Dashboard.CodexGlobalHeadroomPort = port
-	} else {
-		s.settings.Dashboard.CodexGlobalHeadroomTarget = ""
-		s.settings.Dashboard.CodexGlobalHeadroomPort = 0
-	}
 	s.mu.Unlock()
 	return s.Save()
 }
@@ -805,6 +739,69 @@ func (s *Service) GetRemotePort() int {
 		return 8680
 	}
 	return port
+}
+
+// GetAgentCLIEnabled 返回 agent-CLI 开关（nil = 默认 true，DESIGN.md §3.7）。
+func (s *Service) GetAgentCLIEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.settings.AgentCLIEnabled == nil {
+		return true
+	}
+	return *s.settings.AgentCLIEnabled
+}
+
+// SetAgentCLIEnabled 事务式持久化 agent-CLI 开关（DESIGN.md §3.7）：
+// saveMu → mutate under mu → saveLocked，保存失败回滚内存（同 SetRemoteEnabled
+// 的事务式模式，R2-Minor-02/R3-Minor-02）。运行态联动（启停 Server、撤销端点
+// 文件）由 App 门面（app_agentcli.go）负责，本层只管持久化真值。
+func (s *Service) SetAgentCLIEnabled(enabled bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	old := s.settings.AgentCLIEnabled
+	s.settings.AgentCLIEnabled = &enabled
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk.
+		s.mu.Lock()
+		s.settings.AgentCLIEnabled = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// GetClaudeWebUIEnabled 返回 Claude Code Web 平面开关（nil = 默认 true，
+// claude-webui 设计 §8）。开关只在会话启动时读取（App 门面职责）。
+func (s *Service) GetClaudeWebUIEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.settings.ClaudeWebUIEnabled == nil {
+		return true
+	}
+	return *s.settings.ClaudeWebUIEnabled
+}
+
+// SetClaudeWebUIEnabled 事务式持久化 Claude Code Web 平面开关（claude-webui
+// 设计 §8）：saveMu → mutate under mu → saveLocked，保存失败回滚内存（同
+// SetAgentCLIEnabled 的事务式模式）。运行中翻转不影响已起平面——平面材料
+// 在会话启动时按当时的开关值一次性分配。
+func (s *Service) SetClaudeWebUIEnabled(enabled bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	old := s.settings.ClaudeWebUIEnabled
+	s.settings.ClaudeWebUIEnabled = &enabled
+	s.mu.Unlock()
+	if err := s.saveLocked(); err != nil {
+		// Revert in-memory so a Save failure leaves memory == disk.
+		s.mu.Lock()
+		s.settings.ClaudeWebUIEnabled = old
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Service) SetRemotePort(port int) error {

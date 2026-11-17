@@ -80,8 +80,8 @@ func forceRuntimeGOOSForTest(t *testing.T, goos string) {
 
 func TestSupportedTools(t *testing.T) {
 	tools := SupportedTools()
-	if len(tools) != 6 {
-		t.Fatalf("SupportedTools() returned %d tools, want 6", len(tools))
+	if len(tools) != 5 {
+		t.Fatalf("SupportedTools() returned %d tools, want 5", len(tools))
 	}
 	seen := map[CLITool]bool{}
 	for _, tool := range tools {
@@ -90,7 +90,7 @@ func TestSupportedTools(t *testing.T) {
 		}
 		seen[tool] = true
 	}
-	for _, expected := range []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp, ToolHeadroom} {
+	for _, expected := range []CLITool{ToolClaudeCode, ToolOpenCode, ToolCodex, ToolPi, ToolOmp} {
 		if !seen[expected] {
 			t.Errorf("SupportedTools() missing %q", expected)
 		}
@@ -107,7 +107,6 @@ func TestIsValidCLITool(t *testing.T) {
 		{ToolCodex, true},
 		{ToolPi, true},
 		{ToolOmp, true},
-		{ToolHeadroom, true},
 		{CLITool("nonexistent"), false},
 		{CLITool(""), false},
 	}
@@ -421,29 +420,6 @@ func TestCheckOne_ClaudeVersion_CommandFails(t *testing.T) {
 	}
 }
 
-func TestCheckOne_OpenCodeVersion(t *testing.T) {
-	svc := newTestService(
-		responseFor("opencode", "opencode v1.2.3", nil),
-	)
-	version, err := svc.openCodeVersion("opencode")
-	if err != nil {
-		t.Fatalf("openCodeVersion error: %v", err)
-	}
-	if version != "1.2.3" {
-		t.Errorf("openCodeVersion = %q, want %q", version, "1.2.3")
-	}
-}
-
-func TestCheckOne_OpenCodeVersion_EmptyOutput(t *testing.T) {
-	svc := newTestService(
-		responseFor("opencode", "", nil),
-	)
-	_, err := svc.openCodeVersion("opencode")
-	if err == nil {
-		t.Fatal("expected error for empty version output")
-	}
-}
-
 func TestCheckOne_CodexVersion(t *testing.T) {
 	svc := newTestService(
 		responseFor("codex", "codex-cli 0.87.0", nil),
@@ -541,36 +517,6 @@ func TestCompareVersionStrings(t *testing.T) {
 			got := compareVersionStrings(tc.current, tc.latest)
 			if got != tc.want {
 				t.Errorf("compareVersionStrings(%q, %q) = %d, want %d", tc.current, tc.latest, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestVersionParts(t *testing.T) {
-	tests := []struct {
-		version string
-		want    []int
-	}{
-		{"1.2.3", []int{1, 2, 3}},
-		{"0.87.0", []int{0, 87, 0}},
-		{"", nil},
-		{"v1.0.0", []int{1, 0, 0}},
-		{"1.0.0-alpha", []int{1, 0, 0}},
-		{"1.0.0+build.1", []int{1, 0, 0}},
-		{"1", []int{1}},
-		{"x.y.z", nil},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.version, func(t *testing.T) {
-			got := versionParts(tc.version)
-			if len(got) != len(tc.want) {
-				t.Fatalf("versionParts(%q) = %v, want %v", tc.version, got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("versionParts(%q)[%d] = %d, want %d", tc.version, i, got[i], tc.want[i])
-				}
 			}
 		})
 	}
@@ -860,7 +806,6 @@ func TestDisplayToolName(t *testing.T) {
 		{ToolClaudeCode, "Claude Code"},
 		{ToolOpenCode, "OpenCode"},
 		{ToolCodex, "Codex"},
-		{ToolHeadroom, "Headroom"},
 		{CLITool("other"), "other"},
 	}
 	for _, tc := range tests {

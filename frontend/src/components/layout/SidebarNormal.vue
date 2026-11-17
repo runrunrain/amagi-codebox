@@ -9,13 +9,13 @@
     <!-- 主机切换层（RC1-6 桌面端互联）：全局 host scope，常驻侧栏顶部 -->
     <HostScopeSwitcher />
 
-    <!-- New Session Button -->
+    <!-- New Session Button (launching 时显示 WSL 启动阶段文案；无事件/非 WSL 维持现状) -->
     <button class="new-btn" @click="handleNewSession" title="新建会话">
       <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round">
         <line x1="12" y1="5" x2="12" y2="19"/>
         <line x1="5" y1="12" x2="19" y2="12"/>
       </svg>
-      新建会话
+      {{ launching && launchStageText ? launchStageText : '新建会话' }}
     </button>
 
     <!-- Navigation -->
@@ -126,7 +126,8 @@ const { state: dashState, persistDefaults } = useDashboardState()
 const platformCaps = usePlatformCapabilities()
 const { showSuccess, showError, showInfo } = useToast()
 // 共用会话启动逻辑（与 SessionSettingsView 共享，消除重复）
-const { canLaunchFromSettings, launchFromSettings: launchSession } = useSessionLaunch()
+// launchStageText：WSL 启动期间的后端阶段文案（null = 无事件/非 WSL，维持现状）
+const { canLaunchFromSettings, launchFromSettings: launchSession, launchStageText } = useSessionLaunch()
 
 const launching = ref(false)
 
@@ -170,6 +171,7 @@ const navItems = [
 ]
 
 const runningSessions = computed(() => sessionStore.runningSessions)
+type RunningSessionItem = (typeof runningSessions.value)[number]
 const activeSessionId = computed(() => sessionStore.activeSessionId)
 const sessionCount = computed(() => runningSessions.value.length)
 
@@ -184,7 +186,7 @@ const groupedSessionsByAppType = computed(() => {
   const sessions = runningSessions.value
   const groups = new Map<string, { key: string; label: string; color: string; sessions: typeof sessions }>()
 
-  sessions.forEach((session: any) => {
+  sessions.forEach((session) => {
     const appType: string = (session?.appType as string) || ''
     if (!appType) return
     if (!groups.has(appType)) {
@@ -261,12 +263,12 @@ function handleNewSession() {
   }
 }
 
-function handleSessionClick(session: any) {
+function handleSessionClick(session: RunningSessionItem) {
   sessionStore.setActiveSession(session.id)
   router.push('/terminal')
 }
 
-async function handleSessionClose(session: any) {
+async function handleSessionClose(session: RunningSessionItem) {
   const sessionId = session.id
   if (session.status === 'stopping') {
     showInfo('会话正在停止，等待进程退出后才会移出列表')

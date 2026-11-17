@@ -10,6 +10,10 @@ export function AddSavedWorkDir(arg1, arg2) {
   return window['go']['main']['App']['AddSavedWorkDir'](arg1, arg2);
 }
 
+export function AddSharedMarketplace(arg1) {
+  return window['go']['main']['App']['AddSharedMarketplace'](arg1);
+}
+
 export function AddUrlToHistory(arg1, arg2) {
   return window['go']['main']['App']['AddUrlToHistory'](arg1, arg2);
 }
@@ -22,20 +26,24 @@ export function ApplyWSLCliResourcesSupply(arg1, arg2) {
   return window['go']['main']['App']['ApplyWSLCliResourcesSupply'](arg1, arg2);
 }
 
-export function ApplyWSLPiConfigSupply() {
-  return window['go']['main']['App']['ApplyWSLPiConfigSupply']();
-}
-
-export function ApplyWSLSkillsSupply(arg1) {
-  return window['go']['main']['App']['ApplyWSLSkillsSupply'](arg1);
+export function BeginClaudeAccountEnrollment(arg1) {
+  return window['go']['main']['App']['BeginClaudeAccountEnrollment'](arg1);
 }
 
 export function BrowseDirectory() {
   return window['go']['main']['App']['BrowseDirectory']();
 }
 
+export function CancelClaudeAccountEnrollment(arg1) {
+  return window['go']['main']['App']['CancelClaudeAccountEnrollment'](arg1);
+}
+
 export function CancelRemotePairingWindow(arg1) {
   return window['go']['main']['App']['CancelRemotePairingWindow'](arg1);
+}
+
+export function CaptureClaudeAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CaptureClaudeAccount'](arg1, arg2, arg3);
 }
 
 export function CheckClaudeConfig() {
@@ -58,14 +66,6 @@ export function CheckWSLCliResourcesSupply(arg1) {
   return window['go']['main']['App']['CheckWSLCliResourcesSupply'](arg1);
 }
 
-export function CheckWSLPiConfigSupply() {
-  return window['go']['main']['App']['CheckWSLPiConfigSupply']();
-}
-
-export function CheckWSLSkillsSupply() {
-  return window['go']['main']['App']['CheckWSLSkillsSupply']();
-}
-
 export function CleanClaudeInstall(arg1) {
   return window['go']['main']['App']['CleanClaudeInstall'](arg1);
 }
@@ -78,16 +78,16 @@ export function ClearStoppedSessions() {
   return window['go']['main']['App']['ClearStoppedSessions']();
 }
 
-export function ClearStoppedSessionsDetailed() {
-  return window['go']['main']['App']['ClearStoppedSessionsDetailed']();
-}
-
 export function ConfirmExternalCleanupRecovery(arg1, arg2) {
   return window['go']['main']['App']['ConfirmExternalCleanupRecovery'](arg1, arg2);
 }
 
 export function CreateRemotePairingWindow(arg1) {
   return window['go']['main']['App']['CreateRemotePairingWindow'](arg1);
+}
+
+export function CreateSharedMcpEntry(arg1) {
+  return window['go']['main']['App']['CreateSharedMcpEntry'](arg1);
 }
 
 export function DeleteAIProxySubscription(arg1) {
@@ -106,6 +106,10 @@ export function DeleteSharedMCPServer(arg1) {
   return window['go']['main']['App']['DeleteSharedMCPServer'](arg1);
 }
 
+export function DeleteSharedMcpEntry(arg1, arg2) {
+  return window['go']['main']['App']['DeleteSharedMcpEntry'](arg1, arg2);
+}
+
 export function DeleteSharedSkill(arg1) {
   return window['go']['main']['App']['DeleteSharedSkill'](arg1);
 }
@@ -114,12 +118,24 @@ export function DeleteTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['DeleteTerminalPreset'](arg1, arg2);
 }
 
+export function DeploySharedMarketplacePlugin(arg1, arg2) {
+  return window['go']['main']['App']['DeploySharedMarketplacePlugin'](arg1, arg2);
+}
+
+export function DisableWSLUnifiedSupply() {
+  return window['go']['main']['App']['DisableWSLUnifiedSupply']();
+}
+
 export function DownloadAndApplyUpdate() {
   return window['go']['main']['App']['DownloadAndApplyUpdate']();
 }
 
-export function EnableWSLPiConfigSupply() {
-  return window['go']['main']['App']['EnableWSLPiConfigSupply']();
+export function EnableWSLUnifiedSupply() {
+  return window['go']['main']['App']['EnableWSLUnifiedSupply']();
+}
+
+export function EnsureWSLSharedSkillsRoot() {
+  return window['go']['main']['App']['EnsureWSLSharedSkillsRoot']();
 }
 
 export function ExportConfigToFile() {
@@ -146,6 +162,18 @@ export function GetAIProxyState() {
   return window['go']['main']['App']['GetAIProxyState']();
 }
 
+export function GetAIProxyTraffic(arg1) {
+  return window['go']['main']['App']['GetAIProxyTraffic'](arg1);
+}
+
+export function GetAgentCLIInstallStatus() {
+  return window['go']['main']['App']['GetAgentCLIInstallStatus']();
+}
+
+export function GetAgentCLIStatus() {
+  return window['go']['main']['App']['GetAgentCLIStatus']();
+}
+
 export function GetAllSharedSkillsAggregated(arg1) {
   return window['go']['main']['App']['GetAllSharedSkillsAggregated'](arg1);
 }
@@ -162,12 +190,12 @@ export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
 
-export function GetCodexGlobalHeadroom() {
-  return window['go']['main']['App']['GetCodexGlobalHeadroom']();
+export function GetClaudeAccountOperation(arg1) {
+  return window['go']['main']['App']['GetClaudeAccountOperation'](arg1);
 }
 
-export function GetConfigService() {
-  return window['go']['main']['App']['GetConfigService']();
+export function GetClaudeAccounts() {
+  return window['go']['main']['App']['GetClaudeAccounts']();
 }
 
 export function GetDockerWSLHealth() {
@@ -178,16 +206,8 @@ export function GetDrvFSAdvisories() {
   return window['go']['main']['App']['GetDrvFSAdvisories']();
 }
 
-export function GetEnvCheckOperationState() {
-  return window['go']['main']['App']['GetEnvCheckOperationState']();
-}
-
 export function GetEnvCheckSnapshot() {
   return window['go']['main']['App']['GetEnvCheckSnapshot']();
-}
-
-export function GetEnvCheckStatus() {
-  return window['go']['main']['App']['GetEnvCheckStatus']();
 }
 
 export function GetEnvVars() {
@@ -208,22 +228,6 @@ export function GetExternalCleanupRecoveryStatus() {
 
 export function GetGitHubToken() {
   return window['go']['main']['App']['GetGitHubToken']();
-}
-
-export function GetHeadroomPerfByClient() {
-  return window['go']['main']['App']['GetHeadroomPerfByClient']();
-}
-
-export function GetHeadroomSavings() {
-  return window['go']['main']['App']['GetHeadroomSavings']();
-}
-
-export function GetKeyDiagnostics() {
-  return window['go']['main']['App']['GetKeyDiagnostics']();
-}
-
-export function GetLaunchCompensationDebts() {
-  return window['go']['main']['App']['GetLaunchCompensationDebts']();
 }
 
 export function GetLogFileContent(arg1) {
@@ -278,10 +282,6 @@ export function GetOutputHistorySnapshot(arg1) {
   return window['go']['main']['App']['GetOutputHistorySnapshot'](arg1);
 }
 
-export function GetPathsService() {
-  return window['go']['main']['App']['GetPathsService']();
-}
-
 export function GetPiAuthConfig() {
   return window['go']['main']['App']['GetPiAuthConfig']();
 }
@@ -308,6 +308,10 @@ export function GetPiPluginWSLStatus() {
 
 export function GetPlatformCapabilities() {
   return window['go']['main']['App']['GetPlatformCapabilities']();
+}
+
+export function GetProviderAPIKey(arg1) {
+  return window['go']['main']['App']['GetProviderAPIKey'](arg1);
 }
 
 export function GetProviderExportJSON(arg1) {
@@ -358,16 +362,8 @@ export function GetSessionControlHolds() {
   return window['go']['main']['App']['GetSessionControlHolds']();
 }
 
-export function GetSessionWebUI(arg1) {
-  return window['go']['main']['App']['GetSessionWebUI'](arg1);
-}
-
 export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
-}
-
-export function GetSettingsService() {
-  return window['go']['main']['App']['GetSettingsService']();
 }
 
 export function GetSharedMCPServers() {
@@ -414,32 +410,12 @@ export function GetWSLPluginTargetSupport() {
   return window['go']['main']['App']['GetWSLPluginTargetSupport']();
 }
 
-export function GetWSLSkillsSupplyStatus() {
-  return window['go']['main']['App']['GetWSLSkillsSupplyStatus']();
-}
-
 export function GrantWSLVisionConsent() {
   return window['go']['main']['App']['GrantWSLVisionConsent']();
 }
 
-export function HeadroomGetPort() {
-  return window['go']['main']['App']['HeadroomGetPort']();
-}
-
-export function HeadroomGetStatus() {
-  return window['go']['main']['App']['HeadroomGetStatus']();
-}
-
-export function HeadroomIsRunning() {
-  return window['go']['main']['App']['HeadroomIsRunning']();
-}
-
-export function HeadroomStart(arg1) {
-  return window['go']['main']['App']['HeadroomStart'](arg1);
-}
-
-export function HeadroomStop() {
-  return window['go']['main']['App']['HeadroomStop']();
+export function HasProviderAPIKey(arg1) {
+  return window['go']['main']['App']['HasProviderAPIKey'](arg1);
 }
 
 export function ImportAIProxySubscription(arg1, arg2, arg3) {
@@ -462,6 +438,10 @@ export function ImportSharedMCPServers(arg1) {
   return window['go']['main']['App']['ImportSharedMCPServers'](arg1);
 }
 
+export function ImportSharedMarketplacesFromClaude(arg1) {
+  return window['go']['main']['App']['ImportSharedMarketplacesFromClaude'](arg1);
+}
+
 export function ImportSharedSkillFromDir(arg1) {
   return window['go']['main']['App']['ImportSharedSkillFromDir'](arg1);
 }
@@ -472,6 +452,14 @@ export function ImportSharedSkillFromZip(arg1) {
 
 export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportWSLCliConfigKeys'](arg1, arg2, arg3);
+}
+
+export function InstallAgentCLIShim() {
+  return window['go']['main']['App']['InstallAgentCLIShim']();
+}
+
+export function InstallAgentCLISkill(arg1) {
+  return window['go']['main']['App']['InstallAgentCLISkill'](arg1);
 }
 
 export function InstallCLIToWSL(arg1) {
@@ -502,14 +490,6 @@ export function KeepWSLCliResourceLocal(arg1, arg2) {
   return window['go']['main']['App']['KeepWSLCliResourceLocal'](arg1, arg2);
 }
 
-export function KeepWSLPiConfigUnitLocal(arg1) {
-  return window['go']['main']['App']['KeepWSLPiConfigUnitLocal'](arg1);
-}
-
-export function KeepWSLSkillLocal(arg1) {
-  return window['go']['main']['App']['KeepWSLSkillLocal'](arg1);
-}
-
 export function LaunchCodexSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchCodexSession'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -526,8 +506,16 @@ export function LaunchPiSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['LaunchPiSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function LaunchSession(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5, arg6);
+export function LaunchSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['LaunchSession'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ListClaudeMarketplacesForImport() {
+  return window['go']['main']['App']['ListClaudeMarketplacesForImport']();
+}
+
+export function ListCodexAdvisorChats(arg1) {
+  return window['go']['main']['App']['ListCodexAdvisorChats'](arg1);
 }
 
 export function ListLocalLanAddresses() {
@@ -540,6 +528,18 @@ export function ListRemoteDevices() {
 
 export function ListRemoteSecurityEvents(arg1) {
   return window['go']['main']['App']['ListRemoteSecurityEvents'](arg1);
+}
+
+export function ListSharedMarkets() {
+  return window['go']['main']['App']['ListSharedMarkets']();
+}
+
+export function ListSharedMcp() {
+  return window['go']['main']['App']['ListSharedMcp']();
+}
+
+export function ListSharedSkills() {
+  return window['go']['main']['App']['ListSharedSkills']();
 }
 
 export function MigrateProviderPresetsToTerminal() {
@@ -556,6 +556,18 @@ export function OpenFileInEditor(arg1, arg2) {
 
 export function OpenRemoteWebUI() {
   return window['go']['main']['App']['OpenRemoteWebUI']();
+}
+
+export function OpenSharedMarketplaceFolder(arg1) {
+  return window['go']['main']['App']['OpenSharedMarketplaceFolder'](arg1);
+}
+
+export function OpenSharedSkillFolder(arg1) {
+  return window['go']['main']['App']['OpenSharedSkillFolder'](arg1);
+}
+
+export function OpenSharedSkillsRoot() {
+  return window['go']['main']['App']['OpenSharedSkillsRoot']();
 }
 
 export function PickMCPJSONFile() {
@@ -582,14 +594,6 @@ export function PreviewWSLCliResourcesSupply(arg1) {
   return window['go']['main']['App']['PreviewWSLCliResourcesSupply'](arg1);
 }
 
-export function PreviewWSLPiConfigSupply() {
-  return window['go']['main']['App']['PreviewWSLPiConfigSupply']();
-}
-
-export function PreviewWSLSkillsSupply() {
-  return window['go']['main']['App']['PreviewWSLSkillsSupply']();
-}
-
 export function ProbeAllProviderQuotas() {
   return window['go']['main']['App']['ProbeAllProviderQuotas']();
 }
@@ -600,10 +604,6 @@ export function ProbeModelModalityNow(arg1, arg2) {
 
 export function ProbeProviderQuota(arg1) {
   return window['go']['main']['App']['ProbeProviderQuota'](arg1);
-}
-
-export function ProbeSessionWebUI(arg1) {
-  return window['go']['main']['App']['ProbeSessionWebUI'](arg1);
 }
 
 export function PtyResize(arg1, arg2, arg3) {
@@ -618,16 +618,28 @@ export function PtyWriteLarge(arg1, arg2) {
   return window['go']['main']['App']['PtyWriteLarge'](arg1, arg2);
 }
 
-export function QuickLaunch(arg1, arg2, arg3) {
-  return window['go']['main']['App']['QuickLaunch'](arg1, arg2, arg3);
-}
-
 export function ReadTextFile(arg1) {
   return window['go']['main']['App']['ReadTextFile'](arg1);
 }
 
+export function ReconcileClaudeAccounts(arg1, arg2) {
+  return window['go']['main']['App']['ReconcileClaudeAccounts'](arg1, arg2);
+}
+
 export function RefreshAIProxySubscription(arg1) {
   return window['go']['main']['App']['RefreshAIProxySubscription'](arg1);
+}
+
+export function RefreshSharedMarkets() {
+  return window['go']['main']['App']['RefreshSharedMarkets']();
+}
+
+export function RefreshSharedMcp() {
+  return window['go']['main']['App']['RefreshSharedMcp']();
+}
+
+export function RefreshSharedSkills() {
+  return window['go']['main']['App']['RefreshSharedSkills']();
 }
 
 export function RegenerateRemoteToken() {
@@ -678,8 +690,8 @@ export function RemoteClientGetRemoteSettings(arg1) {
   return window['go']['main']['App']['RemoteClientGetRemoteSettings'](arg1);
 }
 
-export function RemoteClientLaunchRemoteSession(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['RemoteClientLaunchRemoteSession'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function RemoteClientLaunchRemoteSession(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['RemoteClientLaunchRemoteSession'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function RemoteClientListHosts() {
@@ -750,6 +762,18 @@ export function RemoteClientUpdateHost(arg1, arg2) {
   return window['go']['main']['App']['RemoteClientUpdateHost'](arg1, arg2);
 }
 
+export function RemoveAgentCLIShim() {
+  return window['go']['main']['App']['RemoveAgentCLIShim']();
+}
+
+export function RemoveAgentCLISkill(arg1) {
+  return window['go']['main']['App']['RemoveAgentCLISkill'](arg1);
+}
+
+export function RemoveClaudeAccount(arg1, arg2) {
+  return window['go']['main']['App']['RemoveClaudeAccount'](arg1, arg2);
+}
+
 export function RemovePiPackageTargeted(arg1, arg2) {
   return window['go']['main']['App']['RemovePiPackageTargeted'](arg1, arg2);
 }
@@ -762,20 +786,28 @@ export function RemoveSession(arg1) {
   return window['go']['main']['App']['RemoveSession'](arg1);
 }
 
+export function RemoveSharedMarketplace(arg1) {
+  return window['go']['main']['App']['RemoveSharedMarketplace'](arg1);
+}
+
 export function RemoveUrlFromHistory(arg1, arg2) {
   return window['go']['main']['App']['RemoveUrlFromHistory'](arg1, arg2);
+}
+
+export function RenameClaudeAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RenameClaudeAccount'](arg1, arg2, arg3);
 }
 
 export function ResolveTerminalPreset(arg1, arg2) {
   return window['go']['main']['App']['ResolveTerminalPreset'](arg1, arg2);
 }
 
-export function RetryLaunchCompensationDebt(arg1) {
-  return window['go']['main']['App']['RetryLaunchCompensationDebt'](arg1);
-}
-
 export function RevokeRemoteDevice(arg1, arg2) {
   return window['go']['main']['App']['RevokeRemoteDevice'](arg1, arg2);
+}
+
+export function RotateAgentCLIToken() {
+  return window['go']['main']['App']['RotateAgentCLIToken']();
 }
 
 export function RunEnvCheck() {
@@ -788,10 +820,6 @@ export function RunEnvFixAction(arg1, arg2, arg3) {
 
 export function SaveAIProxySettings(arg1) {
   return window['go']['main']['App']['SaveAIProxySettings'](arg1);
-}
-
-export function SaveAllConfig() {
-  return window['go']['main']['App']['SaveAllConfig']();
 }
 
 export function SaveAmagiConfig(arg1) {
@@ -838,8 +866,16 @@ export function SelfHealDockerWSLIntegration() {
   return window['go']['main']['App']['SelfHealDockerWSLIntegration']();
 }
 
-export function SetCodexGlobalHeadroom(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SetCodexGlobalHeadroom'](arg1, arg2, arg3);
+export function SessionListDirectories(arg1, arg2) {
+  return window['go']['main']['App']['SessionListDirectories'](arg1, arg2);
+}
+
+export function SetAgentCLIEnabled(arg1) {
+  return window['go']['main']['App']['SetAgentCLIEnabled'](arg1);
+}
+
+export function SetClaudeAccountRotation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetClaudeAccountRotation'](arg1, arg2, arg3);
 }
 
 export function SetEnvVar(arg1, arg2) {
@@ -882,12 +918,12 @@ export function SetSharedMCPServerTargets(arg1, arg2) {
   return window['go']['main']['App']['SetSharedMCPServerTargets'](arg1, arg2);
 }
 
-export function SetSharedSkillEnabled(arg1, arg2) {
-  return window['go']['main']['App']['SetSharedSkillEnabled'](arg1, arg2);
+export function SetSharedMcpEngineSelection(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetSharedMcpEngineSelection'](arg1, arg2, arg3, arg4);
 }
 
-export function SetSharedSkillTargets(arg1, arg2) {
-  return window['go']['main']['App']['SetSharedSkillTargets'](arg1, arg2);
+export function SetSharedSkillEnabled(arg1, arg2) {
+  return window['go']['main']['App']['SetSharedSkillEnabled'](arg1, arg2);
 }
 
 export function SetSystemProxyEnabled(arg1) {
@@ -922,6 +958,10 @@ export function StopSession(arg1) {
   return window['go']['main']['App']['StopSession'](arg1);
 }
 
+export function SwitchClaudeAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SwitchClaudeAccount'](arg1, arg2, arg3);
+}
+
 export function SyncAIProxyV2rayN() {
   return window['go']['main']['App']['SyncAIProxyV2rayN']();
 }
@@ -934,14 +974,6 @@ export function TakeOverWSLCliResource(arg1, arg2, arg3) {
   return window['go']['main']['App']['TakeOverWSLCliResource'](arg1, arg2, arg3);
 }
 
-export function TakeOverWSLPiConfigUnit(arg1, arg2) {
-  return window['go']['main']['App']['TakeOverWSLPiConfigUnit'](arg1, arg2);
-}
-
-export function TakeOverWSLSkill(arg1, arg2) {
-  return window['go']['main']['App']['TakeOverWSLSkill'](arg1, arg2);
-}
-
 export function ToggleRemoteServer(arg1) {
   return window['go']['main']['App']['ToggleRemoteServer'](arg1);
 }
@@ -950,12 +982,24 @@ export function UninstallClaudeCode(arg1) {
   return window['go']['main']['App']['UninstallClaudeCode'](arg1);
 }
 
+export function UpdateCLIInWSL(arg1) {
+  return window['go']['main']['App']['UpdateCLIInWSL'](arg1);
+}
+
 export function UpdatePiPackageTargeted(arg1, arg2) {
   return window['go']['main']['App']['UpdatePiPackageTargeted'](arg1, arg2);
 }
 
 export function UpdateProvider(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateProvider'](arg1, arg2, arg3);
+}
+
+export function UpdateSharedMarketplace(arg1) {
+  return window['go']['main']['App']['UpdateSharedMarketplace'](arg1);
+}
+
+export function UpdateSharedMcpEntry(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSharedMcpEntry'](arg1, arg2);
 }
 
 export function UpdateTool(arg1) {

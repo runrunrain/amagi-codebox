@@ -178,8 +178,6 @@ func cliCommandNamesForTool(tool CLITool) []string {
 		return []string{"pi"}
 	case ToolOmp:
 		return []string{"omp"}
-	case ToolHeadroom:
-		return []string{"headroom"}
 	default:
 		return nil
 	}

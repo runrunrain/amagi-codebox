@@ -26,7 +26,7 @@ export const CONFIG_PAGES: { id: ConfigPageId; cli: string; label: string; defau
   { id: 'opencode:global', cli: 'OpenCode', label: '全局配置', defaultId: 'provider' },
 ];
 export const PI_SECTIONS: ConfigSectionItem[] = [
-  { id: 'agents', label: '角色模型' }, { id: 'compaction', label: '上下文压缩', meta: '下次压缩生效' },
+  { id: 'agents', label: '角色模型' }, { id: 'advisor', label: '执行中咨询' }, { id: 'codemode', label: 'CodeMode' }, { id: 'compaction', label: '上下文压缩', meta: '下次压缩生效' },
   { id: 'mcp', label: 'MCP 路由' }, { id: 'concurrency', label: '并发限制' },
 ];
 export const OMP_SECTIONS: ConfigSectionItem[] = [
@@ -37,11 +37,5 @@ export const OPENCODE_SECTIONS: ConfigSectionItem[] = [
   { id: 'mcp', label: 'MCP 服务器' }, { id: 'permission', label: '权限' }, { id: 'instructions', label: '指令文件' },
   { id: 'plugin', label: '插件' }, { id: 'experimental', label: '实验特性' }, { id: 'unknown', label: '其他键' },
 ];
-export function staticSections(page: ConfigPageId): ConfigSectionItem[] {
-  if (page === 'pi:agents') return PI_SECTIONS;
-  if (page === 'omp:agents') return OMP_SECTIONS;
-  if (page === 'opencode:global') return OPENCODE_SECTIONS.filter(i => i.id !== 'model' && i.id !== 'unknown');
-  return [];
-}
 export const pageSectionId = (page: string, id: string) => `section:${page}:${encodeURIComponent(id)}`;
 export const providerSectionId = (name: string) => `provider:${encodeURIComponent(name)}`;

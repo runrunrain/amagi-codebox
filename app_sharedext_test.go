@@ -17,6 +17,7 @@ import (
 	"amagi-codebox/internal/piplugin"
 	"amagi-codebox/internal/plugin"
 	"amagi-codebox/internal/sharedext"
+	"amagi-codebox/internal/sharedmarket"
 )
 
 func TestClaudePluginSkillsProvider(t *testing.T) {
@@ -335,5 +336,89 @@ func TestAppImportSharedSkillEnvelope(t *testing.T) {
 	skills := a.GetSharedSkills()
 	if len(skills) != 3 {
 		t.Fatalf("GetSharedSkills len = %d, want 3", len(skills))
+	}
+}
+
+// TestSharedSkillProvidersMarketDeployedSkills P6 交汇点：市场清单技能 ∩
+// ~/.agents 现存目录推导已部署条目（启用/停用两态），external 引用插件跳过。
+func TestSharedSkillProvidersMarketDeployedSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // sharedSkillProvidersMarket 经 os.UserHomeDir 解析 ~/.agents
+
+	// 市场状态 + clone 目录（直写文件系统，sharedmarket.List 只读它们）。
+	agents := filepath.Join(home, ".agents")
+	if err := os.MkdirAll(filepath.Join(agents, "marketplaces", "fixture-market", ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"version":1,"marketplaces":[{"name":"fixture-market","source":"https://example.com/m.git","addedAt":"2026-11-18T00:00:00Z","lastUpdated":"2026-11-18T00:00:00Z"}]}`
+	if err := os.WriteFile(filepath.Join(agents, "marketplaces.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog := `{"name":"fixture-market","plugins":[
+		{"name":"alpha","source":"./plugins/alpha","description":"阿尔法"},
+		{"name":"external-one","source":{"source":"git-subdir","url":"https://example.com/x.git"}}
+	]}`
+	if err := os.WriteFile(filepath.Join(agents, "marketplaces", "fixture-market", ".claude-plugin", "marketplace.json"), []byte(catalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(agents, "marketplaces", "fixture-market", rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("plugins/alpha/.claude-plugin/plugin.json", `{"name":"alpha"}`)
+	write("plugins/alpha/skills/skill-one/SKILL.md", "---\nname: skill-one\n---\n# one\n")
+	write("plugins/alpha/skills/skill-two/SKILL.md", "---\nname: skill-two\n---\n# two\n")
+
+	// 部署产物：skill-one 启用在位；skill-two 被停用（skills-disabled）；未部署目录不计。
+	if err := os.MkdirAll(filepath.Join(agents, "skills", "skill-one"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agents, "skills", "skill-one", "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(agents, "skills-disabled", "skill-two"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agents, "skills-disabled", "skill-two", "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{SharedMarkets: sharedmarket.New(home, nil), Log: logging.NewService(home)}
+	providers := app.sharedSkillProvidersMarket()
+	if len(providers) != 1 {
+		t.Fatalf("providers = %d, want 1（external 插件跳过）: %+v", len(providers), providers)
+	}
+	p := providers[0]
+	if p.Engine != sharedext.Engine("market") {
+		t.Fatalf("engine = %q, want market", p.Engine)
+	}
+	if p.PluginID != "alpha@fixture-market" || p.PluginName != "alpha" {
+		t.Fatalf("plugin id/name = %q/%q", p.PluginID, p.PluginName)
+	}
+	if len(p.Skills) != 2 {
+		t.Fatalf("skills = %+v, want skill-one(启用)+skill-two(停用)", p.Skills)
+	}
+	if !p.SubItemsDisabled["skill/skill-two"] {
+		t.Fatalf("skills-disabled 中的 skill-two 应标记停用: %+v", p.SubItemsDisabled)
+	}
+	if _, present := p.SubItemsDisabled["skill/skill-one"]; present {
+		t.Fatalf("启用态 skill-one 不应标记停用: %+v", p.SubItemsDisabled)
+	}
+}
+
+// TestSharedSkillProvidersMarketMissingState 市场不可读（无状态文件）时
+// 降级为空，不报错。
+func TestSharedSkillProvidersMarketMissingState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app := &App{SharedMarkets: sharedmarket.New(home, nil)}
+	if got := app.sharedSkillProvidersMarket(); len(got) != 0 {
+		t.Fatalf("空市场应返回空 providers: %+v", got)
 	}
 }

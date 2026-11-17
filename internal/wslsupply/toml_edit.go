@@ -268,11 +268,10 @@ func parseTOMLKV(lines []string, idx int, currentPath []string, scopeSet map[str
 		if !scopeSet[currentPath[0]] {
 			return "", nil, 0, nil // 非受管表内的键值：不解析
 		}
-		kp, kerr := splitTOMLKeyPath(keyPart)
-		if kerr != nil {
+		// 表内键值只需可解析校验；path 仅在根键分支消费，此处不构建。
+		if _, kerr := splitTOMLKeyPath(keyPart); kerr != nil {
 			return "", nil, 0, fmt.Errorf("key in managed table: %w", kerr)
 		}
-		path = append(append([]string{}, currentPath...), kp...)
 	}
 	// 值解析（多行数组逐行拼接直到可完整解析或耗尽）。
 	joined := strings.TrimSpace(line[eq+1:])

@@ -4,16 +4,11 @@
  */
 
 import {
-  GetRemoteToken,
   GetRemoteStatus,
   GetRemoteWebUIStatus,
   GetSessionControlHolds,
   ReleaseSessionControl,
-  OpenRemoteWebUI,
-  RegenerateRemoteToken,
   ToggleRemoteServer,
-  SetRemotePort,
-  SetRemoteHost,
   SetRemoteEndpoint,
   CreateRemotePairingWindow,
   GetRemotePairingWindow,
@@ -32,16 +27,9 @@ import type { main, remote } from '../../wailsjs/go/models';
 import { callApi } from './internal/call';
 
 /**
- * Get remote token
- */
-export function getRemoteToken(): Promise<string> {
-  return callApi('[api.remote.getRemoteToken]', () => GetRemoteToken());
-}
-
-/**
  * Get remote status
  */
-export function getRemoteStatus(): Promise<Record<string, any>> {
+export function getRemoteStatus(): Promise<Record<string, unknown>> {
   return callApi('[api.remote.getRemoteStatus]', () => GetRemoteStatus());
 }
 
@@ -61,38 +49,10 @@ export function getRemoteWebUIStatus(): Promise<main.RemoteWebUIStatusResult> {
 }
 
 /**
- * Open remote Web UI
- */
-export function openRemoteWebUI(): Promise<main.OpenRemoteWebUIResult> {
-  return callApi('[api.remote.openRemoteWebUI]', () => OpenRemoteWebUI());
-}
-
-/**
- * Regenerate remote token
- */
-export function regenerateRemoteToken(): Promise<string> {
-  return callApi('[api.remote.regenerateRemoteToken]', () => RegenerateRemoteToken());
-}
-
-/**
  * Toggle remote server
  */
 export function toggleRemoteServer(enabled: boolean): Promise<void> {
   return callApi('[api.remote.toggleRemoteServer]', () => ToggleRemoteServer(enabled));
-}
-
-/**
- * Set remote port
- */
-export function setRemotePort(port: number): Promise<void> {
-  return callApi('[api.remote.setRemotePort]', () => SetRemotePort(port));
-}
-
-/**
- * Set remote host
- */
-export function setRemoteHost(host: string): Promise<void> {
-  return callApi('[api.remote.setRemoteHost]', () => SetRemoteHost(host));
 }
 
 /**

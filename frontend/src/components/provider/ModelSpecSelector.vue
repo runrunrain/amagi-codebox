@@ -30,6 +30,7 @@
         <Dropdown
           :model-value="model"
           :options="modelOptions"
+          :disabled="!modelOptions.some(o => !o.disabled)"
           placeholder="选择模型"
           class="mss-dd"
           @update:model-value="onModelChange"
@@ -37,10 +38,14 @@
         <Dropdown
           :model-value="level"
           :options="levelOptions"
+          :disabled="!model"
           class="mss-dd mss-dd-level"
           @update:model-value="onLevelChange"
         />
       </div>
+      <p v-if="providerEntry && !providerEntry.models.length && !model" class="mss-empty" role="status">
+        暂无模型目录，可切换服务商或手动输入模型。
+      </p>
       <AppButton variant="ghost" size="small" class="mss-mode-btn" @click="manual = true">手动输入模型</AppButton>
     </template>
     <code v-if="spec" class="mss-spec">{{ spec }}</code>
@@ -70,7 +75,8 @@ const emit = defineEmits<{ 'update:model-value': [value: string] }>();
 const manual = ref(false);
 
 const spec = computed(() => props.modelValue || '');
-const parsed = computed(() => parseModelSpec(spec.value));
+// provider/ 是选择器的可恢复中间态，不等于可保存的完整模型 spec。
+const parsed = computed(() => parseModelSpec(spec.value, { allowEmptyModel: true }));
 
 const providerEntry = computed(() => {
   const p = parsed.value?.provider;
@@ -103,7 +109,7 @@ const modelOptions = computed<DropdownOption[]>(() => {
   if (model.value && !options.some(o => o.value === model.value)) {
     options.unshift({ value: model.value, label: `${model.value}（当前值，目录未收录）` });
   }
-  return options;
+  return options.length ? options : [{ value: '', label: '暂无模型目录', disabled: true }];
 });
 
 const levelOptions = computed<DropdownOption[]>(() => {
@@ -169,6 +175,12 @@ function onLevelChange(l: string) {
 
 .mss-mode-btn {
   align-self: flex-start;
+}
+
+.mss-empty {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 12px;
 }
 
 .mss-spec {

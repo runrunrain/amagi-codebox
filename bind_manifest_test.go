@@ -1,7 +1,7 @@
 package main
 
 // bind_manifest_test.go — T-24 production Wails Bind surface test (design §4.1,
-// §6.3, §10.3 C-01). Asserts that raw PTY/Headroom services are NOT bound,
+// §6.3, §10.3 C-01). Asserts that raw PTY services are NOT bound,
 // and that the App exposes neither the cleanup bypass (StopAllSessions) nor the
 // raw callback/history exports (R3-Minor-01).
 
@@ -9,13 +9,20 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"amagi-codebox/internal/skins"
 )
 
 // forbiddenTypePrefixes are package-qualified type suffixes that must NEVER be
 // in the production Bind list — the raw service objects themselves (design §6.3).
 var forbiddenTypePrefixes = []string{
 	"pty.Service",
-	"headroom.HeadroomService",
+	"secrets.SecretsService",
+	"envcheck.Service",
+	"logging.Service",
+	"updater.Service",
+	"ompconfig.Service",
+	"opencodeconfig.Service",
 }
 
 // appForbiddenMethods are App-level methods that must NOT be exported (raw
@@ -47,8 +54,8 @@ var appGatedMutationMethods = []string{
 
 // appRawMutationNameFragments are name fragments that must NOT appear in any
 // exported App method (they would indicate a raw service mutation leaked onto
-// the bound App surface). Legitimate facades use the Pty*/Proxy*/Headroom*
-// prefixes instead.
+// the bound App surface). Legitimate facades use the Pty*/Proxy* prefixes
+// instead.
 var appRawMutationNameFragments = []string{
 	"WriteRaw",
 	"ResizeRaw",
@@ -95,7 +102,7 @@ func TestBindManifest_GatedFacadesReachable(t *testing.T) {
 // the bind check from "raw service objects absent" into an exported-mutation
 // manifest assertion.
 // appClassifiedNonSessionMutations (R12 Minor): non-session/PTY mutations exported on
-// the bound App surface that were introduced by M2 recovery/headroom work. Each entry
+// the bound App surface that were introduced by M2 recovery work. Each entry
 // is explicitly classified with its gating semantics so future manifest drift is
 // reviewable: these are NOT raw session mutations (they do not touch PTY/session
 // state), they require explicit user confirmation or backend authority fencing.
@@ -103,9 +110,30 @@ var appClassifiedNonSessionMutations = map[string]string{
 	// Requires explicit PG-06-style user confirmation in the desktop UI; backend
 	// refuses while the process is live and writes a typed audit on completion.
 	"ConfirmExternalCleanupRecovery": "user-confirm + backend live-refuse + typed audit",
-	// Mutates global codex headroom; gated by coordinator admission (R4-002) and the
-	// corrupt-store recovery fence (R9-002).
-	"SetCodexGlobalHeadroom": "coordinator admission + recovery fence",
+	// Claude 订阅账号轮换 facade（design §7.2）：入口在 App，raw 服务不入
+	// Bind；所有 mutation 经 1a 领域服务的 MutationGate（SharedClaudeCredentials
+	// mutation admission）+ operation 注册表；事件只发 operationId/stage/
+	// state/generation。
+	"BeginClaudeAccountEnrollment":  "credentials mutation admission + quiescence",
+	"CaptureClaudeAccount":          "credentials mutation admission + quiescence + background operation",
+	"CancelClaudeAccountEnrollment": "credentials mutation admission",
+	"SwitchClaudeAccount":           "credentials mutation admission + quiescence + requestId 幂等 background operation",
+	"SetClaudeAccountRotation":      "能力/池 revision/riskAck 校验 + ConfigService 写入",
+	"ReconcileClaudeAccounts":       "inspect 零写；其余走 mutation 门 + background operation",
+	"RemoveClaudeAccount":           "1a 移除限制（活动账号先切/停管）+ mutation admission",
+	"RenameClaudeAccount":           "别名长度 1..64 + revision 校验",
+	// 共用技能面板的非会话 mutation（扩展中心重构 spec §2.5/§2.8）：目录
+	// 移动与删除均需 UI 确认弹窗（删除为 danger）；managed 名
+	// （amagi-codebox）后端直接拒绝。
+	"SetSharedSkillEnabled": "目录移动（~/.agents/skills ⇄ skills-disabled）需 UI 确认弹窗；managed 名后端拒绝",
+	"DeleteSharedSkill":     "技能目录永久删除需 UI danger 确认弹窗；managed 名后端拒绝",
+	// 共用 MCP 面板的非会话 mutation（共用 MCP spec §3）：登记文件 CRUD 与
+	// 四引擎分发写入均需 UI 表单/明确开关动作；外部手改的目标条目后端
+	// 拒删待确认（ErrForeignModified → force 二次确认）。
+	"CreateSharedMcpEntry":        "写 ~/.agents/.mcp.json（0600 原子写）需 UI 表单提交；同名已存在后端拒绝",
+	"UpdateSharedMcpEntry":        "覆写登记条目需 UI 表单提交；name 不可改、条目不存在后端拒绝",
+	"DeleteSharedMcpEntry":        "登记删除 + 已分发引擎还原需 UI danger 确认弹窗；外部手改的目标条目需 force 二次确认",
+	"SetSharedMcpEngineSelection": "写各 Agent 真实 MCP 配置需 UI 明确开关/重新分发动作；目标手写同名条目后端拒绝（conflict）",
 }
 
 func TestBindManifest_ClassifiedNonSessionMutations(t *testing.T) {
@@ -154,24 +182,13 @@ func TestBindManifest_AppIsBound(t *testing.T) {
 	}
 }
 
-func TestBindManifest_HeadroomFacadesReachable(t *testing.T) {
-	app := newTestApp(t)
-	appType := reflect.TypeOf(app)
-	// Lease-guarded facade methods that replace the raw Headroom binding.
-	for _, name := range []string{"HeadroomStart", "HeadroomStop", "HeadroomGetStatus"} {
-		if _, ok := appType.MethodByName(name); !ok {
-			t.Errorf("App facade %s is missing (replaces raw service binding)", name)
-		}
-	}
-}
-
 // TestBindManifest_SecretsDeadBindMethodsRemoved freezes the removal of the
 // provider-specific key accessor shim methods that had no Go or frontend/src
-// callers (verified by grep across .go and frontend/src — only stale
-// frontend/wailsjs generated stubs remained, which wails build regenerates).
-// They reached the frontend directly via app.Secrets (bind_list.go) and so were
-// dead surface on the bound SecretsService. GetAllProviders is intentionally
-// retained: it has a real Go caller in cmd/codebox (secretProviderNames).
+// callers. SecretsService itself is no longer directly bound in bind_list.go
+// (replaced by narrow App.HasProviderAPIKey / App.GetProviderAPIKey facades),
+// and these dead shim methods must stay removed. GetAllProviders is
+// intentionally retained: it has real Go callers in agentcli (handleKeyStatus
+// in agentcli_h_config.go and knownStoredSecrets in agentcli_h_usage.go).
 func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 	app := newTestApp(t)
 	if app.Secrets == nil {
@@ -183,9 +200,9 @@ func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 			t.Errorf("removed dead bind method %s reappeared on SecretsService", name)
 		}
 	}
-	// Sanity: GetAllProviders must remain (cmd/codebox depends on it).
+	// Sanity: GetAllProviders must remain (agentcli callers depend on it).
 	if _, ok := rt.MethodByName("GetAllProviders"); !ok {
-		t.Errorf("GetAllProviders must remain on SecretsService (cmd/codebox caller)")
+		t.Errorf("GetAllProviders must remain on SecretsService (agentcli caller)")
 	}
 }
 
@@ -195,14 +212,16 @@ func TestBindManifest_SecretsDeadBindMethodsRemoved(t *testing.T) {
 // 予以清单化接受——本测试冻结该注入面：Set*/Record* 方法集合必须恰好等于清单，
 // 未来新增注入面必须在此显式登记其理由，防止静默扩张。
 var configServiceAcceptedMutationSurface = map[string]string{
-	"SetAPIKeyResolver":     "组装期注入 key 解析器（契约 §2 既有先例）",
-	"SetAPIKeyReadyProbe":   "组装期注入密钥库就绪探针；未就绪时跳过导出写盘，防止空 key 覆盖（密钥面安全）",
-	"SetModalityProber":     "组装期注入探测调度入口（契约 v1.2）",
+	"SetAPIKeyResolver":              "组装期注入 key 解析器（契约 §2 既有先例）",
+	"SetAPIKeyReadyProbe":            "组装期注入密钥库就绪探针；未就绪时跳过导出写盘，防止空 key 覆盖（密钥面安全）",
+	"SetModalityProber":              "组装期注入探测调度入口（契约 v1.2）",
 	"SetPiLoginPresetChangeListener": "组装期注入登录预设保存/删除回调；把 contextWindow 覆写同步到 canonical root 的 models.json（锁外触发，不进 ConfigService 写路径）；webview 伪造仅写本机窗口覆写，无凭据面",
-	"RecordModalityProbe":   "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
-	"RecordProviderQuota":   "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
-	"SetAllTerminalPresets": "预设整体导入的合法入口",
-	"SetAgentTeams":         "Agent Teams 设置的合法入口",
+	"RecordModalityProbe":            "探测结论回写入口；webview 伪造仅污染本机能力缓存，无凭据外泄",
+	"RecordProviderQuota":            "额度探测结论回写入口（额度查询方案 §4）；Entry 值域天然无凭据，webview 伪造仅污染本机额度缓存",
+	"SetAgentTeams":                  "Agent Teams 设置的合法入口",
+	"SetClaudeAccountRotation":       "Claude 订阅账号轮换配置唯一写入口（design §3.2：账号服务不自行写 models.json；严格 Validate 拒绝未知 strategy）",
+	"ReplaceProviders":               "整设备配置导入的事务性提供商快照替换入口；经 scrubProviderAPIKeys 剥离明文密钥且无凭据落盘，仅影响本地 models.json",
+	"ReplaceImportedPresetSnapshots": "整设备配置导入的预设快照整体替换入口（terminal_presets / opencode_presets）；仅更新本地 models.json 预设，无凭据与系统命令面",
 }
 
 func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
@@ -214,7 +233,7 @@ func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
 	actual := map[string]bool{}
 	for i := 0; i < rt.NumMethod(); i++ {
 		name := rt.Method(i).Name
-		if strings.HasPrefix(name, "Set") || strings.HasPrefix(name, "Record") {
+		if strings.HasPrefix(name, "Set") || strings.HasPrefix(name, "Record") || strings.HasPrefix(name, "Replace") {
 			actual[name] = true
 		}
 	}
@@ -225,6 +244,44 @@ func TestBindManifest_ConfigServiceInjectionSurfaceReviewed(t *testing.T) {
 		delete(actual, name)
 	}
 	for name := range actual {
-		t.Errorf("ConfigService exposes unreviewed Set*/Record* method %s —— 注入/回写面扩张须在 bind_manifest_test.go 登记理由", name)
+		t.Errorf("ConfigService exposes unreviewed Set*/Record*/Replace* method %s —— 注入/回写面扩张须在 bind_manifest_test.go 登记理由", name)
+	}
+}
+
+func TestBindManifest_SkinsNoSetContext(t *testing.T) {
+	rt := reflect.TypeOf((*skins.Service)(nil))
+	if _, ok := rt.MethodByName("SetContext"); ok {
+		t.Error("skins.Service must NOT expose SetContext on Wails bind surface")
+	}
+}
+
+func TestBindManifest_AppHardenedSurface(t *testing.T) {
+	app := newTestApp(t)
+	appType := reflect.TypeOf(app)
+
+	for _, name := range []string{"HasProviderAPIKey", "GetProviderAPIKey"} {
+		if _, ok := appType.MethodByName(name); !ok {
+			t.Errorf("App narrow facade %s is missing", name)
+		}
+	}
+	for _, removed := range []string{
+		"CleanHeadroom",
+		"QuickLaunch",
+		"GetEnvCheckOperationState",
+		"GetConfigService",
+		"GetPathsService",
+		"GetSettingsService",
+		"GetSessionWebUI",
+		"ProbeSessionWebUI",
+		"SaveAllConfig",
+		"GetKeyDiagnostics",
+		"ClearStoppedSessionsDetailed",
+		"GetEnvCheckStatus",
+		"GetLaunchCompensationDebts",
+		"RetryLaunchCompensationDebt",
+	} {
+		if _, ok := appType.MethodByName(removed); ok {
+			t.Errorf("App exposes hardened/internal/dead method %s (must not be bound)", removed)
+		}
 	}
 }

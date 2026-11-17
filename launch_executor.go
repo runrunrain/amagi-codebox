@@ -27,29 +27,38 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"amagi-codebox/internal/headroom"
+	"amagi-codebox/internal/appmeta/claude"
+	"amagi-codebox/internal/claudewebui"
 	"amagi-codebox/internal/launchplan"
 	"amagi-codebox/internal/platform"
 	"amagi-codebox/internal/processcap"
 	"amagi-codebox/internal/remote"
 	"amagi-codebox/internal/session"
+	"amagi-codebox/internal/webui"
 	"amagi-codebox/internal/wslsupply"
 	"gopkg.in/yaml.v3"
 )
 
 // launchExecutorDeps holds the App service adapters the executor needs.
 type launchExecutorDeps struct {
-	pty           ptyStartPort
-	headroom      headroomStartPort
-	codexHeadroom headroomStartPort
-	sharedCoord   *remote.SharedServiceCoordinator
-	debts         *launchplan.CompensationDebtRegistry
-	configMu      *sync.Mutex
+	pty         ptyStartPort
+	sharedCoord *remote.SharedServiceCoordinator
+	debts       *launchplan.CompensationDebtRegistry
+	configMu    *sync.Mutex
 	// webui 是 remote 创建/重启 embedded pi 会话的 Web 平面接线（remote-
 	// webui-plane：对齐桌面 LaunchPiSession T-1.5）。nil = 未接线（测试），
 	// pi 会话照常启动、只是不做 webui 注入与 tracker 注册。
 	webui webuiLaunchPlane
+	// claudeWebUI 是 remote 创建/重启 embedded claude 会话的 Web 平面接线
+	//（claude-webui design §5.4）。nil = 未接线（测试），claude 会话照常
+	// 启动、只是 commit 后不起数据面 server 也不注册 tracker（平面 unknown）。
+	claudeWebUI claudeWebUILaunchPlane
+	// claudePlaneLog 是 claude Web 平面链路的可选日志接缝（nil 安全）：端口/
+	// token 预分配失败与数据面 Start 失败均「仅记日志不阻断启动」，executor
+	// 不直接持有 logging.Service（对齐 supplyLog 的窄接缝纪律）。
+	claudePlaneLog claudePlaneLog
 	// wslSupply 是 WSL 配置供给协调器接缝（P3-S0：EffectWSLConfigSupply 的
 	// 执行面；nil = 未接线，计划含 WSL 供给 effect 时 Prepare 失败 fail closed，
 	// 不静默降级旧 shell 载荷路径）。
@@ -65,25 +74,36 @@ type launchExecutorDeps struct {
 // webuiLaunchPlane 是 remote 启动链与 internal/webui 的窄接口切片：
 // PrepareEnv 分配 AMAGI_WEBUI_PORT / AMAGI_WEBUI_TOKEN 注入材料（失败返回
 // 零值不阻断启动——扩展自选端口写注册表，探测侧走注册表回退发现）；
-// RegisterSession 在启动 commit 后发布 per-session 探测 tracker。
+// RegisterSessionWithWindow 在启动 commit 后发布 per-session 探测 tracker
+// （window<=0 取服务默认窗口；WSL 目标应传 webui.DefaultWSLProbingWindow，
+// 对齐桌面 LaunchPiSession 的分窗口注册）。
 type webuiLaunchPlane interface {
 	PrepareEnv() (port int, token string)
-	RegisterSession(sessionID string, pid, port int, token string)
+	RegisterSessionWithWindow(sessionID string, pid, port int, token string, window time.Duration)
+}
+
+// claudeWebUILaunchPlane 是 remote 启动链与 claude Web 平面（进程内数据面
+// server，claude-webui design §5.4/§5.2）的窄接口切片：Start 在 PTY commit
+// 后启动 per-session 回环 server 并返回实际 bind 端口（App 适配器补
+// InputPort 双车道写口并桥 internal/claudewebui.Manager）；RecordClaudeSessionID
+// 把 --session-id 注入值落到 session.Manager（tracker/列表语义与桌面
+// LaunchSession 同一落点）；RegisterTracker 发布 webui.Service 探测 tracker
+// （pi 与 claudecode 共用同一状态机，design §4-D3）。
+type claudeWebUILaunchPlane interface {
+	Start(cfg claudewebui.PlaneConfig) (boundPort int, err error)
+	RecordClaudeSessionID(sessionID, claudeSessionID string)
+	RegisterTracker(sessionID string, pid, port int, token string)
+}
+
+// claudePlaneLog 是 claude Web 平面链路的最小日志接缝（nil 安全）。
+type claudePlaneLog interface {
+	Warn(scope, msg, detail string)
 }
 
 type ptyStartPort interface {
 	StartResolvedWithRunEvidence(sessionID string, spec platform.ResolvedLaunchSpec, runHandle any) (processcap.StartEvidence, error)
 	WaitReadyForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID) error
 	WriteRawForBinding(ctx context.Context, sessionID string, bindingID processcap.BindingID, data []byte) error
-}
-
-type headroomStartPort interface {
-	IsRunning() bool
-	GetStatus() headroom.HeadroomStatus
-	SetPort(port int) error
-	Start(backendURL string) error
-	StartForOpenAI(backendURL string) error
-	Stop() error
 }
 
 // appLaunchExecutor implements launchplan.Executor.
@@ -141,11 +161,6 @@ type preparedEffectBuilder struct {
 
 func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.PreparedEffect, error) {
 	switch spec.Kind {
-	case launchplan.EffectHeadroomStart:
-		if spec.Shared == nil {
-			return nil, errors.New("headroom effect missing shared spec")
-		}
-		return b.buildHeadroomStart(spec.Shared), nil
 	case launchplan.EffectConfigMutation:
 		if spec.Config == nil {
 			return nil, errors.New("config effect missing config spec")
@@ -178,21 +193,6 @@ func (b *preparedEffectBuilder) build(spec launchplan.EffectSpec) (launchplan.Pr
 	}
 }
 
-func (b *preparedEffectBuilder) buildHeadroomStart(shared *launchplan.SharedStartSpec) launchplan.PreparedEffect {
-	return &headroomStartEffect{
-		deps: b.deps, service: shared.Service, upstreamURL: shared.UpstreamURL, listenPort: shared.ListenPort,
-		admission: sharedAdmissionFromBinding(b.sharedAdmissions, shared.Service),
-	}
-}
-
-func sharedAdmissionFromBinding(admissions map[launchplan.SharedServiceKind]any, kind launchplan.SharedServiceKind) *remote.SharedLaunchAdmission {
-	if admissions == nil {
-		return nil
-	}
-	admission, _ := admissions[kind].(*remote.SharedLaunchAdmission)
-	return admission
-}
-
 func (b *preparedEffectBuilder) buildConfigMutation(cfg *launchplan.ConfigMutationSpec) (launchplan.PreparedEffect, error) {
 	content, ok := b.plan.Secrets.Buffer(cfg.Candidate)
 	if !ok {
@@ -207,55 +207,35 @@ func (b *preparedEffectBuilder) buildConfigMutation(cfg *launchplan.ConfigMutati
 }
 
 func (b *preparedEffectBuilder) buildWSLConfigSupply(spec *launchplan.WSLConfigSupplySpec) (launchplan.PreparedEffect, error) {
-	hasUnits := len(spec.Units) > 0
-	if hasUnits && b.deps.wslSupply == nil {
-		return nil, errors.New("wsl supply effect: coordinator unavailable")
+	// 生产单元只剩 OpenCode 附加层（Pi 的供给单元已随「WSL 内 Pi 共享
+	// Windows agent 根」退役；shared 小文件与 claude/codex 键级单元的启动
+	// lazy 补漏走 PTY effect 内的 runWSLSharedFilesForSpec）。
+	if spec.OpenCodeLayer == nil {
+		return nil, errors.New("wsl supply effect: opencode layer spec is required")
 	}
-	if !hasUnits && spec.OpenCodeLayer == nil {
-		return nil, errors.New("wsl supply effect: cli and units are required")
+	if b.deps.openCodeLayerPrep == nil {
+		return nil, errors.New("wsl supply effect: opencode layer preparer unavailable")
 	}
-	if strings.TrimSpace(spec.CLI) == "" {
-		return nil, errors.New("wsl supply effect: cli is required")
+	content, ok := b.plan.Secrets.Buffer(spec.OpenCodeLayer.Content)
+	if !ok {
+		return nil, errors.New("wsl supply effect: opencode layer content buffer not found")
 	}
-	units := make([]wslsupply.UnitID, 0, len(spec.Units))
-	for _, u := range spec.Units {
-		if strings.TrimSpace(u) == "" {
-			return nil, errors.New("wsl supply effect: empty unit id")
+	hasPTY := false
+	for _, s := range b.plan.Effects {
+		if s.Kind == launchplan.EffectPTYStart {
+			hasPTY = true
+			break
 		}
-		units = append(units, wslsupply.UnitID(u))
 	}
-	reason := wslsupply.Reason(spec.Reason)
-	if reason == "" {
-		reason = wslsupply.ReasonLaunch
+	if !hasPTY {
+		return nil, errors.New("wsl supply effect: opencode layer requires a PTY effect")
 	}
-	effect := &wslConfigSupplyEffect{
-		deps: b.deps, distro: strings.TrimSpace(spec.Distro), cli: wslsupply.CLI(spec.CLI),
-		reason: reason, units: units,
-	}
-	if spec.OpenCodeLayer != nil {
-		if b.deps.openCodeLayerPrep == nil {
-			return nil, errors.New("wsl supply effect: opencode layer preparer unavailable")
-		}
-		content, ok := b.plan.Secrets.Buffer(spec.OpenCodeLayer.Content)
-		if !ok {
-			return nil, errors.New("wsl supply effect: opencode layer content buffer not found")
-		}
-		hasPTY := false
-		for _, s := range b.plan.Effects {
-			if s.Kind == launchplan.EffectPTYStart {
-				hasPTY = true
-				break
-			}
-		}
-		if !hasPTY {
-			return nil, errors.New("wsl supply effect: opencode layer requires a PTY effect")
-		}
-		effect.openCodeLayer = append([]byte(nil), content...)
-		effect.layerPrep = b.deps.openCodeLayerPrep
-		// 晚绑定：Prepare 循环完成后 b.ptyProcess 指向本计划的 PTY effect；
-		// 层注入必须发生在其 Apply 之前（计划序保证）。
-		effect.ptyRef = &b.ptyProcess
-	}
+	effect := &wslConfigSupplyEffect{deps: b.deps, distro: strings.TrimSpace(spec.Distro)}
+	effect.openCodeLayer = append([]byte(nil), content...)
+	effect.layerPrep = b.deps.openCodeLayerPrep
+	// 晚绑定：Prepare 循环完成后 b.ptyProcess 指向本计划的 PTY effect；
+	// 层注入必须发生在其 Apply 之前（计划序保证）。
+	effect.ptyRef = &b.ptyProcess
 	return effect, nil
 }
 
@@ -288,105 +268,96 @@ func (b *preparedEffectBuilder) buildPTYStart(proc *launchplan.ProcessStartSpec)
 			spec.Env.Variables = overrideWebUIEnv(spec.Env.Variables, entries)
 		}
 	}
+	// claude Web 平面（claude-webui design §5.4）：数据面 server 在 CodeBox
+	// 进程内，不经 env 通道（claudecode 无扩展宿主消费 AMAGI_WEBUI_*，D2）
+	// ——不注 env，只在 Prepare 组装 commit 材料：sid/workDir 来自计划与
+	// 最终 spec；transcriptRoot 用与桌面 t3 同一助手 claude.ClaudeConfigRoot
+	// 从进程 env 解析（CLAUDE_CONFIG_DIR 优先 → HOME/USERPROFILE → 缺省
+	// homeDir——重定向过的 remote 会话转录路径才不会错）；port/token 此刻
+	// 预分配，失败仅记日志不阻断启动（port=0 由 Manager 自选；token 空则
+	// commit 时 Start 报错跳过注册，会话照常、平面 unknown）。门控要求
+	// 计划携带 WebUIPlane（planner 无条件置字段，R8；WSL 目标 2026-11 起同携）
+	// 且已接线。
+	var claudePlane *claudeWebPlaneMaterial
+	if b.deps.claudeWebUI != nil && proc.WebUIPlane != nil && spec.AppType == string(session.AppTypeClaudeCode) {
+		material := &claudeWebPlaneMaterial{
+			claudeSessionID: proc.WebUIPlane.ClaudeSessionID,
+			workDir:         spec.WorkDir,
+		}
+		homeDir := ""
+		if home, homeErr := os.UserHomeDir(); homeErr != nil {
+			b.warnClaudePlane("claude Web 平面解析用户主目录失败，转录根缺省为空", homeErr.Error())
+		} else {
+			homeDir = home
+		}
+		material.transcriptRoot = claude.ClaudeConfigRoot(homeDir, spec.Env.Variables)
+		// WSL 目标（claude-webui design §5.1 WSL 扩展，2026-11）：转录在 distro
+		// 内 Linux 路径下，宿主侧 env 推导指向错根——改经 distro 身份探测翻译
+		// 为 UNC。distro 取 DefaultWSLDistro(spec.Env)（与 PTY 启动同源判定面）。
+		// 解析失败仅告警并放弃平面（会话照常，与桌面 startClaudeWebPlane 同
+		// 口径）。
+		if spec.BootstrapMode == platform.BootstrapWSL {
+			root, rootErr := wslClaudeTranscriptRootForDistro(platform.DefaultWSLDistro(spec.Env.Variables), spec.Env.Variables)
+			if rootErr != nil {
+				b.warnClaudePlane("WSL 会话转录根解析失败，本会话无 Web 平面（会话照常）", rootErr.Error())
+				material = nil
+			} else {
+				material.transcriptRoot = root
+			}
+		}
+		if material == nil {
+			// WSL 转录根解析失败已告警：不再分配端口/token，平面材料整体缺席
+			//（commit 后零调用零残留，与 Start 失败降级同口径）。
+			return &ptyStartEffect{
+				deps:       b.deps,
+				sessionID:  b.sessionID,
+				spec:       spec,
+				runHandle:  b.runHandle,
+				webuiPlane: webuiPlane,
+				webuiPort:  webuiPort,
+				webuiToken: webuiToken,
+			}, nil
+		}
+		if port, portErr := webui.AllocateFreePort(); portErr == nil {
+			material.port = port
+		} else {
+			b.warnClaudePlane("claude Web 平面端口分配失败，将由数据面 server 自选端口", portErr.Error())
+		}
+		if token, tokenErr := webui.GenerateToken(); tokenErr == nil {
+			material.token = token
+		} else {
+			b.warnClaudePlane("claude Web 平面 token 生成失败，本会话将无 Web 平面", tokenErr.Error())
+		}
+		claudePlane = material
+	}
 	return &ptyStartEffect{
-		deps:       b.deps,
-		sessionID:  b.sessionID,
-		spec:       spec,
-		runHandle:  b.runHandle,
-		webuiPlane: webuiPlane,
-		webuiPort:  webuiPort,
-		webuiToken: webuiToken,
+		deps:        b.deps,
+		sessionID:   b.sessionID,
+		spec:        spec,
+		runHandle:   b.runHandle,
+		webuiPlane:  webuiPlane,
+		webuiPort:   webuiPort,
+		webuiToken:  webuiToken,
+		claudePlane: claudePlane,
 	}, nil
 }
 
-// ---------------------------------------------------------------------------
-// Headroom start effect (M-01: uses SharedStartSpec upstream/port)
-// ---------------------------------------------------------------------------
-
-type headroomStartEffect struct {
-	deps        launchExecutorDeps
-	service     launchplan.SharedServiceKind
-	upstreamURL string
-	listenPort  int
-	startedByMe bool
-	committed   bool
-	admission   *remote.SharedLaunchAdmission
+// claudeWebPlaneMaterial 是 PTY effect 在 Prepare 阶段组装的 claude Web 平面
+// 启动材料（design §5.4）：commit 后经 deps.claudeWebUI 依次
+// RecordClaudeSessionID → Start → RegisterTracker 消费。
+type claudeWebPlaneMaterial struct {
+	claudeSessionID string
+	workDir         string
+	transcriptRoot  string
+	port            int
+	token           string
 }
 
-func (e *headroomStartEffect) Kind() launchplan.EffectKind { return launchplan.EffectHeadroomStart }
-func (e *headroomStartEffect) ArmOwnership()               {}
-
-func (e *headroomStartEffect) Apply(_ context.Context) (launchplan.EffectEvidence, error) {
-	if e.listenPort <= 0 {
-		return launchplan.EffectEvidence{}, errors.New("headroom listen port is invalid")
+// warnClaudePlane 经可选日志接缝记 WARN（nil 安全）。
+func (b *preparedEffectBuilder) warnClaudePlane(msg, detail string) {
+	if b.deps.claudePlaneLog != nil {
+		b.deps.claudePlaneLog.Warn("claudewebui", msg, detail)
 	}
-	if e.upstreamURL == "" {
-		return launchplan.EffectEvidence{}, errors.New("headroom upstream URL is empty")
-	}
-	var svc headroomStartPort
-	var start func() error
-	switch e.service {
-	case launchplan.SharedClaudeHeadroom:
-		svc = e.deps.headroom
-		start = func() error { return svc.Start(e.upstreamURL) }
-	case launchplan.SharedCodexHeadroom:
-		svc = e.deps.codexHeadroom
-		start = func() error { return svc.StartForOpenAI(e.upstreamURL) }
-	default:
-		return launchplan.EffectEvidence{}, fmt.Errorf("unknown headroom service: %d", e.service)
-	}
-	if svc == nil {
-		return launchplan.EffectEvidence{}, errors.New("headroom service unavailable")
-	}
-	if svc.IsRunning() {
-		status := svc.GetStatus()
-		if !status.Running || status.Port != e.listenPort || status.BackendURL != e.upstreamURL {
-			return launchplan.EffectEvidence{}, errors.New("running headroom configuration does not match launch plan")
-		}
-		return launchplan.EffectEvidence{}, nil
-	}
-	if err := svc.SetPort(e.listenPort); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("set headroom port: %w", err)
-	}
-	if err := start(); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("start headroom: %w", err)
-	}
-	e.startedByMe = true
-	if e.deps.sharedCoord == nil || e.admission == nil {
-		_ = svc.Stop()
-		e.startedByMe = false
-		return launchplan.EffectEvidence{}, errors.New("headroom start transaction is not coordinator-owned")
-	}
-	if err := e.deps.sharedCoord.MarkLaunchTransactionStarted(e.admission); err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("record headroom start ownership: %w", err)
-	}
-	status := svc.GetStatus()
-	if !status.Running || status.Port != e.listenPort || status.BackendURL != e.upstreamURL {
-		if e.deps.sharedCoord.AuthorizeCompensatingStop(e.admission) {
-			_ = svc.Stop()
-		}
-		e.startedByMe = false
-		return launchplan.EffectEvidence{}, errors.New("started headroom configuration failed exact verification")
-	}
-	return launchplan.EffectEvidence{}, nil
-}
-
-func (e *headroomStartEffect) compensate(_ context.Context) bool {
-	if !e.startedByMe || e.committed || e.deps.sharedCoord == nil || !e.deps.sharedCoord.AuthorizeCompensatingStop(e.admission) {
-		return true
-	}
-	var err error
-	switch e.service {
-	case launchplan.SharedClaudeHeadroom:
-		if e.deps.headroom != nil {
-			err = e.deps.headroom.Stop()
-		}
-	case launchplan.SharedCodexHeadroom:
-		if e.deps.codexHeadroom != nil {
-			err = e.deps.codexHeadroom.Stop()
-		}
-	}
-	return err == nil
 }
 
 // ---------------------------------------------------------------------------
@@ -762,30 +733,24 @@ func (e *configMutationEffect) disposeSensitive() {
 // WSL config supply effect (P3-S0: unified desktop/remote credential boundary)
 // ---------------------------------------------------------------------------
 
-// wslConfigSupplyEffect 在 PTY 之前执行 WSL 配置供给：Apply 阶段经 wslsupply
-// 协调器 Inspect/Plan/Apply（BuildPlan 只携带描述，纯读零副作用）。闸门语义
-// 与桌面 syncWSLPiLoginAuthAtLaunch 完全同源（同一 verdictForWSLLoginSupply
-// 映射）：A2 DistroHasCopy 降级放行 + WARN；NoAuth/阻断 fail closed 拒绝启动。
-// Abort/补偿：A2 凭据刷新是持久认证状态，不随 PTY 启动失败回滚成旧 token；
-// 普通文件写入（S0 无生产单元）按 CAS 条件撤销（只恢复 hash 仍匹配的写入）。
+// wslConfigSupplyEffect 在 PTY 之前执行 WSL 配置供给。现役生产面是 OpenCode
+// 附加层（写入失败 → 启动失败，不再无 provider 静默启动）；Pi 的凭据/托管
+// 配置供给单元已随「WSL 内 Pi 共享 Windows agent 根」退役（1.3.126）。shared
+// 小文件与 claude/codex 键级单元的启动补漏在 PTY effect 内经
+// runWSLSharedFilesForSpec 执行。
 type wslConfigSupplyEffect struct {
 	deps   launchExecutorDeps
 	distro string
-	cli    wslsupply.CLI
-	reason wslsupply.Reason
-	units  []wslsupply.UnitID
 
-	// P3-S2 OpenCode 附加层（可选）：content 是 runtime config JSON 的独占副本
-	//（含 apiKey，随计划 SecretBuffer 生命周期）；layerPrep 由 App 注入（与桌面
+	// OpenCode 附加层：content 是 runtime config JSON 的独占副本（含 apiKey，
+	// 随计划 SecretBuffer 生命周期）；layerPrep 由 App 注入（与桌面
 	// prepareWSLOpenCodeLayer 同一实现）；ptyRef 晚绑定本计划的 PTY effect，
 	// 层注入必须发生在其 Apply 之前（计划序保证，Apply 时再校验）。
 	openCodeLayer []byte
 	layerPrep     func(ctx context.Context, distro string, cfg map[string]any) (string, error)
 	ptyRef        **ptyStartEffect
 
-	applied bool
-	results []wslsupply.UnitResult
-	undos   []*wslsupply.CompensationHandle
+	undos []*wslsupply.CompensationHandle
 }
 
 func (e *wslConfigSupplyEffect) Kind() launchplan.EffectKind { return launchplan.EffectWSLConfigSupply }
@@ -801,71 +766,13 @@ func (e *wslConfigSupplyEffect) Apply(ctx context.Context) (launchplan.EffectEvi
 			return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: no usable WSL distro for launch")
 		}
 	}
-	// P3-S2 OpenCode 附加层：与桌面同一准备函数（写入失败 → 启动失败，不再
+	// OpenCode 附加层：与桌面同一准备函数（写入失败 → 启动失败，不再
 	// 无 provider 静默启动）；成功后把 OPENCODE_CONFIG（Linux 路径）注入后续
 	// PTY effect 的 env 并追加进 WSLENV 转发清单。
 	if e.openCodeLayer != nil {
 		if err := e.applyOpenCodeLayer(ctx, distro); err != nil {
 			return launchplan.EffectEvidence{}, err
 		}
-	}
-	if len(e.units) == 0 {
-		return launchplan.EffectEvidence{}, nil
-	}
-	// P3-S1：计划是描述，执行按协调器能力适配——裸协调器（单测）缺 S1 托管面
-	// 适配器时自动降级为已注册单元（A2 恒在），不报 unknown unit。
-	units := e.units
-	if known, ok := e.deps.wslSupply.(interface {
-		HasUnit(wslsupply.UnitID) bool
-	}); ok {
-		filtered := make([]wslsupply.UnitID, 0, len(units))
-		for _, u := range units {
-			if known.HasUnit(u) {
-				filtered = append(filtered, u)
-			}
-		}
-		units = filtered
-	}
-	if len(units) == 0 {
-		return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: no runnable units for launch")
-	}
-	res, err := e.deps.wslSupply.RunUnits(ctx, distro, e.cli, e.reason, units)
-	if err != nil {
-		return launchplan.EffectEvidence{}, fmt.Errorf("wsl supply: %w", err)
-	}
-	e.applied = true
-	e.results = res.Results
-	for i := range res.Results {
-		if res.Results[i].Undo != nil {
-			e.undos = append(e.undos, res.Results[i].Undo)
-		}
-	}
-	// 闸门判定：登录供给（含 A2）沿用 S0 统一映射；纯配置供给（P3-S2
-	// API-provider 远程路径）与桌面 runWSLManagedModelsAtLaunch 同语义——仅
-	// managed-models 的 target-corrupt 阻断，其余失败/阻断告警放行。
-	hasA2 := false
-	for _, u := range units {
-		if u == wslsupply.UnitPiA2Auth {
-			hasA2 = true
-			break
-		}
-	}
-	if hasA2 {
-		if verdict := verdictForWSLLoginSupply(res, nil); verdict.launchErr != nil {
-			return launchplan.EffectEvidence{}, verdict.launchErr
-		} else if verdict.warn {
-			if e.deps.supplyLog != nil {
-				e.deps.supplyLog.Warn("wslsupply", verdict.message, verdict.detail)
-			}
-		} else if verdict.info && e.deps.supplyLog != nil {
-			e.deps.supplyLog.Info("wslsupply", verdict.message, verdict.detail)
-		}
-		return launchplan.EffectEvidence{}, nil
-	}
-	if launchErr, warnMsg, warnDetail := verdictForWSLPiConfigSupply(res, nil); launchErr != nil {
-		return launchplan.EffectEvidence{}, launchErr
-	} else if warnMsg != "" && e.deps.supplyLog != nil {
-		e.deps.supplyLog.Warn("wslsupply", warnMsg, warnDetail)
 	}
 	return launchplan.EffectEvidence{}, nil
 }
@@ -958,6 +865,11 @@ type ptyStartEffect struct {
 	webuiPlane bool
 	webuiPort  int
 	webuiToken string
+	// claudeWebPlane（claude-webui design §5.4）：embedded claude 会话的平面
+	// 材料（Prepare 阶段组装：sid/workDir/transcriptRoot + 预分配 port/token，
+	// 不注 env）。nil = 非 claude 会话、计划未携带 WebUIPlane（WSL 目标）
+	// 或未接线。与 pi 分支按 AppType 天然互斥。
+	claudePlane *claudeWebPlaneMaterial
 }
 
 func (e *ptyStartEffect) Kind() launchplan.EffectKind { return launchplan.EffectPTYStart }
@@ -967,7 +879,9 @@ func (e *ptyStartEffect) Apply(ctx context.Context) (launchplan.EffectEvidence, 
 	if e.deps.pty == nil {
 		return launchplan.EffectEvidence{}, errors.New("PTY service unavailable")
 	}
-	if err := runWSLSharedFilesForSpec(ctx, e.deps.wslSupply, e.spec); err != nil {
+	// remote/restart effect 不做启动预检（preflight=nil）：供给与目录定谳保持
+	// 既有 RunUnits + prepareWSLStartupSpec 路径，行为不变。
+	if err := runWSLSharedFilesForSpec(ctx, e.deps.wslSupply, e.spec, nil); err != nil {
 		return launchplan.EffectEvidence{}, fmt.Errorf("WSL shared supply: %w", err)
 	}
 	start, err := e.deps.pty.StartResolvedWithRunEvidence(e.sessionID, e.spec, e.runHandle)
@@ -1098,10 +1012,6 @@ func (e *appPreparedExecution) Abort(ctx context.Context) launchplan.Compensatio
 		}
 		report.Attempted++
 		switch eff := e.effects[i].(type) {
-		case *headroomStartEffect:
-			if !eff.compensate(ctx) {
-				report.Failed++
-			}
 		case *configMutationEffect:
 			outcome := eff.compensate(ctx)
 			report.Outcomes = append(report.Outcomes, outcome)
@@ -1127,8 +1037,6 @@ func (e *appPreparedExecution) Abort(ctx context.Context) launchplan.Compensatio
 
 func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 	switch typed := effect.(type) {
-	case *headroomStartEffect:
-		return typed.startedByMe
 	case *configMutationEffect:
 		return typed.hasPartialOwnership()
 	case *ptyStartEffect:
@@ -1140,15 +1048,49 @@ func effectHasPartialOwnership(effect launchplan.PreparedEffect) bool {
 	}
 }
 
-// commitWebUIPlane 在启动 commit 后发布 webui tracker（对齐桌面
-// LaunchPiSession：PTY 启动成功后 RegisterSession，供 /session/{id}/webui
-// 探测与 /webui/{sid} 反向代理消费）。Abort 路径不会调用本方法，无残留
-// tracker；注入失败（port=0/token=""）仍注册——走注册表回退发现。
+// commitWebUIPlane 在启动 commit 后发布 Web 平面（Abort 路径不会调用本
+// 方法，零调用零残留）。两分支按 AppType 互斥：
+//   - pi（remote-webui-plane，对齐桌面 LaunchPiSession）：PTY 启动成功后
+//     RegisterSession，供 /session/{id}/webui 探测与 /webui/{sid} 反向代理
+//     消费；注入失败（port=0/token=""）仍注册——走注册表回退发现。
+//   - claude（claude-webui design §5.4）：PID 就绪后依次 RecordClaudeSessionID
+//     （落 session.Manager，先于 Start——sid 映射不依赖平面成败）→ Start
+//     （进程内数据面 server；失败仅记日志不注册，会话照常、平面 unknown，
+//     对齐桌面 §5.3-2 降级）→ RegisterTracker（注册端口用 Start 返回的
+//     boundPort）。
 func (e *ptyStartEffect) commitWebUIPlane() {
+	if e.claudePlane != nil && e.deps.claudeWebUI != nil && e.start.PID > 0 {
+		e.deps.claudeWebUI.RecordClaudeSessionID(e.sessionID, e.claudePlane.claudeSessionID)
+		boundPort, err := e.deps.claudeWebUI.Start(claudewebui.PlaneConfig{
+			SessionID:       e.sessionID,
+			ClaudeSessionID: e.claudePlane.claudeSessionID,
+			WorkDir:         e.claudePlane.workDir,
+			TranscriptRoot:  e.claudePlane.transcriptRoot,
+			PID:             e.start.PID,
+			Port:            e.claudePlane.port,
+			Token:           e.claudePlane.token,
+		})
+		if err != nil {
+			if e.deps.claudePlaneLog != nil {
+				e.deps.claudePlaneLog.Warn("claudewebui", "claude Web 平面启动失败，本会话无 Web 平面", fmt.Sprintf("id=%s err=%v", e.sessionID, err))
+			}
+			return
+		}
+		e.deps.claudeWebUI.RegisterTracker(e.sessionID, e.start.PID, boundPort, e.claudePlane.token)
+		return
+	}
 	if !e.webuiPlane || e.deps.webui == nil || e.start.PID <= 0 {
 		return
 	}
-	e.deps.webui.RegisterSession(e.sessionID, e.start.PID, e.webuiPort, e.webuiToken)
+	// WSL 目标放宽探测窗口（对齐桌面 app_session_pty.go 的分窗口注册）：
+	// WSL+DrvFS 下 pi 扩展的 webui server 就绪实测 30s~3m42s+（jiti 模块
+	// 加载落在 /mnt 慢路径），默认 45s 窗口会在服务就绪前耗尽误判
+	// unavailable；与桌面同一 DefaultWSLProbingWindow 口径。
+	window := time.Duration(0)
+	if e.spec.BootstrapMode == platform.BootstrapWSL {
+		window = webui.DefaultWSLProbingWindow
+	}
+	e.deps.webui.RegisterSessionWithWindow(e.sessionID, e.start.PID, e.webuiPort, e.webuiToken, window)
 }
 
 // overrideWebUIEnv 以覆盖语义写入 AMAGI_WEBUI_* env 条目：宿主进程自身若
@@ -1170,8 +1112,6 @@ func (e *appPreparedExecution) MarkCommitted() {
 	e.committed = true
 	for _, eff := range e.effects {
 		switch typed := eff.(type) {
-		case *headroomStartEffect:
-			typed.committed = true
 		case *configMutationEffect:
 			typed.markCommitted()
 		case *ptyStartEffect:

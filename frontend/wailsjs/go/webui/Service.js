@@ -22,6 +22,10 @@ export function RegisterSession(arg1, arg2, arg3, arg4) {
   return window['go']['webui']['Service']['RegisterSession'](arg1, arg2, arg3, arg4);
 }
 
+export function RegisterSessionWithWindow(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['webui']['Service']['RegisterSessionWithWindow'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function RemoveSession(arg1) {
   return window['go']['webui']['Service']['RemoveSession'](arg1);
 }

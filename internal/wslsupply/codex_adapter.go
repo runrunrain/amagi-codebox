@@ -71,6 +71,18 @@ func (a *codexConfigAdapter) Files() []string       { return []string{CodexConfi
 // SelectionAware 报告接受键级导入选择（server/profile 叶名选择集）。
 func (a *codexConfigAdapter) SelectionAware() bool { return true }
 
+// importableSourceKeys 返回来源侧当前可导入键全集（"mcp_servers/<name>"/
+// "profiles/<name>"；P2-B 统一管理的选择集物化面）。只读 Windows 侧
+// config.toml，不探测目标；来源读失败返回错误（物化不猜键集）。
+func (a *codexConfigAdapter) importableSourceKeys() ([]string, error) {
+	doc, _, err := a.readSourceDoc()
+	if err != nil {
+		return nil, err
+	}
+	desired, _ := a.desiredFrom(doc, nil) // nil = 不过滤，全量可导入段
+	return sortedDesiredKeys(desired), nil
+}
+
 // codexAnalysis 是一次分析的完整产物（Plan/预览/候选共用形态）。
 type codexAnalysis struct {
 	desired    map[string]any
@@ -313,18 +325,6 @@ func (a *codexConfigAdapter) PreviewKeys(snap *Snapshot, state *StateEntry) ([]K
 	return out, ""
 }
 
-func toMapKeys(v any) []string {
-	m, ok := v.(map[string]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
 func strconvItoa(n int) string { return fmt.Sprintf("%d", n) }
 
 // codexProfileBefore 生成 profile 键的脱敏预览摘要：总键数与其中不导入的
@@ -357,7 +357,7 @@ func (a *codexConfigAdapter) AdoptCandidate(ctx context.Context, target TargetRe
 func (a *codexConfigAdapter) buildCandidate(ctx context.Context, target TargetRef, state *StateEntry, adopt bool) (ProjectionCandidate, error) {
 	// SA-11：Detached 只阻断普通供给路径；显式「预览后确认接管」（adopt=true，
 	// 协调器已过 CAS/同怠门）是唯一声明的恢复入口，必须放行重建基准（与 Pi
-	// 键级适配器同构；接管成功后 recordProjectionState 重建条目即解除 Detached）。
+	// 键级适配器同构；接管成功后 Register 闭包经 registerProjectionEntryIn 重建条目即解除 Detached）。
 	if state != nil && state.Detached && !adopt {
 		return ProjectionCandidate{}, errors.New("unit is detached (keep-local); takeover required to re-enable")
 	}

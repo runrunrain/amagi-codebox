@@ -8,6 +8,7 @@ package wslsupply
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"amagi-codebox/internal/launcher"
 	"amagi-codebox/internal/platform"
 )
 
@@ -64,7 +64,6 @@ func TestCompensateApplySerialized(t *testing.T) {
 		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "m1", OK: true},
 	}}
 	c := NewCoordinator(t.TempDir(), nil, op.probes())
-	c.SetA2Adapter(&stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
 
 	var content atomic.Value // []byte
 	content.Store([]byte(`{"rev":1}`))
@@ -128,7 +127,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 
 	t.Run("update restores preimage", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		src := `{"rev":1}`
 		c.RegisterProjection(&stubProjection{unit: "pi/prefs", rel: "prefs.json",
 			source: func() []byte { return []byte(src) }, sensitive: false})
@@ -151,7 +150,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 	t.Run("first create removes half-committed file", func(t *testing.T) {
 		fp := newFakeProbes(t)
 		fp.chmodErr = fmt.Errorf("wsl.exe dead")
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		c.RegisterProjection(&stubProjection{unit: "pi/prefs", rel: "prefs.json",
 			source: func() []byte { return []byte(`{"a":1}`) }, sensitive: false})
 		res := runUnit(t, c, CLIPi, "pi/prefs")
@@ -165,7 +164,7 @@ func TestSubmitFileChmodFailureRestoresPreimage(t *testing.T) {
 
 	t.Run("sensitive unit fails before rename keeps preimage", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		src := `{"rev":1}`
 		c.RegisterProjection(&stubProjection{unit: "pi/prefs", rel: "prefs.json",
 			source: func() []byte { return []byte(src) }, sensitive: true})
@@ -198,7 +197,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 
 	t.Run("distinct files never collide", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		agentDir := filepath.Join(fp.uncRoot, "home/u/.pi/agent")
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -217,7 +216,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if _, err := c.submitFile(target, rel, []byte(content), false); err != nil {
+				if _, err := c.submitFileCtx(context.Background(), target, rel, []byte(content), false); err != nil {
 					errs <- err
 				}
 			}()
@@ -239,7 +238,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 
 	t.Run("same file unique staging tolerates transient sharing violation", func(t *testing.T) {
 		fp := newFakeProbes(t)
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		agentDir := filepath.Join(fp.uncRoot, "home/u/.pi/agent")
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -257,7 +256,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if _, err := c.submitFile(target, "prefs.json", []byte(content), false); err != nil {
+				if _, err := c.submitFileCtx(context.Background(), target, "prefs.json", []byte(content), false); err != nil {
 					errs <- err
 				}
 			}()
@@ -283,7 +282,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 	t.Run("chmod failure under concurrency stays consistent", func(t *testing.T) {
 		fp := newFakeProbes(t)
 		fp.chmodErr = fmt.Errorf("wsl.exe dead")
-		c := newCoordinatorWith(t, fp, &stubA2{outcome: launcher.SyncWSLPiLoginAuthFresh})
+		c := newCoordinatorWith(t, fp)
 		agentDir := filepath.Join(fp.uncRoot, "home/u/.pi/agent")
 		if err := os.MkdirAll(agentDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -304,7 +303,7 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				_, _ = c.submitFile(target, "prefs.json", []byte(content), false)
+				_, _ = c.submitFileCtx(context.Background(), target, "prefs.json", []byte(content), false)
 			}()
 		}
 		close(start)
@@ -319,4 +318,24 @@ func TestSubmitFilePrimitiveTrueConcurrency(t *testing.T) {
 		}
 		assertNoStagingLeftover(t, agentDir)
 	})
+}
+
+// submitFileCtx 是旧签名兼容入口（保留同壳面：既有测试桩；生产路径一律
+// 直接构造 CommitRequest 走 commitFile——完整生命周期在 commit.go）。
+func (c *Coordinator) submitFileCtx(ctx context.Context, target TargetRef, relPath string, content []byte, sensitive bool) (*CompensationHandle, error) {
+	// 旧壳面保留旧「最后写者胜」语义：publish 冲突（并发写同一路径）时以
+	// 当前目标为新前像有界重试一次（最多 2 次尝试，不递归）。
+	for attempt := 0; attempt < 2; attempt++ {
+		rcpt := c.commitFile(ctx, CommitRequest{
+			Target: target, RelPath: relPath, Candidate: content, Sensitive: sensitive, Kind: OpKindWrite,
+		})
+		if rcpt.Err == nil {
+			return rcpt.UndoLease, nil
+		}
+		if rcpt.ErrDetail == "publish-conflict" || rcpt.ErrDetail == "target-changed-since-planning" {
+			continue
+		}
+		return nil, rcpt.Err
+	}
+	return nil, errors.New("submit file lost a bounded race with concurrent writers; retry")
 }

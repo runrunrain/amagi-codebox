@@ -10,13 +10,19 @@
     <div class="es-body"><slot /></div>
   </section>
 </template>
-<script lang="ts">let sectionSeq = 0;</script>
+<script lang="ts">
+let sectionSeq = 0;
+function nextSectionSeq(): number {
+  sectionSeq += 1;
+  return sectionSeq;
+}
+</script>
 <script setup lang="ts">
 import { computed, provide } from 'vue';
 import InfoTip, { type InfoTipItem } from './InfoTip.vue';
 import { EDITOR_SECTION_ACTIVE } from './sectionVisibility';
 const props = withDefaults(defineProps<{ sectionId: string; title: string; active?: boolean; code?: string; badge?: number | null; meta?: string; metaTone?: 'neutral' | 'warning'; tip?: string | string[]; tipItems?: InfoTipItem[] }>(), { active: true, metaTone: 'neutral' });
-const titleId = `editor-section-${++sectionSeq}`;
+const titleId = `editor-section-${nextSectionSeq()}`;
 provide(EDITOR_SECTION_ACTIVE, computed(() => props.active));
 </script>
 <style scoped>

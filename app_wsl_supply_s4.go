@@ -93,9 +93,9 @@ func wslCliResourceLayout(cli wslsupply.CLI) *wslsupply.ResourceLayout {
 	switch cli {
 	case wslsupply.CLIClaude:
 		return &wslsupply.ResourceLayout{
-			HostRoot:     filepath.Join(home, ".claude"),
-			Files:        []string{"CLAUDE.md"},
-			DirUnits:     []string{"commands", "agents", "skills"},
+			HostRoot: filepath.Join(home, ".claude"),
+			Files:    []string{"CLAUDE.md"},
+			DirUnits: []string{"commands", "agents", "skills"},
 			// SA-10：Claude commands/agents 的顶层 Markdown 文件（review.md 等）
 			// 是真实消费者发现形态——单文件单元与目录单元并存。
 			FileLeafUnits: []string{"commands", "agents"},
@@ -406,7 +406,7 @@ func (a *App) PreviewWSLCliConfigSupply(cliName string) []WSLConfigUnitPreview {
 	for _, pv := range previews {
 		row := WSLConfigUnitPreview{
 			Unit: string(pv.Unit), RelPath: pv.RelPath, Policy: string(pv.Policy),
-			Action: piPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
+			Action: wslPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
 			Frozen: pv.Freeze, TargetHash: pv.TargetHash,
 			Notes: append([]string(nil), pv.Notes...), Keys: []WSLConfigUnitKeyPreview{},
 		}
@@ -623,7 +623,7 @@ func (a *App) PreviewWSLCliResourcesSupply(cliName string) []WSLSkillPreview {
 			continue
 		}
 		row := WSLSkillPreview{
-			Name: rel, Action: piPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
+			Name: rel, Action: wslPreviewActionName(pv.Action), Blocked: pv.BlockedReason,
 			Frozen: pv.Freeze, TargetHash: pv.TargetHash,
 			Notes: append([]string(nil), pv.Notes...),
 		}

@@ -60,9 +60,10 @@ onMounted(async () => {
   await ensure()
 
   try {
-    const info: any = await GetAppInfo()
-    currentVersion.value = info?.version || ''
-    configDir.value = info?.configDir || info?.configPath || info?.homeDir || ''
+    const info: Record<string, unknown> = await GetAppInfo()
+    currentVersion.value = typeof info?.version === 'string' ? info.version : ''
+    const dir = info?.configDir || info?.configPath || info?.homeDir || ''
+    configDir.value = typeof dir === 'string' ? dir : ''
   } catch (err) {
     console.error('load app info:', err)
   }

@@ -1,0 +1,33 @@
+/* Local to the proxy workspace; imported as scoped CSS by each panel. */
+h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.2px; color: var(--label); }
+strong { font-size: 13px; font-weight: 600; color: var(--label); }
+.hint { font-size: 12px; color: var(--secondary); line-height: 1.7; margin: 6px 0 0; }
+.section-title { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.field { display: block; min-width: 0; font-size: 12px; color: var(--secondary); }
+.field-note { margin-left: 6px; font-size: 11px; font-weight: 400; }
+.field-wide { grid-column: 1 / -1; }
+.input, textarea { display: block; width: 100%; min-width: 0; min-height: 38px; margin: 7px 0 0; padding: 9px 11px; border: 1px solid var(--proxy-border); border-radius: 8px; background: var(--card); color: var(--label); font-family: inherit; font-size: 13px; transition: border-color .15s, box-shadow .15s; }
+textarea { font-family: var(--mono); font-size: 12px; line-height: 1.7; resize: vertical; }
+textarea[readonly] { background: var(--control); color: var(--secondary); }
+.input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
+.input:disabled, textarea:disabled { opacity: .6; }
+.input::placeholder, textarea::placeholder { color: var(--secondary); opacity: .8; }
+.text-button { border: 0; border-radius: 5px; background: none; padding: 5px 2px; color: var(--secondary); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.text-button:hover:not(:disabled) { color: var(--accent-strong); }
+.text-button:disabled { opacity: .5; cursor: not-allowed; }
+.danger-text, .danger-text:hover:not(:disabled) { color: var(--danger-strong); }
+.warning-text { color: var(--warning-strong); }
+.disclosure > summary, .help-disclosure > summary { display: flex; align-items: center; gap: 9px; cursor: pointer; list-style: none; font-size: 12px; color: var(--secondary); }
+summary::-webkit-details-marker { display: none; }
+.disclosure > summary > svg:last-child, .help-disclosure > summary > svg:last-child { margin-left: auto; width: 14px; height: 14px; transition: transform .18s; }
+.disclosure[open] > summary > svg:last-child, .help-disclosure[open] > summary > svg:last-child { transform: rotate(90deg); }
+.help-body { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; font-size: 12px; color: var(--secondary); line-height: 1.8; }
+.help-body p { margin: 0; }
+.notice { display: flex; align-items: flex-start; gap: 10px; padding: 12px 15px; border-radius: 9px; font-size: 12px; line-height: 1.7; }
+.notice svg { flex-shrink: 0; margin-top: 1px; }
+.notice p { margin: 0; }
+.warning { background: color-mix(in srgb, var(--warning) 7%, var(--card)); color: var(--warning-strong); }
+:is(button, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+svg { flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }

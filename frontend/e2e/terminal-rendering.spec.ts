@@ -168,7 +168,8 @@ test.beforeEach(async ({ page }) => {
         failNextResize = true
       },
     }
-    ;(window as any).go = {
+    const wailsWin = window as unknown as { go?: unknown; runtime?: unknown }
+    wailsWin.go = {
       main: { App: app },
       // webui Service 绑定 stub：T-2.3 a11y 测试需要 pi Web 平面切换控件可见
       // （ProbeWebUI → available；OpenWebPlane → about:blank 免真实服务）。
@@ -183,7 +184,7 @@ test.beforeEach(async ({ page }) => {
         },
       },
     }
-    ;(window as any).runtime = new Proxy(
+    wailsWin.runtime = new Proxy(
       {
         EventsOnMultiple(name: string, callback: Listener) {
           let bucket = listeners.get(name)
@@ -194,7 +195,7 @@ test.beforeEach(async ({ page }) => {
       },
       {
         get(target, property: string) {
-          return (target as any)[property] ?? (() => undefined)
+          return Reflect.get(target, property) ?? (() => undefined)
         },
       },
     )

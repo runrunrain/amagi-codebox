@@ -44,9 +44,6 @@ func (r *appEnvCheckRunner) Run(_ context.Context, spec platform.CommandSpec) (*
 	if strings.Contains(path, "omp") {
 		return &platform.ProcessResult{Stdout: "omp/17.2.10"}, nil
 	}
-	if strings.Contains(path, "headroom") {
-		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
-	}
 
 	// npm commands (version check, package view)
 	if strings.Contains(path, "npm") {
@@ -89,9 +86,6 @@ func (r *appEnvCheckRunnerWithFailure) Run(_ context.Context, spec platform.Comm
 	if strings.Contains(path, "omp") {
 		return &platform.ProcessResult{Stdout: "omp/17.2.10"}, nil
 	}
-	if strings.Contains(path, "headroom") {
-		return &platform.ProcessResult{Stdout: "headroom 1.0.0"}, nil
-	}
 	if strings.Contains(path, "npm") {
 		if len(spec.Args) > 0 && spec.Args[0] == "view" {
 			return &platform.ProcessResult{Stdout: "1.0.0"}, nil
@@ -114,7 +108,7 @@ func newTestAppWithEnvCheck(t *testing.T, runner platform.ProcessRunner) *App {
 
 	// Create temp executables so exec.LookPath finds them
 	tmpDir := t.TempDir()
-	for _, name := range []string{"claude", "opencode", "codex", "pi", "omp", "headroom"} {
+	for _, name := range []string{"claude", "opencode", "codex", "pi", "omp"} {
 		ext := ""
 		content := "#!/bin/sh\nexit 0\n"
 		if runtime.GOOS == "windows" {
@@ -211,11 +205,11 @@ func TestGetEnvCheckStatus_ReturnsCachedStatus(t *testing.T) {
 	}
 
 	// Act: get cached status
-	cached := app.GetEnvCheckStatus()
+	cached := app.getEnvCheckStatus()
 
 	// Assert: cached status should be non-nil and contain all tools
 	if cached == nil {
-		t.Fatal("GetEnvCheckStatus() returned nil")
+		t.Fatal("getEnvCheckStatus() returned nil")
 	}
 	if len(cached.Items) != len(envcheck.SupportedTools()) {
 		t.Errorf("cached Items count = %d, want %d", len(cached.Items), len(envcheck.SupportedTools()))
@@ -233,11 +227,11 @@ func TestGetEnvCheckStatus_ReturnsNilBeforeAnyCheck(t *testing.T) {
 	app := newTestAppWithEnvCheck(t, runner)
 
 	// Act: get cached status without running any check
-	cached := app.GetEnvCheckStatus()
+	cached := app.getEnvCheckStatus()
 
 	// Assert: should return non-nil but empty (per Service.GetCachedStatus contract)
 	if cached == nil {
-		t.Fatal("GetEnvCheckStatus() should return non-nil even before checks")
+		t.Fatal("getEnvCheckStatus() should return non-nil even before checks")
 	}
 	if len(cached.Items) != 0 {
 		t.Errorf("expected 0 items before any check, got %d", len(cached.Items))
@@ -348,9 +342,9 @@ func TestGetStartupEnv(t *testing.T) {
 	}
 
 	// Assert: cached status is accessible via app API
-	cached := app.GetEnvCheckStatus()
+	cached := app.getEnvCheckStatus()
 	if cached == nil {
-		t.Fatal("GetEnvCheckStatus() returned nil after startup check")
+		t.Fatal("getEnvCheckStatus() returned nil after startup check")
 	}
 	if len(cached.Items) != len(status.Items) {
 		t.Errorf("cached items = %d, want %d matching CheckAll result",
@@ -384,9 +378,9 @@ func TestGetStartupEnv_WithIssues(t *testing.T) {
 	}
 
 	// Assert: the status is available through the app API
-	cached := app.GetEnvCheckStatus()
+	cached := app.getEnvCheckStatus()
 	if cached == nil {
-		t.Fatal("GetEnvCheckStatus() should return non-nil even when tools have issues")
+		t.Fatal("getEnvCheckStatus() should return non-nil even when tools have issues")
 	}
 	if len(cached.Issues) == 0 {
 		t.Error("cached status should also reflect the detected issues")

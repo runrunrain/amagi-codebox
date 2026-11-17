@@ -503,6 +503,45 @@ func (m *Manager) LifecycleSnapshotByID(id string) (AuthoritySnapshot, error) {
 	return snapshotLocked(entry), nil
 }
 
+// LaunchContextSnapshot 是会话权威启动上下文的只读投影：会话实际启动时
+// 定谳的 mode 与 workdir，加上提交（activation commit）进权威记录的
+// stable recipe 的 ShellRef（请求的 shell 偏好，不等于实际解析结果）。
+// 供只读消费方校验会话归属与模式；实际文件系统目标须读取 PTY 捕获的
+// SessionWSLTarget，不能重放 ShellRef 或当前默认 shell 推测。不携带
+// provider/model/PID/凭据。
+type LaunchContextSnapshot struct {
+	SessionID string
+	CLIType   launchplan.CLIType
+	Mode      launchplan.Mode
+	Workdir   string
+	ShellRef  string
+	State     AuthorityLifecycleState
+}
+
+// LaunchContextByID resolves the authoritative launch context of any present
+// authority entry (embedded and external alike). Stopped/exited sessions keep
+// their context until removal. ShellRef is empty when the entry was activated
+// without a recipe.
+func (m *Manager) LaunchContextByID(id string) (LaunchContextSnapshot, error) {
+	entry := m.entryForID(id)
+	if entry == nil {
+		return LaunchContextSnapshot{}, ErrAuthorityNotFound
+	}
+	entry.guard.Lock()
+	defer entry.guard.Unlock()
+	if entry.phase != authorityPresent {
+		return LaunchContextSnapshot{}, ErrAuthorityNotFound
+	}
+	return LaunchContextSnapshot{
+		SessionID: entry.session.ID,
+		CLIType:   launchplan.CLIType(entry.session.AppType),
+		Mode:      entry.private.mode,
+		Workdir:   entry.session.WorkDir,
+		ShellRef:  entry.private.recipe.ShellRef,
+		State:     entry.private.state,
+	}, nil
+}
+
 func (m *Manager) ResolveRemoteHandle(id string) (ResolvedRemoteHandle, error) {
 	m.indexMu.RLock()
 	entry := m.entries[id]

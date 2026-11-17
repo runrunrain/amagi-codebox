@@ -587,48 +587,6 @@ func isClaudeSIGKILLSignal(lowerMessage string, err error) bool {
 	return false
 }
 
-// ensureClaudeBinaryHealthy returns nil when the binary at path passes the
-// integrity inspection. It returns a descriptive error otherwise. Used by
-// the install pre-check to short-circuit attempts to "fall back" to a
-// truncated shard.
-func ensureClaudeBinaryHealthy(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("empty claude binary path")
-	}
-	report := InspectClaudeBinaryIntegrity(path)
-	if !report.Exists {
-		return nil // absent binary is handled elsewhere; not a corruption
-	}
-	if report.Corrupted {
-		return fmt.Errorf("claude binary at %s is corrupted: %s", path, report.Reason)
-	}
-	return nil
-}
-
-// healthyClaudeBinaryCandidates filters a list of candidate paths down to
-// those that pass the integrity inspection. It is used to gate the npm
-// package-binary fallback (installer.go claudeNPMPackageBinaryFallbackCandidates)
-// so a truncated shard left behind by an interrupted install is NOT
-// reported as a usable Claude Code binary.
-func healthyClaudeBinaryCandidates(candidates []string) []string {
-	out := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		report := InspectClaudeBinaryIntegrity(candidate)
-		if report.Exists && !report.Corrupted {
-			out = append(out, candidate)
-		}
-	}
-	return out
-}
-
 // ---------------------------------------------------------------------------
 // M-1: Detect-path auto self-heal
 // ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@
 
 import {
   InstallPlugin,
-  ListPlugins,
   RefreshPlugins,
   SetPluginEnabled,
   UninstallPlugin,
@@ -46,10 +45,6 @@ async function callOmp<T>(context: string, fn: () => Promise<T>): Promise<T> {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`${context}：${message}`, { cause: err });
   }
-}
-
-export async function listOmpPlugins(): Promise<OmpPlugin[]> {
-  return await callOmp('获取 OMP 插件列表失败', () => ListPlugins()) as OmpPlugin[];
 }
 
 export async function refreshOmpPlugins(): Promise<OmpPluginsData> {

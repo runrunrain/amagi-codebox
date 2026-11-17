@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"amagi-codebox/internal/fsutil"
 )
 
 // defaultAmagiConfig 是 amagi.json 缺失时返回的默认骨架，
@@ -53,19 +55,6 @@ func authConfigPath() string {
 	return filepath.Join(agentDir(), "auth.json")
 }
 
-// ensureDir creates the parent directory of the given path if it does not exist.
-func ensureDir(path string) error {
-	dir := filepath.Dir(path)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create directory %s: %w", dir, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("stat directory %s: %w", dir, err)
-	}
-	return nil
-}
-
 // GetAmagiConfig 读取 amagi.json 内容。文件缺失时返回默认骨架；
 // JSON 非法或根不是对象时原样返回内容，供用户在源码模式修复。
 func (s *Service) GetAmagiConfig() (string, error) {
@@ -90,7 +79,7 @@ func (s *Service) GetAmagiConfig() (string, error) {
 	return string(formatted) + "\n", nil
 }
 
-// SaveAmagiConfig 校验并保存 amagi.json：合法对象且 compaction 与插件契约一致。
+// SaveAmagiConfig 校验并保存 amagi.json：合法对象且 compaction/advisor 与插件契约一致。
 // 通过临时文件原子写入（0600，文件包含模型配置但不含密钥，仍按私有对待）。
 func (s *Service) SaveAmagiConfig(content string) error {
 	if err := ValidateAmagiConfig(content); err != nil {
@@ -107,10 +96,10 @@ func (s *Service) SaveAmagiConfig(content string) error {
 	formatted = append(formatted, '\n')
 
 	path := amagiConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, formatted)
+	return fsutil.WritePrivateFile(path, formatted)
 }
 
 // GetAmagiConfigPath 返回 amagi.json 的绝对路径（供前端展示/复制）。
@@ -121,7 +110,7 @@ func (s *Service) GetAmagiConfigPath() (string, error) {
 // ---------------------------------------------------------------------------
 // 显式目标窄接口（P3-S2，design §七）：原无 target 方法保持 Windows 默认语义；
 // 以下方法接受显式 agent 目录，不做任何进程级 PI_CODING_AGENT_DIR 变更。
-// WSL 私有文件的写入不走本接口（writePrivateFile 的 rename 失败直接覆盖回退
+// WSL 私有文件的写入不走本接口（fsutil.WritePrivateFile 的 rename 失败直接覆盖回退
 // 不能作为跨界 writer 复用）——必须经 wslsupply 协调器的安全提交原语。
 // ---------------------------------------------------------------------------
 
@@ -139,81 +128,6 @@ func (s *Service) ReadAgentFileAt(agentDir, name string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
-}
-
-// GetAmagiConfigAt 读取显式目录的 amagi.json（缺失返回默认骨架；非法 JSON
-// 原样返回，供源码模式修复）。与 GetAmagiConfig 同语义，仅目标显式。
-func (s *Service) GetAmagiConfigAt(agentDir string) (string, error) {
-	data, err := s.ReadAgentFileAt(agentDir, "amagi.json")
-	if err != nil {
-		return "", err
-	}
-	if len(data) == 0 {
-		return defaultAmagiConfig, nil
-	}
-	if !json.Valid(data) {
-		return string(data), nil
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
-		return string(data), nil
-	}
-	formatted, err := json.MarshalIndent(obj, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("format amagi config: %w", err)
-	}
-	return string(formatted) + "\n", nil
-}
-
-// SaveAmagiConfigAt 校验并保存 amagi.json 到显式目录（本地文件系统目标；
-// WSL UNC 目标拒绝——跨界私有文件写入必须经 wslsupply 安全提交原语）。
-func (s *Service) SaveAmagiConfigAt(agentDir, content string) error {
-	if err := ValidateAmagiConfig(content); err != nil {
-		return err
-	}
-	if isUNCPath(agentDir) {
-		return errors.New("refusing to write amagi.json into a WSL UNC target; use the config supply coordinator")
-	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(content), &obj); err != nil {
-		return err
-	}
-	formatted, err := json.MarshalIndent(obj, "", "  ")
-	if err != nil {
-		return fmt.Errorf("format JSON: %w", err)
-	}
-	formatted = append(formatted, '\n')
-	path := filepath.Join(agentDir, "amagi.json")
-	if err := ensureDir(path); err != nil {
-		return err
-	}
-	return writePrivateFile(path, formatted)
-}
-
-// isUNCPath 报告路径是否为 UNC 形态（\\wsl$… / \\wsl.localhost… 等网络根）。
-func isUNCPath(p string) bool {
-	return strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, `//`)
-}
-
-// writePrivateFile 临时文件 + rename 原子写入，权限 0600；
-// rename 失败（如 Windows 文件被占用）时回退直接覆盖。
-func writePrivateFile(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write temp file %s: %w", tmp, err)
-	}
-	defer func() { _ = os.Remove(tmp) }()
-	_ = os.Chmod(tmp, 0o600)
-
-	if err := os.Rename(tmp, path); err == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else if overwriteErr := os.WriteFile(path, data, 0o600); overwriteErr == nil {
-		_ = os.Chmod(path, 0o600)
-		return nil
-	} else {
-		return fmt.Errorf("replace config file %s: %w", path, err)
-	}
 }
 
 // GetModelsConfig 读取 models.json（provider 注册表）内容。
@@ -258,10 +172,10 @@ func (s *Service) SaveModelsConfig(content string) error {
 	formatted = append(formatted, '\n')
 
 	path := modelsConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, formatted)
+	return fsutil.WritePrivateFile(path, formatted)
 }
 
 // GetModelsConfigPath 返回 models.json 的绝对路径，供前端展示。
@@ -317,10 +231,10 @@ func (s *Service) SaveAuthConfig(content string) error {
 	formatted = append(formatted, '\n')
 
 	path := authConfigPath()
-	if err := ensureDir(path); err != nil {
+	if err := fsutil.EnsurePrivateDir(path); err != nil {
 		return err
 	}
-	return writePrivateFile(path, formatted)
+	return fsutil.WritePrivateFile(path, formatted)
 }
 
 // GetAuthConfigPath 返回 auth.json 的绝对路径，供前端展示。
@@ -335,6 +249,8 @@ type ModelCatalogEntry struct {
 	Reasoning      bool     `json:"reasoning"`
 	ThinkingLevels []string `json:"thinkingLevels,omitempty"`
 	ContextWindow  int      `json:"contextWindow,omitempty"`
+	// MaxTokens 是模型目录声明值，不应用 modelOverrides，供恢复最大输出额度。
+	MaxTokens int `json:"maxTokens,omitempty"`
 }
 
 // ModelCatalogProvider 是单个 provider 及其模型列表。
@@ -357,8 +273,8 @@ type ModelCatalog struct {
 	Providers []ModelCatalogProvider `json:"providers"`
 }
 
-// GetPiModelCatalog 读取 models.json，抽取 provider→models 目录（只读，
-// 不含 apiKey 等敏感信息），序列化为 JSON 返回。文件缺失时返回空目录。
+// GetPiModelCatalog 合并内置缓存与 models.json 的逐模型定义/覆盖（只读，
+// 不返回 apiKey 等敏感信息），序列化为 JSON 返回。
 func (s *Service) GetPiModelCatalog() (string, error) {
 	catalog := ModelCatalog{Providers: []ModelCatalogProvider{}}
 
@@ -380,11 +296,22 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 	providersRaw, _ := root["providers"].(map[string]any)
 	// 无 providers 键（含 models.json 缺失）不提前返回：builtin 目录与前线契约仍需合并。
 
+	// models.json 是内置目录的覆盖层，不是整组 provider 的替换。
+	// 缓存缺失/损坏时仍展示自定义模型；绝不从认证条目猜测模型 ID。
+	builtin, _ := loadBuiltinProviders()
 	names := make([]string, 0, len(providersRaw))
 	for name := range providersRaw {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	builtinNames := make([]string, 0, len(builtin))
+	for name := range builtin {
+		if _, custom := providersRaw[name]; !custom {
+			builtinNames = append(builtinNames, name)
+		}
+	}
+	sort.Strings(builtinNames)
+	names = append(names, builtinNames...)
 
 	// auth.json 中的提供商名集合（不读取凭据内容，仅判断有无有效条目）
 	authNames := map[string]bool{}
@@ -405,8 +332,13 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 	}
 
 	for _, name := range names {
-		entry := ModelCatalogProvider{Name: name, Models: []ModelCatalogEntry{}}
+		entry := ModelCatalogProvider{Name: name, HasAuth: authNames[name]}
+		base, _ := builtin[name].(map[string]any)
 		provider, _ := providersRaw[name].(map[string]any)
+		if _, custom := providersRaw[name]; !custom {
+			entry.Source = "builtin"
+		}
+		entry.Models = mergeCatalogModels(base, provider)
 		if provider != nil {
 			if api, ok := provider["api"].(string); ok {
 				entry.API = api
@@ -414,27 +346,8 @@ func (s *Service) GetPiModelCatalog() (string, error) {
 			if key, ok := provider["apiKey"].(string); ok && key != "" {
 				entry.HasAuth = true
 			}
-			entry.HasAuth = entry.HasAuth || authNames[name]
-			if models, ok := provider["models"].([]any); ok {
-				for _, m := range models {
-					model, ok := m.(map[string]any)
-					if !ok {
-						continue
-					}
-					if me, ok := extractModelEntry(model); ok {
-						entry.Models = append(entry.Models, me)
-					}
-				}
-			}
 		}
 		catalog.Providers = append(catalog.Providers, entry)
-	}
-
-	// 追加内置目录（models-store.json，根层为 providers 映射）：补齐仅存在于
-	// 内置目录/仅通过 OAuth 登录的提供商（如 openai-codex）。models.json 中
-	// 已有的自定义条目优先，不被内置版本覆盖。
-	if builtin, err := loadBuiltinCatalog(names, authNames); err == nil {
-		catalog.Providers = append(catalog.Providers, builtin...)
 	}
 
 	// 合并 amagi-pi 前线契约文件（~/.pi/agent/amagi/data/codex-frontline.json）：
@@ -468,6 +381,9 @@ func extractModelEntry(model map[string]any) (ModelCatalogEntry, bool) {
 	if cw, ok := model["contextWindow"].(float64); ok {
 		me.ContextWindow = int(cw)
 	}
+	if max, ok := model["maxTokens"].(float64); ok && max > 0 && max <= 9007199254740991 && max == float64(int(max)) {
+		me.MaxTokens = int(max)
+	}
 	me.ThinkingLevels = extractThinkingLevels(me.Reasoning, model["thinkingLevelMap"])
 	if me.ThinkingLevels == nil {
 		if thinking, ok := model["thinking"].(map[string]any); ok {
@@ -477,9 +393,9 @@ func extractModelEntry(model map[string]any) (ModelCatalogEntry, bool) {
 	return me, true
 }
 
-// loadBuiltinCatalog 读取 models-store.json（pi 内置模型目录缓存）并返回
-// 不在自定义注册表中的 providers。authNames 用于标注 OAuth/api_key 登录状态。
-func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]ModelCatalogProvider, error) {
+// loadBuiltinProviders 读取 models-store.json（根层为 provider 映射）。
+// 保留原始模型元数据，等 models.json 合并完后再抽取下拉所需字段。
+func loadBuiltinProviders() (map[string]any, error) {
 	storePath := filepath.Join(agentDir(), "models-store.json")
 	data, err := os.ReadFile(storePath)
 	if err != nil {
@@ -489,46 +405,61 @@ func loadBuiltinCatalog(customNames []string, authNames map[string]bool) ([]Mode
 	if err := json.Unmarshal(data, &store); err != nil {
 		return nil, err
 	}
+	return store, nil
+}
 
-	custom := map[string]bool{}
-	for _, n := range customNames {
-		custom[n] = true
-	}
-
-	names := make([]string, 0, len(store))
-	for name := range store {
-		if custom[name] {
-			continue
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var out []ModelCatalogProvider
-	for _, name := range names {
-		entry := ModelCatalogProvider{
-			Name:    name,
-			Models:  []ModelCatalogEntry{},
-			Source:  "builtin",
-			HasAuth: authNames[name],
-		}
-		provider, _ := store[name].(map[string]any)
-		if provider != nil {
-			if models, ok := provider["models"].([]any); ok {
-				for _, m := range models {
-					model, ok := m.(map[string]any)
-					if !ok {
-						continue
-					}
-					if me, ok := extractModelEntry(model); ok {
-						entry.Models = append(entry.Models, me)
-					}
-				}
+// mergeCatalogModels 复刻 Pi models.json 语义：models 按 id 添加/替换，
+// 最后应用 modelOverrides（未知 id 忽略；thinkingLevelMap 逐键合并，含 null）。
+func mergeCatalogModels(base, custom map[string]any) []ModelCatalogEntry {
+	models := []map[string]any{}
+	indices := map[string]int{}
+	for _, provider := range []map[string]any{base, custom} {
+		rawModels, _ := provider["models"].([]any)
+		for _, raw := range rawModels {
+			model, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := model["id"].(string)
+			if id == "" {
+				continue
+			}
+			if i, exists := indices[id]; exists {
+				models[i] = model
+			} else {
+				indices[id] = len(models)
+				models = append(models, model)
 			}
 		}
-		out = append(out, entry)
 	}
-	return out, nil
+	overrides, _ := custom["modelOverrides"].(map[string]any)
+	out := make([]ModelCatalogEntry, 0, len(models))
+	for _, model := range models {
+		id, _ := model["id"].(string)
+		if override, ok := overrides[id].(map[string]any); ok {
+			// 仅应用目录消费的字段；id 不可覆盖，敏感字段不进入输出。
+			for _, key := range []string{"name", "reasoning", "contextWindow"} {
+				if value, exists := override[key]; exists && value != nil {
+					model[key] = value
+				}
+			}
+			if patch, ok := override["thinkingLevelMap"].(map[string]any); ok {
+				levels, _ := model["thinkingLevelMap"].(map[string]any)
+				merged := map[string]any{}
+				for key, value := range levels {
+					merged[key] = value
+				}
+				for key, value := range patch {
+					merged[key] = value
+				}
+				model["thinkingLevelMap"] = merged
+			}
+		}
+		if entry, ok := extractModelEntry(model); ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // mergeFrontlineContract 把 amagi-pi 前线契约文件的追加模型与档位补丁合并进目录对应 provider。
