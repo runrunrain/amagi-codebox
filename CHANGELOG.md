@@ -4,6 +4,17 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.144] - 2026-11-17
+
+### Added
+
+- **公共子页「共用插件市场」**（扩展中心第三个公共页签，与共用技能/共用 MCP 同构）：把 Claude Code 插件市场（或任意 git 市场源）以引擎中立形式纳入统一管理——浅 clone 到 `~/.agents/marketplaces/<name>`（登记状态 `~/.agents/marketplaces.json` 原子写）；支持「从 Claude Code 导入」（URL/github repo/本地 installLocation 三级源转换，保持同名）与直接添加；市场内插件 skills 可一键部署到 `~/.agents/skills` 成为共用技能（staging 原子发布、不覆盖已有目录、失败可重试），部署后联动刷新共用技能缓存。域服务 `internal/sharedmarket`（git 执行注入点），App 门面 9 个方法（`app_sharedmarket.go`，不进 Bind 列表），前端 `SharedMarketPanel` 两级分页 + api/store 全链。
+
+### Fixed
+
+- **插件子项（skill/command/agent/MCP）启停完全不生效，真实状态不体现**：开关原本只写 CodeBox 私有记录（~/.amagi-codebox/plugin-subitems.json），Claude Code 不读该文件——界面状态变化对 CLI 零效果，且与文件系统真相脱钩。重构为「文件系统即真相」：禁用 skill/command/agent = 把 installPath 下对应目录/文件移入 stash（~/.amagi-codebox/plugin-subitems-stash，Claude 扫描不到即真实不加载）；禁用 MCP server = 从插件 .mcp.json 移除条目存入 stash（读不到即不挂载）；启用 = 原样移回/写回。详情页子项状态以「installPath 在位 = 启用、stash 在位 = 禁用」实时合并（插件 update 重装恢复后新文件优先，孤儿 stash 下次启用时弃置，MCP 同策略不覆盖新版定义）；展示名（frontmatter name）与物理路径经 stash sidecar 元数据映射——按显示名操作始终定位真实物理文件；.mcp.json/stash 为合法 JSON null 时按空对象处理不 panic，stash 损坏时显式报错不覆盖；子项写操作与卸载/更新互斥（锁内重验安装身份，防向已卸载路径恢复孤立文件）；hooks.json 无稳定条目标识，hooks 子项如实标注不支持单独启停（行不可切、操作明确报错）。插件级启停链路实测有效（settings.json enabledPlugins 双向验证）；App 分派层在 Claude 注册表读取失败时改为显式报错（原先静默落到 Codex no-op，开关无声失效无从排查）。
+- **插件全装完的市场显示「0 个可安装」、市场页「已安装」页签永远为空**：市场目录数据源原为 `claude plugin list --json --available`，该输出只含未安装插件（Claude Code 2.1.319 实测），vexel（2 插件全装）/godot（1 插件全装）必显 0；旧版 CLI bare-array 形状还混入 claude.ai 插件目录 3700+ 条虚标「全部市场」计数（截图 3956 实为 232 市场条目 + 3724 目录条目）。改为本地市场 clone 直读（`~/.claude/plugins/marketplaces/<name>/.claude-plugin/marketplace.json`，完整含已安装条目）为主，CLI 输出降级为 installCount 合并与本地不可读时的 fallback（过滤未注册市场条目；混合可用性时仅对失败市场合并）；官方市场 173/223 条 `source` 为对象导致整个 catalog 解析失败被跳过——`flexibleString` 宽容降级。连带修复：跨市场同名插件（writing-skills 同时在 amagi/vexel）isInstalled 仅按 name 互相误判 + 安装传参歧义（改按完整 `name@marketplace`）；添加市场后 5 分钟目录缓存不失效（改为全量三 load 失效重载）；市场徽章文案改「N 个插件」对齐含已安装条目的语义。
+
 ## [1.3.143] - 2026-11-17
 
 ### Added
