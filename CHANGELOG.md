@@ -4,6 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.141] - 2026-11-17
+
+### Removed
+
+- **后端与测试代码深扫（code-sweep 第二轮：deadcode 可达性 × unused(tests:false) 交叉，净删约 1590 行）**：
+  - **测试替身移出产品编译**：`control_h123_test_helpers.go` 整文件（fakeCausalPort/recordingLifecycleHook 等 19 符号）改名 `_test.go`；resetWSL*CacheForTest 系列钩子、waitForWSLSupplyPushIdleForTest、recordCount、newServiceWithRunner、readIntent、tryAcquire、writeServerEventSync、noopSessionRawPort/noopFencer/serverMsg、sharedServiceFingerprint、boolPtr、commitFaults.add、submitFileCtx、VolatileSecurityEventSink 簇、newSecurityOptions、noopSessionOperationJournal 簇、SessionStateAdapter 整文件——凡「仅测试消费的观察口/构造口/替身」一律归位 `_test.go`（Go 同包加方法合法，调用点零改动），产品二进制不再携带测试基建。
+  - **退役特性孤儿及其守护测试删除**（deadcode 判 main 不可达 + unused 判仅测试引用双确认，全平台词界复核剔除 darwin/Linux/e2e 在用 17 项）：App 补偿债查询/重试、getProviderAPIKeyForFormat、stopAllSessionsForShutdown、syncCodexConfig* 子系统 ×4、envcheck codex stale-NPM 清理子系统 ×13、claude 二进制健康自愈 ×2、NPM 候选枚举 ×3、RunEventSinkFunc、ShutdownCleanupPermit 死字段等；连带删除 28 个「博物馆测试」（测的是已从产品摘除的子系统）与 10 项孤儿测试基建。
+  - **有意保留豁免（设计锚）**：productionRemoteLaunchResolver 簇（app.go fail-closed 注释明示五 planners 实现前不注入）、resolvePiLoginPreset（毗邻活的统一登录分类器）、realRunnerOnInit（init 接线快照）、procFSProcessIdentity/encodePoolEnvelope/verifySavedPool/syncFeedAndAttachCausal（Linux/darwin keychain/e2e harness 平台在用——Windows 侧扫描的平台盲区）。
+  - 工具沉淀：新增 `go run` 形式的 deadcode/unused(tests:false) 交叉流程与 AST 声明级删除脚本经验，纳入 code-sweep skill 后续演进素材。
+
+### Notes
+
+- 已验证：go build/vet/golangci-lint（0 issues，含 --tests=false 复扫仅剩 8 项已豁免平台盲区）/gofmt 全空；受影响包与全量 Windows 测试失败集与清扫前基线逐族一致（Pairing/MigrationGate 翻转项经基线代码单跑复验为 Windows 预存文件锁/时序 flake 族）；macOS CI 全量为权威门。
+
 ## [1.3.140] - 2026-11-17
 
 ### Fixed
