@@ -40,7 +40,7 @@
 
 | Phase | 内容 | Agent | 依赖 | 交付/验收 | 状态 |
 |---|---|---|---|---|---|
-| P1 | internal/sharedext 包：skill 导入(zip安全/文件夹)/删除/启停/复制分发+清单回收；MCP JSON 多格式导入/删除/启停/5 CLI 写入移除；聚合器(手动+插件来源标记,带缓存)；精简 TOML 保真编辑器；全单测 | luban | - | 单测绿+vet 绿；commit | pending |
+| P1 | internal/sharedext 包：skill 导入(zip安全/文件夹)/删除/启停/复制分发+清单回收；MCP JSON 多格式导入/删除/启停/5 CLI 写入移除；聚合器(手动+插件来源标记,带缓存)；精简 TOML 保真编辑器；全单测 | luban | - | 单测绿+vet 绿；commit `4c16b6ab` | done ✅ |
 | P2 | app.go 接线+bind_list.go+文件/目录选择对话框；frontend api/sharedExt.ts+stores/sharedExt.ts；wails generate module | luban | P1 | 绑定可调；store 单测；commit | pending |
 | P3 | 前端「共用」主 tab：CommonSkillsPanel(来源徽章/启停/删除禁用/目标勾选/导入)、CommonMCPPanel(JSON导入预览/启停/删除/目标)；跳转插件详情；Vitest | luban | P2 | Vitest 绿+npm build 绿；commit | pending |
 | P4 | 生命周期补齐：Codex 单插件更新；Pi 包启停+skill 级过滤启停；OpenCode/OMP skill 级启停(按 CLI 实际能力)；更新/卸载后聚合刷新联动 | luban | P2 (可与P3并行度受限于共享前端文件→串行) | 单测绿；commit | pending |

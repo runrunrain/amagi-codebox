@@ -2121,6 +2121,7 @@ export namespace envvars {
 	export class EnvVar {
 	    key: string;
 	    value: string;
+	    allowPathValue?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EnvVar(source);
@@ -2130,6 +2131,7 @@ export namespace envvars {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
 	        this.value = source["value"];
+	        this.allowPathValue = source["allowPathValue"];
 	    }
 	}
 	export class GlobalSyncStatus {
@@ -2532,6 +2534,38 @@ export namespace main {
 	        this.running = source["running"];
 	    }
 	}
+	export class ImportSharedMCPResult {
+	    imported: sharedext.SharedMCPServer[];
+	    skipped: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ImportSharedMCPResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.imported = this.convertValues(source["imported"], sharedext.SharedMCPServer);
+	        this.skipped = source["skipped"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ModalityProbeNowResult {
 	    conclusive: boolean;
 	    vision: boolean;
@@ -2567,6 +2601,102 @@ export namespace main {
 	        this.port = source["port"];
 	        this.running = source["running"];
 	    }
+	}
+	export class PiPluginOpOutcome {
+	    target: string;
+	    ok: boolean;
+	    outcome: string;
+	    errCode?: string;
+	    detail?: string;
+	    output?: string;
+	    pinnedRef?: string;
+	    refKind?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PiPluginOpOutcome(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.target = source["target"];
+	        this.ok = source["ok"];
+	        this.outcome = source["outcome"];
+	        this.errCode = source["errCode"];
+	        this.detail = source["detail"];
+	        this.output = source["output"];
+	        this.pinnedRef = source["pinnedRef"];
+	        this.refKind = source["refKind"];
+	    }
+	}
+	export class PiPluginTargetedResult {
+	    target: string;
+	    results: PiPluginOpOutcome[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PiPluginTargetedResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.target = source["target"];
+	        this.results = this.convertValues(source["results"], PiPluginOpOutcome);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PiPluginWSLStatus {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    snapshot: wslsupply.WSLPluginSnapshot;
+	    summary: wslsupply.PluginRegistrationSummary;
+	
+	    static createFrom(source: any = {}) {
+	        return new PiPluginWSLStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.snapshot = this.convertValues(source["snapshot"], wslsupply.WSLPluginSnapshot);
+	        this.summary = this.convertValues(source["summary"], wslsupply.PluginRegistrationSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class RemoteClientConnectResult {
 	    host: remoteclient.HostEntry;
@@ -2688,6 +2818,104 @@ export namespace main {
 	        this.configuredPort = source["configuredPort"];
 	    }
 	}
+	export class WSLSkillSummary {
+	    name: string;
+	    state: string;
+	    detail: string;
+	    incompatible?: string[];
+	    excluded: number;
+	    files: number;
+	    bytes: number;
+	    selectable: boolean;
+	    actions: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSkillSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.incompatible = source["incompatible"];
+	        this.excluded = source["excluded"];
+	        this.files = source["files"];
+	        this.bytes = source["bytes"];
+	        this.selectable = source["selectable"];
+	        this.actions = source["actions"];
+	    }
+	}
+	export class WSLSkillsSupplyStatus {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    rootMissing: boolean;
+	    scanStarted: boolean;
+	    scanRunning: boolean;
+	    scanScanned: number;
+	    scanTotal: number;
+	    scanIncomplete: boolean;
+	    skills: WSLSkillSummary[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLSkillsSupplyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.rootMissing = source["rootMissing"];
+	        this.scanStarted = source["scanStarted"];
+	        this.scanRunning = source["scanRunning"];
+	        this.scanScanned = source["scanScanned"];
+	        this.scanTotal = source["scanTotal"];
+	        this.scanIncomplete = source["scanIncomplete"];
+	        this.skills = this.convertValues(source["skills"], WSLSkillSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WSLConfigUnitDetail {
+	    unit: string;
+	    relPath: string;
+	    policy: string;
+	    state: string;
+	    detail: string;
+	    actions: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLConfigUnitDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.unit = source["unit"];
+	        this.relPath = source["relPath"];
+	        this.policy = source["policy"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.actions = source["actions"];
+	    }
+	}
 	export class WSLCliSupplyStatus {
 	    distro: string;
 	    available: boolean;
@@ -2726,7 +2954,6 @@ export namespace main {
 		    return a;
 		}
 	}
-
 	export class WSLConfigSupplyFace {
 	    key: string;
 	    label: string;
@@ -2745,28 +2972,6 @@ export namespace main {
 	        this.state = source["state"];
 	        this.detail = source["detail"];
 	        this.lastCheck = source["lastCheck"];
-	    }
-	}
-	export class WSLConfigUnitDetail {
-	    unit: string;
-	    relPath: string;
-	    policy: string;
-	    state: string;
-	    detail: string;
-	    actions: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLConfigUnitDetail(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.unit = source["unit"];
-	        this.relPath = source["relPath"];
-	        this.policy = source["policy"];
-	        this.state = source["state"];
-	        this.detail = source["detail"];
-	        this.actions = source["actions"];
 	    }
 	}
 	export class WSLConfigSupplyStatus {
@@ -2896,6 +3101,46 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class WSLOpenCodeMCPEntry {
+	    name: string;
+	    remote: boolean;
+	    nativeCommand: string;
+	    needsAdapt: boolean;
+	    reason: string;
+	    globalConflict: boolean;
+	    overrideGlobal: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLOpenCodeMCPEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.remote = source["remote"];
+	        this.nativeCommand = source["nativeCommand"];
+	        this.needsAdapt = source["needsAdapt"];
+	        this.reason = source["reason"];
+	        this.globalConflict = source["globalConflict"];
+	        this.overrideGlobal = source["overrideGlobal"];
+	    }
+	}
+	export class WSLPluginTargetEntry {
+	    cli: string;
+	    support: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLPluginTargetEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cli = source["cli"];
+	        this.support = source["support"];
+	        this.detail = source["detail"];
+	    }
+	}
 	export class WSLSkillPreview {
 	    name: string;
 	    portable: boolean;
@@ -2924,107 +3169,8 @@ export namespace main {
 	        this.notes = source["notes"];
 	    }
 	}
-	export class WSLSkillSummary {
-	    name: string;
-	    state: string;
-	    detail: string;
-	    incompatible?: string[];
-	    excluded: number;
-	    files: number;
-	    bytes: number;
-	    selectable: boolean;
-	    actions: string[];
 	
-	    static createFrom(source: any = {}) {
-	        return new WSLSkillSummary(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.state = source["state"];
-	        this.detail = source["detail"];
-	        this.incompatible = source["incompatible"];
-	        this.excluded = source["excluded"];
-	        this.files = source["files"];
-	        this.bytes = source["bytes"];
-	        this.selectable = source["selectable"];
-	        this.actions = source["actions"];
-	    }
-	}
-	export class WSLSkillsSupplyStatus {
-	    distro: string;
-	    available: boolean;
-	    reason?: string;
-	    rootMissing: boolean;
-	    scanStarted: boolean;
-	    scanRunning: boolean;
-	    scanScanned: number;
-	    scanTotal: number;
-	    scanIncomplete: boolean;
-	    skills: WSLSkillSummary[];
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLSkillsSupplyStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.distro = source["distro"];
-	        this.available = source["available"];
-	        this.reason = source["reason"];
-	        this.rootMissing = source["rootMissing"];
-	        this.scanStarted = source["scanStarted"];
-	        this.scanRunning = source["scanRunning"];
-	        this.scanScanned = source["scanScanned"];
-	        this.scanTotal = source["scanTotal"];
-	        this.scanIncomplete = source["scanIncomplete"];
-	        this.skills = this.convertValues(source["skills"], WSLSkillSummary);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 
-	export class WSLOpenCodeMCPEntry {
-	    name: string;
-	    remote: boolean;
-	    nativeCommand: string;
-	    needsAdapt: boolean;
-	    reason: string;
-	    globalConflict: boolean;
-	    overrideGlobal: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new WSLOpenCodeMCPEntry(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.remote = source["remote"];
-	        this.nativeCommand = source["nativeCommand"];
-	        this.needsAdapt = source["needsAdapt"];
-	        this.reason = source["reason"];
-	        this.globalConflict = source["globalConflict"];
-	        this.overrideGlobal = source["overrideGlobal"];
-	    }
-	}
 }
 
 export namespace ompplugin {
@@ -4839,6 +4985,143 @@ export namespace settings {
 
 }
 
+export namespace sharedext {
+	
+	export class AggregatedSkill {
+	    name: string;
+	    description: string;
+	    origin: string;
+	    pluginEngine?: string;
+	    pluginId?: string;
+	    pluginName?: string;
+	    managed: boolean;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new AggregatedSkill(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.origin = source["origin"];
+	        this.pluginEngine = source["pluginEngine"];
+	        this.pluginId = source["pluginId"];
+	        this.pluginName = source["pluginName"];
+	        this.managed = source["managed"];
+	        this.enabled = source["enabled"];
+	    }
+	}
+	export class PluginSkill {
+	    name: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginSkill(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	    }
+	}
+	export class PluginSkillsProvider {
+	    engine: string;
+	    pluginId: string;
+	    pluginName: string;
+	    skills: PluginSkill[];
+	    subItemsDisabled?: Record<string, boolean>;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginSkillsProvider(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.engine = source["engine"];
+	        this.pluginId = source["pluginId"];
+	        this.pluginName = source["pluginName"];
+	        this.skills = this.convertValues(source["skills"], PluginSkill);
+	        this.subItemsDisabled = source["subItemsDisabled"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SharedMCPServer {
+	    name: string;
+	    config: Record<string, any>;
+	    origin: string;
+	    enabled: boolean;
+	    targets: string[];
+	    deployed: string[];
+	    createdAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedMCPServer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.config = source["config"];
+	        this.origin = source["origin"];
+	        this.enabled = source["enabled"];
+	        this.targets = source["targets"];
+	        this.deployed = source["deployed"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
+	export class SharedSkill {
+	    name: string;
+	    description: string;
+	    sourcePath: string;
+	    origin: string;
+	    enabled: boolean;
+	    targets: string[];
+	    deployed: string[];
+	    deployedAt?: string;
+	    createdAt: string;
+	    missing?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedSkill(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.sourcePath = source["sourcePath"];
+	        this.origin = source["origin"];
+	        this.enabled = source["enabled"];
+	        this.targets = source["targets"];
+	        this.deployed = source["deployed"];
+	        this.deployedAt = source["deployedAt"];
+	        this.createdAt = source["createdAt"];
+	        this.missing = source["missing"];
+	    }
+	}
+
+}
+
 export namespace skins {
 	
 	export class Skin {
@@ -5611,6 +5894,131 @@ export namespace wslsetup {
 	        this.nodeVersion = source["nodeVersion"];
 	        this.tools = this.convertValues(source["tools"], ToolStatus);
 	        this.reason = source["reason"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace wslsupply {
+	
+	export class PluginRegistrationSummary {
+	    managed: number;
+	    installed: number;
+	    failed: number;
+	    frozen: number;
+	    missing: number;
+	    pendingOps: number;
+	    lastOpAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PluginRegistrationSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.managed = source["managed"];
+	        this.installed = source["installed"];
+	        this.failed = source["failed"];
+	        this.frozen = source["frozen"];
+	        this.missing = source["missing"];
+	        this.pendingOps = source["pendingOps"];
+	        this.lastOpAt = source["lastOpAt"];
+	    }
+	}
+	export class WSLPluginItem {
+	    source: string;
+	    identity: string;
+	    sourceType: string;
+	    name?: string;
+	    version?: string;
+	    commit?: string;
+	    managed: boolean;
+	    state: string;
+	    detail?: string;
+	    entityPresent: boolean;
+	    settingsPresent: boolean;
+	    entityPath?: string;
+	    pinnedRef?: string;
+	    refKind?: string;
+	    frozen?: boolean;
+	    frozenReason?: string;
+	    lastOp?: string;
+	    lastErrorCode?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLPluginItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.identity = source["identity"];
+	        this.sourceType = source["sourceType"];
+	        this.name = source["name"];
+	        this.version = source["version"];
+	        this.commit = source["commit"];
+	        this.managed = source["managed"];
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.entityPresent = source["entityPresent"];
+	        this.settingsPresent = source["settingsPresent"];
+	        this.entityPath = source["entityPath"];
+	        this.pinnedRef = source["pinnedRef"];
+	        this.refKind = source["refKind"];
+	        this.frozen = source["frozen"];
+	        this.frozenReason = source["frozenReason"];
+	        this.lastOp = source["lastOp"];
+	        this.lastErrorCode = source["lastErrorCode"];
+	    }
+	}
+	export class WSLPluginSnapshot {
+	    distro: string;
+	    available: boolean;
+	    reason?: string;
+	    checked: boolean;
+	    checkedAt?: string;
+	    piResolve?: string;
+	    items: WSLPluginItem[];
+	    managed: number;
+	    installed: number;
+	    mismatched: number;
+	    local: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSLPluginSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.distro = source["distro"];
+	        this.available = source["available"];
+	        this.reason = source["reason"];
+	        this.checked = source["checked"];
+	        this.checkedAt = source["checkedAt"];
+	        this.piResolve = source["piResolve"];
+	        this.items = this.convertValues(source["items"], WSLPluginItem);
+	        this.managed = source["managed"];
+	        this.installed = source["installed"];
+	        this.mismatched = source["mismatched"];
+	        this.local = source["local"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

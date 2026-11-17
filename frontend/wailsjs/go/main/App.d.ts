@@ -6,6 +6,7 @@ import {main} from '../models';
 import {envcheck} from '../models';
 import {updater} from '../models';
 import {aiproxy} from '../models';
+import {sharedext} from '../models';
 import {config} from '../models';
 import {dockerwsl} from '../models';
 import {envvars} from '../models';
@@ -26,6 +27,7 @@ export function AddSavedWorkDir(arg1:string,arg2:string):Promise<Array<settings.
 export function AddUrlToHistory(arg1:string,arg2:string):Promise<void>;
 
 export function ApplyWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function ApplyWSLCliResourcesSupply(arg1:string,arg2:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
 export function ApplyWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitOutcome>>;
@@ -39,6 +41,8 @@ export function CancelRemotePairingWindow(arg1:number):Promise<boolean>;
 export function CheckClaudeConfig():Promise<envcheck.ClaudeConfigStatus>;
 
 export function CheckForUpdate():Promise<updater.UpdateInfo>;
+
+export function CheckPiPluginWSLStatus():Promise<main.PiPluginWSLStatus>;
 
 export function CheckTool(arg1:string):Promise<envcheck.CheckStatus>;
 
@@ -66,6 +70,10 @@ export function DeleteEnvVar(arg1:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
 
+export function DeleteSharedMCPServer(arg1:string):Promise<void>;
+
+export function DeleteSharedSkill(arg1:string):Promise<void>;
+
 export function DeleteTerminalPreset(arg1:string,arg2:string):Promise<void>;
 
 export function DownloadAndApplyUpdate():Promise<void>;
@@ -84,6 +92,8 @@ export function FixClaudeConfig(arg1:string,arg2:string,arg3:string):Promise<env
 
 export function GetAIProxyState():Promise<aiproxy.State>;
 
+export function GetAllSharedSkillsAggregated(arg1:boolean):Promise<Array<sharedext.AggregatedSkill>>;
+
 export function GetAmagiConfig():Promise<string>;
 
 export function GetAmagiConfigPath():Promise<string>;
@@ -95,6 +105,8 @@ export function GetCodexGlobalHeadroom():Promise<main.CodexGlobalHeadroomStatus>
 export function GetConfigService():Promise<config.ConfigService>;
 
 export function GetDockerWSLHealth():Promise<dockerwsl.HealthReport>;
+
+export function GetDrvFSAdvisories():Promise<string>;
 
 export function GetEnvCheckOperationState():Promise<envcheck.OperationState>;
 
@@ -158,6 +170,8 @@ export function GetPiModelsConfig():Promise<string>;
 
 export function GetPiModelsConfigPath():Promise<string>;
 
+export function GetPiPluginWSLStatus():Promise<main.PiPluginWSLStatus>;
+
 export function GetPlatformCapabilities():Promise<platform.PlatformCapabilities>;
 
 export function GetProviderExportJSON(arg1:string):Promise<string>;
@@ -190,6 +204,10 @@ export function GetSessions():Promise<Array<session.SessionInfo>>;
 
 export function GetSettingsService():Promise<settings.Service>;
 
+export function GetSharedMCPServers():Promise<Array<sharedext.SharedMCPServer>>;
+
+export function GetSharedSkills():Promise<Array<sharedext.SharedSkill>>;
+
 export function GetStartupWarnings():Promise<Array<string>>;
 
 export function GetSystemProxyStatus():Promise<main.SystemProxyStatus>;
@@ -206,6 +224,8 @@ export function GetWSLConfigSupplyStatus():Promise<main.WSLConfigSupplyStatus>;
 
 export function GetWSLOpenCodeMCPPreview():Promise<Array<main.WSLOpenCodeMCPEntry>>;
 
+export function GetWSLPluginTargetSupport():Promise<Array<main.WSLPluginTargetEntry>>;
+
 export function GetWSLSkillsSupplyStatus():Promise<main.WSLSkillsSupplyStatus>;
 
 export function GrantWSLVisionConsent():Promise<void>;
@@ -220,8 +240,6 @@ export function HeadroomStart(arg1:string):Promise<void>;
 
 export function HeadroomStop():Promise<void>;
 
-export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
-
 export function ImportAIProxySubscription(arg1:string,arg2:string,arg3:string):Promise<aiproxy.State>;
 
 export function ImportConfigFromFile():Promise<string>;
@@ -230,13 +248,26 @@ export function ImportEnvVars(arg1:string):Promise<void>;
 
 export function ImportEnvVarsFromFile():Promise<void>;
 
+export function ImportSharedMCPServers(arg1:Array<sharedext.SharedMCPServer>):Promise<main.ImportSharedMCPResult>;
+
+export function ImportSharedSkillFromDir(arg1:string):Promise<Array<sharedext.SharedSkill>>;
+
+export function ImportSharedSkillFromZip(arg1:string):Promise<Array<sharedext.SharedSkill>>;
+
+export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
+
 export function InstallCLIToWSL(arg1:string):Promise<wslsetup.InstallResult>;
 
 export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallResult>;
 
+export function InstallPiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
+
 export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
 
+export function InvalidateSharedExtCache():Promise<void>;
+
 export function KeepWSLCliConfigUnitLocal(arg1:string,arg2:string):Promise<void>;
+
 export function KeepWSLCliResourceLocal(arg1:string,arg2:string):Promise<void>;
 
 export function KeepWSLPiConfigUnitLocal(arg1:string):Promise<void>;
@@ -267,7 +298,16 @@ export function OpenFileInEditor(arg1:string,arg2:number):Promise<void>;
 
 export function OpenRemoteWebUI():Promise<main.OpenRemoteWebUIResult>;
 
+export function PickMCPJSONFile():Promise<string>;
+
+export function PickSharedSkillDir():Promise<string>;
+
+export function PickSharedSkillZipFile():Promise<string>;
+
+export function PreviewSharedMCPJSON(arg1:string):Promise<Array<sharedext.SharedMCPServer>>;
+
 export function PreviewWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitPreview>>;
+
 export function PreviewWSLCliResourcesSupply(arg1:string):Promise<Array<main.WSLSkillPreview>>;
 
 export function PreviewWSLPiConfigSupply():Promise<Array<main.WSLConfigUnitPreview>>;
@@ -289,6 +329,8 @@ export function PtyWrite(arg1:string,arg2:string):Promise<void>;
 export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
 
 export function QuickLaunch(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+
+export function ReadTextFile(arg1:string):Promise<string>;
 
 export function RefreshAIProxySubscription(arg1:string):Promise<aiproxy.State>;
 
@@ -352,6 +394,8 @@ export function RemoteClientTerminalSendInput(arg1:string,arg2:string):Promise<v
 
 export function RemoteClientUpdateHost(arg1:string,arg2:string):Promise<void>;
 
+export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
+
 export function RemoveSavedWorkDir(arg1:string):Promise<Array<settings.WorkDirEntry>>;
 
 export function RemoveSession(arg1:string):Promise<void>;
@@ -398,9 +442,10 @@ export function SetCodexGlobalHeadroom(arg1:boolean,arg2:string,arg3:number):Pro
 
 export function SetEnvVar(arg1:string,arg2:string):Promise<void>;
 
-export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.GlobalSyncStatus>;
-// P4-A2（2026-10-17）：路径值 per-key 放行门（原生 boolean 参数；下次 wails generate 再生时自动归一）。
 export function SetEnvVarPathAllow(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetEnvVarsGlobalSyncEnabled(arg1:boolean):Promise<envvars.GlobalSyncStatus>;
+
 export function SetGitHubToken(arg1:string):Promise<void>;
 
 export function SetPluginSubItemEnabled(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
@@ -410,6 +455,14 @@ export function SetRemoteEndpoint(arg1:string,arg2:number):Promise<void>;
 export function SetRemoteHost(arg1:string):Promise<void>;
 
 export function SetRemotePort(arg1:number):Promise<void>;
+
+export function SetSharedMCPServerEnabled(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetSharedMCPServerTargets(arg1:string,arg2:Array<sharedext.Engine>):Promise<void>;
+
+export function SetSharedSkillEnabled(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetSharedSkillTargets(arg1:string,arg2:Array<sharedext.Engine>):Promise<void>;
 
 export function SetSystemProxyEnabled(arg1:boolean):Promise<main.SystemProxyStatus>;
 
@@ -430,6 +483,7 @@ export function StopSession(arg1:string):Promise<void>;
 export function SyncAIProxyV2rayN():Promise<aiproxy.State>;
 
 export function TakeOverWSLCliConfigUnit(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function TakeOverWSLCliResource(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function TakeOverWSLPiConfigUnit(arg1:string,arg2:string):Promise<void>;
@@ -440,26 +494,8 @@ export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 
 export function UninstallClaudeCode(arg1:string):Promise<envcheck.InstallResult>;
 
+export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
+
 export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function UpdateTool(arg1:string):Promise<envcheck.InstallResult>;
-
-// P3-S5（2026-10-16）：插件目标化绑定（本机无 wails CLI 期手工补齐；返回类型
-// 暂用 any，前端 api/piPlugin.ts 以本地 interface 承接——下次 wails generate
-// 再生时会按 models.ts 生成强类型并自动归一）。
-export function GetWSLPluginTargetSupport():Promise<any>;
-
-export function InstallPiPackageTargeted(arg1:string,arg2:string):Promise<any>;
-
-export function UpdatePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
-
-export function RemovePiPackageTargeted(arg1:string,arg2:string):Promise<any>;
-
-export function GetPiPluginWSLStatus():Promise<any>;
-
-export function CheckPiPluginWSLStatus():Promise<any>;
-
-// P4-A1（2026-10-17）：DrvFS advisory 只读查询（本机无 wails CLI 期手工补齐；
-// 返回类型暂用 any，前端 api/drvfsAdvisory.ts 以本地 interface 承接并解析
-// JSON 字符串——下次 wails generate 再生时会按 models.ts 生成强类型并自动归一）。
-export function GetDrvFSAdvisories():Promise<any>;

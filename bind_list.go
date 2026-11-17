@@ -37,5 +37,10 @@ func buildWailsBindList(app *App) []any {
 		app.WebUI,
 		app.Skins,
 		app.GitAssist,
+		// 公共扩展中心（sharedext）：公共 skill / 公共 MCP 简单 CRUD 直接走服务
+		// 绑定；对话框 / 聚合 / MCP 导入信封等需要 App 上下文的门面在 App 上
+		//（app.go 尾部 Shared Extensions 段）。注意服务层 ImportMCPServers 为
+		// 三返回值，Wails v2 不支持绑定，导入统一走 App.ImportSharedMCPServers。
+		app.sharedExt,
 	}
 }
