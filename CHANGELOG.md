@@ -14,6 +14,26 @@
 
 - **WSL 启动的 pi 会话 Web 视图永不出现（探测窗口耗尽后停探，服务晚就绪无人再探）**：WSL+DrvFS 目标下 pi 扩展的 webui server 就绪耗时可达 3m42s+（2026-11-17 会话 b5415434 实测：11:35:03 启动、11:38:45 就绪，超出 3min WSL 探测窗口 42s），后端落 unavailable 后前端把该态当终态永久停探——服务真正就绪（端口仍在监听）后无人再探测，Web 视图入口永不出现。修复三面：桌面前端（`stores/session.ts`）unavailable 非终态，转 10s 低频复活探测（后端状态机本就允许 unavailable → available，一轮探测即恢复）；mobile `useSessionWebUI` 同口径（网络瞬断亦自愈）；remote v1 启动链（`launch_executor.go`）WSL 目标补齐桌面同款的 `DefaultWSLProbingWindow` 分窗口注册（原默认 45s，同族缺口）。连带根治 `internal/webui` 测试在 Windows 上因日志句柄未关导致的 TempDir 清理文件锁失败（`newTestService` 等两处轻 `t.Cleanup` 关闭日志句柄）。
 
+## [1.3.142] - 2026-11-17
+
+### Changed
+
+- **WSL 启动预检融合——关键路径串行 wsl.exe 探测降为 1 次**：冷 distro 每次探测都要付一次 VM 唤醒 + 登录 shell 解析成本，启动 RPC 在 PTY 前的多次串行探测是 WSL 冷启动延迟的主因。融合后关键路径仅 1 次探测：claudecode/codex 由 5 次（两轮 RunUnits 的 ResolveTarget + Apply 复核共 4 次 + 目录定谳 1 次）、pi/omp 由 3 次（首启另 +1 次 fd/rg）、opencode 由 3 次，降为全部 1 次（WSLLaunchPreflightProbe 单次融合身份 + 目录；fd/rg 移出关键路径异步）。
+  - 新增 `platform.WSLLaunchPreflightProbe`（internal/platform/wsl_launch_probe.go，新文件）：一次 wsl.exe 调用同时取得身份三件套（uid/$HOME/machine-id，脚本逐字复用 wslIdentityScript）与工作目录定谳（buildWSLWorkDirCheck + 与 WSLResolveDirectoryContext 完全一致的 `__AMAGI_RESOLVED_DIRECTORY__` NUL 标记协议，返回 cd -P 后的绝对物理路径）；10s 预算、经 wslScriptRunnerContext 可取消执行；任一环节失败即整体失败（fail-closed 拒绝启动、不回退换目录），结果只在单次启动 RPC 作用域内显式传递、不做任何跨启动缓存。
+  - 身份在单次启动 RPC 作用域内复用：`Coordinator.TargetFromIdentity`/`RunUnitsWithTarget`（internal/wslsupply/coordinator.go）与 RunUnits 同流程（Inspect → 健康门 → ReconcilePending → Plan → Apply），但入口跳过 ResolveTarget、Apply 跳过「重探身份复核」——预检身份在该次启动 RPC 作用域内视为当次真值，两轮供给闸门（shared 与 claude/codex cli-config）共享同一次身份；跨启动 generation 失效语义不变（下次启动重新预检，重装/换用户/换 Home 仍会被新预检看见），公开的 RunUnits/Apply 语义与既有测试不变（测试 stub 运行器不实现新接口即自动回退原路径）。
+  - pty 预检定谳后跳过重复目录探测：`ResolvedLaunchSpec` 新增 `WSLWorkDirPreflightResolved`（internal/platform/resolver.go），prepareWSLStartupSpec（internal/pty/runtime_target_windows.go）据此直接采用预检返回的定谳路径；remote/restart 路径（launch_executor.go，preflight=nil）保持既有 RunUnits + 目录探测路径，行为完全不变。
+  - fd/rg 搜索工具告警移出关键路径：pi/omp 启动由「PTY 前串行探测 + WARN」改为会话成功启动后 `go warnWSLSearchToolsOnce` 异步执行（app_session_pty.go 两处对称；per-distro 缓存与 sync.Once 单飞语义不变，仅日志告警、不参与启动决策）。
+  - 预检/供给闸门/PTY 各阶段毫秒计时日志（control_wiring.go），冷启动各段耗时可观测。
+
+### Added
+
+- **WSL 启动进度反馈（launch:progress 阶段事件）**：后端在预检/供给/PTY 阶段 best-effort 发射 `launch:progress`（负载 `{stage, message, appType}`，stage 为 preflight/supply/pty 稳定枚举，与前端映射键一一对应；非 Wails ctx/测试环境自动降级不发，发射路径任何失败不阻断启动主流程）。前端 `useSessionLaunch` 在 launching 期间订阅，启动按钮随阶段显示进度文案（正在唤醒 WSL 发行版…/正在准备共享配置…/正在启动终端…），启动结束（成功/失败/异常 finally）注销订阅不泄漏；非 WSL 或无事件的启动维持现状文案。进度映射与订阅生命周期补 vitest（useSessionLaunch.progress.test.ts、control_wiring_progress_test.go）。
+
+### Notes
+
+- 已验证（均本地 Windows 实跑）：go vet、全量编译门、两套 WSL 定向回归、frontend vitest + vue-tsc/vite 构建；独立评审一次通过。
+- 已知边界：真机冷启动端到端耗时未实测（探测次数削减与各阶段毫秒计时已落日志，量化收益待真机验证）；remote/restart 路径行为不变；版本号因 master 已独立发布 1.3.140/1.3.141 顺延至 1.3.142。
+
 ## [1.3.141] - 2026-11-17
 
 ### Removed
