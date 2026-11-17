@@ -529,7 +529,8 @@ watch(
 
 onMounted(async () => {
   // 具备 Web 平面的会话（pi/claudecode）启动 webui 探测轮询（0.5–1s 节奏，
-  // available/终态后自动停止）。探测按 sessionId 键控、与 appType 无关，
+  // available 转低频保活、unavailable 转低频复活探测、ended 终态停止）。
+  // 探测按 sessionId 键控、与 appType 无关，
   // claudecode 会话注册进同一 webui.Service 即被采纳。幂等可重入，
   // 在 mountTerm 之前启动与否无关。
   if (isWebPlaneCapable.value) {

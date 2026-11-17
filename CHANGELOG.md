@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [Unreleased]
+
+### Fixed
+
+- **WSL 启动的 pi 会话 Web 视图永不出现（探测窗口耗尽后停探，服务晚就绪无人再探）**：WSL+DrvFS 目标下 pi 扩展的 webui server 就绪耗时可达 3m42s+（2026-11-17 会话 b5415434 实测：11:35:03 启动、11:38:45 就绪，超出 3min WSL 探测窗口 42s），后端落 unavailable 后前端把该态当终态永久停探——服务真正就绪（端口仍在监听）后无人再探测，Web 视图入口永不出现。修复三面：桌面前端（`stores/session.ts`）unavailable 非终态，转 10s 低频复活探测（后端状态机本就允许 unavailable → available，一轮探测即恢复）；mobile `useSessionWebUI` 同口径（网络瞬断亦自愈）；remote v1 启动链（`launch_executor.go`）WSL 目标补齐桌面同款的 `DefaultWSLProbingWindow` 分窗口注册（原默认 45s，同族缺口）。连带根治 `internal/webui` 测试在 Windows 上因日志句柄未关导致的 TempDir 清理文件锁失败（`newTestService` 等两处轻 `t.Cleanup` 关闭日志句柄）。
+
 ## [1.3.142] - 2026-11-17
 
 ### Changed

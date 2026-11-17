@@ -733,11 +733,12 @@ func (p appWebUILaunchPlane) PrepareEnv() (int, string) {
 	return port, token
 }
 
-// RegisterSession 发布 per-session webui 探测 tracker（服务未接线时静默
-// 跳过，如测试构造）。
-func (p appWebUILaunchPlane) RegisterSession(sessionID string, pid, port int, token string) {
+// RegisterSessionWithWindow 发布 per-session webui 探测 tracker（服务未接线时
+// 静默跳过，如测试构造）。window<=0 取服务默认窗口；WSL 目标应传
+// webui.DefaultWSLProbingWindow（WSL+DrvFS 下 pi 扩展就绪实测送慢于默认窗口）。
+func (p appWebUILaunchPlane) RegisterSessionWithWindow(sessionID string, pid, port int, token string, window time.Duration) {
 	if p.app.WebUI != nil {
-		p.app.WebUI.RegisterSession(sessionID, pid, port, token)
+		p.app.WebUI.RegisterSessionWithWindow(sessionID, pid, port, token, window)
 	}
 }
 

@@ -192,7 +192,9 @@ func (s *Service) GetWebUIStatus(sessionID string) Status {
 
 // ProbeWebUI 执行一轮探测并返回最新状态。前端按契约 §4.1 建议的
 // 0.5–1s 节奏轮询；available 后转低频保活（跟随 /resume 等会话切换），
-// unavailable / ended 后停止轮询。
+// unavailable 后转低频复活探测（10s 级：窗口耗尽只证「此刻未就绪」非
+// 永久属性，WSL 慢启动的 webui server 可晚于窗口就绪，后端状态机允许
+// unavailable → available 复活），ended 后停止轮询。
 // 网络 I/O 在全局锁外执行（Major3：不阻塞其他会话的状态读写）。
 func (s *Service) ProbeWebUI(sessionID string) Status {
 	s.mu.Lock()
