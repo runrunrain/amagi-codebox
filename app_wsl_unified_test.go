@@ -263,6 +263,8 @@ func writeUnifiedFile(t *testing.T, path, content string) {
 func newUnifiedFixture(t *testing.T) *unifiedFixture {
 	t.Helper()
 	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	target := t.TempDir()
 	probes := &unifiedTestProbes{
 		identity: platform.WSLUserIdentity{UID: "1000", Home: "/home/u", MachineID: "machine-unified", OK: true},
@@ -281,11 +283,15 @@ func newUnifiedFixture(t *testing.T) *unifiedFixture {
 	writeUnifiedFile(t, filepath.Join(home, ".claude", "skills", "alpha", "SKILL.md"), "# alpha")
 
 	origHome, origDistro, origRunning := wslS4HomeDirFn, wslDefaultDistroFn, wslDistroRunningFn
+	origResolve, origTranslate := wslResolveCommandsFn, wslPathMappingProbeFn
 	t.Cleanup(func() {
 		wslS4HomeDirFn = origHome
 		wslDefaultDistroFn = origDistro
 		wslDistroRunningFn = origRunning
+		wslResolveCommandsFn, wslPathMappingProbeFn = origResolve, origTranslate
 	})
+	noWSLProbe := func(string, ...string) map[string]string { return nil }
+	wslResolveCommandsFn, wslPathMappingProbeFn = noWSLProbe, noWSLProbe
 	wslS4HomeDirFn = func() (string, error) { return home, nil }
 	wslDefaultDistroFn = func([]string) string { return "Ubuntu" }
 	wslDistroRunningFn = func(string) bool { return true }
@@ -747,6 +753,10 @@ func TestWSLUnifiedPartialEnableFailureAutoContinues(t *testing.T) {
 	}, "codex fixed group must be auto-continued after recovery")
 	waitUntil(t, func() bool { return unifiedTargetExists(f, ".claude/skills/alpha/SKILL.md") },
 		"tree reconcile must resume after recovery")
+	waitUntil(t, func() bool {
+		settings, ok := unifiedTargetJSONOk(f, ".claude/settings.json")
+		return ok && settings["model"] == "sonnet"
+	}, "settings must be supplied before freezing the target copy")
 	// 续接不复活 detached：保留本地的单元在后续自动周期中不被重新授权/改写。
 	if err := f.app.KeepWSLCliConfigUnitLocal("claude", "claude/settings"); err != nil {
 		t.Fatalf("keep local: %v", err)
@@ -764,6 +774,108 @@ func TestWSLUnifiedPartialEnableFailureAutoContinues(t *testing.T) {
 	}
 	if !detached {
 		t.Fatal("claude/settings must remain detached (not revived by continuation)")
+	}
+}
+
+type pausedUnifiedSettingsSource struct {
+	*wslClaudeConfigSource
+	beforeRead func()
+}
+
+func (s *pausedUnifiedSettingsSource) SettingsJSON() ([]byte, error) {
+	if s.beforeRead != nil {
+		s.beforeRead()
+	}
+	return s.wslClaudeConfigSource.SettingsJSON()
+}
+
+func TestWSLKeepLocalSerializesInFlightSettingsPush(t *testing.T) {
+	f := newUnifiedFixture(t)
+	ctx := t.Context()
+	const unit = wslsupply.UnitClaudeSettings
+	const rel = ".claude/settings.json"
+	source := &pausedUnifiedSettingsSource{wslClaudeConfigSource: &wslClaudeConfigSource{app: f.app}}
+	f.coord.RegisterProjection(wslsupply.NewClaudeSettingsAdapter(source, nil))
+	if err := f.coord.GrantUnitConsent(ctx, "Ubuntu", wslsupply.CLIClaude, unit); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.coord.SetUnitSelection("Ubuntu", wslsupply.CLIClaude, unit, []string{"model"}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := f.coord.RunUnits(ctx, "Ubuntu", wslsupply.CLIClaude, wslsupply.ReasonSave, []wslsupply.UnitID{unit}); err != nil || len(res.Results) != 1 || res.Results[0].Outcome != wslsupply.UnitApplied {
+		t.Fatalf("seed settings: %+v, %v", res.Results, err)
+	}
+	sourcePath := filepath.Join(f.home, filepath.FromSlash(rel))
+	writeUnifiedFile(t, sourcePath, `{"model":"haiku"}`)
+	target, err := f.coord.ResolveTarget(ctx, "Ubuntu", wslsupply.CLIClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := f.coord.Inspect(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := f.coord.Plan(wslsupply.SupplyRequest{Target: target, Reason: wslsupply.ReasonSave, SelectedUnits: []wslsupply.UnitID{unit}}, snap)
+	if err != nil || plan.Units[0].Action != wslsupply.ActionWriteProjection {
+		t.Fatalf("expected a write plan: %+v, %v", plan, err)
+	}
+	// Apply has passed its Detached check when Candidate reaches the source read.
+	entered, release := make(chan struct{}), make(chan struct{})
+	unpause := sync.OnceFunc(func() { close(release) })
+	var workers sync.WaitGroup
+	defer func() { unpause(); workers.Wait() }()
+	source.beforeRead = sync.OnceFunc(func() { close(entered); <-release })
+	applied := make(chan error, 1)
+	workers.Go(func() {
+		res, err := f.coord.Apply(ctx, plan)
+		if err == nil && (len(res.Results) != 1 || res.Results[0].Outcome != wslsupply.UnitApplied) {
+			err = fmt.Errorf("expected in-flight write to complete: %+v", res.Results)
+		}
+		applied <- err
+	})
+	select {
+	case <-entered:
+	case err := <-applied:
+		t.Fatalf("apply ended before candidate read: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply did not enter candidate read")
+	}
+	started := make(chan struct{})
+	kept := make(chan error, 1)
+	workers.Go(func() {
+		close(started)
+		kept <- f.app.KeepWSLCliConfigUnitLocal("claude", string(unit))
+	})
+	<-started
+	select {
+	case err := <-kept:
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeUnifiedFile(t, sourcePath, `{"model":"opus"}`)
+		unpause()
+		if err := <-applied; err != nil {
+			t.Fatal(err)
+		}
+		t.Fatalf("keep-local returned before push completed; target model after return = %v", readUnifiedTargetJSON(t, f, rel)["model"])
+	case <-time.After(150 * time.Millisecond):
+		// Keep-local must wait for the blocked apply, not race its commit.
+	}
+	unpause()
+	if err := <-applied; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-kept; err != nil {
+		t.Fatal(err)
+	}
+	writeUnifiedFile(t, sourcePath, `{"model":"opus"}`)
+	// Even an already-prepared write plan cannot pass the detached check now.
+	res, err := f.coord.Apply(ctx, plan)
+	if err != nil || len(res.Results) != 1 || res.Results[0].Detail != "detached" {
+		t.Fatalf("expected detached rejection: %+v, %v", res.Results, err)
+	}
+	if got := readUnifiedTargetJSON(t, f, rel)["model"]; got != "haiku" {
+		t.Fatalf("target after keep-local = %v, want haiku", got)
 	}
 }
 

@@ -714,13 +714,15 @@ func (a *App) GrantWSLVisionConsent() error {
 // 各一次 wsl.exe）；探测失败返回错误（适配器按「不可确认」保守处理）。
 type wslTransformFactsSource struct{}
 
+var wslResolveCommandsFn = platform.WSLResolveCommands
+
 func (wslTransformFactsSource) TransformFacts(_ context.Context, target wslsupply.TargetRef) (wslsupply.TransformFacts, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
 	facts := wslsupply.TransformFacts{
-		ResolvedCommands: platform.WSLResolveCommands(target.Distro, "npx", "npm"),
+		ResolvedCommands: wslResolveCommandsFn(target.Distro, "npx", "npm"),
 		PathMappings:     map[string]string{},
 		HostHomeWindows:  home,
 	}

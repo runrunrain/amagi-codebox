@@ -1365,6 +1365,11 @@ func (c *Coordinator) DropUnitRegistration(distro string, cli CLI, unit UnitID) 
 // 零值 entry（未登记）报错而非静默追加空代登记；变更不搬动其它目标的
 // 授权与基准（entryFor 同代命中才拿到 prev）。
 func (c *Coordinator) detachUnitOnDistro(distro string, unit UnitID, mutate func(prev StateEntry) StateEntry) error {
+	// 与供给提交串行：已通过 Detached 检查的写入必须在停跟随返回前完成；
+	// 排队的写入则在 applyMu 下重新读取 Detached。
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
 	var resolveErr error
 	err := c.state.mutate(func(st *StateFile) {
 		gen, rerr := resolveDistroGeneration(st, distro)
