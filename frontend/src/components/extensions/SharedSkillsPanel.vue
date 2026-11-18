@@ -1,8 +1,9 @@
 <!-- 共用技能面板（契约 §2.6，列表/详情分页化）：~/.agents/skills 的管理面板，
      复用 ui/* 共享件。一级列表态为四段式：① DiagnosticBanner（errors=store.error）→
      ② CountTabs（全部/已启用/已禁用 + 搜索）→ ③ ListToolbar（「共用技能 N」+
-     打开技能根目录/刷新）→ ④ 全宽列表（PluginRow：图标/名称+徽章/描述完整多行/
-     行尾启停 Switch；空态：EmptyStateCard）。
+     导入压缩包/导入文件夹/打开技能根目录/刷新；导入落 skills-disabled 默认停用）+
+     预留 legacy slot（旧版 sharedext 登记提示的挂载点，空态亦可见）→ ④ 全宽列表
+     （PluginRow：图标/名称+徽章/描述完整多行/行尾启停 Switch；空态：EmptyStateCard）。
      二级详情态（点击行进入，替换子页内容区）：「← 返回列表」+ 面包屑
      「共用技能 › <名>」+ 居中窄单列（max-width 720px）：DetailHeader（大图标/名称/
      主操作：启停/打开目录/删除）→ 描述全文 → MetaGrid（版本/作者/路径/托管状态等）。
@@ -39,6 +40,12 @@
         <!-- ③ 工具栏 -->
         <ListToolbar title="共用技能" :count="visibleSkills.length" :loading="isLoading">
           <template #actions>
+            <AppButton variant="ghost" size="small" :disabled="importing || isLoading" @click="handleImportZip">
+              {{ importing ? '导入中…' : '导入压缩包' }}
+            </AppButton>
+            <AppButton variant="ghost" size="small" :disabled="importing || isLoading" @click="handleImportFolder">
+              导入文件夹
+            </AppButton>
             <AppButton variant="ghost" size="small" @click="handleOpenRoot">
               打开技能根目录
             </AppButton>
@@ -47,6 +54,11 @@
             </AppButton>
           </template>
         </ListToolbar>
+
+        <!-- 预留 legacy slot（Leader 兼容旧版 sharedext 登记数据的挂载点，
+             ExtensionsView 以 #legacy 传入 LegacySharedExtensionsNotice）：本面板
+             不实现其功能，仅保证列表态（含空态）渲染。 -->
+        <slot name="legacy" />
 
         <!-- ④ 内容区：空态 / 全宽列表 -->
         <EmptyStateCard
@@ -97,7 +109,11 @@
             <AppButton variant="ghost" size="small" @click="handleOpenFolder(activeSkill)">
               打开目录
             </AppButton>
-            <AppButton variant="danger" size="small" @click="requestDelete(activeSkill)">
+            <AppButton v-if="activeSkill.marketOrigin" variant="ghost" size="small"
+              @click="emit('openMarket', activeSkill.marketOrigin.marketplace)">
+              前往共用市场
+            </AppButton>
+            <AppButton v-else variant="danger" size="small" @click="requestDelete(activeSkill)">
               删除
             </AppButton>
           </template>
@@ -136,7 +152,7 @@ import { ref, computed, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useSharedSkillsStore } from '../../stores/sharedSkills';
 import * as sharedSkillsApi from '../../api/sharedSkills';
-import type { SharedSkillView } from '../../api/sharedSkills';
+import type { SharedSkillView, SharedSkillsImportResult } from '../../api/sharedSkills';
 import AppButton from '../ui/AppButton.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import EmptyState from '../ui/EmptyState.vue';
@@ -156,6 +172,8 @@ import type {
 } from './pluginViewTypes';
 import { useToast } from '../../composables/useToast';
 
+const emit = defineEmits<{ openMarket: [name: string] }>();
+
 // managed 技能引导文案（契约 §2.4 行为裁定：与 App 门面错误文案一致）
 const MANAGED_TOAST = 'amagi-codebox 为应用托管技能，请在 设置 → 命令行访问 中管理';
 
@@ -174,10 +192,11 @@ const {
   loading: isLoading,
   error,
   loaded,
+  importing,
   enabledCount,
   disabledCount,
 } = storeToRefs(store);
-const { load, setEnabled, remove } = store;
+const { load, setEnabled, remove, importFromZip, importFromFolder } = store;
 const { showSuccess, showError, showWarn } = useToast();
 
 // --- 本地视图状态（门控类状态一律 store 派生，契约 §2.6） ---
@@ -252,6 +271,9 @@ function rowBadges(skill: SharedSkillView): PluginBadgeDescriptor[] {
   if (skill.managed) {
     badges.push({ text: '应用托管', type: 'type', color: 'warning' });
   }
+  if (skill.marketOrigin) {
+    badges.push({ text: `共用市场 · ` + skill.marketOrigin.plugin, type: 'scope' });
+  }
   if (skill.version) {
     badges.push({ text: `v${skill.version}`, type: 'ver' });
   }
@@ -316,6 +338,10 @@ async function confirmToggle() {
 
 // --- 删除：永久删除目录，danger 确认（文案契约 §2.6）；managed 直接 toast 引导 ---
 function requestDelete(skill: SharedSkillView) {
+  if (skill.marketOrigin) {
+    showWarn('请前往共用市场卸载对应插件');
+    return;
+  }
   if (skill.managed) {
     showWarn(MANAGED_TOAST);
     return;
@@ -367,6 +393,38 @@ async function handleOpenRoot() {
   }
 }
 
+// --- 导入（zip / 本地文件夹）：默认停用落 skills-disabled，不自动分发；
+// 成功后切到「已禁用」标签让用户立刻看到落点（导入项默认停用）。 ---
+async function runImportAction(action: () => Promise<SharedSkillsImportResult | null>) {
+  try {
+    const result = await action();
+    if (!result) return; // 用户取消选择
+    if (result.imported.length > 0) {
+      showSuccess(`已导入 ${result.imported.length} 个技能（默认停用，启用后生效）`);
+      activeTab.value = 'disabled';
+      searchText.value = '';
+    }
+    if (result.skipped.length > 0) {
+      showWarn(
+        result.imported.length > 0
+          ? `部分技能未导入：${result.skipped.join('；')}`
+          : `没有技能被导入：${result.skipped.join('；')}`,
+      );
+    }
+  } catch (err) {
+    console.error('[SharedSkillsPanel] Import failed:', err);
+    showError(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function handleImportZip() {
+  await runImportAction(importFromZip);
+}
+
+async function handleImportFolder() {
+  await runImportAction(importFromFolder);
+}
+
 // 首载：store 已加载过则不重复（契约 §2.6：切走再切回不重复加载，靠 store 状态）
 onMounted(() => {
   if (!loaded.value) {
@@ -386,6 +444,8 @@ defineExpose({
   confirmDelete,
   handleOpenFolder,
   handleOpenRoot,
+  handleImportZip,
+  handleImportFolder,
   handleRefresh: load,
 });
 </script>

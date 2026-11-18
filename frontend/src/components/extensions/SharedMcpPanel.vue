@@ -41,6 +41,9 @@
             <AppButton variant="primary" size="small" @click="openCreateForm">
               新增服务器
             </AppButton>
+            <AppButton variant="ghost" size="small" @click="openImportDialog">
+              导入 JSON
+            </AppButton>
             <AppButton
               variant="ghost"
               size="small"
@@ -60,6 +63,8 @@
         <p class="panel-hint">
           用户级登记（~/.agents/.mcp.json）并按引擎分发；各 Agent 子页展示的是其插件自带的 MCP 服务器（只读）。
         </p>
+
+        <slot name="legacy" />
 
         <!-- ④ 内容区：空态两形态（登记文件不存在 / 暂无条目）/ 全宽列表 -->
         <EmptyStateCard
@@ -305,6 +310,110 @@
       confirm-text="强制继续"
       @confirm="confirmForeignRemove"
     />
+
+    <!-- 导入对话框（粘贴 JSON / 选择 JSON 文件）：解析预览只显示名称/类型/
+         状态（不露配置值）；显式提交后才登记（默认无分发；同名跳过后端逐条
+         报告，结果态展示） -->
+    <Dialog
+      v-model:open="showImportDialog"
+      title="导入 MCP 服务器"
+      description="粘贴 JSON 或选择 JSON 文件，解析预览确认后登记到 ~/.agents/.mcp.json（默认不分发，同名条目跳过不覆盖）"
+    >
+      <div class="import-body">
+        <!-- 结果态：导入/跳过报告（含原因），完成关闭 -->
+        <template v-if="importResult">
+          <p class="import-summary">
+            已导入 {{ importResult.imported.length }} 条，跳过 {{ importResult.skipped.length }} 条。
+          </p>
+          <ul v-if="importResult.imported.length" class="import-result-list">
+            <li v-for="name in importResult.imported" :key="`ok-${name}`">
+              已登记：{{ name }}（默认未分发，可在详情矩阵勾选分发）
+            </li>
+          </ul>
+          <ul v-if="importResult.skipped.length" class="import-result-list">
+            <li v-for="skipped in importResult.skipped" :key="`skip-${skipped.name}`">
+              跳过 {{ skipped.name }}：{{ skipped.reason }}
+            </li>
+          </ul>
+        </template>
+
+        <!-- 输入/预览态 -->
+        <template v-else>
+          <div class="import-actions-row">
+            <AppButton
+              variant="ghost"
+              size="small"
+              :disabled="importBusy"
+              title="弹出系统文件选择对话框（仅读取所选 JSON 文件，有大小上限）"
+              @click="handlePickImportFile"
+            >
+              {{ importBusy ? '处理中…' : '选择 JSON 文件…' }}
+            </AppButton>
+            <span v-if="importFileName" class="import-file-name">已选择：{{ importFileName }}</span>
+          </div>
+          <textarea
+            v-if="!importFileName"
+            v-model="importText"
+            :disabled="importBusy"
+            class="form-input mono import-textarea"
+            @input="importPreviewEntries = null"
+            rows="8"
+            placeholder='粘贴 MCP JSON，例: {"mcpServers": {"web-search": {"command": "npx"}}}'
+          />
+          <AppButton v-else variant="ghost" size="small" :disabled="importBusy" @click="resetImportState">
+            改为粘贴 JSON
+          </AppButton>
+          <div class="import-actions-row">
+            <AppButton
+              variant="ghost"
+              size="small"
+              v-if="!importFileName"
+              :disabled="importBusy || !importText.trim()"
+              @click="submitImportPreview"
+            >
+              解析预览
+            </AppButton>
+            <AppButton
+              v-if="importPreviewEntries"
+              variant="primary"
+              size="small"
+              :disabled="importBusy || importOkCount === 0"
+              @click="submitImport"
+            >
+              {{ importBusy ? '导入中…' : `导入 ${importOkCount} 条` }}
+            </AppButton>
+          </div>
+          <!-- 预览列表：只显示名称/类型/状态与附注，绝不显示配置值 -->
+          <div v-if="importPreviewEntries" class="import-preview">
+            <div
+              v-for="(row, index) in importPreviewEntries"
+              :key="`${row.name}-${index}`"
+              class="import-preview-row"
+            >
+              <code class="import-preview-name">{{ row.name }}</code>
+              <Badge
+                :type="row.type === 'stdio' ? 'ver' : 'type'"
+                :color="row.type === 'stdio' ? undefined : 'mcp'"
+                :text="row.type || '未知形态'"
+              />
+              <Badge
+                v-if="row.status === 'ok'"
+                type="type"
+                color="capability"
+                :text="row.note ? `可导入（${row.note}）` : '可导入'"
+              />
+              <Badge v-else-if="row.status === 'exists'" type="warning" :text="`同名将跳过：${row.note ?? ''}`" />
+              <Badge v-else type="warning" :text="`无法导入：${row.note ?? ''}`" />
+            </div>
+          </div>
+          <p v-if="importError" class="form-error">{{ importError }}</p>
+        </template>
+      </div>
+      <template #footer>
+        <AppButton v-if="importResult" variant="primary" @click="closeImportDialog">完成</AppButton>
+        <AppButton v-else variant="ghost" @click="closeImportDialog">取消</AppButton>
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -318,6 +427,7 @@ import type {
   SharedMcpEngineCell,
   SharedMcpEngineMeta,
   SharedMcpEntryOverview,
+  SharedMcpImportPreviewEntry,
 } from '../../api/sharedMcp';
 import AppButton from '../ui/AppButton.vue';
 import Badge from '../ui/Badge.vue';
@@ -352,7 +462,7 @@ const {
   error,
   loaded,
 } = storeToRefs(store);
-const { load, create, update, remove, setEngineSelection, engineCell } = store;
+const { load, create, update, remove, setEngineSelection, importEntries, engineCell } = store;
 const { showSuccess, showError } = useToast();
 
 // --- 本地视图状态（门控类状态一律 store 派生） ---
@@ -825,6 +935,97 @@ async function submitForm() {
   }
 }
 
+// --- 导入（粘贴 JSON / 选择 JSON 文件；预览只显示名称/类型，不露配置值） ---
+const showImportDialog = ref(false);
+const importText = ref('');
+const importFileName = ref('');
+const importFileTicket = ref('');
+const importPreviewEntries = ref<SharedMcpImportPreviewEntry[] | null>(null);
+const importResult = ref<{ imported: string[]; skipped: { name: string; reason: string }[] } | null>(null);
+const importBusy = ref(false);
+const importError = ref('');
+
+const importOkCount = computed(
+  () => importPreviewEntries.value?.filter((row) => row.status === 'ok').length ?? 0,
+);
+
+function resetImportState() {
+  importText.value = '';
+  importFileName.value = '';
+  importFileTicket.value = '';
+  importPreviewEntries.value = null;
+  importResult.value = null;
+  importError.value = '';
+}
+
+function openImportDialog() {
+  resetImportState();
+  importBusy.value = false;
+  showImportDialog.value = true;
+}
+
+function closeImportDialog() {
+  showImportDialog.value = false;
+  resetImportState();
+}
+
+/** 选择 JSON 文件：后端弹系统对话框 + 解析预览（路径不经前端、有大小上限）；取消返回 null 静默 */
+async function handlePickImportFile() {
+  if (importBusy.value) return;
+  importBusy.value = true;
+  try {
+    const picked = await sharedMcpApi.pickSharedMcpImportFile();
+    if (!picked) return; // 用户取消
+    importText.value = '';
+    importFileName.value = picked.fileName;
+    importFileTicket.value = picked.ticket;
+    importPreviewEntries.value = picked.entries;
+    importError.value = '';
+  } catch (err) {
+    console.error('[SharedMcpPanel] Pick import file failed:', err);
+    importError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    importBusy.value = false;
+  }
+}
+
+/** 解析粘贴文本预览（不落盘；预览响应不含配置值） */
+async function submitImportPreview() {
+  if (importBusy.value) return;
+  importBusy.value = true;
+  try {
+    const preview = await sharedMcpApi.parseSharedMcpImportText(importText.value);
+    importPreviewEntries.value = preview.entries;
+    importError.value = '';
+  } catch (err) {
+    console.error('[SharedMcpPanel] Parse import preview failed:', err);
+    importPreviewEntries.value = null;
+    importError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    importBusy.value = false;
+  }
+}
+
+/** 显式提交：批量登记（后端重新解析裁定同名冲突；默认无分发），结果态展示逐条报告 */
+async function submitImport() {
+  if (importBusy.value || importOkCount.value === 0) return;
+  importBusy.value = true;
+  try {
+    const result = await importEntries(importText.value, importFileTicket.value || undefined);
+    importResult.value = { imported: result.imported, skipped: result.skipped };
+    showSuccess(
+      `已导入 ${result.imported.length} 条（默认未分发）${
+        result.skipped.length ? `，跳过 ${result.skipped.length} 条` : ''
+      }`,
+    );
+  } catch (err) {
+    console.error('[SharedMcpPanel] Import failed:', err);
+    importError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    importBusy.value = false;
+  }
+}
+
 // --- 打开登记目录（复用 OpenFileInEditor 通用门面：目录经系统默认程序=文件管理器打开） ---
 async function handleOpenRegistryDir() {
   if (!registryPath.value) return;
@@ -865,6 +1066,16 @@ defineExpose({
   confirmForeignRemove,
   handleOpenRegistryDir,
   handleRefresh,
+  openImportDialog,
+  closeImportDialog,
+  handlePickImportFile,
+  submitImportPreview,
+  submitImport,
+  importText,
+  importFileName,
+  importPreviewEntries,
+  importResult,
+  importError,
   formName,
   formType,
   formCommand,
@@ -1197,5 +1408,81 @@ textarea.form-input {
   font-size: 12px;
   color: var(--danger, #ff3b30);
   line-height: 1.5;
+}
+
+/* 导入对话框 */
+.import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.import-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.import-file-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.import-textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 预览列表：只显示名称/类型/状态与附注（不含配置值）；限高滚动 */
+.import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.import-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.import-preview-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--label);
+  background: var(--control);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.import-summary {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.import-result-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--secondary);
+  line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-word;
 }
 </style>

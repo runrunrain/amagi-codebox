@@ -13,6 +13,7 @@ import type {
   SharedMcpEngineMeta,
   SharedMcpEntry,
   SharedMcpEntryOverview,
+  SharedMcpImportOutcome,
   SharedMcpOverview,
 } from '../api/sharedMcp';
 
@@ -86,6 +87,19 @@ export const useSharedMcpStore = defineStore('sharedMcp', () => {
     );
   }
 
+  /**
+   * 导入（显式提交）：后端重新解析并批量登记（同名跳过逐条报告、默认无
+   * 分发）；成功以响应 Overview 整体替换并返回结果报告供面板展示；失败
+   * rethrow 供导入对话框展示错误。
+   */
+  async function importEntries(text: string, ticket?: string): Promise<SharedMcpImportOutcome> {
+    const result = ticket
+      ? await sharedMcpApi.importPickedSharedMcpFile(ticket)
+      : await sharedMcpApi.importSharedMcpEntries(text);
+    applyOverview(result.overview);
+    return result;
+  }
+
   /** 矩阵一格（引擎未返回时 undefined，消费方按未分发呈现） */
   function engineCell(entry: SharedMcpEntryOverview, engine: string): SharedMcpEngineCell | undefined {
     return entry.engines?.[engine];
@@ -104,6 +118,7 @@ export const useSharedMcpStore = defineStore('sharedMcp', () => {
     update,
     remove,
     setEngineSelection,
+    importEntries,
     engineCell,
   };
 });

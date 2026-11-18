@@ -33,6 +33,22 @@ const apiMocks = vi.hoisted(() => ({
   deleteSharedMcpEntry: vi.fn(async () => emptyOverview()),
   setSharedMcpEngineSelection: vi.fn(async () => emptyOverview()),
   openSharedMcpRegistryDir: vi.fn(async () => undefined),
+  parseSharedMcpImportText: vi.fn(
+    async (): Promise<{ entries: import('../../../../api/sharedMcp').SharedMcpImportPreviewEntry[] }> => ({
+      entries: [],
+    }),
+  ),
+  pickSharedMcpImportFile: vi.fn(
+    async (): Promise<import('../../../../api/sharedMcp').SharedMcpImportFilePreview | null> => null,
+  ),
+  importPickedSharedMcpFile: vi.fn(async () => ({ imported: ['from-file'], skipped: [], overview: emptyOverview() })),
+  importSharedMcpEntries: vi.fn(
+    async (): Promise<import('../../../../api/sharedMcp').SharedMcpImportOutcome> => ({
+      imported: [],
+      skipped: [],
+      overview: emptyOverview(),
+    }),
+  ),
 }));
 
 function emptyOverview(): import('../../../../api/sharedMcp').SharedMcpOverview {
@@ -47,6 +63,10 @@ vi.mock('../../../../api/sharedMcp', () => ({
   deleteSharedMcpEntry: apiMocks.deleteSharedMcpEntry,
   setSharedMcpEngineSelection: apiMocks.setSharedMcpEngineSelection,
   openSharedMcpRegistryDir: apiMocks.openSharedMcpRegistryDir,
+  parseSharedMcpImportText: apiMocks.parseSharedMcpImportText,
+  pickSharedMcpImportFile: apiMocks.pickSharedMcpImportFile,
+  importPickedSharedMcpFile: apiMocks.importPickedSharedMcpFile,
+  importSharedMcpEntries: apiMocks.importSharedMcpEntries,
 }));
 
 import SharedMcpPanel from '../../../../components/extensions/SharedMcpPanel.vue';
@@ -145,6 +165,21 @@ interface PanelExposed {
   formDescription: Ref<string>;
   formKvRows: Ref<{ key: string; value: string }[]>;
   formError: Ref<string>;
+  openImportDialog: () => void;
+  closeImportDialog: () => void;
+  handlePickImportFile: () => Promise<void>;
+  submitImportPreview: () => Promise<void>;
+  submitImport: () => Promise<void>;
+  importText: Ref<string>;
+  importFileName: Ref<string>;
+  importPreviewEntries: Ref<
+    import('../../../../api/sharedMcp').SharedMcpImportPreviewEntry[] | null
+  >;
+  importResult: Ref<{
+    imported: string[];
+    skipped: { name: string; reason: string }[];
+  } | null>;
+  importError: Ref<string>;
 }
 
 function panelExposed(result: PanelRenderResult): PanelExposed {
@@ -714,5 +749,170 @@ describe('SharedMcpPanel 工具栏动作', () => {
 
     await panel.handleRefresh();
     expect(apiMocks.listSharedMcp).toHaveBeenCalled();
+  });
+});
+
+// ---- 导入（粘贴 JSON / 选择 JSON 文件）----
+
+describe('SharedMcpPanel 导入', () => {
+  const IMPORT_TEXT =
+    '{"mcpServers":{"web-import":{"command":"npx","env":{"K":"SECRET-IMPORT-9"}},"dup-import":{"type":"http","url":"https://i.example.com/m"}}}';
+
+  const IMPORT_PREVIEW = {
+    entries: [
+      { name: 'dup-import', type: 'http', status: 'exists', note: '登记文件已有同名条目，提交时将跳过（不覆盖既有条目）' },
+      { name: 'web-import', type: 'stdio', status: 'ok' },
+      { name: 'bad-import', type: '', status: 'invalid', note: '条目名仅允许字母、数字、- 与 _' },
+    ],
+  };
+
+  it('工具栏含「导入」按钮；openImportDialog 打开对话框（teleports，含默认不分发说明）', async () => {
+    const store = useSharedMcpStore();
+    seedStore(store, []);
+    const { html } = await renderPanel();
+    expect(html).toContain('导入');
+    expect(html).toContain('新增服务器');
+
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+    panel.openImportDialog();
+    const teleportsHtml = await rerenderTeleports(result);
+    expect(teleportsHtml).toContain('导入 MCP 服务器');
+    expect(teleportsHtml).toContain('默认不分发');
+    expect(teleportsHtml).toContain('同名条目跳过不覆盖');
+    expect(teleportsHtml).toContain('选择 JSON 文件…');
+    expect(teleportsHtml).toContain('解析预览');
+  });
+
+  it('submitImportPreview 调 parseSharedMcpImportText 并渲染名称/类型/状态；预览不渲染任何配置值', async () => {
+    apiMocks.parseSharedMcpImportText.mockResolvedValueOnce(IMPORT_PREVIEW);
+    const store = useSharedMcpStore();
+    seedStore(store, []);
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+
+    panel.openImportDialog();
+    panel.importText.value = IMPORT_TEXT;
+    await panel.submitImportPreview();
+    expect(apiMocks.parseSharedMcpImportText).toHaveBeenCalledWith(IMPORT_TEXT);
+
+    const teleportsHtml = await rerenderTeleports(result);
+    // 名称/类型/状态呈现
+    expect(teleportsHtml).toContain('web-import');
+    expect(teleportsHtml).toContain('stdio');
+    expect(teleportsHtml).toContain('可导入');
+    expect(teleportsHtml).toContain('同名将跳过');
+    expect(teleportsHtml).toContain('无法导入');
+    expect(teleportsHtml).toContain('登记文件已有同名条目');
+    // 导入按钮计数（仅 1 条 ok）
+    expect(teleportsHtml).toContain('导入 1 条');
+    // 预览列表区（textarea 之后）绝不渲染配置值：textarea 展示的是用户自己
+    // 粘贴的原文（预期行为），「不露配置值」约束的是解析后的预览呈现
+    const previewStart = teleportsHtml.indexOf('import-preview');
+    const previewSection = previewStart >= 0 ? teleportsHtml.slice(previewStart) : '';
+    expect(previewSection).not.toBe('');
+    expect(previewSection).not.toContain('SECRET-IMPORT-9');
+    expect(previewSection).not.toContain('npx');
+    expect(previewSection).not.toContain('https://i.example.com/m');
+  });
+
+  it('选择文件只回传预览及凭据；显式确认才提交', async () => {
+    apiMocks.pickSharedMcpImportFile.mockResolvedValueOnce({
+      entries: [{ name: 'from-file', type: 'stdio', status: 'ok' }],
+      fileName: 'mcp-export.json',
+      ticket: 'fixture-ticket',
+    });
+    const store = useSharedMcpStore();
+    seedStore(store, []);
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+
+    panel.openImportDialog();
+    await panel.handlePickImportFile();
+    expect(apiMocks.pickSharedMcpImportFile).toHaveBeenCalled();
+    expect(panel.importText.value).toBe('');
+    expect(panel.importFileName.value).toBe('mcp-export.json');
+    let teleportsHtml = await rerenderTeleports(result);
+    expect(teleportsHtml).toContain('已选择：mcp-export.json');
+    expect(teleportsHtml).toContain('from-file');
+
+    // 取消路径：null 静默、状态保持
+    apiMocks.pickSharedMcpImportFile.mockResolvedValueOnce(null);
+    await panel.handlePickImportFile();
+    expect(panel.importText.value).toBe('');
+    teleportsHtml = await rerenderTeleports(result);
+    expect(teleportsHtml).not.toContain('解析预览失败');
+    expect(apiMocks.importPickedSharedMcpFile).not.toHaveBeenCalled();
+    await panel.submitImport();
+    expect(apiMocks.importPickedSharedMcpFile).toHaveBeenCalledWith('fixture-ticket');
+    expect(apiMocks.importSharedMcpEntries).not.toHaveBeenCalled();
+  });
+
+  it('显式提交调 importSharedMcpEntries(text)；结果态渲染逐条报告；store Overview 更新', async () => {
+    apiMocks.importSharedMcpEntries.mockResolvedValueOnce({
+      imported: ['web-import'],
+      skipped: [{ name: 'dup-import', reason: '登记文件已有同名条目，已跳过（不覆盖既有条目）' }],
+      overview: {
+        entries: [
+          {
+            entry: { name: 'web-import', type: 'stdio', command: 'npx' },
+            nameDistributable: true,
+            engines: {},
+          },
+        ],
+        registryExists: true,
+        registryPath: '/home/u/.agents/.mcp.json',
+        enginesMeta: ENGINE_METAS,
+      },
+    });
+    const store = useSharedMcpStore();
+    seedStore(store, []);
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+
+    panel.openImportDialog();
+    panel.importText.value = IMPORT_TEXT;
+    panel.importPreviewEntries.value = [{ name: 'web-import', type: 'stdio', status: 'ok' }];
+    await panel.submitImport();
+    expect(apiMocks.importSharedMcpEntries).toHaveBeenCalledWith(IMPORT_TEXT);
+
+    const teleportsHtml = await rerenderTeleports(result);
+    expect(teleportsHtml).toContain('已导入 1 条，跳过 1 条');
+    expect(teleportsHtml).toContain('已登记：web-import');
+    expect(teleportsHtml).toContain('默认未分发');
+    expect(teleportsHtml).toContain('跳过 dup-import');
+    expect(teleportsHtml).toContain('不覆盖既有条目');
+    // 门面返回的最新 Overview 已整体替换（列表出现导入条目）
+    expect(store.entries.map((e) => e.entry.name)).toContain('web-import');
+  });
+
+  it('预览失败 → 对话框内错误呈现，不调提交', async () => {
+    apiMocks.parseSharedMcpImportText.mockRejectedValueOnce(new Error('不是合法 JSON: unexpected token'));
+    const store = useSharedMcpStore();
+    seedStore(store, []);
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+
+    panel.openImportDialog();
+    panel.importText.value = '{oops}';
+    await panel.submitImportPreview();
+    expect(panel.importError.value).toContain('不是合法 JSON');
+    const teleportsHtml = await rerenderTeleports(result);
+    expect(teleportsHtml).toContain('不是合法 JSON');
+    expect(apiMocks.importSharedMcpEntries).not.toHaveBeenCalled();
+  });
+
+  it('closeImportDialog 关闭并重置状态', async () => {
+    const store = useSharedMcpStore();
+    seedStore(store, []);
+    const result = await renderPanel();
+    const panel = panelExposed(result);
+    panel.openImportDialog();
+    panel.importText.value = IMPORT_TEXT;
+    panel.importPreviewEntries.value = [{ name: 'x', type: 'stdio', status: 'ok' }];
+    panel.closeImportDialog();
+    expect(panel.importText.value).toBe('');
+    expect(panel.importPreviewEntries.value).toBeNull();
+    expect(panel.importResult.value).toBeNull();
   });
 });

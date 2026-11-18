@@ -26,9 +26,9 @@ type registryFile struct {
 // Service 提供公共 skill / 公共 MCP 的管理与分发。
 // 所有公开方法内部经 s.mu 串行化（registry 与文件系统部署的一致性优先）。
 type Service struct {
-	mu       sync.Mutex
-	baseDir  string         // ~/.amagi-codebox（仓库根的父目录）
-	log      *logging.Service
+	mu        sync.Mutex
+	baseDir   string // ~/.amagi-codebox（仓库根的父目录）
+	log       *logging.Service
 	overrides map[Engine]string // 引擎基准根注入（测试/便携模式）；空 = 真实解析
 
 	// 聚合缓存（30s TTL；registry 写操作失效）
@@ -66,6 +66,18 @@ func (s *Service) skillsRepoDir() string { return filepath.Join(s.sharedRoot(), 
 
 // registryPath 返回 registry.json 路径。
 func (s *Service) registryPath() string { return filepath.Join(s.sharedRoot(), "registry.json") }
+
+// RegistryCounts reports the retired depot's registrations without enumerating
+// skill paths or returning MCP definitions. It never creates or modifies the depot.
+func (s *Service) RegistryCounts() (skills, mcp int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reg, err := s.loadRegistryLocked()
+	if err != nil {
+		return 0, 0, err
+	}
+	return len(reg.Skills), len(reg.MCP), nil
+}
 
 // ---------------------------------------------------------------------------
 // 引擎目标路径解析

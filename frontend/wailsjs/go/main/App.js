@@ -102,10 +102,6 @@ export function DeleteProvider(arg1) {
   return window['go']['main']['App']['DeleteProvider'](arg1);
 }
 
-export function DeleteSharedMCPServer(arg1) {
-  return window['go']['main']['App']['DeleteSharedMCPServer'](arg1);
-}
-
 export function DeleteSharedMcpEntry(arg1, arg2) {
   return window['go']['main']['App']['DeleteSharedMcpEntry'](arg1, arg2);
 }
@@ -174,10 +170,6 @@ export function GetAgentCLIStatus() {
   return window['go']['main']['App']['GetAgentCLIStatus']();
 }
 
-export function GetAllSharedSkillsAggregated(arg1) {
-  return window['go']['main']['App']['GetAllSharedSkillsAggregated'](arg1);
-}
-
 export function GetAmagiConfig() {
   return window['go']['main']['App']['GetAmagiConfig']();
 }
@@ -228,6 +220,10 @@ export function GetExternalCleanupRecoveryStatus() {
 
 export function GetGitHubToken() {
   return window['go']['main']['App']['GetGitHubToken']();
+}
+
+export function GetLegacySharedExtensionsSummary() {
+  return window['go']['main']['App']['GetLegacySharedExtensionsSummary']();
 }
 
 export function GetLogFileContent(arg1) {
@@ -366,12 +362,8 @@ export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
 }
 
-export function GetSharedMCPServers() {
-  return window['go']['main']['App']['GetSharedMCPServers']();
-}
-
-export function GetSharedSkills() {
-  return window['go']['main']['App']['GetSharedSkills']();
+export function GetSharedSkillOrigin(arg1) {
+  return window['go']['main']['App']['GetSharedSkillOrigin'](arg1);
 }
 
 export function GetStartupWarnings() {
@@ -434,20 +426,24 @@ export function ImportEnvVarsFromFile() {
   return window['go']['main']['App']['ImportEnvVarsFromFile']();
 }
 
-export function ImportSharedMCPServers(arg1) {
-  return window['go']['main']['App']['ImportSharedMCPServers'](arg1);
+export function ImportPickedSharedMcpFile(arg1) {
+  return window['go']['main']['App']['ImportPickedSharedMcpFile'](arg1);
 }
 
 export function ImportSharedMarketplacesFromClaude(arg1) {
   return window['go']['main']['App']['ImportSharedMarketplacesFromClaude'](arg1);
 }
 
-export function ImportSharedSkillFromDir(arg1) {
-  return window['go']['main']['App']['ImportSharedSkillFromDir'](arg1);
+export function ImportSharedMcpEntries(arg1) {
+  return window['go']['main']['App']['ImportSharedMcpEntries'](arg1);
 }
 
-export function ImportSharedSkillFromZip(arg1) {
-  return window['go']['main']['App']['ImportSharedSkillFromZip'](arg1);
+export function ImportSharedSkillsDir(arg1) {
+  return window['go']['main']['App']['ImportSharedSkillsDir'](arg1);
+}
+
+export function ImportSharedSkillsZip(arg1) {
+  return window['go']['main']['App']['ImportSharedSkillsZip'](arg1);
 }
 
 export function ImportWSLCliConfigKeys(arg1, arg2, arg3) {
@@ -476,10 +472,6 @@ export function InstallPiPackageTargeted(arg1, arg2) {
 
 export function InstallTool(arg1) {
   return window['go']['main']['App']['InstallTool'](arg1);
-}
-
-export function InvalidateSharedExtCache() {
-  return window['go']['main']['App']['InvalidateSharedExtCache']();
 }
 
 export function KeepWSLCliConfigUnitLocal(arg1, arg2) {
@@ -538,6 +530,10 @@ export function ListSharedMcp() {
   return window['go']['main']['App']['ListSharedMcp']();
 }
 
+export function ListSharedSkillOrigins() {
+  return window['go']['main']['App']['ListSharedSkillOrigins']();
+}
+
 export function ListSharedSkills() {
   return window['go']['main']['App']['ListSharedSkills']();
 }
@@ -570,20 +566,20 @@ export function OpenSharedSkillsRoot() {
   return window['go']['main']['App']['OpenSharedSkillsRoot']();
 }
 
-export function PickMCPJSONFile() {
-  return window['go']['main']['App']['PickMCPJSONFile']();
+export function ParseSharedMcpImportText(arg1) {
+  return window['go']['main']['App']['ParseSharedMcpImportText'](arg1);
 }
 
-export function PickSharedSkillDir() {
-  return window['go']['main']['App']['PickSharedSkillDir']();
+export function PickSharedMcpImportFile() {
+  return window['go']['main']['App']['PickSharedMcpImportFile']();
 }
 
-export function PickSharedSkillZipFile() {
-  return window['go']['main']['App']['PickSharedSkillZipFile']();
+export function PickSharedSkillsDir() {
+  return window['go']['main']['App']['PickSharedSkillsDir']();
 }
 
-export function PreviewSharedMCPJSON(arg1) {
-  return window['go']['main']['App']['PreviewSharedMCPJSON'](arg1);
+export function PickSharedSkillsZip() {
+  return window['go']['main']['App']['PickSharedSkillsZip']();
 }
 
 export function PreviewWSLCliConfigSupply(arg1) {
@@ -616,10 +612,6 @@ export function PtyWrite(arg1, arg2) {
 
 export function PtyWriteLarge(arg1, arg2) {
   return window['go']['main']['App']['PtyWriteLarge'](arg1, arg2);
-}
-
-export function ReadTextFile(arg1) {
-  return window['go']['main']['App']['ReadTextFile'](arg1);
 }
 
 export function ReconcileClaudeAccounts(arg1, arg2) {
@@ -910,14 +902,6 @@ export function SetRemotePort(arg1) {
   return window['go']['main']['App']['SetRemotePort'](arg1);
 }
 
-export function SetSharedMCPServerEnabled(arg1, arg2) {
-  return window['go']['main']['App']['SetSharedMCPServerEnabled'](arg1, arg2);
-}
-
-export function SetSharedMCPServerTargets(arg1, arg2) {
-  return window['go']['main']['App']['SetSharedMCPServerTargets'](arg1, arg2);
-}
-
 export function SetSharedMcpEngineSelection(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetSharedMcpEngineSelection'](arg1, arg2, arg3, arg4);
 }
@@ -980,6 +964,10 @@ export function ToggleRemoteServer(arg1) {
 
 export function UninstallClaudeCode(arg1) {
   return window['go']['main']['App']['UninstallClaudeCode'](arg1);
+}
+
+export function UninstallSharedMarketplacePlugin(arg1, arg2) {
+  return window['go']['main']['App']['UninstallSharedMarketplacePlugin'](arg1, arg2);
 }
 
 export function UpdateCLIInWSL(arg1) {

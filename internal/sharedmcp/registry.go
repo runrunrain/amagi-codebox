@@ -86,7 +86,7 @@ func validateEntry(entry SharedMcpEntry) error {
 	case "http":
 		host, perr := parseEntryURL(entry.URL)
 		if perr != nil || host == "" {
-			return NewErr(KindInvalidEntry, "http 形态的服务器必须填写合法 URL（需包含主机名），当前为 %q", entry.URL)
+			return NewErr(KindInvalidEntry, "http 形态的服务器必须填写合法 URL（需包含主机名）")
 		}
 	default:
 		return NewErr(KindInvalidEntry, "服务器类型必须是 stdio 或 http，当前为 %q", entry.Type)
@@ -389,6 +389,8 @@ func sameStringSet(a, b []string) bool {
 
 // Create 在登记文件新增条目（spec §2.1）。同名已存在 → 拒绝。
 func (s *Service) Create(entry SharedMcpEntry) error {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	if err := validateEntry(entry); err != nil {
 		return err
 	}
@@ -419,6 +421,8 @@ func (s *Service) Create(entry SharedMcpEntry) error {
 // 不自动重分发——已分发引擎随内容变化如实转 drift，由用户逐引擎 resync
 // （spec §3）。未知键的 raw 值从当前文件原样合并保留。
 func (s *Service) Update(name string, entry SharedMcpEntry) error {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	if entry.Name != "" && entry.Name != name {
 		return NewErr(KindInvalidEntry, "条目名不可修改（标识为 %q，不接受 %q）", name, entry.Name)
 	}
@@ -460,6 +464,8 @@ func (s *Service) Update(name string, entry SharedMcpEntry) error {
 // 保留空对象 {} 不删键（最小扰动，顶层键集恒不变）。与分发的联动（先逐
 // 引擎还原）在 App 门面层编排（spec §3）。既有不合规名字同样可删。
 func (s *Service) Delete(name string) error {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	data, exists, err := s.readRegistryStart()
 	if err != nil {
 		return err

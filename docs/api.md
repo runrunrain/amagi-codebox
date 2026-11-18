@@ -2,9 +2,8 @@
 
 本文档列出前端可调用的全部 Wails 绑定方法。方法清单**以当前代码为准**，生成依据：
 
-- 绑定清单：`bind_list.go` 的 `buildWailsBindList`（共 16 个绑定 = `App` + 15 个服务）
+- 绑定清单：`bind_list.go` 的 `buildWailsBindList`（共 15 个绑定 = `App` + 14 个服务）
 - 方法签名：`App` 导出方法（`app.go`、`app_remoteclient.go`、`app_agentcli.go`、`app_agentcli_install.go`、`app_sharedskills.go` 等），以及 `internal/` 下各已绑定服务结构体的导出方法（以 `frontend/wailsjs/go/` 为生成物事实源）
-- 校对日期：2026-11-20（v1.3.145 P6 融合：远端 1.3.144 绑定收敛 + 本分支 SharedExt 绑定）
 
 ## 调用方式
 
@@ -21,7 +20,6 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 | OpenCodePlugins | `opencodeplugin.Service` | `internal/opencodeplugin` |
 | PiPlugins | `piplugin.Service` | `internal/piplugin` |
 | OmpPlugins | `ompplugin.Service` | `internal/ompplugin` |
-| SharedExt | `sharedext.Service` | `internal/sharedext`（共用中心：公共 skill/MCP） |
 | PiConfig | `piconfig.Service` | `internal/piconfig` |
 | AgentProfiles | `agentprofile.Service` | `internal/agentprofile` |
 | Usage | `usage.Service` | `internal/usage` |
@@ -56,7 +54,6 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - [OpenCodePlugins（OpenCode 插件）](#opencodepluginsopencode-插件)
 - [PiPlugins（Pi 扩展包）](#pipluginspi-扩展包)
 - [OmpPlugins（omp 插件）](#omppluginsomp-插件)
-- [SharedExt（共用中心：公共 skill/MCP）](#sharedext共用中心公共-skillmcp)
 - [PiConfig（Pi 配置文件）](#piconfigpi-配置文件)
 - [AgentProfiles（Agent 配置档）](#agentprofilesagent-配置档)
 - [Usage（用量统计）](#usage用量统计)
@@ -133,7 +130,8 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `ListSharedSkills() ([]SharedSkillView, error)` — 枚举两个根目录下的全部共用技能（按名称排序；元数据取自 SKILL.md frontmatter，缺失时如实回退目录名并标记 `hasSkillMd=false`）。
 - `RefreshSharedSkills() ([]SharedSkillView, error)` — 显式刷新；服务层无缓存，语义等同 `ListSharedSkills`（为契约点名的 Refresh 显式提供）。
 - `SetSharedSkillEnabled(name string, enabled bool) ([]SharedSkillView, error)` — 启用/停用：目录在 `skills` ⇄ `skills-disabled` 间移动，对真实读取 `~/.agents/skills` 的 CLI 立即生效；返回最新列表（前端免二次请求）。managed 技能（`amagi-codebox`）拒绝启停（与 InstallDefaults 启动自动装回冲突）。
-- `DeleteSharedSkill(name string) ([]SharedSkillView, error)` — 永久删除技能目录（含禁用态；前端须弹 danger 确认弹窗），返回最新列表；managed 技能拒绝。
+- `DeleteSharedSkill(name string) ([]SharedSkillView, error)` — 永久删除手动技能目录（含禁用态）；应用托管与有共用市场来源记录的技能拒绝单独删除。
+- `PickSharedSkillsZip()` / `PickSharedSkillsDir()` — 系统文件/目录选择器。`ImportSharedSkillsZip(path)` / `ImportSharedSkillsDir(path)` — 导入到禁用根，不覆盖同名技能、不分发到引擎私有目录。
 - `OpenSharedSkillFolder(name string) error` — 用系统文件管理器打开指定技能的当前目录（先校验存在再打开）。
 - `OpenSharedSkillsRoot() error` — 打开 `~/.agents/skills` 根目录；根目录不存在时如实报错并提示先安装技能（不自动创建目录）。
 
@@ -148,7 +146,9 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `DeleteSharedMcpEntry(name string, force bool) (*SharedMcpOverview, error)` — 删除登记条目并先逐引擎还原：Applied 非空时逐引擎 Undistribute（force 透传），任一失败整体失败返回（登记保留、已还原引擎保持已还原），全部成功才删登记 + 清该条目状态。
 - `SetSharedMcpEngineSelection(name, engine string, selected, force bool) (*SharedMcpOverview, error)` — 设置「条目 × 引擎」一格勾选：selected=true → Distribute（幂等 resync，drift 格的「重新分发」即本方法；目标被外部改过返回 ErrForeignModified，force 确认后才覆盖）；false → Undistribute（外改同样需 force）。逐引擎独立成败，互不牵连。
 
-所有方法返回最新 Overview（前端免二次请求）；错误文案与日志不含 env / headers 明文。「打开登记目录」复用通用门面 `OpenFileInEditor`。
+- `ParseSharedMcpImportText(text)` / `PickSharedMcpImportFile()` — 粘贴 JSON 或选择文件后预览，预览表只展示名称、类型和校验状态。`ImportSharedMcpEntries(text)` — 显式提交批量登记，不覆盖同名、不自动分发。
+
+列表和写入方法返回最新 Overview（前端免二次请求）；错误文案与日志不含 env / headers 明文。「打开登记目录」复用通用门面 `OpenFileInEditor`。
 
 ### 共用插件市场（`app_sharedmarket.go`）
 
@@ -160,8 +160,10 @@ Wails 把每个绑定对象挂到 `window.go.<包名>.<结构体名>` 命名空�
 - `ListClaudeMarketplacesForImport() ([]ClaudeMarketplaceForImport, error)` — Claude Code 已注册市场 + 已导入标记（源转换：URL > github repo 合成 > 本地 installLocation）。
 - `ImportSharedMarketplacesFromClaude(names []string) ([]sharedmarket.Marketplace, error)` — 按名从 Claude 注册表导入（保持同名）；单市场原子，批量不回滚、失败即中止并携带市场名。
 - `UpdateSharedMarketplace(name string) ([]sharedmarket.Marketplace, error)` — `git pull --ff-only`；clone 目录缺失时重新克隆恢复。
-- `RemoveSharedMarketplace(name string) ([]sharedmarket.Marketplace, error)` — 删除 clone 目录与登记（已部署技能不受影响）。
+- `RemoveSharedMarketplace(name string) ([]sharedmarket.Marketplace, error)` — 删除 clone 目录与登记；有来源记录的部署须先卸载。
 - `DeploySharedMarketplacePlugin(marketName, pluginName string) (*sharedmarket.DeployReport, error)` — 部署插件 skills 到 `~/.agents/skills`（名称段/符号链接祖先/最终目标三层安全校验；报告 `deployed`/`skipped` 恒为数组）。
+- `UninstallSharedMarketplacePlugin(marketName, pluginName)` — 只删除匹配来源记录的技能（含停用态）；保留旧版无来源记录的条目、手动技能和市场 clone。
+- `GetSharedSkillOrigin(name)` / `ListSharedSkillOrigins()` — 读取共用市场部署来源记录；不遍历引擎私有插件。
 - `OpenSharedMarketplaceFolder(name string) error` — 系统文件管理器打开市场 clone 目录。
 
 ### 远程服务器（Remote Server）
@@ -408,16 +410,9 @@ legacy 配置面（过渡方案）：
 - `InstallPlugin(spec string)` / `UninstallPlugin(name string)` / `SetPluginEnabled(name string, enabled bool)` / `UpgradePlugin(name string)` → `(*CommandResult, error)` — 安装/卸载/启停/升级。
 - `InspectPlugin(plugin Plugin) *PluginDetail` — 零 CLI fork 的本地扫描详情（含 skills，供聚合批量取用）；`GetPluginDetails(name string) (*PluginDetail, error)` — CLI 定位+扫描详情。
 
-## SharedExt（共用中心：公共 skill/MCP）
+## 旧版共用数据
 
-`sharedext.Service`（`internal/sharedext/`），管理跨 CLI 共享的公共 skill（单一事实源 `~/.amagi-codebox/shared/skills/`，复制分发+清单回收）与公共 MCP（`~/.amagi-codebox/shared/registry.json`，写入各 CLI 原生 MCP 配置）。状态存储 `~/.amagi-codebox/shared/registry.json`。前端入口在扩展管理页「共用」tab。
-
-- 公共 skill：`ListSharedSkills()` / `ImportSkillFromZip(zipPath)` / `ImportSkillFromDir(dirPath)` / `DeleteSharedSkill(name)` / `SetSharedSkillEnabled(name, enabled)` / `SetSharedSkillTargets(name, targets []Engine)` — 导入（zip 含穿越/炸弹/symlink 防护）、删除（仅手动导入条目，插件来源由插件卸载统一管理）、启停（启用=复制分发到勾选目标 CLI 目录，禁用=按清单回收）、目标按需勾选。
-- 公共 MCP：`ListSharedMCPServers()` / `ImportMCPServers(servers)` / `DeleteSharedMCPServer(name)` / `SetSharedMCPServerEnabled(name, enabled)` / `SetSharedMCPServerTargets(name, targets []Engine)` — 写入目标：Claude `~/.claude.json` mcpServers、Codex `config.toml [mcp_servers.*]`（TOML 保真编辑）、OpenCode `opencode.json` mcp、Pi/OMP `<agentDir>/mcp.json`；JSON 大文件 sjson 原位编辑+备份轮转。
-- `ParseMCPJSON(text)` — 纯预览解析（兼容 `{"mcpServers":{}}` / 裸对象 / 单条三种格式）。
-- `GetAggregatedSkills(providers, force)` — 聚合视图：手动条目（managed=true 可删可启停）+ 插件来源条目（managed=false，来源标记，删除归插件）；30s TTL 缓存，force 旁路。
-
-App 门面（`app.go` Shared Extensions 段）：上述能力的 `main.App` 包装（`GetSharedSkills`、`ImportSharedSkillFromZip/Dir`、`DeleteSharedSkill`、`SetSharedSkillEnabled/Targets`、`GetSharedMCPServers`、`PreviewSharedMCPJSON`、`ImportSharedMCPServers`（返回 `ImportSharedMCPResult{Imported, Skipped}` 信封）、`GetAllSharedSkillsAggregated(force)`、`InvalidateSharedExtCache`）+ 文件选择对话框（`PickSharedSkillZipFile` / `PickSharedSkillDir` / `PickMCPJSONFile` / `ReadTextFile`，1MB 上限）。插件更新/卸载/启停成功后自动失效聚合缓存（四引擎 OnChange 注入）。
+`GetLegacySharedExtensionsSummary()` 只返回已退役的 `~/.amagi-codebox/shared/registry.json` 登记数量与目录，不返回 MCP 配置，也不枚举插件或写入旧仓库。
 
 ## PiConfig（Pi 配置文件）
 

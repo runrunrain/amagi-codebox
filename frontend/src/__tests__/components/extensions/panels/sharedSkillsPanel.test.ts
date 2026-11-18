@@ -27,6 +27,10 @@ const apiMocks = vi.hoisted(() => ({
   openSharedSkillFolder: vi.fn(async () => undefined),
   openSharedSkillsRoot: vi.fn(async () => undefined),
   refreshSharedSkills: vi.fn(async () => [] as Array<import('../../../../api/sharedSkills').SharedSkillView>),
+  importSharedSkillsZip: vi.fn(async (): Promise<import('../../../../api/sharedSkills').SharedSkillsImportResult> => ({ imported: [], skipped: [], views: [] })),
+  importSharedSkillsDir: vi.fn(async (): Promise<import('../../../../api/sharedSkills').SharedSkillsImportResult> => ({ imported: [], skipped: [], views: [] })),
+  pickSharedSkillsZip: vi.fn(async () => ''),
+  pickSharedSkillsDir: vi.fn(async () => ''),
 }));
 
 vi.mock('../../../../api/sharedSkills', () => ({
@@ -36,6 +40,10 @@ vi.mock('../../../../api/sharedSkills', () => ({
   openSharedSkillFolder: apiMocks.openSharedSkillFolder,
   openSharedSkillsRoot: apiMocks.openSharedSkillsRoot,
   refreshSharedSkills: apiMocks.refreshSharedSkills,
+  importSharedSkillsZip: apiMocks.importSharedSkillsZip,
+  importSharedSkillsDir: apiMocks.importSharedSkillsDir,
+  pickSharedSkillsZip: apiMocks.pickSharedSkillsZip,
+  pickSharedSkillsDir: apiMocks.pickSharedSkillsDir,
 }));
 
 import SharedSkillsPanel from '../../../../components/extensions/SharedSkillsPanel.vue';
@@ -71,9 +79,11 @@ interface PanelRenderResult {
   instances: ComponentInternalInstance[];
 }
 
-async function renderPanel(): Promise<PanelRenderResult> {
+async function renderPanel(slots?: { legacy?: () => ReturnType<typeof h> }): Promise<PanelRenderResult> {
   const instances: ComponentInternalInstance[] = [];
-  const Wrapper = defineComponent({ setup: () => () => h(SharedSkillsPanel) });
+  const Wrapper = defineComponent({
+    setup: () => () => h(SharedSkillsPanel, null, slots ?? {}),
+  });
   const app = createSSRApp(Wrapper);
   app.mixin({
     beforeCreate() {
@@ -115,6 +125,8 @@ interface PanelExposed {
   confirmDelete: () => Promise<void>;
   handleOpenFolder: (skill: SharedSkillView) => Promise<void>;
   handleOpenRoot: () => Promise<void>;
+  handleImportZip: () => Promise<void>;
+  handleImportFolder: () => Promise<void>;
   handleRefresh: () => Promise<void>;
 }
 
@@ -405,5 +417,126 @@ describe('SharedSkillsPanel 工具栏动作', () => {
     const result = await renderPanel();
     await panelExposed(result).handleOpenFolder(ENABLED_A);
     expect(apiMocks.openSharedSkillFolder).toHaveBeenCalledWith('skill-a');
+  });
+});
+
+// ---- 导入（zip / 本地文件夹）：默认停用落 skills-disabled ----
+
+describe('SharedSkillsPanel 导入', () => {
+  it('工具栏含导入压缩包/导入文件夹入口', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, [ENABLED_A]);
+    const { html } = await renderPanel();
+    expect(html).toContain('导入压缩包');
+    expect(html).toContain('导入文件夹');
+  });
+
+  it('handleImportZip：取消选择（pick 空串）→ 不调导入、无 toast', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, [ENABLED_A]);
+    apiMocks.pickSharedSkillsZip.mockResolvedValue('');
+    const result = await renderPanel();
+    const { toasts } = useToast();
+
+    await panelExposed(result).handleImportZip();
+    await Promise.resolve(); // 微任务排空（store 动作内 await）
+    expect(apiMocks.importSharedSkillsZip).not.toHaveBeenCalled();
+    expect(toasts).toHaveLength(0);
+  });
+
+  it('handleImportZip：成功 → 成功 toast + 跳过 warn，列表替换为信封 views', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, [ENABLED_A]);
+    const importedSkill = skill({
+      name: 'imported',
+      displayName: 'Imported',
+      enabled: false,
+      path: '/home/u/.agents/skills-disabled/imported',
+    });
+    apiMocks.pickSharedSkillsZip.mockResolvedValue('/tmp/demo.zip');
+    apiMocks.importSharedSkillsZip.mockResolvedValue({
+      imported: [importedSkill],
+      skipped: ['taken（同名已存在（启用或停用），拒绝覆盖）'],
+      views: [importedSkill],
+    });
+    const result = await renderPanel();
+    const { toasts } = useToast();
+
+    await panelExposed(result).handleImportZip();
+    await Promise.resolve();
+    expect(apiMocks.importSharedSkillsZip).toHaveBeenCalledWith('/tmp/demo.zip');
+    expect(store.skills).toEqual([importedSkill]);
+    expect(toasts.some((t) => t.message.includes('已导入 1 个技能（默认停用'))).toBe(true);
+    expect(toasts.some((t) => t.message.includes('部分技能未导入') && t.message.includes('拒绝覆盖'))).toBe(true);
+  });
+
+  it('handleImportZip：后端整体失败 → 失败 toast，列表不动', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, [ENABLED_A]);
+    apiMocks.pickSharedSkillsZip.mockResolvedValue('/tmp/attack.zip');
+    apiMocks.importSharedSkillsZip.mockRejectedValue(new Error('路径穿越，拒绝导入'));
+    const result = await renderPanel();
+    const { toasts } = useToast();
+
+    await panelExposed(result).handleImportZip();
+    await Promise.resolve();
+    expect(toasts.some((t) => t.message.includes('导入失败') && t.message.includes('路径穿越'))).toBe(true);
+    expect(store.skills).toEqual([ENABLED_A]);
+  });
+
+  it('handleImportFolder：走 Dir 通道（pick → import）', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, []);
+    apiMocks.pickSharedSkillsDir.mockResolvedValue('/tmp/skills-src');
+    apiMocks.importSharedSkillsDir.mockResolvedValue({
+      imported: [DISABLED_B],
+      skipped: [],
+      views: [DISABLED_B],
+    });
+    const result = await renderPanel();
+    const { toasts } = useToast();
+
+    await panelExposed(result).handleImportFolder();
+    await Promise.resolve();
+    expect(apiMocks.importSharedSkillsDir).toHaveBeenCalledWith('/tmp/skills-src');
+    expect(store.skills).toEqual([DISABLED_B]);
+    expect(toasts.some((t) => t.message.includes('已导入 1 个技能'))).toBe(true);
+  });
+});
+
+// ---- legacy slot：列表态（含空态）渲染预留挂载点 ----
+
+describe('SharedSkillsPanel legacy slot', () => {
+  const legacySlots = () => ({
+    legacy: () => h('aside', { class: 'legacy-test-marker' }, '旧版数据提示占位'),
+  });
+
+  it('列表态渲染 legacy slot 内容（工具栏之下、列表之上）', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, [ENABLED_A]);
+    const { html } = await renderPanel(legacySlots());
+    expect(html).toContain('legacy-test-marker');
+    expect(html).toContain('旧版数据提示占位');
+    const slotIdx = html.indexOf('legacy-test-marker');
+    const listIdx = html.indexOf('plugin-row');
+    const toolbarIdx = html.indexOf('list-toolbar');
+    expect(toolbarIdx).toBeLessThan(slotIdx);
+    expect(slotIdx).toBeLessThan(listIdx);
+  });
+
+  it('空态亦可见 legacy slot', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, []);
+    const { html } = await renderPanel(legacySlots());
+    expect(html).toContain('暂无共用技能');
+    expect(html).toContain('legacy-test-marker');
+  });
+
+  it('未传入 slot 时面板正常渲染（可选 slot）', async () => {
+    const store = useSharedSkillsStore();
+    seedStore(store, [ENABLED_A]);
+    const { html } = await renderPanel();
+    expect(html).not.toContain('legacy-test-marker');
+    expect(html).toContain('Skill A');
   });
 });

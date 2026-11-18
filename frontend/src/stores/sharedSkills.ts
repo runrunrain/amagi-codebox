@@ -7,7 +7,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import * as sharedSkillsApi from '../api/sharedSkills';
-import type { SharedSkillView } from '../api/sharedSkills';
+import type { SharedSkillView, SharedSkillsImportResult } from '../api/sharedSkills';
 
 export const useSharedSkillsStore = defineStore('sharedSkills', () => {
   const skills = ref<SharedSkillView[]>([]);
@@ -45,15 +45,52 @@ export const useSharedSkillsStore = defineStore('sharedSkills', () => {
     skills.value = await sharedSkillsApi.deleteSharedSkill(name);
   }
 
+  // 导入互斥标记：zip/文件夹导入共享（选择器未关前禁用入口）
+  const importing = ref(false);
+
+  // 导入执行器：先弹选择器（取消 → null 不动作），再执行导入；成功以信封
+  // views 整体替换列表并返回信封供面板双 toast；失败 rethrow 供面板 toast。
+  async function runImport(
+    pick: () => Promise<string>,
+    run: (path: string) => Promise<SharedSkillsImportResult>,
+  ): Promise<SharedSkillsImportResult | null> {
+    if (importing.value) return null;
+    importing.value = true;
+    try {
+      const path = await pick();
+      if (!path) return null; // 用户取消
+      const result = await run(path);
+      skills.value = result.views;
+      error.value = '';
+      loaded.value = true;
+      return result;
+    } finally {
+      importing.value = false;
+    }
+  }
+
+  /** zip 导入：落点 ~/.agents/skills-disabled（默认停用，不自动分发） */
+  async function importFromZip() {
+    return runImport(sharedSkillsApi.pickSharedSkillsZip, sharedSkillsApi.importSharedSkillsZip);
+  }
+
+  /** 本地文件夹导入：语义同 zip 导入 */
+  async function importFromFolder() {
+    return runImport(sharedSkillsApi.pickSharedSkillsDir, sharedSkillsApi.importSharedSkillsDir);
+  }
+
   return {
     skills,
     loading,
     error,
     loaded,
+    importing,
     enabledCount,
     disabledCount,
     load,
     setEnabled,
     remove,
+    importFromZip,
+    importFromFolder,
   };
 });

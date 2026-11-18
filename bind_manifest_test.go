@@ -23,6 +23,7 @@ var forbiddenTypePrefixes = []string{
 	"updater.Service",
 	"ompconfig.Service",
 	"opencodeconfig.Service",
+	"sharedext.Service", // retired v1.3.145 depot; only registration counts are exposed
 }
 
 // appForbiddenMethods are App-level methods that must NOT be exported (raw
@@ -35,6 +36,8 @@ var appForbiddenMethods = []string{
 	"UnregisterOutputCallback",
 	"RegisterExitCallback",
 	"UnregisterExitCallback",
+	"GetAllSharedSkillsAggregated", // don't scan private engine plugins for common skills
+	"ReadTextFile",                 // import only reads files selected by the dialog
 	"RegisterResizeCallback",
 	"UnregisterResizeCallback",
 }
@@ -125,12 +128,17 @@ var appClassifiedNonSessionMutations = map[string]string{
 	// 共用技能面板的非会话 mutation（扩展中心重构 spec §2.5/§2.8）：目录
 	// 移动与删除均需 UI 确认弹窗（删除为 danger）；managed 名
 	// （amagi-codebox）后端直接拒绝。
-	"SetSharedSkillEnabled": "目录移动（~/.agents/skills ⇄ skills-disabled）需 UI 确认弹窗；managed 名后端拒绝",
-	"DeleteSharedSkill":     "技能目录永久删除需 UI danger 确认弹窗；managed 名后端拒绝",
+	"SetSharedSkillEnabled":            "目录移动（~/.agents/skills ⇄ skills-disabled）需 UI 确认弹窗；managed 名后端拒绝",
+	"DeleteSharedSkill":                "技能目录永久删除需 UI danger 确认弹窗；managed 名后端拒绝",
+	"ImportSharedSkillsZip":            "用户选择 ZIP；有界安全解包，默认停用，不覆盖同名",
+	"ImportSharedSkillsDir":            "用户选择文件夹；有界复制，默认停用，不覆盖同名",
+	"UninstallSharedMarketplacePlugin": "UI danger 确认；仅删除有匹配市场来源记录的技能",
 	// 共用 MCP 面板的非会话 mutation（共用 MCP spec §3）：登记文件 CRUD 与
 	// 四引擎分发写入均需 UI 表单/明确开关动作；外部手改的目标条目后端
 	// 拒删待确认（ErrForeignModified → force 二次确认）。
 	"CreateSharedMcpEntry":        "写 ~/.agents/.mcp.json（0600 原子写）需 UI 表单提交；同名已存在后端拒绝",
+	"ImportPickedSharedMcpFile":   "确认并消耗当前文件预览凭据；不接受任意路径",
+	"ImportSharedMcpEntries":      "UI 显式提交批量登记，不覆盖同名、不自动分发",
 	"UpdateSharedMcpEntry":        "覆写登记条目需 UI 表单提交；name 不可改、条目不存在后端拒绝",
 	"DeleteSharedMcpEntry":        "登记删除 + 已分发引擎还原需 UI danger 确认弹窗；外部手改的目标条目需 force 二次确认",
 	"SetSharedMcpEngineSelection": "写各 Agent 真实 MCP 配置需 UI 明确开关/重新分发动作；目标手写同名条目后端拒绝（conflict）",

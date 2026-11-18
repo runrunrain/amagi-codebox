@@ -9,7 +9,6 @@ import {updater} from '../models';
 import {sharedmcp} from '../models';
 import {aiproxy} from '../models';
 import {router} from '../models';
-import {sharedext} from '../models';
 import {dockerwsl} from '../models';
 import {envvars} from '../models';
 import {logging} from '../models';
@@ -70,8 +69,6 @@ export function DeleteEnvVar(arg1:string):Promise<void>;
 
 export function DeleteProvider(arg1:string):Promise<void>;
 
-export function DeleteSharedMCPServer(arg1:string):Promise<void>;
-
 export function DeleteSharedMcpEntry(arg1:string,arg2:boolean):Promise<main.SharedMcpOverview>;
 
 export function DeleteSharedSkill(arg1:string):Promise<Array<main.SharedSkillView>>;
@@ -106,8 +103,6 @@ export function GetAgentCLIInstallStatus():Promise<main.AgentCLIInstallStatus>;
 
 export function GetAgentCLIStatus():Promise<main.AgentCLIStatus>;
 
-export function GetAllSharedSkillsAggregated(arg1:boolean):Promise<Array<sharedext.AggregatedSkill>>;
-
 export function GetAmagiConfig():Promise<string>;
 
 export function GetAmagiConfigPath():Promise<string>;
@@ -133,6 +128,8 @@ export function GetEnvVarsJSON():Promise<string>;
 export function GetExternalCleanupRecoveryStatus():Promise<remote.ExternalCleanupRecoveryStatus>;
 
 export function GetGitHubToken():Promise<string>;
+
+export function GetLegacySharedExtensionsSummary():Promise<main.LegacySharedExtensionsSummary>;
 
 export function GetLogFileContent(arg1:string):Promise<string>;
 
@@ -202,9 +199,7 @@ export function GetSessionControlHolds():Promise<Array<main.SessionControlHoldVi
 
 export function GetSessions():Promise<Array<session.SessionInfo>>;
 
-export function GetSharedMCPServers():Promise<Array<sharedext.SharedMCPServer>>;
-
-export function GetSharedSkills():Promise<Array<sharedext.SharedSkill>>;
+export function GetSharedSkillOrigin(arg1:string):Promise<sharedmarket.SkillOrigin>;
 
 export function GetStartupWarnings():Promise<Array<string>>;
 
@@ -236,13 +231,15 @@ export function ImportEnvVars(arg1:string):Promise<void>;
 
 export function ImportEnvVarsFromFile():Promise<void>;
 
-export function ImportSharedMCPServers(arg1:Array<sharedext.SharedMCPServer>):Promise<main.ImportSharedMCPResult>;
+export function ImportPickedSharedMcpFile(arg1:string):Promise<main.SharedMcpImportOutcome>;
 
 export function ImportSharedMarketplacesFromClaude(arg1:Array<string>):Promise<Array<sharedmarket.Marketplace>>;
 
-export function ImportSharedSkillFromDir(arg1:string):Promise<main.ImportSharedSkillResult>;
+export function ImportSharedMcpEntries(arg1:string):Promise<main.SharedMcpImportOutcome>;
 
-export function ImportSharedSkillFromZip(arg1:string):Promise<main.ImportSharedSkillResult>;
+export function ImportSharedSkillsDir(arg1:string):Promise<main.SharedSkillsImportResult>;
+
+export function ImportSharedSkillsZip(arg1:string):Promise<main.SharedSkillsImportResult>;
 
 export function ImportWSLCliConfigKeys(arg1:string,arg2:string,arg3:Array<string>):Promise<Array<main.WSLConfigUnitOutcome>>;
 
@@ -257,8 +254,6 @@ export function InstallClaudeWithMethod(arg1:string):Promise<envcheck.InstallRes
 export function InstallPiPackageTargeted(arg1:string,arg2:string):Promise<main.PiPluginTargetedResult>;
 
 export function InstallTool(arg1:string):Promise<envcheck.InstallResult>;
-
-export function InvalidateSharedExtCache():Promise<void>;
 
 export function KeepWSLCliConfigUnitLocal(arg1:string,arg2:string):Promise<void>;
 
@@ -288,6 +283,8 @@ export function ListSharedMarkets():Promise<Array<sharedmarket.Marketplace>>;
 
 export function ListSharedMcp():Promise<main.SharedMcpOverview>;
 
+export function ListSharedSkillOrigins():Promise<Array<sharedmarket.SkillOrigin>>;
+
 export function ListSharedSkills():Promise<Array<main.SharedSkillView>>;
 
 export function MigrateProviderPresetsToTerminal():Promise<number>;
@@ -304,13 +301,13 @@ export function OpenSharedSkillFolder(arg1:string):Promise<void>;
 
 export function OpenSharedSkillsRoot():Promise<void>;
 
-export function PickMCPJSONFile():Promise<string>;
+export function ParseSharedMcpImportText(arg1:string):Promise<main.SharedMcpImportPreview>;
 
-export function PickSharedSkillDir():Promise<string>;
+export function PickSharedMcpImportFile():Promise<main.SharedMcpImportFilePreview>;
 
-export function PickSharedSkillZipFile():Promise<string>;
+export function PickSharedSkillsDir():Promise<string>;
 
-export function PreviewSharedMCPJSON(arg1:string):Promise<Array<sharedext.SharedMCPServer>>;
+export function PickSharedSkillsZip():Promise<string>;
 
 export function PreviewWSLCliConfigSupply(arg1:string):Promise<Array<main.WSLConfigUnitPreview>>;
 
@@ -327,8 +324,6 @@ export function PtyResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 export function PtyWrite(arg1:string,arg2:string):Promise<void>;
 
 export function PtyWriteLarge(arg1:string,arg2:string):Promise<void>;
-
-export function ReadTextFile(arg1:string):Promise<string>;
 
 export function ReconcileClaudeAccounts(arg1:string,arg2:number):Promise<main.ClaudeAccountReconcileResultDTO>;
 
@@ -474,10 +469,6 @@ export function SetRemoteHost(arg1:string):Promise<void>;
 
 export function SetRemotePort(arg1:number):Promise<void>;
 
-export function SetSharedMCPServerEnabled(arg1:string,arg2:boolean):Promise<void>;
-
-export function SetSharedMCPServerTargets(arg1:string,arg2:Array<sharedext.Engine>):Promise<void>;
-
 export function SetSharedMcpEngineSelection(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<main.SharedMcpOverview>;
 
 export function SetSharedSkillEnabled(arg1:string,arg2:boolean):Promise<Array<main.SharedSkillView>>;
@@ -509,6 +500,8 @@ export function TakeOverWSLCliResource(arg1:string,arg2:string,arg3:string):Prom
 export function ToggleRemoteServer(arg1:boolean):Promise<void>;
 
 export function UninstallClaudeCode(arg1:string):Promise<envcheck.InstallResult>;
+
+export function UninstallSharedMarketplacePlugin(arg1:string,arg2:string):Promise<sharedmarket.UninstallReport>;
 
 export function UpdateCLIInWSL(arg1:string):Promise<wslsetup.InstallResult>;
 

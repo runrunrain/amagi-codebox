@@ -5,7 +5,7 @@
     <!-- RC1-6：远程模式提示条（扩展管理为本机功能） -->
     <RemoteScopeBanner subject="扩展管理" />
 
-    <!-- 顶部页签导航（契约 §1 重构）：七子页水平页签行，选中=胶囊高亮底
+    <!-- 顶部页签导航：共用技能、MCP、市场与五引擎各一个入口，选中=胶囊高亮底
          （浅色 token，Segmented pill 选中态视觉），未选中纯文字灰；无图标 -->
     <nav class="ex-tabs" aria-label="扩展子页">
       <button
@@ -23,13 +23,17 @@
     <!-- 子页内容区（全宽，列表/详情分页化由各面板自理） -->
     <div class="ex-subpage">
       <!-- 公共：共用技能（~/.agents/skills） -->
-      <SharedSkillsPanel v-if="extSubPage === 'shared-skills'" />
+      <SharedSkillsPanel v-if="extSubPage === 'shared-skills'" @open-market="openSkillMarket">
+        <template #legacy><LegacySharedExtensionsNotice kind="skills" /></template>
+      </SharedSkillsPanel>
 
       <!-- 公共：共用 MCP（~/.agents/.mcp.json 登记 + 四引擎分发） -->
-      <SharedMcpPanel v-else-if="extSubPage === 'shared-mcp'" />
+      <SharedMcpPanel v-else-if="extSubPage === 'shared-mcp'">
+        <template #legacy><LegacySharedExtensionsNotice kind="mcp" /></template>
+      </SharedMcpPanel>
 
       <!-- 公共：共用插件市场（~/.agents/marketplaces 克隆管理 + 技能部署） -->
-      <SharedMarketPanel v-else-if="extSubPage === 'shared-market'" />
+      <SharedMarketPanel v-else-if="extSubPage === 'shared-market'" :initial-market="skillMarket" />
 
       <!-- ClaudeCode 子页 -->
       <!-- :key 区分 Claude/Codex 两分支：否则 v-if 切换时 Vue 原地 patch、
@@ -46,10 +50,6 @@
         </div>
       </div>
 
-      <!-- 共用中心子页（P3：CodeBox 公共 skill/MCP 仓库 + 五引擎分发 + 聚合视图） -->
-      <div v-else-if="extSubPage === 'common-center'" class="engine-pane">
-        <CommonCenterPanel />
-      </div>
 
       <!-- OpenCode 子页 -->
       <div v-else-if="extSubPage === 'opencode'" class="engine-pane">
@@ -138,7 +138,7 @@ import SharedSkillsPanel from '../components/extensions/SharedSkillsPanel.vue';
 import SharedMcpPanel from '../components/extensions/SharedMcpPanel.vue';
 import SharedMarketPanel from '../components/extensions/SharedMarketPanel.vue';
 import WSLPluginTargetPlaceholder from '../components/extensions/WSLPluginTargetPlaceholder.vue';
-import CommonCenterPanel from '../components/extensions/common/CommonCenterPanel.vue';
+import LegacySharedExtensionsNotice from '../components/extensions/LegacySharedExtensionsNotice.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import { usePluginStore } from '../stores/plugin';
 import type { ExtSubPage } from '../stores/plugin';
@@ -150,7 +150,7 @@ const { setExtSubPage, addCcMarketplace, addCxMarketplace } = pluginStore;
 const { showError, showSuccess } = useToast();
 
 // 子页页签（契约 §1.2 顶部页签化）：静态数据不进 store（选中状态/动作在
-// stores/plugin.ts）；纯文字无图标，顺序=公共两页 + 五引擎
+// stores/plugin.ts）；纯文字无图标，顺序=共用技能、MCP、市场 + 五引擎
 interface SubPageTab {
   key: ExtSubPage;
   label: string;
@@ -160,7 +160,6 @@ const subPageTabs: SubPageTab[] = [
   { key: 'shared-skills', label: '共用技能' },
   { key: 'shared-mcp', label: '共用 MCP' },
   { key: 'shared-market', label: '共用市场' },
-  { key: 'common-center', label: '共用中心' },
   { key: 'claude', label: 'Claude Code' },
   { key: 'opencode', label: 'OpenCode' },
   { key: 'codex', label: 'Codex' },
@@ -173,12 +172,19 @@ const showAddMarketDialog = ref(false);
 const activeEngine = ref<'claude' | 'codex'>('claude');
 const marketSource = ref('');
 const addMarketSubmitting = ref(false);
+const skillMarket = ref<string>();
+
+function openSkillMarket(name: string) {
+  skillMarket.value = name;
+  setExtSubPage('shared-market');
+}
 
 // 子页切换（契约 §1.3/§3）：唯一写入口为 store.setExtSubPage——
 // 同值守卫防重击清详情态；引擎子页联动 setPluginEngine（清 activePluginId）
 // + setPluginView('installed') 重置列表态（原引擎 Segmented 契约平移）；
 // shared-skills 子页不动引擎态
 function handleSubPageChange(page: ExtSubPage) {
+  if (page !== extSubPage.value) skillMarket.value = undefined;
   setExtSubPage(page);
 }
 

@@ -85,7 +85,7 @@ func (a *App) AddSharedMarketplace(source string) ([]sharedmarket.Marketplace, e
 // Claude 注册表市场 + 已导入标记（按名称比对共用市场状态）。
 type ClaudeMarketplaceForImport struct {
 	Name     string `json:"name"`
-	Source   string `json:"source"`   // 可 clone 源（转换后）
+	Source   string `json:"source"` // 可 clone 源（转换后）
 	Repo     string `json:"repo,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Imported bool   `json:"imported"` // 已存在于共用市场
@@ -107,7 +107,7 @@ func claudeMarketplaceCloneSource(repo, url, installLocation string) (string, er
 }
 
 // buildClaudeImportViews 是 ListClaudeMarketplacesForImport 的纯组装逻辑
-//（抽出便于单测：无 CLI/git 依赖）。source 转换失败时置空串，由前端如实呈现。
+// （抽出便于单测：无 CLI/git 依赖）。source 转换失败时置空串，由前端如实呈现。
 func buildClaudeImportViews(
 	marketplaces []plugin.Marketplace,
 	shared []sharedmarket.Marketplace,
@@ -194,6 +194,8 @@ func (a *App) UpdateSharedMarketplace(name string) ([]sharedmarket.Marketplace, 
 // RemoveSharedMarketplace 删除共用市场（clone 目录 + 状态条目；已部署技能
 // 不受影响），返回最新列表（前端须先 danger 确认）。
 func (a *App) RemoveSharedMarketplace(name string) ([]sharedmarket.Marketplace, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
 	if err := a.sharedMarketService().Remove(name); err != nil {
 		return nil, err
 	}
@@ -201,9 +203,35 @@ func (a *App) RemoveSharedMarketplace(name string) ([]sharedmarket.Marketplace, 
 }
 
 // DeploySharedMarketplacePlugin 把市场内插件的技能部署到 ~/.agents/skills
-// （成为共用技能，由共用技能子页统一启停管理）。
+// （成为共用技能，由共用技能子页统一启停管理）。部署成功时在技能目录内写入
+// 受限隐藏来源凭据（provenance 标记），供来源查询与卸载使用。
 func (a *App) DeploySharedMarketplacePlugin(marketName, pluginName string) (*sharedmarket.DeployReport, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
 	return a.sharedMarketService().DeployPlugin(marketName, pluginName)
+}
+
+// GetSharedSkillOrigin 读取单个共用技能目录的部署来源凭据（凭据 = 受限隐藏
+// 标记 + 目录本身；不做名称碰撞推断）。目录存在但无有效凭据（手动条目或
+// 旧版部署）返回 null；目录不存在返回错误。
+func (a *App) GetSharedSkillOrigin(skillName string) (*sharedmarket.SkillOrigin, error) {
+	return a.sharedMarketService().SharedSkillOrigin(skillName)
+}
+
+// ListSharedSkillOrigins 枚举 ~/.agents/skills 与 ~/.agents/skills-disabled 下
+// 全部带有效来源凭据的共用技能（无凭据目录不列出）——「共用技能」页批量
+// 标注部署来源的数据源。
+func (a *App) ListSharedSkillOrigins() ([]sharedmarket.SkillOrigin, error) {
+	return a.sharedMarketService().ListSkillOrigins()
+}
+
+// UninstallSharedMarketplacePlugin 显式卸载市场插件的已部署共用技能：仅删除
+// 来源凭据完全匹配（市场名 + 插件名 + 目录名）的启用/停用目录；同名手动
+// 条目与无凭据目录保留；市场 clone 不受影响。
+func (a *App) UninstallSharedMarketplacePlugin(marketName, pluginName string) (*sharedmarket.UninstallReport, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
+	return a.sharedMarketService().UninstallPlugin(marketName, pluginName)
 }
 
 // OpenSharedMarketplaceFolder 用系统文件管理器打开市场 clone 目录（模式照抄

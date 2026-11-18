@@ -1,6 +1,6 @@
 /**
  * Shared Market API（共用插件市场，~/.agents/marketplaces）
- * 包装 wailsjs App 门面（app_sharedmarket.go 的 8 个方法），全部走 callApi
+ * 包装 wailsjs App 门面（app_sharedmarket.go），全部走 callApi
  * 统一 "log + rethrow" 语义（api/sharedSkills.ts 同范式）。
  *
  * 本地声明 interface 而非 import wailsjs models，避免手写漂移
@@ -17,6 +17,9 @@ import {
   RemoveSharedMarketplace,
   DeploySharedMarketplacePlugin,
   OpenSharedMarketplaceFolder,
+  GetSharedSkillOrigin,
+  ListSharedSkillOrigins,
+  UninstallSharedMarketplacePlugin,
 } from '../../wailsjs/go/main/App';
 
 import { callApi } from './internal/call';
@@ -29,6 +32,9 @@ export interface SharedMarketPlugin {
   author?: string;
   /** 可部署的技能目录名（本地 source 存在的条目） */
   skills: string[];
+  /** 当前仍存在且来源凭据（provenance 标记）指向本市场本插件的技能目录名；
+   * 同名但无凭据的目录不计入（不按名称碰撞推断）。 */
+  deployedSkills?: string[];
   /** true = 插件内容不在市场仓库内（git-subdir 外部引用），无法本地部署 */
   externalSource?: boolean;
 }
@@ -67,6 +73,30 @@ export interface ClaudeMarketplaceForImport {
   url?: string;
   /** 已存在于共用市场 */
   imported: boolean;
+}
+
+/** 单个共用技能目录的部署来源凭据（目录 + 受限隐藏标记组成证据） */
+export interface SharedSkillOrigin {
+  /** 技能目录名（与凭据内 skill 一致，已后端校验） */
+  skill: string;
+  /** 部署来源市场名 */
+  marketplace: string;
+  /** 部署来源插件名（catalog 透传标识） */
+  plugin: string;
+  /** 部署时间（RFC3339，凭据写入时刻；不代表技能内容版本） */
+  deployedAt: string;
+  /** 位于 skills/ → true；skills-disabled/ → false */
+  enabled: boolean;
+  /** 技能目录绝对路径 */
+  path: string;
+}
+
+/** 市场插件卸载结果（仅移除来源凭据完全匹配的目录） */
+export interface SharedMarketUninstallReport {
+  marketplace: string;
+  plugin: string;
+  /** 已删除的技能目录名（含停用态目录）；同名手动/无凭据目录不在其列 */
+  removed: string[];
 }
 
 /** 枚举共用市场（状态 + 实时目录扫描） */
@@ -125,5 +155,35 @@ export function deploySharedMarketplacePlugin(
 export function openSharedMarketplaceFolder(name: string): Promise<void> {
   return callApi('[api.sharedMarket.openSharedMarketplaceFolder]', () =>
     OpenSharedMarketplaceFolder(name),
+  );
+}
+
+/**
+ * 读取单个共用技能目录的部署来源凭据。
+ * 目录存在但无有效凭据（手动条目或旧版部署）→ null；目录不存在 → reject。
+ */
+export function getSharedSkillOrigin(skillName: string): Promise<SharedSkillOrigin | null> {
+  return callApi('[api.sharedMarket.getSharedSkillOrigin]', () =>
+    GetSharedSkillOrigin(skillName),
+  );
+}
+
+/** 枚举两个技能根下全部带有效来源凭据的共用技能（无凭据目录不列出） */
+export function listSharedSkillOrigins(): Promise<SharedSkillOrigin[]> {
+  return callApi('[api.sharedMarket.listSharedSkillOrigins]', () =>
+    ListSharedSkillOrigins(),
+  );
+}
+
+/**
+ * 显式卸载市场插件的已部署共用技能：仅删除来源凭据完全匹配（市场 + 插件 +
+ * 目录名）的启用/停用目录；同名手动条目与无凭据目录保留；市场 clone 不受影响。
+ */
+export function uninstallSharedMarketplacePlugin(
+  marketName: string,
+  pluginName: string,
+): Promise<SharedMarketUninstallReport> {
+  return callApi('[api.sharedMarket.uninstallSharedMarketplacePlugin]', () =>
+    UninstallSharedMarketplacePlugin(marketName, pluginName),
   );
 }

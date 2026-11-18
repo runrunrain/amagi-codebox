@@ -2605,69 +2605,21 @@ export namespace main {
 	        this.imported = source["imported"];
 	    }
 	}
-	export class ImportSharedMCPResult {
-	    imported: sharedext.SharedMCPServer[];
-	    skipped: string[];
+	export class LegacySharedExtensionsSummary {
+	    path: string;
+	    skills: number;
+	    mcp: number;
 	
 	    static createFrom(source: any = {}) {
-	        return new ImportSharedMCPResult(source);
+	        return new LegacySharedExtensionsSummary(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.imported = this.convertValues(source["imported"], sharedext.SharedMCPServer);
-	        this.skipped = source["skipped"];
+	        this.path = source["path"];
+	        this.skills = source["skills"];
+	        this.mcp = source["mcp"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class ImportSharedSkillResult {
-	    imported: sharedext.SharedSkill[];
-	    skipped: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ImportSharedSkillResult(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.imported = this.convertValues(source["imported"], sharedext.SharedSkill);
-	        this.skipped = source["skipped"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class ModalityProbeNowResult {
 	    conclusive: boolean;
@@ -2897,6 +2849,40 @@ export namespace main {
 	        this.inGrace = source["inGrace"];
 	    }
 	}
+	export class SharedMcpImportFilePreview {
+	    entries: sharedmcp.ImportPreviewEntry[];
+	    fileName: string;
+	    ticket: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedMcpImportFilePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entries = this.convertValues(source["entries"], sharedmcp.ImportPreviewEntry);
+	        this.fileName = source["fileName"];
+	        this.ticket = source["ticket"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SharedMcpOverview {
 	    entries: sharedmcp.EntryOverview[];
 	    registryExists: boolean;
@@ -2933,6 +2919,71 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SharedMcpImportOutcome {
+	    imported: string[];
+	    skipped: sharedmcp.ImportSkipped[];
+	    overview: SharedMcpOverview;
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedMcpImportOutcome(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.imported = source["imported"];
+	        this.skipped = this.convertValues(source["skipped"], sharedmcp.ImportSkipped);
+	        this.overview = this.convertValues(source["overview"], SharedMcpOverview);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SharedMcpImportPreview {
+	    entries: sharedmcp.ImportPreviewEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedMcpImportPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entries = this.convertValues(source["entries"], sharedmcp.ImportPreviewEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class SharedSkillView {
 	    name: string;
 	    displayName: string;
@@ -2942,6 +2993,7 @@ export namespace main {
 	    enabled: boolean;
 	    path: string;
 	    hasSkillMd: boolean;
+	    marketOrigin?: sharedmarket.SkillOrigin;
 	    managed: boolean;
 	    managedStatus?: string;
 	
@@ -2959,9 +3011,62 @@ export namespace main {
 	        this.enabled = source["enabled"];
 	        this.path = source["path"];
 	        this.hasSkillMd = source["hasSkillMd"];
+	        this.marketOrigin = this.convertValues(source["marketOrigin"], sharedmarket.SkillOrigin);
 	        this.managed = source["managed"];
 	        this.managedStatus = source["managedStatus"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SharedSkillsImportResult {
+	    imported: sharedskills.Skill[];
+	    skipped: string[];
+	    views: SharedSkillView[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SharedSkillsImportResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.imported = this.convertValues(source["imported"], sharedskills.Skill);
+	        this.skipped = source["skipped"];
+	        this.views = this.convertValues(source["views"], SharedSkillView);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SystemProxyStatus {
 	    supported: boolean;
@@ -5294,91 +5399,6 @@ export namespace settings {
 
 }
 
-export namespace sharedext {
-	
-	export class AggregatedSkill {
-	    name: string;
-	    description: string;
-	    origin: string;
-	    pluginEngine?: string;
-	    pluginId?: string;
-	    pluginName?: string;
-	    managed: boolean;
-	    enabled: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new AggregatedSkill(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.origin = source["origin"];
-	        this.pluginEngine = source["pluginEngine"];
-	        this.pluginId = source["pluginId"];
-	        this.pluginName = source["pluginName"];
-	        this.managed = source["managed"];
-	        this.enabled = source["enabled"];
-	    }
-	}
-	export class SharedMCPServer {
-	    name: string;
-	    config: Record<string, any>;
-	    origin: string;
-	    enabled: boolean;
-	    targets: string[];
-	    deployed: string[];
-	    createdAt: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SharedMCPServer(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.config = source["config"];
-	        this.origin = source["origin"];
-	        this.enabled = source["enabled"];
-	        this.targets = source["targets"];
-	        this.deployed = source["deployed"];
-	        this.createdAt = source["createdAt"];
-	    }
-	}
-	export class SharedSkill {
-	    name: string;
-	    description: string;
-	    sourcePath: string;
-	    origin: string;
-	    enabled: boolean;
-	    targets: string[];
-	    deployed: string[];
-	    deployedAt?: string;
-	    createdAt: string;
-	    missing?: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new SharedSkill(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.sourcePath = source["sourcePath"];
-	        this.origin = source["origin"];
-	        this.enabled = source["enabled"];
-	        this.targets = source["targets"];
-	        this.deployed = source["deployed"];
-	        this.deployedAt = source["deployedAt"];
-	        this.createdAt = source["createdAt"];
-	        this.missing = source["missing"];
-	    }
-	}
-
-}
-
 export namespace sharedmarket {
 	
 	export class DeployReport {
@@ -5407,6 +5427,7 @@ export namespace sharedmarket {
 	    description?: string;
 	    author?: string;
 	    skills: string[];
+	    deployedSkills: string[];
 	    externalSource?: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -5420,6 +5441,7 @@ export namespace sharedmarket {
 	        this.description = source["description"];
 	        this.author = source["author"];
 	        this.skills = source["skills"];
+	        this.deployedSkills = source["deployedSkills"];
 	        this.externalSource = source["externalSource"];
 	    }
 	}
@@ -5468,6 +5490,45 @@ export namespace sharedmarket {
 		    }
 		    return a;
 		}
+	}
+	
+	export class SkillOrigin {
+	    skill: string;
+	    marketplace: string;
+	    plugin: string;
+	    deployedAt: string;
+	    enabled: boolean;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SkillOrigin(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.skill = source["skill"];
+	        this.marketplace = source["marketplace"];
+	        this.plugin = source["plugin"];
+	        this.deployedAt = source["deployedAt"];
+	        this.enabled = source["enabled"];
+	        this.path = source["path"];
+	    }
+	}
+	export class UninstallReport {
+	    marketplace: string;
+	    plugin: string;
+	    removed: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new UninstallReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.marketplace = source["marketplace"];
+	        this.plugin = source["plugin"];
+	        this.removed = source["removed"];
+	    }
 	}
 
 }
@@ -5573,6 +5634,69 @@ export namespace sharedmcp {
 		    }
 		    return a;
 		}
+	}
+	export class ImportPreviewEntry {
+	    name: string;
+	    type: string;
+	    status: string;
+	    note?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImportPreviewEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.status = source["status"];
+	        this.note = source["note"];
+	    }
+	}
+	export class ImportSkipped {
+	    name: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImportSkipped(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.reason = source["reason"];
+	    }
+	}
+
+}
+
+export namespace sharedskills {
+	
+	export class Skill {
+	    name: string;
+	    displayName: string;
+	    description: string;
+	    version: string;
+	    author: string;
+	    enabled: boolean;
+	    path: string;
+	    hasSkillMd: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Skill(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.displayName = source["displayName"];
+	        this.description = source["description"];
+	        this.version = source["version"];
+	        this.author = source["author"];
+	        this.enabled = source["enabled"];
+	        this.path = source["path"];
+	        this.hasSkillMd = source["hasSkillMd"];
+	    }
 	}
 
 }

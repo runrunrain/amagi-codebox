@@ -21,15 +21,19 @@ import (
 
 	"amagi-codebox/internal/agentcli/install"
 	"amagi-codebox/internal/logging"
+	"amagi-codebox/internal/sharedmarket"
 	"amagi-codebox/internal/sharedskills"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // SharedSkillView 是前端看到的共用技能条目：sharedskills.Skill 加 managed
 // 组装（spec §2.4）。
 type SharedSkillView struct {
 	sharedskills.Skill
-	Managed       bool   `json:"managed"`                 // amagi-codebox 自带技能
-	ManagedStatus string `json:"managedStatus,omitempty"` // install 五态（not-installed/up-to-date/outdated/modified-by-user/invalid），经 a.agentCLIInstaller().SkillStatus(install.SkillTargetAgents)
+	MarketOrigin  *sharedmarket.SkillOrigin `json:"marketOrigin,omitempty"`
+	Managed       bool                      `json:"managed"`                 // amagi-codebox 自带技能
+	ManagedStatus string                    `json:"managedStatus,omitempty"` // install 五态（not-installed/up-to-date/outdated/modified-by-user/invalid），经 a.agentCLIInstaller().SkillStatus(install.SkillTargetAgents)
 }
 
 // managedSharedSkillMessage 是 managed 技能启停/删除的统一拒绝文案
@@ -88,7 +92,7 @@ func (a *App) sharedSkillViews() ([]SharedSkillView, error) {
 	}
 	views := make([]SharedSkillView, 0, len(skills))
 	for _, sk := range skills {
-		v := SharedSkillView{Skill: sk}
+		v := SharedSkillView{Skill: sk, MarketOrigin: sharedmarket.OriginForSkill(sk.Path, sk.Enabled)}
 		if sk.Name == sharedskills.ManagedSkillName {
 			v.Managed = true
 			v.ManagedStatus = string(a.agentCLIInstaller().SkillStatus(install.SkillTargetAgents).State)
@@ -114,6 +118,8 @@ func (a *App) RefreshSharedSkills() ([]SharedSkillView, error) {
 // skills-disabled 间移动，对读取 ~/.agents/skills 的 CLI 立即生效），返回
 // 最新列表（前端免二次请求）。managed 技能拒绝（spec §2.4 行为裁定）。
 func (a *App) SetSharedSkillEnabled(name string, enabled bool) ([]SharedSkillView, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
 	if name == sharedskills.ManagedSkillName {
 		return nil, errors.New(managedSharedSkillMessage)
 	}
@@ -126,8 +132,15 @@ func (a *App) SetSharedSkillEnabled(name string, enabled bool) ([]SharedSkillVie
 // DeleteSharedSkill 永久删除共用技能目录（含禁用态；前端须弹 danger 确认
 // 弹窗），返回最新列表。managed 技能拒绝（同 SetSharedSkillEnabled）。
 func (a *App) DeleteSharedSkill(name string) ([]SharedSkillView, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
 	if name == sharedskills.ManagedSkillName {
 		return nil, errors.New(managedSharedSkillMessage)
+	}
+	if sk, err := a.sharedSkillsService().Detail(name); err != nil {
+		return nil, err
+	} else if origin := sharedmarket.OriginForSkill(sk.Path, sk.Enabled); origin != nil {
+		return nil, fmt.Errorf("此技能由共用市场部署，请在「%s」市场卸载插件「%s」", origin.Marketplace, origin.Plugin)
 	}
 	if err := a.sharedSkillsService().Delete(name); err != nil {
 		return nil, err
@@ -163,7 +176,7 @@ func (a *App) OpenSharedSkillFolder(name string) error {
 
 // OpenSharedSkillsRoot 打开 ~/.agents/skills 根目录。根目录不存在时如实报错
 // 并提示先安装技能（spec §2.5 裁定：不自动 MkdirAll——「用户可见状态必须
-// 真实」，不替用户造目录）。
+// 真实」，不替用户造目录；导入是唯一例外：导入落盘时会按需创建禁用根）。
 func (a *App) OpenSharedSkillsRoot() error {
 	root := a.sharedSkillsService().SkillsRoot()
 	fi, err := os.Stat(root)
@@ -186,4 +199,88 @@ func (a *App) OpenSharedSkillsRoot() error {
 		a.Log.Info("sharedskills", "系统文件管理器打开技能根目录", root)
 	}
 	return nil
+}
+
+// ---- Wails 门面：导入（canonical 共用技能纵切，替代 v1.3.145 sharedext ----
+// ---- 重复导入面）                                                          ----
+
+// SharedSkillsImportResult 是 ImportSharedSkillsZip/Dir 的单值返回信封
+// （Wails v2 对多返回值支持有限，服务层 (imported, skipped, error) 在此折叠）。
+// 部分成功（同名/非法名/超限跳过）不返回 error，明细在 Skipped 供前端双
+// toast；仅整体失败才返回 error。Views 为导入后的最新列表（前端免二次请求）。
+type SharedSkillsImportResult struct {
+	Imported []sharedskills.Skill `json:"imported"`
+	Skipped  []string             `json:"skipped"`
+	Views    []SharedSkillView    `json:"views"`
+}
+
+// wrapSharedSkillsImport 折叠服务层导入结果为信封：非 nil 切片保证（JS 侧
+// 免判空）；error 原样透传（整体失败时 Skipped 一并带回供前端展示明细）；
+// 成功后组装最新列表（managed 联动与 List 同源）。
+func (a *App) wrapSharedSkillsImport(imported []sharedskills.Skill, skipped []string, err error) (SharedSkillsImportResult, error) {
+	if imported == nil {
+		imported = []sharedskills.Skill{}
+	}
+	if skipped == nil {
+		skipped = []string{}
+	}
+	env := SharedSkillsImportResult{Imported: imported, Skipped: skipped}
+	if err != nil {
+		return env, err
+	}
+	views, verr := a.sharedSkillViews()
+	if verr != nil {
+		return env, verr
+	}
+	env.Views = views
+	return env, nil
+}
+
+// ImportSharedSkillsZip 从 zip 压缩包导入共用技能：安全解包（拒绝路径穿越
+// 与链接条目，总量/文件数/单文件上限）后统一落盘到 ~/.agents/skills-disabled
+// （默认停用为保守策略：不自动分发到各 CLI 私有目录）；同名（启用/停用/托管
+// 名 amagi-codebox）一律跳过、绝不覆盖。名称与 ImportSharedSkillFromZip
+// （已随 v1.3.145 sharedext 重复模块退役移除）无关。
+func (a *App) ImportSharedSkillsZip(zipPath string) (SharedSkillsImportResult, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
+	imported, skipped, err := a.sharedSkillsService().ImportFromZip(zipPath)
+	return a.wrapSharedSkillsImport(imported, skipped, err)
+}
+
+// ImportSharedSkillsDir 从本地文件夹导入共用技能（文件夹自身含 SKILL.md 视为
+// 单个技能，否则扫描子目录；链接与越界拒绝、上限与 zip 导入一致），落盘与
+// 同名语义同 ImportSharedSkillsZip。
+func (a *App) ImportSharedSkillsDir(dirPath string) (SharedSkillsImportResult, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
+	imported, skipped, err := a.sharedSkillsService().ImportFromDir(dirPath)
+	return a.wrapSharedSkillsImport(imported, skipped, err)
+}
+
+// PickSharedSkillsZip 弹出系统文件选择对话框选择技能 zip 压缩包（导入入口）。
+// 用户取消返回空串（无错误）；仅返回路径，不读文件内容。
+func (a *App) PickSharedSkillsZip() (string, error) {
+	path, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "选择技能压缩包",
+		Filters: []wailsRuntime.FileFilter{
+			{DisplayName: "ZIP 压缩包 (*.zip)", Pattern: "*.zip"},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("打开文件选择对话框失败：%w", err)
+	}
+	return path, nil
+}
+
+// PickSharedSkillsDir 弹出系统目录选择对话框选择技能文件夹（导入入口）。
+// 用户取消返回空串（无错误）。
+func (a *App) PickSharedSkillsDir() (string, error) {
+	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "选择技能文件夹",
+	})
+	if err != nil {
+		return "", fmt.Errorf("打开目录选择对话框失败：%w", err)
+	}
+	return dir, nil
 }

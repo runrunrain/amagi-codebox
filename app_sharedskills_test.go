@@ -5,6 +5,7 @@ package main
 // 组装（夹具放一个 amagi-codebox 目录）、门面往返与「打开目录」两门面。
 
 import (
+	"archive/zip"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,6 +58,25 @@ func newSharedSkillsFacadeTestApp(t *testing.T) (*App, string, *recordingFileOpe
 func mkSkillDir(t *testing.T, home, root, name string) string {
 	t.Helper()
 	dir := filepath.Join(home, ".agents", root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// writeAppSkillDir 在 parent 下创建带 SKILL.md 的技能目录（导入夹具用）。
+func writeAppSkillDir(t *testing.T, parent, name, skillMD string) string {
+	t.Helper()
+	dir := mkSkillDirFor(t, parent, name)
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func mkSkillDirFor(t *testing.T, parent, name string) string {
+	t.Helper()
+	dir := filepath.Join(parent, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -186,3 +206,111 @@ func TestAppSharedSkills_OpenFolderAndRoot(t *testing.T) {
 
 // 接口断言：recordingFileOpener 满足 platform.FileOpener（编译期守卫）。
 var _ platform.FileOpener = (*recordingFileOpener)(nil)
+
+// ---- 导入门面（canonical 共用技能纵切）：信封组装与整体失败语义 ----
+
+// makeSharedSkillsZip 构造测试 zip（entry 名 → 内容）。
+func makeSharedSkillsZip(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	w := zip.NewWriter(f)
+	for name, content := range files {
+		entry, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppSharedSkills_ImportZipEnvelopeAndFreshViews(t *testing.T) {
+	app, home, _ := newSharedSkillsFacadeTestApp(t)
+	zipPath := filepath.Join(t.TempDir(), "demo.zip")
+	makeSharedSkillsZip(t, zipPath, map[string]string{
+		"demo/SKILL.md": "---\nname: Demo\ndescription: 演示\n---\n正文",
+	})
+
+	res, err := app.ImportSharedSkillsZip(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Imported) != 1 || res.Imported[0].Name != "demo" || res.Imported[0].Enabled {
+		t.Fatalf("信封 Imported 应含默认停用的 demo: %+v", res.Imported)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("无跳过项: %v", res.Skipped)
+	}
+	// Views 为导入后的最新列表（与 List 同源，含落盘路径）。
+	if len(res.Views) != 1 || res.Views[0].Name != "demo" || res.Views[0].Enabled {
+		t.Fatalf("Views 应为最新列表（demo 默认停用）: %+v", res.Views)
+	}
+	if res.Views[0].Path != filepath.Join(home, ".agents", "skills-disabled", "demo") {
+		t.Fatalf("Views 落点应在禁用根: %s", res.Views[0].Path)
+	}
+
+	// List 独立复核：导入条目真实可见且默认停用。
+	views, err := app.ListSharedSkills()
+	if err != nil || len(views) != 1 || views[0].Enabled {
+		t.Fatalf("List 应看到停用条目: err=%v views=%+v", err, views)
+	}
+}
+
+func TestAppSharedSkills_ImportDirPartialSuccessAndManagedAssembly(t *testing.T) {
+	app, home, _ := newSharedSkillsFacadeTestApp(t)
+	// 夹具：托管技能正式安装（Managed=true）+ 既有同名占位。
+	if err := app.agentCLIInstaller().InstallSkill(install.SkillTargetAgents); err != nil {
+		t.Fatal(err)
+	}
+	writeAppSkillDir(t, filepath.Join(home, ".agents", "skills"), "taken", "---\nname: Taken\n---\n")
+	src := t.TempDir()
+	writeAppSkillDir(t, src, "taken", "---\nname: NewTaken\n---\n")
+	writeAppSkillDir(t, src, "fresh", "---\nname: Fresh\ndescription: 新技能\n---\n正文")
+
+	res, err := app.ImportSharedSkillsDir(src)
+	if err != nil {
+		t.Fatalf("部分成功不应返回 error: %v", err)
+	}
+	if len(res.Imported) != 1 || res.Imported[0].Name != "fresh" {
+		t.Fatalf("仅 fresh 导入: %+v", res.Imported)
+	}
+	if len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "拒绝覆盖") {
+		t.Fatalf("taken 应以同名拒绝覆盖跳过: %v", res.Skipped)
+	}
+	// Views 组装 managed 联动（amagi-codebox 条目带 Managed 标记）。
+	byName := map[string]SharedSkillView{}
+	for _, v := range res.Views {
+		byName[v.Name] = v
+	}
+	if v := byName[sharedskills.ManagedSkillName]; !v.Managed || v.ManagedStatus == "" {
+		t.Fatalf("托管条目应带 Managed/ManagedStatus: %+v", v)
+	}
+	if v := byName["fresh"]; v.Managed || v.Enabled {
+		t.Fatalf("fresh 应为非托管且默认停用: %+v", v)
+	}
+}
+
+func TestAppSharedSkills_ImportZipTotalFailureReturnsError(t *testing.T) {
+	app, _, _ := newSharedSkillsFacadeTestApp(t)
+	zipPath := filepath.Join(t.TempDir(), "attack.zip")
+	makeSharedSkillsZip(t, zipPath, map[string]string{"../evil.txt": "boom"})
+
+	res, err := app.ImportSharedSkillsZip(zipPath)
+	if err == nil {
+		t.Fatal("整体失败应返回 error")
+	}
+	if res.Imported == nil || res.Skipped == nil {
+		t.Fatalf("信封切片应非 nil（JS 免判空）: %+v", res)
+	}
+	if len(res.Imported) != 0 || len(res.Views) != 0 {
+		t.Fatalf("整体失败不应有导入结果: %+v", res)
+	}
+}

@@ -296,8 +296,8 @@ func TestNameFromSource(t *testing.T) {
 		"https://github.com/runrunrain/vexel-plugins-marketplace.git": "vexel-plugins-marketplace",
 		"https://github.com/owner/repo/":                              "repo",
 		"/local/path/to/market":                                       "market",
-		`C:\Users\x\some-market`:                                     "some-market",
-		"https://example.com/": "example.com", // 裸域名无路径：派生名为域名，后续 clone 失败会如实报错
+		`C:\Users\x\some-market`:                                      "some-market",
+		"https://example.com/":                                        "example.com", // 裸域名无路径：派生名为域名，后续 clone 失败会如实报错
 	}
 	for source, want := range cases {
 		if got := nameFromSource(source); got != want {
@@ -456,9 +456,14 @@ func TestDeployLeavesNoStagingResidue(t *testing.T) {
 		t.Fatalf("DeployPlugin: %v", err)
 	}
 	// F03：staging 部署不留暂存残留（成功后清理；隐藏目录不进入共用技能扫描）
-	staging := filepath.Join(svc.userHome, ".agents", "skills", ".deploy-staging")
-	if _, err := os.Lstat(staging); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("staging root must be cleaned after deploy, stat err=%v", err)
+	entries, err := os.ReadDir(svc.skillsRoot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".deploy-staging") {
+			t.Fatalf("staging root must be cleaned after deploy: %s", entry.Name())
+		}
 	}
 	for _, skill := range []string{"skill-one", "skill-two"} {
 		if _, err := os.Stat(filepath.Join(svc.skillsRoot(), skill, "SKILL.md")); err != nil {

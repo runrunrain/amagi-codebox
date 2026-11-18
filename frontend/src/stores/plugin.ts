@@ -42,14 +42,13 @@ interface ResourceFilter {
 /**
  * 扩展中心子页 key（契约 §1.2 + P6 融合）：'shared-skills' = 公共「共用技能」
  * 子页、'shared-mcp' = 公共「共用 MCP」子页、'shared-market' = 公共「共用插件
- * 市场」子页、'common-center' = 共用中心（P3：CodeBox 公共 skill/MCP 仓库与
- * 五引擎分发/聚合视图）；其余五个值与 pluginEngine 引擎名同字面（引擎子页）。
+ * 市场」子页；其余五个值与 pluginEngine 引擎名同字面（引擎子页）。
  */
 export type ExtSubPage =
   | 'shared-skills'
   | 'shared-mcp'
   | 'shared-market'
-  | 'common-center'
+
   | 'claude'
   | 'opencode'
   | 'codex'
@@ -59,8 +58,7 @@ export type ExtSubPage =
 export const usePluginStore = defineStore('plugin', () => {
   // 子页选中状态（契约 §1.3）：默认 'claude'（沿用原 pluginEngine 默认值）。
   // 仅内存态不落盘（与原 extMainTab/pluginEngine 一致），刷新回默认。
-  // P6 融合：原主 tab 体系（plugins/common/env/tools）随远端扩展中心重构退役，
-  // 本分支共用中心改以 'common-center' 子页形式融入。
+
   const extSubPage = ref<ExtSubPage>('claude');
 
   // Plugin engine selection
@@ -213,8 +211,8 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   // 引擎子页判定（共用 MCP 契约 §4.1）：ExtSubPage 中与 pluginEngine 同字面的
-  // 五个值；公共子页 'shared-skills' / 'shared-mcp' / 'shared-market' /
-  // 'common-center' 不联动引擎态。类型收窄使 setPluginEngine(page) 通过编译
+  // 五个值；公共子页 'shared-skills' / 'shared-mcp' / 'shared-market'
+  // 不联动引擎态。类型收窄使 setPluginEngine(page) 通过编译
   //（公共子页不在引擎联合内）。
   function isEngineSubPage(
     page: ExtSubPage,
@@ -222,8 +220,7 @@ export const usePluginStore = defineStore('plugin', () => {
     return (
       page !== 'shared-skills' &&
       page !== 'shared-mcp' &&
-      page !== 'shared-market' &&
-      page !== 'common-center'
+      page !== 'shared-market'
     );
   }
 

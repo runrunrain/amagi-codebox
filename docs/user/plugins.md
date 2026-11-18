@@ -23,7 +23,7 @@ Amagi CodeBox 同时管理五套独立的插件/包生态：
 | Pi | `internal/piplugin` | `pi install/remove/update <source>`；真相源 `~/.pi/agent/settings.json` 的 `packages[]` 数组 | `~/.pi/agent/`（或 `PI_CODING_AGENT_DIR`） |
 | OMP | `internal/ompplugin` | `omp plugin list/install/uninstall/enable/disable/upgrade`（CLI `--json` 输出） | `~/.omp/agent/` |
 
-五套引擎与公共对象在应用内统一通过 `/extensions`（扩展管理）页暴露。页面为 **ZCode 式两栏子页布局**：左侧是子页导航，按「公共 / Agent」两个分组组织——公共组为「共用技能」与「共用 MCP」，Agent 组为 Claude Code / OpenCode / Codex / Pi / OMP 五个引擎子页；右侧为当前子页的内容区。子页选中状态保存在 `frontend/src/stores/plugin.ts` 的 `extSubPage`（`setExtSubPage` 是唯一写入口；切到引擎子页会联动重置插件视图态，切到共用技能子页不影响引擎态）。
+五套引擎与公共对象在应用内统一通过 `/extensions`（扩展管理）页暴露。页面顶部提供「共用技能」「共用 MCP」「共用市场」，以及 Claude Code / OpenCode / Codex / Pi / OMP 五个引擎页签。子页选中状态保存在 `frontend/src/stores/plugin.ts` 的 `extSubPage`（`setExtSubPage` 是唯一写入口；切到引擎子页会联动重置插件视图态，切到共用技能子页不影响引擎态）。
 
 每个引擎子页面板自上而下为：诊断横幅（仅在加载出错或存在警告时出现）、资源计数标签行（Claude 另有「MCP」标签，Pi 另有技能 / 扩展 / 提示词 / 主题标签，行尾为当前标签的搜索框）、工具栏（刷新与安装 / 市场入口）和内容区。插件列表为按市场分组的行式条目（Claude / Codex）或单组平铺，Claude / Codex 点选插件后在右侧查看详情，其余引擎则切换到详情页。Claude / Codex 经「市场」标签或工具栏「浏览插件市场」进入市场视图，「添加市场」统一由扩展管理页弹出的对话框处理。前端 API 层分别落在 `frontend/src/api/` 的 `plugin.ts`、`opencodePlugin.ts`、`codexPlugin.ts`、`piPlugin.ts`、`ompPlugin.ts` 与 `sharedSkills.ts`；公共子页另有 `sharedMcp.ts`。
 
@@ -41,17 +41,21 @@ Amagi CodeBox 在 CLI 之上添加的能力：
 「共用技能」是扩展中心「公共」分组下的子页，管理 `~/.agents/skills`（启用态）与 `~/.agents/skills-disabled`（禁用态）两个目录里的技能目录。这些技能对所有真实读取 `~/.agents/skills` 的 CLI 生效；启停通过**目录移动**实现，立即生效，无需重启。
 
 - **列表与详情**：合并两个根目录并按名称排序；元数据（displayName / description / version / author）取自技能目录内 `SKILL.md` 的 frontmatter，缺失时回退目录名并如实标记（不伪造版本号）。计数标签为「全部 / 已启用 / 已禁用」，行尾带搜索框；工具栏提供「打开技能根目录」与「刷新」。
-- **启停与删除**：均先弹确认弹窗（删除为 danger 级确认），确认后执行目录移动或永久删除（`os.RemoveAll`，含禁用态目录），并返回最新列表。删除不可恢复。
+- **导入**：可选 ZIP 或本地文件夹。导入默认停用，不覆盖同名技能，也不会复制到各引擎的私有技能目录。
+- **启停与删除**：启停通过目录移动；手动技能可以确认后永久删除。有来源记录的共用市场技能从对应市场插件卸载，不在技能页单独删除。旧版无来源记录的目录不会按名字被市场认领。
+- **卸载期间目录变更**：共用市场先将候选技能移入同一技能根下的 `.uninstall-*` 隔离目录，再确认是否是原部署实例。不匹配时不删除，并提示保留路径以便手动检查与恢复。
 - **应用托管技能**：名为 `amagi-codebox` 的技能是应用自带技能（徽章「应用托管」），其启停 / 删除会被后端直接拒绝，并提示前往「设置 → 命令行访问」管理——它由 agent CLI 安装器维护，手动移动 / 删除会在下次启动被自动装回。详情页会展示该技能的安装状态（未安装 / 已是最新 / 有更新 / 用户已修改 / 无效）。
 - **打开目录**：可打开单个技能的当前目录或 `~/.agents/skills` 根目录；根目录不存在时如实报错并提示先安装技能（应用不代为创建目录）。
 
-后端机制在 `internal/sharedskills`（枚举 / frontmatter 解析 / 启停 / 删除），前端经 `App` 上的 6 个门面方法访问（`ListSharedSkills` / `RefreshSharedSkills` / `SetSharedSkillEnabled` / `DeleteSharedSkill` / `OpenSharedSkillFolder` / `OpenSharedSkillsRoot`，见 [../api.md](../api.md)）；`sharedskills.Service` 不进 Wails Bind 列表。
+后端机制在 `internal/sharedskills`（枚举 / frontmatter 解析 / 启停 / 删除），前端经 `App` 的共用技能门面访问（见 [../api.md](../api.md)）；`sharedskills.Service` 不进 Wails Bind 列表。
 
 ---
 
 ## 共用 MCP 子页
 
 「共用 MCP」是扩展中心「公共」分组下的另一个子页，管理登记文件 `~/.agents/.mcp.json`（顶层 `mcpServers.<name>`）里的 MCP 服务器条目，并可把条目**分发**到四个 Agent 引擎的真实 MCP 配置。分发只写配置文件，不代表服务器已连通——界面状态只用「已分发 / 未分发 / 有更新」，不做连接探测。
+
+可粘贴 JSON 或从文件导入。预览只显示条目信息和冲突；确认后才登记，同名条目跳过，且不自动分发。
 
 ### 登记文件（数据源）
 
@@ -75,7 +79,7 @@ Amagi CodeBox 在 CLI 之上添加的能力：
 - **外部修改保护**：目标引擎中的条目被外部改过（与上次分发的哈希不一致）时，覆盖或移除都会被拒绝，需在 danger 确认弹窗中强制执行（force）。登记条目内容更新后**不自动重分发**——已分发引擎如实转「有更新」，由用户逐引擎「重新分发」（幂等，等于用当前登记内容重新写入）。
 - **OMP 排除**：OMP（`config.yml`）没有 MCP 配置面，矩阵中恒为只读的 excluded 行——这是当前事实裁定，不是待办；应用不会写任何 OMP 文件。
 
-后端机制在 `internal/sharedmcp`（登记 CRUD / 引擎写入器 / 状态跟踪），前端经 `App` 上的 6 个门面方法访问（`ListSharedMcp` / `RefreshSharedMcp` / `CreateSharedMcpEntry` / `UpdateSharedMcpEntry` / `DeleteSharedMcpEntry` / `SetSharedMcpEngineSelection`，见 [../api.md](../api.md)）；`sharedmcp.Service` 不进 Wails Bind 列表。工具栏「打开登记目录」复用通用的 `OpenFileInEditor` 门面。
+后端机制在 `internal/sharedmcp`（登记 CRUD / 引擎写入器 / 状态跟踪），前端经 `App` 的共用 MCP 门面访问（见 [../api.md](../api.md)）；`sharedmcp.Service` 不进 Wails Bind 列表。工具栏「打开登记目录」复用通用的 `OpenFileInEditor` 门面。
 
 ---
 
@@ -202,14 +206,9 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 
 前端推荐使用 `frontend/src/api/plugin.ts` 中的 `setPluginSubItemEnabled`（带 `Plugin` 中缀的统一入口），而不是 `setSubItemEnabled`（后者直接调 `plugin.Service`，仅适用于 Claude）。
 
-## 共用中心（公共 skill / 公共 MCP）
+## 插件生命周期与旧版共用数据
 
-扩展管理页的「共用」tab 管理跨 CLI 共享的两类资源：
-
-- **公共 skill**：从 zip 压缩包或本地文件夹导入（单一事实源 `~/.amagi-codebox/shared/skills/`）。每个 skill 可按需勾选分发目标 CLI（Claude/Codex/OpenCode/Pi/OMP），启用时复制分发到对应 CLI 的 skills 目录，禁用/删除时按部署清单回收。导入有安全防护（路径穿越/超大文件/符号链接拒绝）。
-- **公共 MCP**：从 JSON 导入（支持粘贴或选文件，兼容 `{"mcpServers":{}}`/裸对象/单条三种格式，导入前有解析预览）。启用时写入各 CLI 原生 MCP 配置（Claude `~/.claude.json`、Codex `config.toml` 的 `[mcp_servers.*]` TOML 保真编辑、OpenCode `opencode.json` 的 `mcp` 键、Pi/OMP `<agentDir>/mcp.json`），禁用/删除时移除。写入前自动备份（保留最近 3 份）。
-
-公共技能页同时聚合展示**插件来源的 skill**（标有「插件·名」徽章）：这类条目不可单独删除，卸载/更新统一在插件管理页的对应插件处操作；启停也走插件自身的子项开关。插件更新、卸载、启停成功后聚合视图自动失效刷新。
+共用技能页只读取 `~/.agents/skills` 与 `~/.agents/skills-disabled`，不会把各引擎已装插件的私有技能纳入列表。上一版「共用中心」的 `~/.amagi-codebox/shared` 仓库及已分发配置不会被自动迁移或删除；有旧登记时，对应页面会提示其位置。
 
 各引擎子项/skill 级启停能力（如实对齐 CLI 实际能力）：
 
@@ -236,15 +235,13 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 | `~/.codex/` 下的状态与缓存（待核实：具体文件名） | `codex` CLI | Codex 插件状态 |
 | `~/.pi/agent/settings.json` 的 `packages[]` | `pi` CLI | Pi 已登记包（真相源） |
 | `~/.omp/agent/` 下的插件状态 | `omp` CLI | OMP 已安装插件 |
-| `~/.amagi-codebox/shared/skills/` | Amagi CodeBox（`internal/sharedext`） | 共用中心公共 skill 单一事实源 |
-| `~/.amagi-codebox/shared/registry.json` | Amagi CodeBox（`internal/sharedext`） | 公共 skill/MCP 状态与部署清单（启停/目标/已部署引擎） |
+| `~/.amagi-codebox/shared/` | 旧版共用中心（保留；不再写入） | 旧版技能文件和 MCP 登记，不进入现行列表 |
 | `~/.agents/skills/` 与 `~/.agents/skills-disabled/` | Amagi CodeBox（`internal/sharedskills`） | 共用技能目录（启用态 / 禁用态） |
 | `~/.agents/.mcp.json` | Amagi CodeBox（`internal/sharedmcp`） | 共用 MCP 登记文件（真相源；未知键原样保留） |
 | `~/.amagi-codebox/shared-mcp-state.json` | Amagi CodeBox（`internal/sharedmcp`） | 共用 MCP 勾选与写入跟踪（选择状态不写 `~/.agents`） |
 | `~/.claude.json` | `claude` CLI；共用 MCP 分发时由 CodeBox 更新顶层 `mcpServers` | Claude Code 全局配置（含 MCP 服务器） |
 | `~/.codex/config.toml` | `codex` CLI；共用 MCP 分发时由 CodeBox 更新 `[mcp_servers.*]` 段 | Codex 配置（`CODEX_HOME` 可重定向） |
-| `~/.pi/agent/mcp.json` | Pi（agent 目录）；共用中心/共用 MCP 分发时由 CodeBox 更新顶层 `mcpServers` | Pi 的 MCP 服务器配置 |
-| `~/.omp/agent/mcp.json` | OMP（agent 目录）；共用中心 MCP 分发时由 CodeBox 编辑 | OMP 的 MCP server 配置（mcpServers 对象） |
+| `~/.pi/agent/mcp.json` | Pi（agent 目录）；共用 MCP 分发时由 CodeBox 更新顶层 `mcpServers` | Pi 的 MCP 服务器配置 |
 
 > 这些文件建议通过应用 UI 维护，不要手工编辑。手工编辑可能破坏 `tmp + rename` 原子写入约定或不同插件引擎的 ID 对齐。
 
@@ -253,7 +250,7 @@ func (a *App) SetPluginSubItemEnabled(pluginId, subItemType, subItemId string, e
 ## 已知限制与注意事项
 
 - **Codex 子项禁用不可用**：CLI 无子项机制，UI 不提供假开关（插件级启停可用）；子项级启停仅对 Claude 引擎真正落盘（skill/command/agent stash 搬移、MCP 条目移出/写回）。
-- **OpenCode 无子项/启停**：CLI 无 disable/子项概念，共用中心对 OpenCode 来源 skill 只读展示。
+- **OpenCode 无子项/启停**：CLI 无 disable/子项概念，其插件技能只在 OpenCode 子页查看。
 - **Codex 单插件更新为模拟实现**：市场刷新+卸载重装；重装失败时旧版已移除，需手动重装（UI 会如实提示）。
 - **OpenCode JSONC 卸载需手工处理**：列表读取支持 JSONC，但自动卸载只修改严格 JSON，防止注释和原有格式丢失。
 - **子项启停分派依赖 Claude 注册表**：注册表读取失败时按 Codex 分派，Claude 插件开关会静默不生效；需要看日志定位。

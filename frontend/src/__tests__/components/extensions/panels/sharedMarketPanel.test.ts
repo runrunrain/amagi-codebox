@@ -11,7 +11,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import type { SharedMarketplace, ClaudeMarketplaceForImport, SharedMarketDeployReport } from '../../../../api/sharedMarket';
+import type {
+  SharedMarketplace,
+  ClaudeMarketplaceForImport,
+  SharedMarketDeployReport,
+  SharedMarketUninstallReport,
+  SharedSkillOrigin,
+} from '../../../../api/sharedMarket';
 
 // 显式返回类型标注：避免 vi.fn(async () => []) 推断为 Promise<never[]>，
 // 导致 mockResolvedValueOnce 传真实对象时 vue-tsc 报 never 不兼容
@@ -30,6 +36,13 @@ const apiMocks = vi.hoisted(() => ({
     skipped: [],
     targetRoot: '/home/x/.agents/skills',
   })),
+  uninstallSharedMarketplacePlugin: vi.fn(async (): Promise<SharedMarketUninstallReport> => ({
+    marketplace: 'vexel-plugins-marketplace',
+    plugin: 'writing-skills',
+    removed: ['planner-doc-style'],
+  })),
+  getSharedSkillOrigin: vi.fn(async (): Promise<SharedSkillOrigin | null> => null),
+  listSharedSkillOrigins: vi.fn(async (): Promise<SharedSkillOrigin[]> => []),
   openSharedMarketplaceFolder: vi.fn(async (): Promise<void> => {}),
 }));
 
@@ -159,6 +172,80 @@ describe('二级：市场内插件列表', () => {
     );
     // 部署写入 ~/.agents/skills 后必须刷新共用技能缓存，返回技能页立即可见
     expect(sharedSkillsApiMocks.listSharedSkills).toHaveBeenCalled();
+  });
+
+  it('卸载按钮与已部署徽章：仅对有凭据记录的插件呈现（无凭据不虚报）', async () => {
+    const store = useSharedMarketStore();
+    store.marketplaces = [
+      marketFixture({
+        plugins: [
+          {
+            name: 'writing-skills',
+            description: '写作方法论技能集',
+            skills: ['planner-doc-style', 'resume-writing'],
+            deployedSkills: ['planner-doc-style'],
+          },
+          { name: 'no-credential', description: '无凭据插件', skills: ['ghost-skill'] },
+        ],
+      }),
+    ];
+    const { instances } = await renderWithCapture(SharedMarketPanel);
+    const panel = instanceOf(instances, SharedMarketPanel);
+    panel.exposed?.selectMarket(store.marketplaces[0]);
+    const html = await renderInstanceAgain(panel);
+
+    expect(html).toContain('已部署 1');
+    expect(html).toContain('卸载');
+    // 无凭据插件：无已部署徽章，不渲染卸载按钮（仅一个部署按钮）
+    expect(html).not.toContain('已部署 2');
+  });
+
+  it('requestUninstall → confirmUninstall → uninstallSharedMarketplacePlugin 桩命中 + 刷新列表与共用技能', async () => {
+    const store = useSharedMarketStore();
+    const fixture = marketFixture({
+      plugins: [
+        {
+          name: 'writing-skills',
+          description: '写作方法论技能集',
+          skills: ['planner-doc-style', 'resume-writing'],
+          deployedSkills: ['planner-doc-style'],
+        },
+      ],
+    });
+    store.marketplaces = [fixture];
+    const { instances } = await renderWithCapture(SharedMarketPanel);
+    const panel = instanceOf(instances, SharedMarketPanel);
+    panel.exposed?.selectMarket(fixture);
+
+    panel.exposed?.requestUninstall(fixture.plugins[0]);
+    await panel.exposed?.confirmUninstall();
+    expect(apiMocks.uninstallSharedMarketplacePlugin).toHaveBeenCalledWith(
+      'vexel-plugins-marketplace',
+      'writing-skills',
+    );
+    // 卸载改变 ~/.agents/skills 现场：市场列表（deployedSkills 重算）与共用技能缓存都刷新
+    expect(apiMocks.listSharedMarkets).toHaveBeenCalled();
+    expect(sharedSkillsApiMocks.listSharedSkills).toHaveBeenCalled();
+  });
+
+  it('initialMarket prop：无依赖窄定位，直接进入市场详情页', async () => {
+    const store = useSharedMarketStore();
+    store.marketplaces = [marketFixture()];
+    const { html } = await renderWithCapture(SharedMarketPanel, {
+      initialMarket: 'vexel-plugins-marketplace',
+    });
+    expect(html).toMatch(/dh-crumb-tail[^>]*>vexel-plugins-marketplace</);
+    expect(html).toMatch(/plugin-row-name[^>]*>writing-skills</);
+  });
+
+  it('initialMarket prop：未命中市场名时停留在市场列表', async () => {
+    const store = useSharedMarketStore();
+    store.marketplaces = [marketFixture()];
+    const { html } = await renderWithCapture(SharedMarketPanel, {
+      initialMarket: 'no-such-market',
+    });
+    expect(html).toMatch(/class="lt-title"[^>]*>共用市场</);
+    expect(html).not.toContain('dh-crumb-tail');
   });
 });
 

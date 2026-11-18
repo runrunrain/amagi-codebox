@@ -195,10 +195,9 @@ beforeEach(() => {
 });
 
 describe('ExtensionsView 集成（契约 §7.2 / R7 顶部页签布局）', () => {
-  it('默认渲染：顶部页签行七子页项 + Claude 子页面板 + WSL 占位', async () => {
+  it('默认渲染：共用技能、MCP 和市场只有一个入口，并保留五个引擎', async () => {
     const { html } = await renderWithCapture(ExtensionsView);
-    // 顶部页签行：七个子页项（公共=共用技能+共用 MCP；五引擎），纯文字无分组标签
-    for (const label of ['共用技能', '共用 MCP', 'Claude Code', 'OpenCode', 'Codex', 'Pi', 'OMP']) {
+    for (const label of ['共用技能', '共用 MCP', '共用市场', 'Claude Code', 'OpenCode', 'Codex', 'Pi', 'OMP']) {
       expect(html).toContain(label);
     }
     // 默认 Claude 子页选中胶囊高亮（active 类随 extSubPage）
@@ -209,6 +208,8 @@ describe('ExtensionsView 集成（契约 §7.2 / R7 顶部页签布局）', () =
     const navMatch = html.match(/<nav class="ex-tabs"[^>]*>[\s\S]*?<\/nav>/);
     expect(navMatch).not.toBeNull();
     expect(navMatch?.[0]).not.toContain('<svg');
+    expect(navMatch?.[0]).not.toContain('共用中心');
+    expect(navMatch?.[0].match(/<button/g)).toHaveLength(8);
     // 主 tab Segmented 已移除（R5/R6：插件管理/环境变量/其他工具）
     expect(html).not.toContain('插件管理');
     expect(html).not.toContain('其他工具');
@@ -249,6 +250,8 @@ describe('ExtensionsView 集成（契约 §7.2 / R7 顶部页签布局）', () =
 
     const { html, instances } = await renderWithCapture(ExtensionsView);
     expect(html).toContain('暂无共用技能');
+    expect(html).toContain('导入压缩包');
+    expect(html).toContain('导入文件夹');
     expect(html).not.toContain('暂无已安装 Codex 插件');
     expect(() => instanceOf(instances, SharedSkillsPanel)).not.toThrow();
   });
@@ -263,6 +266,7 @@ describe('ExtensionsView 集成（契约 §7.2 / R7 顶部页签布局）', () =
     const { html, instances } = await renderWithCapture(ExtensionsView);
     // 空态面板挂载（store 未加载，entries=[]）
     expect(html).toContain('暂无共用 MCP 服务器');
+    expect(html).toContain('导入 JSON');
     expect(html).not.toContain('暂无已安装 Codex 插件');
     expect(html).not.toContain('暂无共用技能');
     expect(() => instanceOf(instances, SharedMcpPanel)).not.toThrow();

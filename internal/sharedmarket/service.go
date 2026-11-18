@@ -15,6 +15,7 @@ package sharedmarket
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,10 @@ type Plugin struct {
 	Description string   `json:"description,omitempty"`
 	Author      string   `json:"author,omitempty"`
 	Skills      []string `json:"skills"` // 可部署的技能目录名（本地 source 存在的条目）
+	// DeployedSkills 是当前仍存在于 ~/.agents/skills（或 skills-disabled）且
+	// 来源凭据（provenance 标记）指向本市场本插件的技能目录名。凭据制：同名
+	// 但无凭据的目录不计入（不按名称碰撞推断）。
+	DeployedSkills []string `json:"deployedSkills"`
 	// ExternalSource 为 true 时插件内容不在市场 clone 内（如官方市场的
 	// git-subdir 外部引用），无法本地枚举技能/部署。
 	ExternalSource bool `json:"externalSource,omitempty"`
@@ -123,8 +128,8 @@ func (s *Service) git(ctx context.Context, args ...string) (string, error) {
 // ---- 状态文件 ----
 
 type stateFile struct {
-	Version      int            `json:"version"`
-	Marketplaces []stateEntry   `json:"marketplaces"`
+	Version      int          `json:"version"`
+	Marketplaces []stateEntry `json:"marketplaces"`
 }
 
 type stateEntry struct {
@@ -296,7 +301,7 @@ func isRegularFile(path string) bool {
 // 即一个技能（名为插件名）；否则取 skills/ 下每个含 SKILL.md 的子目录。
 // 安全规则（F01/F08）：名称段（插件名/子目录名）必须通过 validName（拒绝
 // "../x"、隐藏名、多段名）；目录必须经 withinRoot 验证仍在 clone 内
-//（防符号链接祖先穿越）；SKILL.md 必须是普通文件（拒绝链接形态）。
+// （防符号链接祖先穿越）；SKILL.md 必须是普通文件（拒绝链接形态）。
 func skillDirs(pluginName, dir, cloneRoot string) []deployableSkill {
 	if dir == "" || !validName(pluginName) {
 		return nil
@@ -334,7 +339,9 @@ type deployableSkill struct {
 }
 
 // scanPlugins 扫描 clone 目录，返回市场视图。dirMissing 时置 Missing。
-func (s *Service) scanPlugins(entry stateEntry) Marketplace {
+// origins 是两个技能根的来源凭据快照（scanSkillOrigins），用于组装每个
+// 插件的 DeployedSkills（凭据匹配才算已部署，供卸载入口呈现）。
+func (s *Service) scanPlugins(entry stateEntry, origins map[string]SkillOrigin) Marketplace {
 	market := Marketplace{
 		Name:        entry.Name,
 		Source:      entry.Source,
@@ -350,9 +357,15 @@ func (s *Service) scanPlugins(entry stateEntry) Marketplace {
 		if s.log != nil {
 			s.log.Warn("sharedmarket", "市场 clone 不可读，标记 Missing", fmt.Sprintf("%s: %v", entry.Name, err))
 		}
-		return market
+		catalog = catalogFile{}
 	}
 	market.Description = catalog.Description
+	deployed := map[string][]string{}
+	for _, origin := range origins {
+		if origin.Marketplace == entry.Name {
+			deployed[origin.Plugin] = append(deployed[origin.Plugin], origin.Skill)
+		}
+	}
 
 	for _, cp := range catalog.Plugins {
 		if strings.TrimSpace(cp.Name) == "" {
@@ -376,7 +389,24 @@ func (s *Service) scanPlugins(entry stateEntry) Marketplace {
 			}
 			sort.Strings(plugin.Skills)
 		}
+		// 已部署判定（凭据制）：来源凭据指向「本市场 + 本插件」的技能目录，
+		// 与 clone 内当前枚举无关（市场更新后技能从 clone 消失，已部署目录
+		// 仍凭标记计入）。
+		plugin.DeployedSkills = append([]string{}, deployed[cp.Name]...)
+		delete(deployed, cp.Name)
+		sort.Strings(plugin.DeployedSkills)
 		market.Plugins = append(market.Plugins, plugin)
+	}
+	// A catalog refresh can remove a plugin; retain an uninstall entry for its deployments.
+	remaining := make([]string, 0, len(deployed))
+	for name := range deployed {
+		remaining = append(remaining, name)
+	}
+	sort.Strings(remaining)
+	for _, name := range remaining {
+		sort.Strings(deployed[name])
+		market.Plugins = append(market.Plugins, Plugin{Name: name, Skills: []string{},
+			Description: "当前市场目录不含此插件，仅可卸载已部署技能", DeployedSkills: deployed[name]})
 	}
 	market.PluginCount = len(market.Plugins)
 	return market
@@ -391,8 +421,9 @@ func (s *Service) List() ([]Marketplace, error) {
 		return nil, err
 	}
 	out := make([]Marketplace, 0, len(state.Marketplaces))
+	origins := s.scanSkillOrigins() // 单次扫描两个技能根，供全部市场复用
 	for _, entry := range state.Marketplaces {
-		out = append(out, s.scanPlugins(entry))
+		out = append(out, s.scanPlugins(entry, origins))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -478,7 +509,7 @@ func (s *Service) Add(source, nameHint string) (Marketplace, error) {
 	if s.log != nil {
 		s.log.Info("sharedmarket", "新增共用市场", fmt.Sprintf("name=%s source=%s plugins=%d", name, source, len(catalog.Plugins)))
 	}
-	return s.scanPlugins(stateEntry{Name: name, Source: source, AddedAt: now, LastUpdated: now}), nil
+	return s.scanPlugins(stateEntry{Name: name, Source: source, AddedAt: now, LastUpdated: now}, s.scanSkillOrigins()), nil
 }
 
 // Update 拉取市场最新内容：clone 目录缺失时重新 clone；否则 git pull --ff-only。
@@ -542,7 +573,10 @@ func (s *Service) Update(name string) (Marketplace, error) {
 	if err := s.writeState(state); err != nil {
 		return Marketplace{}, err
 	}
-	return s.scanPlugins(entry), nil
+	// 注：Update（git pull）不重写已部署技能的凭据——重新部署对已存在目标
+	// 保持跳过语义，凭据仍是最初部署时刻的证据（deployedAt 不代表技能内容
+	// 版本）。
+	return s.scanPlugins(entry, s.scanSkillOrigins()), nil
 }
 
 // Remove 删除共用市场：移除 clone 目录与状态条目。已部署到 ~/.agents/skills
@@ -568,6 +602,27 @@ func (s *Service) Remove(name string) error {
 	}
 	if idx < 0 {
 		return fmt.Errorf("共用市场 %q 不存在", name)
+	}
+	// Fail closed: an unreadable/redirected root is not an empty deployment list.
+	agents, _, err := openAgents(s.userHome)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = agents.Close() }()
+	for _, rootName := range []string{activeSkillsDir, disabledSkillsDir} {
+		root, _, err := openPlainDir(agents, rootName)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		_ = root.Close()
+	}
+	for _, origin := range s.scanSkillOrigins() {
+		if origin.Marketplace == name {
+			return fmt.Errorf("请先卸载「%s」中已部署的插件技能，再删除市场", name)
+		}
 	}
 
 	if err := os.RemoveAll(s.clonePath(name)); err != nil {
@@ -603,6 +658,15 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	agents, agentsID, err := openAgents(s.userHome)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("共用市场 %q 不存在", name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = agents.Close() }()
+
 	state, err := s.readState()
 	if err != nil {
 		return nil, err
@@ -611,7 +675,7 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 	for _, entry := range state.Marketplaces {
 		if entry.Name == name {
 			found = true
-				break
+			break
 		}
 	}
 	if !found {
@@ -642,59 +706,78 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 		return nil, fmt.Errorf("插件 %q 没有可部署的技能（未发现 SKILL.md，或名称/路径未通过安全校验）", pluginName)
 	}
 
-	if err := os.MkdirAll(s.skillsRoot(), 0o755); err != nil {
-		return nil, fmt.Errorf("创建技能根目录失败：%s（%v）", s.skillsRoot(), err)
-	}
-
-	// 空切片初始化（F02）：Go nil 切片会序列化为 JSON null，前端消费 .length 会 TyoeError
-	report := &DeployReport{
-		Marketplace: name,
-		Plugin:      pluginName,
-		TargetRoot:  s.skillsRoot(),
-		Deployed:    []string{},
-		Skipped:     []string{},
-	}
-
-	// staging 部署（F03）：先复制到技能根下的隐藏暂存目录（.deploy-staging，
-	// 共用技能扫描不列隐藏目录），全部技能就绪后逐个 rename 发布；中途失败
-	// 清理本轮暂存不留半成品，下次可重试。
-	stagingRoot := filepath.Join(s.skillsRoot(), ".deploy-staging")
-	cleanupStaging := func() {
-		if err := os.RemoveAll(stagingRoot); err != nil && s.log != nil {
-			s.log.Warn("sharedmarket", "清理部署暂存目录失败", fmt.Sprintf("dir=%s err=%v", stagingRoot, err))
+	// Bind both roots now so the first enable/disable rename preserves ownership.
+	for _, name := range []string{activeSkillsDir, disabledSkillsDir} {
+		if err := mkdirIfMissing(agents, name); err != nil {
+			return nil, err
 		}
 	}
-	if err := os.RemoveAll(stagingRoot); err != nil {
-		return nil, fmt.Errorf("清理历史部署暂存失败：%s（%v）", stagingRoot, err)
+	active, activeID, err := openPlainDir(agents, activeSkillsDir)
+	if err != nil {
+		return nil, err
 	}
+	defer func() { _ = active.Close() }()
+	disabled, disabledID, err := openPlainDir(agents, disabledSkillsDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = disabled.Close() }()
 
+	report := &DeployReport{Marketplace: name, Plugin: pluginName, TargetRoot: s.skillsRoot(), Deployed: []string{}, Skipped: []string{}}
+	stagingName := ".deploy-staging-" + rand.Text()
+	if err := active.Mkdir(stagingName, 0o700); err != nil {
+		return nil, fmt.Errorf("创建部署暂存失败：%w", err)
+	}
+	defer func() {
+		if err := active.RemoveAll(stagingName); err != nil && s.log != nil {
+			s.log.Warn("sharedmarket", "清理部署暂存目录失败", fmt.Sprintf("dir=%s err=%v", stagingName, err))
+		}
+	}()
+	staging, _, err := openPlainDir(active, stagingName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = staging.Close() }()
+
+	deployedAt := time.Now().Format(time.RFC3339)
 	for _, skill := range skills {
-		target := filepath.Join(s.skillsRoot(), skill.Name)
-		// 出口约束（F01）：名称段已在 skillDirs 校验，这里再验证 Join 后的最终
-		// 目标仍在技能根内（双保险，拒绝任何构造出的越界路径）
-		if !withinRoot(s.skillsRoot(), filepath.Dir(target)) && !withinRoot(s.skillsRoot(), target) {
-			return nil, fmt.Errorf("技能 %q 的部署目标越出技能根目录，已拒绝（目标 %s）", skill.Name, target)
-		}
-		if _, err := os.Lstat(target); err == nil {
+		if _, err := disabled.Lstat(skill.Name); err == nil {
 			report.Skipped = append(report.Skipped, skill.Name)
 			continue
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			cleanupStaging()
-			return nil, fmt.Errorf("检查目标目录失败：%s（%v）", target, err)
+			return nil, fmt.Errorf("检查停用技能失败：%w", err)
+		}
+		if _, err := active.Lstat(skill.Name); err == nil {
+			report.Skipped = append(report.Skipped, skill.Name)
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("检查目标目录失败：%w", err)
 		}
 
-		stage := filepath.Join(stagingRoot, skill.Name)
-		if err := copyDir(skill.Dir, stage); err != nil {
-			cleanupStaging()
-			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("复制技能失败：%s → %s（%v）", skill.Dir, stage, err))
+		if err := staging.Mkdir(skill.Name, 0o755); err != nil {
+			return nil, s.deployPartialError(report, skill.Name, err)
 		}
-		if err := os.Rename(stage, target); err != nil {
-			cleanupStaging()
-			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("发布技能失败：%s → %s（%v）", stage, target, err))
+		stage, instance, err := openPlainDir(staging, skill.Name)
+		if err != nil {
+			return nil, s.deployPartialError(report, skill.Name, err)
+		}
+		if err := copyDir(skill.Dir, stage); err != nil {
+			_ = stage.Close()
+			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("复制技能失败：%w", err))
+		}
+		err = writeProvenanceMarker(stage, provenanceMarker{
+			Marketplace: name, Plugin: pluginName, Skill: skill.Name, DeployedAt: deployedAt,
+			Instance: instance, Agents: agentsID, ActiveRoot: activeID, DisabledRoot: disabledID,
+		})
+		_ = stage.Close()
+		if err != nil {
+			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("写入来源凭据失败：%w", err))
+		}
+		if err := active.Rename(filepath.Join(stagingName, skill.Name), skill.Name); err != nil {
+			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("发布技能失败：%w", err))
 		}
 		report.Deployed = append(report.Deployed, skill.Name)
 	}
-	cleanupStaging()
 	if s.log != nil {
 		s.log.Info("sharedmarket", "部署插件技能到共用技能", fmt.Sprintf("market=%s plugin=%s deployed=%d skipped=%d", name, pluginName, len(report.Deployed), len(report.Skipped)))
 	}
@@ -728,7 +811,7 @@ func (s *Service) MarketDir(name string) (string, error) {
 
 // copyDir 递归复制目录（普通文件 + 子目录；跳过 .git 与符号链接——
 // 符号链接不跟随复制，防穿越与断链）。
-func copyDir(src, dst string) error {
+func copyDir(src string, dst *os.Root) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -740,38 +823,33 @@ func copyDir(src, dst string) error {
 		if rel == "." {
 			return nil
 		}
-		target := filepath.Join(dst, rel)
 		if d.IsDir() {
 			if d.Name() == ".git" && rel == ".git" {
 				return fs.SkipDir
 			}
-			return os.MkdirAll(target, 0o755)
+			return dst.Mkdir(rel, 0o755)
 		}
 		info, infoErr := d.Info()
 		if infoErr != nil {
 			return infoErr
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil // 跳过符号链接
+		if !info.Mode().IsRegular() {
+			return nil // 跳过链接与其他非普通文件
 		}
-		return copyFile(path, target, info.Mode())
+		return copyFile(path, dst, rel, info.Mode())
 	})
 }
 
-func copyFile(src, dst string, mode fs.FileMode) error {
+func copyFile(src string, dst *os.Root, rel string, mode fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
+	out, err := dst.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 	_, err = io.Copy(out, in)
-	return err
+	return errors.Join(err, out.Close())
 }

@@ -3,10 +3,12 @@
      全宽市场行（PluginRow：名称 + 「N 个插件」计数徽章 + Missing 警示徽章 +
      描述/来源完整多行；行尾 更新/删除）。
      二级＝市场内插件列表：← 返回 + 面包屑（共用市场 › 市场名）+ DetailHeader
-     （N 个插件 + 更新/打开目录）+ 插件行（技能数徽章 / 外部引用徽章 + 行尾
-     「部署技能」按钮 → 复制技能到 ~/.agents/skills，成为共用技能）。
+     （N 个插件 + 更新/打开目录）+ 插件行（技能数/已部署徽章 + 行尾
+     「部署技能」/「卸载」）。「已部署」与卸载范围均以来源凭据（provenance
+     标记）为准：仅凭据匹配的目录可卸载，同名手动/无凭据条目保留，市场 clone
+     不受影响。initialMarket prop 提供无依赖窄定位（外部导航配合）。
      添加/导入/删除均带 Dialog；部署为增量复制（已存在跳过，不覆盖用户改动），
-     toast 汇报部署/跳过明细。首屏 Loading/Error 门控为 store 派生。 -->
+     toast 汇报部署/跳过/卸载明细。首屏 Loading/Error 门控为 store 派生。 -->
 <template>
   <div class="shared-market-panel">
     <LoadingState v-if="showInitialLoading" message="加载市场中..." />
@@ -97,7 +99,7 @@
           description="本地 clone 缺失或 marketplace.json 解析失败；点击「更新」可从源重新克隆恢复"
         />
 
-        <template v-else>
+        <template v-if="!activeMarket.missing || activeMarket.plugins.length > 0">
           <ListToolbar title="市场插件" :count="activeMarket.plugins.length" />
 
           <EmptyStateCard
@@ -115,15 +117,27 @@
               :badges="pluginBadges(plugin)"
             >
               <template #trailing>
-                <AppButton
-                  variant="primary"
-                  size="small"
-                  :disabled="plugin.externalSource || plugin.skills.length === 0 || isDeploying(plugin.name)"
-                  :title="deployButtonTitle(plugin)"
-                  @click="handleDeploy(plugin)"
-                >
-                  {{ deployButtonLabel(plugin) }}
-                </AppButton>
+                <div class="row-actions">
+                  <AppButton
+                    variant="primary"
+                    size="small"
+                    :disabled="plugin.externalSource || plugin.skills.length === 0 || isDeploying(plugin.name)"
+                    :title="deployButtonTitle(plugin)"
+                    @click="handleDeploy(plugin)"
+                  >
+                    {{ deployButtonLabel(plugin) }}
+                  </AppButton>
+                  <AppButton
+                    v-if="deployedCount(plugin) > 0"
+                    variant="danger"
+                    size="small"
+                    :disabled="isUninstalling(plugin.name)"
+                    :title="uninstallButtonTitle(plugin)"
+                    @click="requestUninstall(plugin)"
+                  >
+                    {{ isUninstalling(plugin.name) ? '卸载中…' : '卸载' }}
+                  </AppButton>
+                </div>
               </template>
             </PluginRow>
           </div>
@@ -204,12 +218,22 @@
         confirm-text="删除"
         @confirm="confirmRemove"
       />
+
+      <!-- 卸载插件已部署技能确认（danger；仅移除凭据匹配目录） -->
+      <ConfirmDialog
+        v-model:open="showUninstallDialog"
+        title="卸载已部署技能"
+        :message="uninstallConfirmMessage"
+        danger
+        confirm-text="卸载"
+        @confirm="confirmUninstall"
+      />
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useSharedMarketStore } from '../../stores/sharedMarket';
 import { useSharedSkillsStore } from '../../stores/sharedSkills';
@@ -242,10 +266,31 @@ const {
 const { load, add, update, remove } = store;
 const { showSuccess, showError, showWarn } = useToast();
 
+// --- 无依赖窄定位：initialMarket prop ---
+// 仅按名称在已加载市场列表中选中市场详情页（不走路由/store；供外部导航如
+// 共用技能页「查看来源市场」配合）。列表就绪前挂起等待；同名 prop 不重复
+// 拉回（用户手动返回后不再次跳转），prop 变更则重新定位。
+const props = defineProps<{ initialMarket?: string }>();
+
 // --- 两级分页状态 ---
 const activeMarketName = ref<string | null>(null);
 const activeMarket = computed<SharedMarketplace | null>(
   () => marketplaces.value.find((m) => m.name === activeMarketName.value) || null,
+);
+
+// initialMarket 定位（声明于 activeMarketName 之后，immediate 回调即时执行）
+const appliedInitialMarket = ref<string | null>(null);
+watch(
+  [() => props.initialMarket, marketplaces],
+  () => {
+    const target = props.initialMarket;
+    if (!target || appliedInitialMarket.value === target) return;
+    if (marketplaces.value.some((m) => m.name === target)) {
+      activeMarketName.value = target;
+      appliedInitialMarket.value = target;
+    }
+  },
+  { immediate: true },
 );
 
 // --- 行级操作中态 ---
@@ -303,7 +348,15 @@ function pluginBadges(plugin: SharedMarketPlugin): PluginBadgeDescriptor[] {
   } else {
     badges.push({ text: `${plugin.skills.length} 个技能`, type: 'scope', variant: 'muted' });
   }
+  // 已部署徽章（凭据制）：只有来源凭据仍指向本插件的目录才计入，
+  // 同名手动目录不虚报
+  const deployed = deployedCount(plugin);
+  if (deployed > 0) badges.push({ text: `已部署 ${deployed}`, type: 'scope' });
   return badges;
+}
+
+function deployedCount(plugin: SharedMarketPlugin): number {
+  return plugin.deployedSkills?.length ?? 0;
 }
 
 function deployButtonLabel(plugin: SharedMarketPlugin): string {
@@ -393,6 +446,66 @@ async function handleOpenFolder() {
   } catch (err) {
     console.error('[SharedMarketPanel] Open folder failed:', err);
     showError(`打开目录失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// --- 卸载插件已部署技能（凭据制：仅移除来源凭据匹配目录） ---
+const uninstallingKeys = ref<Record<string, boolean>>({});
+const showUninstallDialog = ref(false);
+const pendingUninstall = ref<SharedMarketPlugin | null>(null);
+
+function uninstallKey(pluginName: string): string {
+  return activeMarket.value ? `uninstall:${activeMarket.value.name}/${pluginName}` : `uninstall:${pluginName}`;
+}
+
+function isUninstalling(pluginName: string): boolean {
+  return !!uninstallingKeys.value[uninstallKey(pluginName)];
+}
+
+function uninstallButtonTitle(plugin: SharedMarketPlugin): string {
+  return `仅移除有来源凭据的已部署技能：${(plugin.deployedSkills ?? []).join('、')}；同名手动目录与市场克隆不受影响`;
+}
+
+function requestUninstall(plugin: SharedMarketPlugin) {
+  pendingUninstall.value = plugin;
+  showUninstallDialog.value = true;
+}
+
+const uninstallConfirmMessage = computed(() => {
+  const plugin = pendingUninstall.value;
+  if (!plugin || !activeMarket.value) return '';
+  const skills = plugin.deployedSkills ?? [];
+  return `卸载「${activeMarket.value.name} / ${plugin.name}」的已部署共用技能？将删除 ${skills.length} 个凭据匹配目录：${skills.join('、')}（含停用态）；同名手动目录与无凭据目录会保留，市场克隆不受影响。此操作不可恢复。`;
+});
+
+async function confirmUninstall() {
+  const plugin = pendingUninstall.value;
+  if (!plugin || !activeMarket.value) return;
+  const key = uninstallKey(plugin.name);
+  if (uninstallingKeys.value[key]) return;
+
+  uninstallingKeys.value = { ...uninstallingKeys.value, [key]: true };
+  showUninstallDialog.value = false;
+  try {
+    const report = await sharedMarketApi.uninstallSharedMarketplacePlugin(
+      activeMarket.value.name,
+      plugin.name,
+    );
+    if (report.removed.length > 0) {
+      showSuccess(`「${plugin.name}」已卸载 ${report.removed.length} 个技能：${report.removed.join('、')}；手动/无凭据目录已保留`);
+    } else {
+      showWarn('没有可卸载的已部署技能（无来源凭据记录）');
+    }
+  } catch (err) {
+    console.error('[SharedMarketPanel] Uninstall failed:', err);
+    showError(`卸载失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // 无论成败都刷新：卸载改变了 ~/.agents/skills 现场，市场列表的
+    // deployedSkills 与共用技能缓存须同步（F06 同款联动）
+    await load();
+    void sharedSkillsStore.load();
+    uninstallingKeys.value = { ...uninstallingKeys.value, [key]: false };
+    pendingUninstall.value = null;
   }
 }
 
@@ -488,7 +601,7 @@ function requestRemove(market: SharedMarketplace) {
 const removeConfirmMessage = computed(() => {
   const market = pendingRemove.value;
   if (!market) return '';
-  return `删除共用市场「${market.name}」？将删除本地克隆目录 ${market.clonePath} 与登记状态；已部署到 ~/.agents/skills 的技能不受影响。此操作不可恢复。`;
+  return `删除共用市场「${market.name}」？将删除本地克隆目录 ${market.clonePath} 与登记状态；若还有带来源记录的部署，请先卸载对应插件。此操作不可恢复。`;
 });
 
 async function confirmRemove() {
@@ -523,6 +636,8 @@ defineExpose({
   handleUpdate,
   handleDeploy,
   handleOpenFolder,
+  requestUninstall,
+  confirmUninstall,
   openAddDialog,
   submitAdd,
   addSource,

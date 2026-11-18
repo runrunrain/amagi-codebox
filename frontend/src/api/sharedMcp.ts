@@ -7,6 +7,10 @@
 
 import {
   ListSharedMcp,
+  ImportPickedSharedMcpFile,
+  ImportSharedMcpEntries,
+  ParseSharedMcpImportText,
+  PickSharedMcpImportFile,
   CreateSharedMcpEntry,
   UpdateSharedMcpEntry,
   DeleteSharedMcpEntry,
@@ -141,4 +145,81 @@ export function openSharedMcpRegistryDir(registryPath: string): Promise<void> {
   // 取父目录（兼容 Windows 反斜杠与 POSIX 正斜杠；无分隔符时原样透传由后端校验）
   const dir = registryPath.replace(/[\\/][^\\/]*$/, '');
   return callApi('[api.sharedMcp.openSharedMcpRegistryDir]', () => OpenFileInEditor(dir, 0));
+}
+
+// ---- 导入（粘贴 JSON / 选择 JSON 文件）----
+
+/**
+ * 导入预览行（sharedmcp.ImportPreviewEntry）：只含名称/归一形态/状态与
+ * 附注，绝不含配置值（command/url/env/headers 等一律不回传）。
+ */
+export interface SharedMcpImportPreviewEntry {
+  /** 条目名 */
+  name: string;
+  /** 归一形态 "stdio"|"http"；无法归一时为空串 */
+  type: string;
+  /** "ok"（可导入）| "exists"（同名将跳过）| "invalid"（无法登记，见 note） */
+  status: 'ok' | 'exists' | 'invalid' | string;
+  /** 状态附注（同名冲突说明 / 无法登记原因 / sse 归一说明） */
+  note?: string;
+}
+
+/** 粘贴文本的解析预览结果（不落盘） */
+export interface SharedMcpImportPreview {
+  entries: SharedMcpImportPreviewEntry[];
+}
+
+/** 文件选择预览；原始配置留在后端 */
+export interface SharedMcpImportFilePreview {
+  entries: SharedMcpImportPreviewEntry[];
+  /** 所选文件名（UI 展示来源用） */
+  fileName: string;
+  ticket: string;
+}
+
+/** 批量提交时被跳过条目的逐条报告（部分冲突报告） */
+export interface SharedMcpImportSkipped {
+  name: string;
+  reason: string;
+}
+
+/** 显式提交的结果报告 + 最新 Overview */
+export interface SharedMcpImportOutcome {
+  imported: string[];
+  skipped: SharedMcpImportSkipped[];
+  overview: SharedMcpOverview;
+}
+
+/**
+ * 解析粘贴的 JSON 并返回预览（不落盘）：只含名称/类型/状态，不含任何
+ * 配置值；与现行登记比对标注同名冲突（exists）。
+ */
+export function parseSharedMcpImportText(text: string): Promise<SharedMcpImportPreview> {
+  return callApi('[api.sharedMcp.parseSharedMcpImportText]', () =>
+    ParseSharedMcpImportText(text),
+  );
+}
+
+/**
+ * 弹出系统文件选择对话框（*.json）并解析预览：读取仅针对对话框所选路径
+ * 且有大小上限；用户取消返回 null。选文件即预览，提交仍需显式点击导入。
+ */
+export function pickSharedMcpImportFile(): Promise<SharedMcpImportFilePreview | null> {
+  return callApi('[api.sharedMcp.pickSharedMcpImportFile]', () =>
+    PickSharedMcpImportFile(),
+  );
+}
+
+/**
+ * 显式提交导入：后端重新解析（以提交时登记现状裁定同名冲突）批量登记，
+ * 默认无分发，返回导入/跳过报告 + 最新 Overview（免二次请求）。
+ */
+export function importSharedMcpEntries(text: string): Promise<SharedMcpImportOutcome> {
+  return callApi('[api.sharedMcp.importSharedMcpEntries]', () =>
+    ImportSharedMcpEntries(text),
+  );
+}
+
+export function importPickedSharedMcpFile(ticket: string): Promise<SharedMcpImportOutcome> {
+  return callApi('[api.sharedMcp.importPickedSharedMcpFile]', () => ImportPickedSharedMcpFile(ticket));
 }

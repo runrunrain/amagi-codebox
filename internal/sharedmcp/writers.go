@@ -52,8 +52,9 @@ type Service struct {
 	env       []string
 	log       *logging.Service
 
-	mu      sync.Mutex // 串化「读状态→写目标→落状态」的读改写窗口（单进程）
-	writers []EngineWriter
+	mu         sync.Mutex // 串化「读状态→写目标→落状态」的读改写窗口（单进程）
+	registryMu sync.Mutex // serialize registry read-modify-write (including bulk imports)
+	writers    []EngineWriter
 }
 
 // New 创建服务。userHome 解析 ~/.agents 与各引擎默认路径；configDir 是应用
