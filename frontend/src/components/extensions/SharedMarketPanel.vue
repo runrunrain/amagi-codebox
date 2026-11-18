@@ -128,7 +128,7 @@
                     variant="ghost"
                     size="small"
                     :disabled="pluginUpdateBusy(activeMarket.name, plugin.name)"
-                    title="从市场源更新此插件"
+                    title="更新此插件并替换已部署技能的文件，保留启停状态"
                     @click="handleUpdatePlugin(plugin)"
                   >
                     {{ isUpdatingPlugin(plugin.name) ? '更新中…' : '更新插件' }}
@@ -436,11 +436,18 @@ async function handleUpdatePlugin(plugin: SharedMarketPlugin) {
 
   updatingPlugins.value.set(market.name, plugin.name);
   try {
-    await updatePlugin(market.name, plugin.name);
-    showSuccess(`已更新插件「${plugin.name}」`);
+    const { updatedSkills, retainedSkills } = await updatePlugin(market.name, plugin.name);
+    const updated = updatedSkills.length > 0 ? `及 ${updatedSkills.length} 个已部署技能` : '';
+    showSuccess(`已更新插件「${plugin.name}」${updated}`);
+    if (retainedSkills.length > 0) {
+      showWarn(`新版缺少以下技能，已保留原版本：${retainedSkills.join('、')}`);
+    }
+    if (updatedSkills.length > 0) void sharedSkillsStore.load();
   } catch (err) {
     console.error('[SharedMarketPanel] Plugin update failed:', err);
     showError(`更新插件失败：${err instanceof Error ? err.message : String(err)}`);
+    await load();
+    void sharedSkillsStore.load();
   } finally {
     updatingPlugins.value.delete(market.name);
   }

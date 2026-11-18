@@ -22,6 +22,9 @@ func Table() []spec.Command {
 		usageCommands(),   // usage ... / logs
 		pluginCommands(),  // plugin ...
 		gitCommands(),     // git repo-info / branches
+		sharedCommands(),
+		wslCommands(),
+		recentCommands(),
 	} {
 		all = append(all, group...)
 	}

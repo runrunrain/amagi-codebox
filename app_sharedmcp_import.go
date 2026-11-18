@@ -149,6 +149,8 @@ func (a *App) ImportPickedSharedMcpFile(ticket string) (*SharedMcpImportOutcome,
 // 裁定同名冲突）并批量登记（同名跳过逐条报告、未知配置值零丢弃原样写入、
 // 默认无分发），返回导入/跳过报告 + 最新 Overview。
 func (a *App) ImportSharedMcpEntries(text string) (*SharedMcpImportOutcome, error) {
+	a.sharedMcpWrites.Lock()
+	defer a.sharedMcpWrites.Unlock()
 	outcome, err := a.sharedMcpService().Import(text)
 	if err != nil {
 		return nil, err

@@ -760,24 +760,12 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 			return nil, fmt.Errorf("检查目标目录失败：%w", err)
 		}
 
-		if err := staging.Mkdir(skill.Name, 0o755); err != nil {
-			return nil, s.deployPartialError(report, skill.Name, err)
-		}
-		stage, instance, err := openPlainDir(staging, skill.Name)
-		if err != nil {
-			return nil, s.deployPartialError(report, skill.Name, err)
-		}
-		if err := copyDir(skill.Dir, stage); err != nil {
-			_ = stage.Close()
-			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("复制技能失败：%w", err))
-		}
-		err = writeProvenanceMarker(stage, provenanceMarker{
+		_, err := stageSkill(staging, skill, provenanceMarker{
 			Marketplace: name, Plugin: pluginName, Skill: skill.Name, DeployedAt: deployedAt,
-			Instance: instance, Agents: agentsID, ActiveRoot: activeID, DisabledRoot: disabledID,
+			Agents: agentsID, ActiveRoot: activeID, DisabledRoot: disabledID,
 		})
-		_ = stage.Close()
 		if err != nil {
-			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("写入来源凭据失败：%w", err))
+			return nil, s.deployPartialError(report, skill.Name, err)
 		}
 		if err := active.Rename(filepath.Join(stagingName, skill.Name), skill.Name); err != nil {
 			return nil, s.deployPartialError(report, skill.Name, fmt.Errorf("发布技能失败：%w", err))
@@ -788,6 +776,26 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 		s.log.Info("sharedmarket", "部署插件技能到共用技能", fmt.Sprintf("market=%s plugin=%s deployed=%d skipped=%d", name, pluginName, len(report.Deployed), len(report.Skipped)))
 	}
 	return report, nil
+}
+
+func stageSkill(staging *os.Root, skill deployableSkill, marker provenanceMarker) (provenanceMarker, error) {
+	if err := staging.Mkdir(skill.Name, 0o755); err != nil {
+		return provenanceMarker{}, err
+	}
+	stage, instance, err := openPlainDir(staging, skill.Name)
+	if err != nil {
+		return provenanceMarker{}, err
+	}
+	defer func() { _ = stage.Close() }()
+	if err := copyDir(skill.Dir, stage); err != nil {
+		return provenanceMarker{}, fmt.Errorf("复制技能失败：%w", err)
+	}
+	marker.Version = markerVersion
+	marker.Instance = instance
+	if err := writeProvenanceMarker(stage, marker); err != nil {
+		return provenanceMarker{}, fmt.Errorf("写入来源凭据失败：%w", err)
+	}
+	return marker, nil
 }
 
 // deployPartialError 构造部分成功部署的错误信息（F03）：已成功的技能不因

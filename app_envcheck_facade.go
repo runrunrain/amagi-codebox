@@ -108,6 +108,10 @@ func (a *App) GetEnvCheckSnapshot() *envcheck.EnvCheckSnapshot {
 // RunEnvFixAction 执行白名单化的环境修复动作。
 // 前端传入 FixActionRequest，后端验证 action 类型后执行对应修复。
 func (a *App) RunEnvFixAction(action string, tool string, extraPath string) (*envcheck.FixActionResult, error) {
+	if action == string(envcheck.SolutionFixClaudeConfig) {
+		a.sharedMcpWrites.Lock()
+		defer a.sharedMcpWrites.Unlock()
+	}
 	req := envcheck.FixActionRequest{
 		Action:    envcheck.SolutionType(action),
 		Tool:      envcheck.CLITool(tool),
@@ -218,6 +222,8 @@ func (a *App) CheckClaudeConfig() (*envcheck.ClaudeConfigStatus, error) {
 // FixClaudeConfig writes a single configuration item to Claude Code settings.
 // Only missing items are added; existing values are never overwritten.
 func (a *App) FixClaudeConfig(key string, value string, filePath string) (*envcheck.ConfigFixResult, error) {
+	a.sharedMcpWrites.Lock()
+	defer a.sharedMcpWrites.Unlock()
 	// Defense-in-depth: validate file path at the binding layer too
 	if filePath != "" {
 		expanded := envcheck.ExpandTilde(filePath)

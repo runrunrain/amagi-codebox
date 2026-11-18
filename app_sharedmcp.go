@@ -111,6 +111,8 @@ func (a *App) RefreshSharedMcp() (*SharedMcpOverview, error) {
 // 已存在后端拒绝），返回最新 Overview。新条目默认全部引擎未勾选，用户在
 // 矩阵显式勾选才分发（spec 裁定三）。
 func (a *App) CreateSharedMcpEntry(entry sharedmcp.SharedMcpEntry) (*SharedMcpOverview, error) {
+	a.sharedMcpWrites.Lock()
+	defer a.sharedMcpWrites.Unlock()
 	if err := a.sharedMcpService().Create(entry); err != nil {
 		return nil, err
 	}
@@ -121,6 +123,8 @@ func (a *App) CreateSharedMcpEntry(entry sharedmcp.SharedMcpEntry) (*SharedMcpOv
 // 后端拒绝）。只改登记文件，不自动重分发——已分发引擎随内容变化如实转
 // drift，由用户在矩阵逐引擎 resync（spec §3）。
 func (a *App) UpdateSharedMcpEntry(name string, entry sharedmcp.SharedMcpEntry) (*SharedMcpOverview, error) {
+	a.sharedMcpWrites.Lock()
+	defer a.sharedMcpWrites.Unlock()
 	if err := a.sharedMcpService().Update(name, entry); err != nil {
 		return nil, err
 	}
@@ -132,6 +136,8 @@ func (a *App) UpdateSharedMcpEntry(name string, entry sharedmcp.SharedMcpEntry) 
 // 需 force 二次确认）；任一失败 → 整体失败返回，登记与已还原引擎保持
 // 如实状态；全部成功才删登记 + 删 state.Entries[name]。
 func (a *App) DeleteSharedMcpEntry(name string, force bool) (*SharedMcpOverview, error) {
+	a.sharedMcpWrites.Lock()
+	defer a.sharedMcpWrites.Unlock()
 	svc := a.sharedMcpService()
 	applied := svc.AppliedEngines(name)
 	if len(applied) > 0 {
@@ -159,6 +165,8 @@ func (a *App) DeleteSharedMcpEntry(name string, force bool) (*SharedMcpOverview,
 // false → Undistribute（ErrForeignModified 时 UI 弹 danger 确认后以
 // force=true 重试）。引擎间互不牵连（逐引擎独立成败）。
 func (a *App) SetSharedMcpEngineSelection(name, engine string, selected, force bool) (*SharedMcpOverview, error) {
+	a.sharedMcpWrites.Lock()
+	defer a.sharedMcpWrites.Unlock()
 	if err := a.sharedMcpService().SetSelected(name, engine, selected, force); err != nil {
 		return nil, err
 	}

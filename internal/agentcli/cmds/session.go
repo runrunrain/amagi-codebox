@@ -66,7 +66,7 @@ func sessionCommands() []spec.Command {
 				{Name: "provider", Type: spec.TypeString, Desc: "提供商名（claudecode 必填；codex/pi/omp 可选，与 preset 二选一时优先显式 model）"},
 				{Name: "model", Type: spec.TypeString, Desc: "模型名（codex/pi/omp 的第一参数；也可传 terminal preset 键）"},
 				{Name: "preset", Type: spec.TypeString, Desc: "预设名（claudecode/opencode 用 preset 名；codex/pi/omp 未给 model 时作为 preset 键传入）"},
-				{Name: "workDir", Type: spec.TypeString, Desc: "工作目录：必须是已存在的目录（校验时归一化为绝对路径）；省略则走应用默认目录"},
+				{Name: "workDir", Type: spec.TypeString, Desc: "已存在的工作目录；WSL 嵌入式会话支持在目标发行版中校验 Linux 路径；省略走应用默认目录"},
 				{Name: "mode", Type: spec.TypeString, Enum: []string{"embedded", "terminal"}, Default: "embedded", Desc: "启动模式，默认 embedded"},
 				{Name: "shell", Type: spec.TypeString, Desc: "覆盖启动 shell 路径（可选）"},
 			},

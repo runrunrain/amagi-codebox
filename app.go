@@ -205,6 +205,7 @@ type App struct {
 	// 绑定**——经 App 门面（app_sharedmcp.go）暴露。
 	SharedMcp       *sharedmcp.Service
 	sharedMcpImport sharedMcpFileDraft
+	sharedMcpWrites sync.Mutex // serializes registry/deployment transactions and Claude config writes
 	// SharedMarkets 是共用插件市场服务（~/.agents/marketplaces 克隆管理 +
 	// 插件技能部署到 ~/.agents/skills）。**非 Wails 绑定**——经 App 门面
 	// （app_sharedmarket.go）暴露。

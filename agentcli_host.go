@@ -20,6 +20,9 @@ func (h *agentCLIHost) handlers() map[string]spec.Handler {
 		h.usageHandlers(),
 		h.pluginHandlers(),
 		h.gitHandlers(),
+		h.sharedHandlers(),
+		h.wslHandlers(),
+		h.recentHandlers(),
 	} {
 		for k, v := range group {
 			all[k] = v

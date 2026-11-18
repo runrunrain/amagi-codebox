@@ -190,8 +190,10 @@ func (a *App) UpdateSharedMarketplace(name string) ([]sharedmarket.Marketplace, 
 	return a.sharedMarketService().List()
 }
 
-// UpdateSharedMarketplacePlugin 从市场源更新指定插件并返回该插件的最新视图。
-func (a *App) UpdateSharedMarketplacePlugin(marketName, pluginName string) (sharedmarket.Plugin, error) {
+// UpdateSharedMarketplacePlugin 更新插件及其已部署技能，保留技能启停状态。
+func (a *App) UpdateSharedMarketplacePlugin(marketName, pluginName string) (sharedmarket.PluginUpdateReport, error) {
+	a.sharedSkillWrites.Lock()
+	defer a.sharedSkillWrites.Unlock()
 	return a.sharedMarketService().UpdatePlugin(marketName, pluginName)
 }
 

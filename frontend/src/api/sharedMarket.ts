@@ -41,6 +41,12 @@ export interface SharedMarketPlugin {
   updatable: boolean;
 }
 
+export interface SharedMarketPluginUpdateReport {
+  plugin: SharedMarketPlugin;
+  updatedSkills: string[];
+  retainedSkills: string[];
+}
+
 /** 一个共用市场的视图（List 附带完整目录扫描） */
 export interface SharedMarketplace {
   name: string;
@@ -137,7 +143,7 @@ export function updateSharedMarketplace(name: string): Promise<SharedMarketplace
   return callApi('[api.sharedMarket.updateSharedMarketplace]', () => UpdateSharedMarketplace(name));
 }
 
-export function updateSharedMarketplacePlugin(marketName: string, pluginName: string): Promise<SharedMarketPlugin> {
+export function updateSharedMarketplacePlugin(marketName: string, pluginName: string): Promise<SharedMarketPluginUpdateReport> {
   return callApi('[api.sharedMarket.updateSharedMarketplacePlugin]', () =>
     UpdateSharedMarketplacePlugin(marketName, pluginName),
   );

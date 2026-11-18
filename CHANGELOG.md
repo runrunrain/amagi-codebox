@@ -4,6 +4,21 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.148] - 2026-11-18
+
+### Added
+
+- `codebox-agent` 新增 56 条命令，覆盖共用技能、共用 MCP、插件市场与插件子项、WSL 配置同步及 Pi 插件目标操作、会话目录与 Web 视图状态、Claude Code 建议配置和 AI 代理分流。内置 `amagi-codebox` skill 与命令参考同步更新。
+
+### Changed
+
+- 共用市场单独更新插件时，同时更新来源匹配的已部署技能，并保留启停状态。新版缺少的技能保留原版本并提示。
+- Claude Code 配置检测改用可折叠列表，展开后可在未配置项和全部项目之间切换，每行显示当前值或建议值。
+
+### Fixed
+
+- 「关于」弹窗首次检查后重新打开会刷新版本结果，发现新版本时展示安装或下载入口。已是最新版本时可手动重新检查。
+
 ## [1.3.147] - 2026-11-18
 
 ### Added

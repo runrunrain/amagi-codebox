@@ -153,60 +153,14 @@
         </div>
       </div>
 
-      <!--
-        Claude Code configuration panel.
-        CheckStatus.config is populated by the backend for claude_code only;
-        we render it inline (HIG: keep related info inside the owning card
-        instead of spawning a sibling card). Each unconfigured item shows a
-        "一键配置" button that calls FixClaudeConfig(key, defaultValue, filePath).
-      -->
-      <div
-        v-if="activeCard.key === 'claude_code' && claudeConfigItems(activeCard.status).length > 0"
-        class="claude-config"
-      >
-        <div class="claude-config-head">
-          <span class="claude-config-title">Claude Code 配置检测</span>
-          <span class="claude-config-summary" :class="claudeConfigAllConfigured(activeCard.status) ? 'tag-success' : 'tag-warn'">
-            {{ claudeConfigConfiguredCount(activeCard.status) }}/{{ claudeConfigItems(activeCard.status).length }} 项已配置
-          </span>
-          <button
-            type="button"
-            class="claude-config-toggle"
-            :aria-expanded="claudeConfigExpanded[activeCard.key] || false"
-            @click="toggleClaudeConfig(activeCard.key)"
-          >
-            {{ claudeConfigExpanded[activeCard.key] ? '收起' : '展开' }}
-          </button>
-        </div>
-        <div v-show="claudeConfigExpanded[activeCard.key]" class="claude-config-list">
-          <div
-            v-for="item in claudeConfigItems(activeCard.status)"
-            :key="activeCard.key + '-cfg-' + item.key"
-            class="claude-config-item"
-          >
-            <div class="claude-config-copy">
-              <div class="claude-config-key mono">{{ item.key }}</div>
-              <div v-if="item.description" class="claude-config-desc">{{ item.description }}</div>
-              <div v-if="item.configured && item.currentValue" class="claude-config-current">
-                当前值：<span class="mono">{{ item.currentValue }}</span>
-              </div>
-            </div>
-            <div class="claude-config-state">
-              <span v-if="item.configured" class="mini-tag tag-success">已配置</span>
-              <span v-else class="mini-tag tag-danger">未配置</span>
-              <AppButton
-                v-if="!item.configured"
-                variant="primary"
-                size="small"
-                :disabled="!!configFixing[item.key] || activeCard.isOperating || checking || !!runningOperation || writeBusy"
-                @click="onFixClaudeConfigClick(activeCard.key, item)"
-              >
-                {{ configFixing[item.key] ? '写入中...' : '一键配置' }}
-              </AppButton>
-            </div>
-          </div>
-        </div>
-      </div>
+      <ClaudeConfigPanel
+        v-if="claudeConfigItems.length > 0"
+        v-show="activeCard.key === 'claude_code'"
+        :items="claudeConfigItems"
+        :disabled="activeCard.isOperating || checking || !!runningOperation || writeBusy"
+        :fixing-key="configFixingKey"
+        @apply="onFixClaudeConfigClick"
+      />
     </div>
 
     <div class="card-actions">
@@ -402,6 +356,7 @@ import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
 import ProgressBar from '../../components/ui/ProgressBar.vue'
 import ConfirmDialog from '../../components/ui/ConfirmDialog.vue'
+import ClaudeConfigPanel from './ClaudeConfigPanel.vue'
 import { errorMessage } from '../../utils/format'
 import {
   planSolutionExecution,
@@ -1037,8 +992,8 @@ async function startUpdate(key: string, displayName: string, latestVersion: stri
 const claudeInstallMethod = ref<ClaudeInstallMethod | ''>('')
 const claudeInstalling = ref(false)
 const claudeUninstalling = ref(false)
-const configFixing = ref<Record<string, boolean>>({})
-const claudeConfigExpanded = ref<Record<string, boolean>>({})
+const configFixingKey = ref<string | null>(null)
+const claudeConfigItems = computed(() => snapshot.value?.status?.items?.claude_code?.config?.configItems ?? [])
 const fixLoadingKey = ref<string>('')
 
 const claudeBusy = computed(() => claudeInstalling.value || claudeUninstalling.value)
@@ -1180,28 +1135,8 @@ async function handleUninstallClaude(status: envcheck.CheckStatus): Promise<void
 
 // ---------- Claude Code: configuration items ----------
 
-function claudeConfigItems(status: envcheck.CheckStatus | null): envcheck.ClaudeConfigItem[] {
-  return status?.config?.configItems || []
-}
-
-function claudeConfigConfiguredCount(status: envcheck.CheckStatus | null): number {
-  return claudeConfigItems(status).filter((item) => !!item.configured).length
-}
-
-function claudeConfigAllConfigured(status: envcheck.CheckStatus | null): boolean {
-  const items = claudeConfigItems(status)
-  return items.length > 0 && items.every((item) => !!item.configured)
-}
-
-function toggleClaudeConfig(cardKey: string): void {
-  claudeConfigExpanded.value = {
-    ...claudeConfigExpanded.value,
-    [cardKey]: !claudeConfigExpanded.value[cardKey],
-  }
-}
-
-async function handleFixClaudeConfig(_cardKey: string, item: envcheck.ClaudeConfigItem): Promise<void> {
-  configFixing.value = { ...configFixing.value, [item.key]: true }
+async function handleFixClaudeConfig(item: envcheck.ClaudeConfigItem): Promise<void> {
+  configFixingKey.value = item.key
   try {
     const result = await fixClaudeConfig(item.key, item.defaultValue || '', item.filePath || '')
     if (result?.success) {
@@ -1213,7 +1148,7 @@ async function handleFixClaudeConfig(_cardKey: string, item: envcheck.ClaudeConf
   } catch (err: unknown) {
     showError('配置写入失败: ' + errorMessage(err))
   } finally {
-    configFixing.value = { ...configFixing.value, [item.key]: false }
+    configFixingKey.value = null
   }
 }
 
@@ -1239,8 +1174,8 @@ function onUninstallClaudeClick(status: envcheck.CheckStatus): void {
   void withWriteGuard(() => handleUninstallClaude(status))
 }
 
-function onFixClaudeConfigClick(cardKey: string, item: envcheck.ClaudeConfigItem): void {
-  void withWriteGuard(() => handleFixClaudeConfig(cardKey, item))
+function onFixClaudeConfigClick(item: envcheck.ClaudeConfigItem): void {
+  void withWriteGuard(() => handleFixClaudeConfig(item))
 }
 
 function issueSeverityLabel(sev: string): string {
@@ -2023,102 +1958,6 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 6px;
   padding-left: 4px;
-}
-
-/* ---------- Claude Code configuration panel ---------- */
-.claude-config {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--separator);
-}
-
-.claude-config-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.claude-config-title {
-  font-weight: 600;
-  color: var(--label);
-}
-
-.claude-config-summary {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-}
-
-.claude-config-toggle {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--accent, #007aff);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 2px 4px;
-}
-
-.claude-config-toggle:hover {
-  text-decoration: underline;
-}
-
-.claude-config-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.claude-config-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 6px 8px;
-  background: var(--control);
-  border-radius: 8px;
-}
-
-.claude-config-copy {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.claude-config-key {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--label);
-  word-break: break-all;
-}
-
-.claude-config-desc {
-  font-size: 11px;
-  color: var(--secondary);
-  line-height: 1.4;
-}
-
-.claude-config-current {
-  font-size: 11px;
-  color: var(--tertiary);
-}
-
-.claude-config-state {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.mini-tag {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 999px;
 }
 
 /* ---------- native / npm method picker ---------- */

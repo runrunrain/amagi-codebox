@@ -361,7 +361,7 @@ func TestAgentCLISessionLaunch_HandlerValidation(t *testing.T) {
 	app := newTestApp(t)
 	h := newAgentCLIHost(app)
 	_, err := h.sessionLaunch(context.Background(), spec.Args{
-		"appType": "claudecode", "provider": "p", "workDir": "/definitely/not/exist/dir",
+		"appType": "claudecode", "provider": "p", "workDir": filepath.Join(t.TempDir(), "missing"),
 	})
 	if code := specErrorCode(t, err); code != spec.ErrBadArgs {
 		t.Errorf("不存在的 workDir 应在分发前拒绝为 bad_args，得到 %s（%v）", code, err)

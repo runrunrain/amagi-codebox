@@ -511,7 +511,7 @@ export function UpdateProvider(arg1:string,arg2:string,arg3:string):Promise<void
 
 export function UpdateSharedMarketplace(arg1:string):Promise<Array<sharedmarket.Marketplace>>;
 
-export function UpdateSharedMarketplacePlugin(arg1:string,arg2:string):Promise<sharedmarket.Plugin>;
+export function UpdateSharedMarketplacePlugin(arg1:string,arg2:string):Promise<sharedmarket.PluginUpdateReport>;
 
 export function UpdateSharedMcpEntry(arg1:string,arg2:sharedmcp.SharedMcpEntry):Promise<main.SharedMcpOverview>;
 

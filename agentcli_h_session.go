@@ -322,11 +322,18 @@ func normalizeAgentLaunchParams(p agentLaunchParams) (agentLaunchParams, *spec.E
 	} else if p.Mode != "embedded" && p.Mode != "terminal" {
 		return p, spec.Errorf(spec.ErrBadArgs, "mode 必须是 embedded 或 terminal，得到 %q", p.Mode)
 	}
-	workDir, err := normalizeAgentLaunchWorkDir(p.WorkDir)
-	if err != nil {
-		return p, err
+	if isLinuxStyleWorkDirFn(p.WorkDir) {
+		if !launchTargetsWSLFn(p.Mode, p.Shell) {
+			return p, agentCLIArgErrf("Linux 工作目录需要可用的 WSL 嵌入式目标（例如 --shell wsl.exe）")
+		}
+		// Launch* resolves and validates this path in the captured WSL target.
+	} else {
+		workDir, err := normalizeAgentLaunchWorkDir(p.WorkDir)
+		if err != nil {
+			return p, err
+		}
+		p.WorkDir = workDir
 	}
-	p.WorkDir = workDir
 	switch p.AppType {
 	case "claudecode":
 		if p.Provider == "" {

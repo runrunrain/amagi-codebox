@@ -46,11 +46,13 @@ export const useSharedMarketStore = defineStore('sharedMarket', () => {
   }
 
   async function updatePlugin(marketName: string, pluginName: string) {
-    const updated = await sharedMarketApi.updateSharedMarketplacePlugin(marketName, pluginName);
+    const report = await sharedMarketApi.updateSharedMarketplacePlugin(marketName, pluginName);
     const market = marketplaces.value.find((market) => market.name === marketName);
-    if (!market) return;
-    const index = market.plugins.findIndex((plugin) => plugin.name === pluginName);
-    if (index >= 0) market.plugins[index] = updated;
+    if (market) {
+      const index = market.plugins.findIndex((plugin) => plugin.name === pluginName);
+      if (index >= 0) market.plugins[index] = report.plugin;
+    }
+    return report;
   }
 
   /** 删除市场（danger 确认在面板层） */

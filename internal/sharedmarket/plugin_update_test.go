@@ -55,9 +55,10 @@ func TestUpdatePluginIsolatesCatalogAndDeploymentSource(t *testing.T) {
 	write("plugins/alpha-new/skills/skill-one/SKILL.md", "# alpha v2\n")
 	commit("Update both plugins and move alpha")
 
-	updated, err := svc.UpdatePlugin(initial.Name, "alpha")
-	if err != nil || updated.Version != "2.0.0" || !updated.Updatable {
-		t.Fatalf("update: %+v, %v", updated, err)
+	report, err := svc.UpdatePlugin(initial.Name, "alpha")
+	updated := report.Plugin
+	if err != nil || updated.Version != "2.0.0" || !updated.Updatable || len(report.UpdatedSkills) != 0 {
+		t.Fatalf("update: %+v, %v", report, err)
 	}
 	svc = New(home, nil)
 	markets, err := svc.List()
@@ -102,5 +103,99 @@ func TestUpdatePluginIsolatesCatalogAndDeploymentSource(t *testing.T) {
 	}
 	if _, err := os.Stat(snapshots[0]); !os.IsNotExist(err) {
 		t.Fatalf("whole-market update left the old snapshot: %v", err)
+	}
+}
+
+func TestUpdatePluginRefreshesOwnedSkillsInTheirOriginalRoots(t *testing.T) {
+	svc, git := newTestService(t)
+	addFixtureMarket(t, svc, git, "mk")
+	writeSkill := func(dir, body string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readSkill := func(dir string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	writeSkill(filepath.Join(svc.clonePath("mk"), "plugins", "alpha", "skills", "retired"), "retired v1")
+	if _, err := svc.DeployPlugin("mk", "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DeployPlugin("mk", "beta-solo"); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(svc.skillsRoot(), "skill-one")
+	manual := filepath.Join(svc.skillsRoot(), "skill-two")
+	disabled := filepath.Join(svc.disabledSkillsRoot(), "skill-two")
+	otherPlugin := filepath.Join(svc.skillsRoot(), "beta-solo")
+	if err := os.Rename(manual, disabled); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(manual, "manual copy")
+	oldActive, oldDisabled, oldOther := readSkill(active), readSkill(disabled), readSkill(otherPlugin)
+	oldOrigin := OriginForSkill(disabled, false)
+	if oldOrigin == nil {
+		t.Fatal("disabled skill must have valid provenance before updating")
+	}
+	git.respond = func(args []string) (string, error) {
+		clone := args[len(args)-1]
+		fixtureMarket(t, clone)
+		for _, skill := range []string{"skill-one", "skill-two", "new-skill"} {
+			writeSkill(filepath.Join(clone, "plugins", "alpha", "skills", skill), skill+" v2")
+		}
+		return "", nil
+	}
+
+	blocked := svc.statePath() + ".tmp"
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdatePlugin("mk", "alpha"); err == nil || !strings.Contains(err.Error(), "写市场状态临时文件失败") {
+		t.Fatalf("expected a market state write failure after publishing: %v", err)
+	}
+	if readSkill(active) != oldActive || readSkill(disabled) != oldDisabled || OriginForSkill(disabled, false) == nil {
+		t.Fatal("failed update did not restore the original deployments and provenance")
+	}
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := svc.UpdatePlugin("mk", "alpha")
+	if err != nil || !reflect.DeepEqual(report.UpdatedSkills, []string{"skill-one", "skill-two"}) ||
+		!reflect.DeepEqual(report.RetainedSkills, []string{"retired"}) {
+		t.Fatalf("unexpected update report: %+v, %v", report, err)
+	}
+	if readSkill(active) != "skill-one v2" || readSkill(disabled) != "skill-two v2" {
+		t.Fatal("deployed contents were not updated in their original roots")
+	}
+	if readSkill(manual) != "manual copy" || readSkill(otherPlugin) != oldOther ||
+		readSkill(filepath.Join(svc.skillsRoot(), "retired")) != "retired v1" {
+		t.Fatal("a deployment or manual skill outside the update set was modified")
+	}
+	for _, root := range []string{svc.skillsRoot(), svc.disabledSkillsRoot()} {
+		if _, err := os.Lstat(filepath.Join(root, "new-skill")); !os.IsNotExist(err) {
+			t.Fatalf("new skill was automatically deployed: %v", err)
+		}
+		if staging, err := filepath.Glob(filepath.Join(root, ".update-staging-*")); err != nil || len(staging) != 0 {
+			t.Fatalf("update left staging directories: %v, %v", staging, err)
+		}
+	}
+	for _, state := range []struct {
+		path    string
+		enabled bool
+	}{{active, true}, {disabled, false}} {
+		origin := OriginForSkill(state.path, state.enabled)
+		if origin == nil || origin.Enabled != state.enabled || origin.Marketplace != "mk" || origin.Plugin != "alpha" || origin.DeployedAt != oldOrigin.DeployedAt {
+			t.Fatalf("updated skill lost its original state or provenance: %+v", origin)
+		}
 	}
 }

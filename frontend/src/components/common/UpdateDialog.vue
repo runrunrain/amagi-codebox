@@ -42,39 +42,40 @@
       </div>
 
       <!-- 更新检查结果 -->
-      <div v-if="updateInfo.hasUpdate" class="version-row">
-        <span class="version-label">最新版本</span>
-        <span class="version-value highlight">{{ updateInfo.latestVersion }}</span>
-      </div>
-      <div v-if="updateInfo.publishedAt" class="version-meta">
-        发布于：{{ updateInfo.publishedAt }}
-      </div>
+      <template v-if="updateInfo?.hasUpdate">
+        <div class="version-row">
+          <span class="version-label">最新版本</span>
+          <span class="version-value highlight">{{ updateInfo.latestVersion }}</span>
+        </div>
+        <div v-if="updateInfo.publishedAt" class="version-meta">
+          发布于：{{ updateInfo.publishedAt }}
+        </div>
 
-      <!-- Release Notes -->
-      <div v-if="updateInfo.releaseNotes" class="release-notes-section">
-        <label>Release Notes</label>
-        <textarea
-          :value="updateInfo.releaseNotes"
-          class="release-notes"
-          rows="8"
-          readonly
-        />
-      </div>
+        <div v-if="updateInfo.releaseNotes" class="release-notes-section">
+          <label>Release Notes</label>
+          <textarea
+            :value="updateInfo.releaseNotes"
+            class="release-notes"
+            rows="8"
+            readonly
+          />
+        </div>
+      </template>
 
       <!-- Update Actions -->
       <div class="update-actions">
         <AppButton
-          v-if="!checked && !checking"
+          v-if="!updateInfo && !checking"
           variant="primary"
           @click="handleCheckUpdate"
         >
           检查更新
         </AppButton>
-        <div v-else-if="checking" class="checking-state">
+        <div v-else-if="checking" class="checking-state" role="status">
           <span class="spinner"></span>
           <span>检查更新中...</span>
         </div>
-        <template v-else-if="checked && updateInfo.hasUpdate">
+        <template v-else-if="updateInfo?.hasUpdate">
           <p v-if="updateInfo.updateAction === 'install'" class="install-hint">
             应用将退出并重启以完成更新
           </p>
@@ -95,9 +96,12 @@
             </AppButton>
           </div>
         </template>
-        <div v-else-if="checked" class="uptodate-state">
-          <span class="status-dot"></span>
-          <span>当前已是最新版本</span>
+        <div v-else class="uptodate-state">
+          <span class="uptodate-message" role="status">
+            <span class="status-dot" aria-hidden="true"></span>
+            当前已是最新版本
+          </span>
+          <AppButton variant="outline" size="small" @click="handleCheckUpdate">重新检查</AppButton>
         </div>
       </div>
 
@@ -115,27 +119,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import Dialog from '../ui/Dialog.vue';
 import AppButton from '../ui/AppButton.vue';
-import { CheckForUpdate, DownloadAndApplyUpdate, GetAppInfo } from '../../../wailsjs/go/main/App';
+import { GetAppInfo } from '../../../wailsjs/go/main/App';
+import type { updater } from '../../../wailsjs/go/models';
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
+import { checkForUpdate, downloadAndApplyUpdate } from '../../api/updater';
 import { errorMessage } from '../../utils/format';
-
-interface UpdateInfo {
-  hasUpdate: boolean;
-  latestVersion: string;
-  publishedAt: string;
-  releaseNotes: string;
-  releaseURL: string;
-  updateAction: 'install' | 'open-download-page';
-}
 
 interface Props {
   open?: boolean;
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   open: false,
 });
 
@@ -149,24 +146,15 @@ const buildTime = ref('');
 const gitCommit = ref('');
 const goVersion = ref('');
 const platform = ref('');
-const updateInfo = ref<UpdateInfo>({
-  hasUpdate: false,
-  latestVersion: '',
-  publishedAt: '',
-  releaseNotes: '',
-  releaseURL: '',
-  updateAction: 'open-download-page',
-});
+const updateInfo = ref<updater.UpdateInfo | null>(null);
 const checking = ref(false);
-const checked = ref(false);
 const downloading = ref(false);
 const updateError = ref('');
+let hasRequestedCheck = false;
 
 onMounted(async () => {
   try {
     const info = await GetAppInfo();
-    // GetAppInfo 当前仅返回 version；buildTime/gitCommit/goVersion/platform/productName
-    // 待鲁班扩展后端后填充，前端按字段存在性防御读取，缺失则隐藏对应行。
     if (info?.version) {
       currentVersion.value = `v${info.version}`;
     }
@@ -180,22 +168,19 @@ onMounted(async () => {
   }
 });
 
+watch(() => props.open, (open) => {
+  if (open && hasRequestedCheck) void handleCheckUpdate();
+});
+
 async function handleCheckUpdate() {
+  if (checking.value || downloading.value) return;
+  hasRequestedCheck = true;
   checking.value = true;
+  updateInfo.value = null;
   updateError.value = '';
   try {
-    const info = await CheckForUpdate();
-    if (info) {
-      updateInfo.value = {
-        hasUpdate: info.hasUpdate || false,
-        latestVersion: info.latestVersion || '',
-        publishedAt: info.publishedAt || '',
-        releaseNotes: info.releaseNotes || '',
-        releaseURL: info.releaseURL || '',
-        updateAction: (info.updateAction as 'install' | 'open-download-page') || 'open-download-page',
-      };
-      checked.value = true;
-    }
+    updateInfo.value = await checkForUpdate();
+    if (!updateInfo.value) updateError.value = '未取得版本信息，请重试';
   } catch (error) {
     console.error('[UpdateDialog] Check update failed:', error);
     updateError.value = '检查更新失败';
@@ -208,7 +193,7 @@ async function handleDownloadAndApply() {
   downloading.value = true;
   updateError.value = '';
   try {
-    await DownloadAndApplyUpdate();
+    await downloadAndApplyUpdate();
   } catch (error) {
     console.error('[UpdateDialog] Download failed:', error);
     // 展示后端返回的真实错误（如 App Translocation 引导），而非固定文案。
@@ -220,7 +205,7 @@ async function handleDownloadAndApply() {
 }
 
 function handlePrimaryUpdateAction() {
-  if (updateInfo.value.updateAction !== 'install') {
+  if (updateInfo.value?.updateAction !== 'install') {
     handleOpenReleasePage();
     return;
   }
@@ -235,7 +220,9 @@ function normalizeUpdateError(err: unknown): string {
 }
 
 function handleOpenReleasePage() {
-  const url = updateInfo.value.releaseURL || `https://github.com/runrunrain/amagi-codebox/releases/tag/v${updateInfo.value.latestVersion}`;
+  const info = updateInfo.value;
+  if (!info?.hasUpdate) return;
+  const url = info.releaseURL || `https://github.com/runrunrain/amagi-codebox/releases/tag/v${info.latestVersion}`;
   BrowserOpenURL(url);
 }
 
@@ -394,12 +381,18 @@ function handleClose() {
 }
 
 .checking-state,
-.uptodate-state {
+.uptodate-state,
+.uptodate-message {
   display: flex;
   align-items: center;
   gap: 10px;
   font-size: 13px;
   color: var(--secondary);
+}
+
+.uptodate-state {
+  flex-wrap: wrap;
+  justify-content: space-between;
 }
 
 .spinner {

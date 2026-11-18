@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import type {
   SharedMarketplace,
-  SharedMarketPlugin,
+  SharedMarketPluginUpdateReport,
   ClaudeMarketplaceForImport,
   SharedMarketDeployReport,
   SharedMarketUninstallReport,
@@ -29,7 +29,7 @@ const apiMocks = vi.hoisted(() => ({
   listClaudeMarketplacesForImport: vi.fn(async (): Promise<ClaudeMarketplaceForImport[]> => []),
   importSharedMarketplacesFromClaude: vi.fn(async (): Promise<SharedMarketplace[]> => []),
   updateSharedMarketplace: vi.fn(async (): Promise<SharedMarketplace[]> => []),
-  updateSharedMarketplacePlugin: vi.fn<() => Promise<SharedMarketPlugin>>(),
+  updateSharedMarketplacePlugin: vi.fn<() => Promise<SharedMarketPluginUpdateReport>>(),
   removeSharedMarketplace: vi.fn(async (): Promise<SharedMarketplace[]> => []),
   deploySharedMarketplacePlugin: vi.fn(async (): Promise<SharedMarketDeployReport> => ({
     marketplace: 'mk',
@@ -161,13 +161,17 @@ describe('二级：市场内插件列表', () => {
     expect(html).toContain('部署技能');
   });
 
-  it('只更新所选插件的版本和技能列表', async () => {
+  it('替换所选插件条目，并在已部署技能更新后重新加载共用技能', async () => {
     const store = useSharedMarketStore();
     const market = marketFixture();
     store.marketplaces = [market];
     const [plugin, external, sibling] = market.plugins;
     const updated = { ...plugin, version: '1.3.0', skills: ['resume-writing'] };
-    apiMocks.updateSharedMarketplacePlugin.mockResolvedValueOnce(updated);
+    apiMocks.updateSharedMarketplacePlugin.mockResolvedValueOnce({
+      plugin: updated,
+      updatedSkills: ['resume-writing'],
+      retainedSkills: [],
+    });
 
     const { instances } = await renderWithCapture(SharedMarketPanel);
     const panel = instanceOf(instances, SharedMarketPanel);
@@ -180,6 +184,7 @@ describe('二级：市场内插件列表', () => {
 
     expect(apiMocks.updateSharedMarketplacePlugin).toHaveBeenCalledWith(market.name, plugin.name);
     expect(apiMocks.updateSharedMarketplace).not.toHaveBeenCalled();
+    expect(sharedSkillsApiMocks.listSharedSkills).toHaveBeenCalledOnce();
     expect(store.marketplaces[0].plugins).toEqual([updated, external, sibling]);
     expect(await renderInstanceAgain(panel)).toContain('v1.3.0');
   });

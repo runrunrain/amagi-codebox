@@ -1,6 +1,6 @@
 # Agent CLI（codebox-agent）
 
-Amagi CodeBox 内置一套**面向 AI agent 的本机命令行**：`codebox-agent`。它让 Claude Code、Codex、Pi 等工具里的 agent（或你的脚本）能以受控方式查询与操作桌面应用的配置——提供商、预设、密钥状态、设置、环境变量、会话、用量统计、插件，全部经由**运行中的桌面应用**执行，不存在离线直写配置文件的路径（避免与应用互相覆盖丢更新）。
+Amagi CodeBox 内置面向 AI agent 和脚本的本机命令行 `codebox-agent`。它通过**运行中的桌面应用**管理提供商、预设、会话、共用技能、MCP、插件市场、WSL 配置同步和 AI 代理分流，并查询环境检测结果与用量。
 
 ## 启用与安装
 
@@ -127,6 +127,22 @@ codebox-agent cli info
 
 ---
 
+### env.apply-claude-config
+
+向配置文件添加一个缺失的 Claude Code 建议值
+
+```
+codebox-agent env apply-claude-config <key>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `key` | 位置 | `string` | 是 | 配置检测结果中的键名 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `APPLY`——执行需 `--yes`。
+
+---
+
 ### env.check
 
 实时环境检测：全部工具或指定工具
@@ -151,6 +167,18 @@ codebox-agent env check
 ```
 codebox-agent env check --tool codex
 ```
+
+---
+
+### env.claude-config
+
+查看 Claude Code 配置检测结果及建议值
+
+```
+codebox-agent env claude-config
+```
+
+风险：`read`（只读）。
 
 ---
 
@@ -661,6 +689,23 @@ codebox-agent session clear-stopped --yes --json
 
 ---
 
+### session.directories
+
+在会话实际的文件系统中列出一级子目录
+
+```
+codebox-agent session directories <sessionId> [--root <root>]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `sessionId` | 位置 | `string` | 是 | 会话 ID |
+| `--root` | 旗标 | `string` | 否 | 目录路径；省略默认从目标主目录浏览 |
+
+风险：`read`（只读）。
+
+---
+
 ### session.get
 
 查看单个会话摘要
@@ -697,7 +742,7 @@ codebox-agent session launch <appType> [--provider <provider>] [--model <model>]
 | `--provider` | 旗标 | `string` | 否 | 提供商名（claudecode 必填；codex/pi/omp 可选，与 preset 二选一时优先显式 model） |
 | `--model` | 旗标 | `string` | 否 | 模型名（codex/pi/omp 的第一参数；也可传 terminal preset 键） |
 | `--preset` | 旗标 | `string` | 否 | 预设名（claudecode/opencode 用 preset 名；codex/pi/omp 未给 model 时作为 preset 键传入） |
-| `--work-dir` | 旗标 | `string` | 否 | 工作目录：必须是已存在的目录（校验时归一化为绝对路径）；省略则走应用默认目录 |
+| `--work-dir` | 旗标 | `string` | 否 | 已存在的工作目录；WSL 嵌入式会话支持在目标发行版中校验 Linux 路径；省略走应用默认目录 |
 | `--mode` | 旗标 | `string` | 否 | 启动模式，默认 embedded；可选值：embedded / terminal；默认 embedded |
 | `--shell` | 旗标 | `string` | 否 | 覆盖启动 shell 路径（可选） |
 
@@ -842,6 +887,39 @@ codebox-agent session stop <sessionId>
 ```
 codebox-agent session stop abc123 --yes
 ```
+
+---
+
+### session.target
+
+查看会话的实际文件系统目标及工作目录
+
+```
+codebox-agent session target <sessionId>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `sessionId` | 位置 | `string` | 是 | 会话 ID |
+
+风险：`read`（只读）。
+
+---
+
+### session.web-status
+
+查看会话 Web 视图状态，不含访问链接或令牌
+
+```
+codebox-agent session web-status <sessionId> [--probe]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `sessionId` | 位置 | `string` | 是 | 会话 ID |
+| `--probe` | 旗标 | `bool` | 否 | 实时探测；省略时读取缓存 |
+
+风险：`read`（只读）。
 
 ---
 
@@ -1025,6 +1103,29 @@ codebox-agent usage sync
 
 ## 插件
 
+### plugin.catalog
+
+查看插件市场目录，含已安装条目
+
+```
+codebox-agent plugin catalog <app> [--market <market>]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `app` | 位置 | `string` | 是 | 插件引擎；可选值：claudecode / codex |
+| `--market` | 旗标 | `string` | 否 | 只列出指定市场内的条目 |
+
+风险：`read`（只读）。
+
+示例：
+
+```
+codebox-agent plugin catalog claudecode --market mymarket
+```
+
+---
+
 ### plugin.disable
 
 禁用插件
@@ -1040,7 +1141,7 @@ codebox-agent plugin disable <app> <id>
 
 风险：`mutate`（修改配置/状态，可逆）。
 
-opencode 与 pi 引擎不支持启停（见 plugin enable Notes）。
+OpenCode 没有包级启停入口，Pi 按包停用资源。
 
 示例：
 
@@ -1061,11 +1162,11 @@ codebox-agent plugin enable <app> <id>
 | 参数 | 形态 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
 | `app` | 位置 | `string` | 是 | 插件引擎：claudecode\|codex\|opencode\|pi\|omp；可选值：claudecode / codex / opencode / pi / omp |
-| `id` | 位置 | `string` | 是 | 插件标识（claudecode/codex 为 name@marketplace；omp 为包名或 pluginId） |
+| `id` | 位置 | `string` | 是 | claudecode/codex 为 name@marketplace；Pi 为包源；OMP 为包名或 pluginId |
 
 风险：`mutate`（修改配置/状态，可逆）。
 
-opencode 与 pi 引擎不支持启停：opencode 无启停面（安装/卸载即开关），pi 的 packages[] 存在即启用——对这两者调用返回 bad_args。
+OpenCode 没有包级启停入口；Pi 使用与原生配置兼容的资源过滤。
 
 示例：
 
@@ -1080,13 +1181,14 @@ codebox-agent plugin enable claudecode myplugin@mymarket
 安装插件（网络操作，写各 CLI 插件目录）
 
 ```
-codebox-agent plugin install <app> <name>
+codebox-agent plugin install <app> <name> [--target <target>]
 ```
 
 | 参数 | 形态 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
 | `app` | 位置 | `string` | 是 | 插件引擎：claudecode\|codex\|opencode\|pi\|omp；可选值：claudecode / codex / opencode / pi / omp |
 | `name` | 位置 | `string` | 是 | 安装标识：claudecode=插件名（用户级安装）；codex=plugin@marketplace；opencode=模块地址 spec；pi=包源（npm:…/git:…/本地路径）；omp=包名或 spec |
+| `--target` | 旗标 | `string` | 否 | 仅 Pi 支持；省略时沿用本机操作；可选值：windows / wsl / both |
 
 风险：`exec`（启动进程/写入会话/安装软件）；确认值 `INSTALL`——执行需 `--yes`。
 
@@ -1132,18 +1234,90 @@ codebox-agent plugin list --json
 
 ---
 
+### plugin.markets
+
+查看 Claude Code 或 Codex 的插件市场
+
+```
+codebox-agent plugin markets <app>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `app` | 位置 | `string` | 是 | 插件引擎；可选值：claudecode / codex |
+
+风险：`read`（只读）。
+
+示例：
+
+```
+codebox-agent plugin markets claudecode
+```
+
+---
+
+### plugin.set-subitem
+
+启用或停用一个受支持的插件子项
+
+```
+codebox-agent plugin set-subitem <app> <id> <type> <name> <state>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `app` | 位置 | `string` | 是 | 插件引擎；可选值：claudecode / pi |
+| `id` | 位置 | `string` | 是 | Claude 插件 ID 或 Pi 包源 |
+| `type` | 位置 | `string` | 是 | 子项类型，Pi 仅支持 skill；可选值：skill / agent / command / mcp |
+| `name` | 位置 | `string` | 是 | plugin subitems 返回的子项名称 |
+| `state` | 位置 | `string` | 是 | 子项目标状态；可选值：enabled / disabled |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+示例：
+
+```
+codebox-agent plugin set-subitem pi npm:my-package skill my-skill disabled
+```
+
+---
+
+### plugin.subitems
+
+查看插件子项及其启停状态
+
+```
+codebox-agent plugin subitems <app> <id>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `app` | 位置 | `string` | 是 | 支持读取子项启停状态的引擎；可选值：claudecode / pi |
+| `id` | 位置 | `string` | 是 | Claude 插件 ID 或 Pi 包源 |
+
+风险：`read`（只读）。
+
+示例：
+
+```
+codebox-agent plugin subitems claudecode myplugin@mymarket
+```
+
+---
+
 ### plugin.uninstall
 
 卸载插件
 
 ```
-codebox-agent plugin uninstall <app> <id>
+codebox-agent plugin uninstall <app> <id> [--target <target>]
 ```
 
 | 参数 | 形态 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
 | `app` | 位置 | `string` | 是 | 插件引擎：claudecode\|codex\|opencode\|pi\|omp；可选值：claudecode / codex / opencode / pi / omp |
 | `id` | 位置 | `string` | 是 | 卸载标识：claudecode/codex=plugin@marketplace；opencode=模块 spec；pi=包源字符串；omp=插件名 |
+| `--target` | 旗标 | `string` | 否 | 仅 Pi 支持；省略时沿用本机操作；可选值：windows / wsl / both |
 
 风险：`destructive`（删除/清空，不可逆）；确认值 `UNINSTALL`——执行需 `--yes`。
 
@@ -1156,6 +1330,771 @@ codebox-agent plugin uninstall <app> <id>
 ```
 codebox-agent plugin uninstall claudecode myplugin@mymarket --yes
 ```
+
+---
+
+### plugin.update
+
+更新指定引擎的单个插件
+
+```
+codebox-agent plugin update <app> <id> [--target <target>]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `app` | 位置 | `string` | 是 | 支持单插件更新的引擎；可选值：claudecode / codex / opencode / pi |
+| `id` | 位置 | `string` | 是 | 插件标识（同 plugin uninstall） |
+| `--target` | 旗标 | `string` | 否 | 仅 Pi 支持；省略时沿用本机操作；可选值：windows / wsl / both |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `UPDATE`——执行需 `--yes`。
+
+超时 600 秒。
+
+Pi 的 both 请求按本机解析出的版本或 ref 重放，分别报告两侧结果。
+
+示例：
+
+```
+codebox-agent plugin update codex myplugin@mymarket --yes
+```
+```
+codebox-agent plugin update pi npm:my-package --target both --yes
+```
+
+---
+
+## 共用扩展
+
+### shared.market.add
+
+从 Git 地址或本地仓库添加共用市场
+
+```
+codebox-agent shared market add <source>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `source` | 位置 | `string` | 是 | Git 地址或桌面主机上的仓库路径 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `ADD`——执行需 `--yes`。
+
+超时 900 秒。
+
+---
+
+### shared.market.claude-sources
+
+列出 Claude Code 中可以导入的市场名称
+
+```
+codebox-agent shared market claude-sources
+```
+
+风险：`read`（只读）。
+
+---
+
+### shared.market.deploy
+
+部署一个市场插件的技能，跳过同名目录
+
+```
+codebox-agent shared market deploy <market> <plugin>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `market` | 位置 | `string` | 是 | 共用市场名 |
+| `plugin` | 位置 | `string` | 是 | 市场内插件名 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### shared.market.import-claude
+
+按名称导入一个 Claude Code 市场
+
+```
+codebox-agent shared market import-claude <market>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `market` | 位置 | `string` | 是 | 共用市场名 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `IMPORT`——执行需 `--yes`。
+
+超时 900 秒。
+
+---
+
+### shared.market.list
+
+列出共用市场、插件及已部署技能
+
+```
+codebox-agent shared market list
+```
+
+风险：`read`（只读）。
+
+---
+
+### shared.market.remove
+
+删除没有已部署技能的共用市场
+
+```
+codebox-agent shared market remove <market>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `market` | 位置 | `string` | 是 | 共用市场名 |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `REMOVE`——执行需 `--yes`。
+
+---
+
+### shared.market.uninstall
+
+卸载一个市场插件已部署且来源匹配的技能
+
+```
+codebox-agent shared market uninstall <market> <plugin>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `market` | 位置 | `string` | 是 | 共用市场名 |
+| `plugin` | 位置 | `string` | 是 | 市场内插件名 |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `UNINSTALL`——执行需 `--yes`。
+
+---
+
+### shared.market.update
+
+刷新一个共用市场的目录
+
+```
+codebox-agent shared market update <market>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `market` | 位置 | `string` | 是 | 共用市场名 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `UPDATE`——执行需 `--yes`。
+
+超时 900 秒。
+
+---
+
+### shared.market.update-plugin
+
+更新单个市场插件及其已部署技能，保留启停状态
+
+```
+codebox-agent shared market update-plugin <market> <plugin>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `market` | 位置 | `string` | 是 | 共用市场名 |
+| `plugin` | 位置 | `string` | 是 | 市场内插件名 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `UPDATE`——执行需 `--yes`。
+
+超时 900 秒。
+
+---
+
+### shared.mcp.delete
+
+删除 MCP 登记并撤回已分发的托管条目
+
+```
+codebox-agent shared mcp delete <name> [--force]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用 MCP 登记名 |
+| `--force` | 旗标 | `bool` | 否 | 确认处理目标端已被外部修改的托管条目 |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `DELETE`——执行需 `--yes`。
+
+---
+
+### shared.mcp.distribute
+
+向指定引擎分发或重新同步一个 MCP 条目
+
+```
+codebox-agent shared mcp distribute <name> <engine> [--force]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用 MCP 登记名 |
+| `engine` | 位置 | `string` | 是 | 目标引擎；可选值：claude / codex / opencode / pi |
+| `--force` | 旗标 | `bool` | 否 | 确认处理目标端已被外部修改的托管条目 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `DISTRIBUTE`——执行需 `--yes`。
+
+---
+
+### shared.mcp.edit
+
+替换一个 MCP 条目的已知配置字段，保留未知字段
+
+```
+codebox-agent shared mcp edit <name> --config <config>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用 MCP 登记名 |
+| `--config` | 旗标 | `string` | 是 | 用 --config - 从 stdin 读取完整条目；支持 `-` 从 stdin 读取；敏感值，日志与回显脱敏 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### shared.mcp.import
+
+登记 MCP JSON，跳过同名条目，分发由用户另行选择
+
+```
+codebox-agent shared mcp import --config <config>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--config` | 旗标 | `string` | 是 | 用 --config - 从 stdin 读取 MCP JSON；支持 `-` 从 stdin 读取；敏感值，日志与回显脱敏 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### shared.mcp.list
+
+查看共用 MCP 登记摘要及各引擎的分发状态
+
+```
+codebox-agent shared mcp list
+```
+
+风险：`read`（只读）。
+
+---
+
+### shared.mcp.preview
+
+预览 MCP JSON 导入及同名冲突
+
+```
+codebox-agent shared mcp preview --config <config>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--config` | 旗标 | `string` | 是 | 用 --config - 从 stdin 读取 MCP JSON；支持 `-` 从 stdin 读取；敏感值，日志与回显脱敏 |
+
+风险：`read`（只读）。
+
+---
+
+### shared.mcp.undistribute
+
+撤回指定引擎中的托管 MCP 条目
+
+```
+codebox-agent shared mcp undistribute <name> <engine> [--force]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用 MCP 登记名 |
+| `engine` | 位置 | `string` | 是 | 目标引擎；可选值：claude / codex / opencode / pi |
+| `--force` | 旗标 | `bool` | 否 | 确认处理目标端已被外部修改的托管条目 |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `UNDISTRIBUTE`——执行需 `--yes`。
+
+---
+
+### shared.skill.delete
+
+删除手动管理的共用技能
+
+```
+codebox-agent shared skill delete <name>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用技能目录名 |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `DELETE`——执行需 `--yes`。
+
+---
+
+### shared.skill.disable
+
+停用共用技能
+
+```
+codebox-agent shared skill disable <name>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用技能目录名 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### shared.skill.enable
+
+启用共用技能
+
+```
+codebox-agent shared skill enable <name>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `name` | 位置 | `string` | 是 | 共用技能目录名 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### shared.skill.import
+
+导入 ZIP 或目录中的技能，默认停用并跳过同名技能
+
+```
+codebox-agent shared skill import <path>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `path` | 位置 | `string` | 是 | 桌面应用所在主机上的 ZIP 或目录绝对路径 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### shared.skill.list
+
+查看共用技能、启停状态与市场部署来源
+
+```
+codebox-agent shared skill list
+```
+
+风险：`read`（只读）。
+
+---
+
+## WSL 配置与资源
+
+### wsl.config.apply
+
+应用已选条目的安全更新
+
+```
+codebox-agent wsl config apply <cli>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `APPLY`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.config.keep-local
+
+停止跟随一个配置单元并保留 WSL 当前内容
+
+```
+codebox-agent wsl config keep-local <cli> <unit>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+| `unit` | 位置 | `string` | 是 | 预览中返回的配置单元 ID |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### wsl.config.preview
+
+预览每个 WSL 配置单元的同步差异
+
+```
+codebox-agent wsl config preview <cli>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+
+风险：`read`（只读）。
+
+---
+
+### wsl.config.select
+
+设置配置单元的同步选择并立即应用
+
+```
+codebox-agent wsl config select <cli> <unit> [--key <key>]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+| `unit` | 位置 | `string` | 是 | 预览中返回的配置单元 ID |
+| `--key` | 旗标 | `string[]` | 否 | 所选键，可重复传入；省略表示撤回该单元的全部选择 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `SELECT`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.config.status
+
+查看目标引擎的 WSL 配置及资源状态
+
+```
+codebox-agent wsl config status <cli>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+
+风险：`read`（只读）。
+
+---
+
+### wsl.config.takeover
+
+按预览指纹接管一个 WSL 配置单元
+
+```
+codebox-agent wsl config takeover <cli> <unit> <targetHash>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+| `unit` | 位置 | `string` | 是 | 预览中返回的配置单元 ID |
+| `targetHash` | 位置 | `string` | 是 | 同一目标最新预览返回的 targetHash |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `TAKEOVER`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.disable
+
+停止自动纳入新条目，保留已有授权和文件
+
+```
+codebox-agent wsl disable
+```
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### wsl.enable
+
+启用当前 WSL 发行版的统一配置管理
+
+```
+codebox-agent wsl enable
+```
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `ENABLE`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.opencode.mcp-preview
+
+查看 OpenCode 在 WSL 的 MCP 覆盖选择
+
+```
+codebox-agent wsl opencode mcp-preview
+```
+
+风险：`read`（只读）。
+
+---
+
+### wsl.opencode.mcp-select
+
+设置 OpenCode 的 WSL MCP 覆盖选择
+
+```
+codebox-agent wsl opencode mcp-select [--server <server>]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--server` | 旗标 | `string[]` | 否 | 所选服务器名称，可重复传入；省略表示清空覆盖选择 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `SELECT`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.pi.check
+
+复核 WSL 中 Pi 插件的实际状态
+
+```
+codebox-agent wsl pi check
+```
+
+风险：`read`（只读）。
+
+超时 300 秒。
+
+---
+
+### wsl.pi.status
+
+查看 Pi 插件的 WSL 重放状态
+
+```
+codebox-agent wsl pi status
+```
+
+风险：`read`（只读）。
+
+---
+
+### wsl.resource.apply
+
+导入显式选中的本机资源到 WSL
+
+```
+codebox-agent wsl resource apply <cli> --resource <resource>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+| `--resource` | 旗标 | `string[]` | 是 | 资源名称，可重复传入 |
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `APPLY`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.resource.check
+
+扫描目标引擎可同步的本机资源
+
+```
+codebox-agent wsl resource check <cli>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+
+风险：`read`（只读）。
+
+---
+
+### wsl.resource.keep-local
+
+停止跟随单项资源并保留 WSL 当前内容
+
+```
+codebox-agent wsl resource keep-local <cli> <resource>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+| `resource` | 位置 | `string` | 是 | 预览中的资源名称 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### wsl.resource.preview
+
+查看 WSL 资源的移植性、同步差异及目标指纹
+
+```
+codebox-agent wsl resource preview <cli>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+
+风险：`read`（只读）。
+
+---
+
+### wsl.resource.takeover
+
+按预览指纹接管一个 WSL 资源
+
+```
+codebox-agent wsl resource takeover <cli> <resource> <targetHash>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `cli` | 位置 | `string` | 是 | CLI 用户配置或资源的所属引擎；可选值：claude / codex |
+| `resource` | 位置 | `string` | 是 | 预览中的资源名称 |
+| `targetHash` | 位置 | `string` | 是 | 同一目标最新预览返回的 targetHash |
+
+风险：`destructive`（删除/清空，不可逆）；确认值 `TAKEOVER`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.skills-link
+
+检查并建立当前发行版的共用技能连接
+
+```
+codebox-agent wsl skills-link
+```
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `LINK`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+### wsl.status
+
+查看 WSL CLI 与统一配置同步状态
+
+```
+codebox-agent wsl status
+```
+
+风险：`read`（只读）。
+
+---
+
+### wsl.vision-consent
+
+授权向当前 WSL 目标同步视觉配置
+
+```
+codebox-agent wsl vision-consent
+```
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `CONSENT`——执行需 `--yes`。
+
+超时 300 秒。
+
+---
+
+## AI 代理分流
+
+### proxy.save
+
+保存完整的 AI 分流配置
+
+```
+codebox-agent proxy save --settings <settings>
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--settings` | 旗标 | `string` | 是 | 先读取 proxy status 中的 settings，再用 --settings - 从 stdin 传入完整对象；支持 `-` 从 stdin 读取；敏感值，日志与回显脱敏 |
+
+风险：`mutate`（修改配置/状态，可逆）。
+
+---
+
+### proxy.start
+
+启动 AI 代理或应用已保存的分流配置
+
+```
+codebox-agent proxy start
+```
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `START`——执行需 `--yes`。
+
+---
+
+### proxy.status
+
+查看 AI 代理运行状态、分流规则及节点摘要
+
+```
+codebox-agent proxy status
+```
+
+风险：`read`（只读）。
+
+---
+
+### proxy.stop
+
+停止 AI 代理
+
+```
+codebox-agent proxy stop
+```
+
+风险：`exec`（启动进程/写入会话/安装软件）；确认值 `STOP`——执行需 `--yes`。
+
+---
+
+### proxy.traffic
+
+查询 AI 代理连接日志和按域名汇总
+
+```
+codebox-agent proxy traffic [--search <search>] [--provider <provider>] [--verdict <verdict>] [--exit <exit>] [--since <since>] [--until <until>] [--offset <offset>]
+```
+
+| 参数 | 形态 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `--search` | 旗标 | `string` | 否 | 匹配域名、提供商或实际出口 |
+| `--provider` | 旗标 | `string` | 否 | 提供商 ID |
+| `--verdict` | 旗标 | `string` | 否 | 出口判断状态 |
+| `--exit` | 旗标 | `string` | 否 | 出口标识 |
+| `--since` | 旗标 | `string` | 否 | 起始时间，RFC3339 |
+| `--until` | 旗标 | `string` | 否 | 截止时间，RFC3339 |
+| `--offset` | 旗标 | `int` | 否 | 分页偏移，默认 0 |
+
+风险：`read`（只读）。
 
 ---
 

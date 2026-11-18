@@ -180,7 +180,7 @@ func TestAgentCLIPluginList_UnknownApp(t *testing.T) {
 func TestAgentCLIPluginEnable_UnsupportedEngines(t *testing.T) {
 	h := newAgentCLIHost(newTestApp(t)) // 五引擎服务均为 nil
 	ctx := context.Background()
-	for _, app := range []string{"opencode", "pi"} {
+	for _, app := range []string{"opencode"} {
 		args := spec.Args{"app": app, "id": "x"}
 		if _, err := h.pluginEnable(ctx, args); specErrorCode(t, err) != spec.ErrBadArgs {
 			t.Errorf("enable %s 应 bad_args，得到 %v", app, err)
@@ -197,7 +197,7 @@ func TestAgentCLIPluginInstall_CodexPrecheck(t *testing.T) {
 	h := newAgentCLIHost(newTestApp(t)) // CodexPlugins nil
 	ctx := context.Background()
 	for _, bad := range []string{"no-at-sign", "a@b@c", "a b@m", "@market", "plugin@"} {
-		if _, err := h.pluginInstall(ctx, spec.Args{"app": "codex", "id": bad}); specErrorCode(t, err) != spec.ErrBadArgs {
+		if _, err := h.pluginInstall(ctx, spec.Args{"app": "codex", "name": bad}); specErrorCode(t, err) != spec.ErrBadArgs {
 			t.Errorf("codex install %q 应 bad_args，得到 %v", bad, err)
 		}
 		if _, err := h.pluginUninstall(ctx, spec.Args{"app": "codex", "id": bad}); specErrorCode(t, err) != spec.ErrBadArgs {

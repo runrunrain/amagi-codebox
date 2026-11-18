@@ -11,11 +11,16 @@ import (
 
 func TestPluginCommands_NameSet(t *testing.T) {
 	want := map[string]bool{
-		"plugin.list":      false,
-		"plugin.enable":    false,
-		"plugin.disable":   false,
-		"plugin.install":   false,
-		"plugin.uninstall": false,
+		"plugin.list":        false,
+		"plugin.enable":      false,
+		"plugin.disable":     false,
+		"plugin.install":     false,
+		"plugin.uninstall":   false,
+		"plugin.update":      false,
+		"plugin.markets":     false,
+		"plugin.catalog":     false,
+		"plugin.subitems":    false,
+		"plugin.set-subitem": false,
 	}
 	for _, c := range pluginCommands() {
 		if _, ok := want[c.Name()]; !ok {
@@ -45,16 +50,27 @@ func TestPluginCommands_InTable(t *testing.T) {
 	}
 }
 
-// TestPluginCommands_AppEnum 校验所有带 app 参数的命令都覆盖五引擎枚举。
+// TestPluginCommands_AppEnum 校验各操作只列出有对应能力的引擎。
 func TestPluginCommands_AppEnum(t *testing.T) {
+	expected := map[string][]string{
+		"plugin.update":      {"claudecode", "codex", "opencode", "pi"},
+		"plugin.markets":     {"claudecode", "codex"},
+		"plugin.catalog":     {"claudecode", "codex"},
+		"plugin.subitems":    {"claudecode", "pi"},
+		"plugin.set-subitem": {"claudecode", "pi"},
+	}
 	for _, c := range pluginCommands() {
 		app, ok := paramOf(c, "app")
 		if !ok {
 			t.Errorf("%s: 缺少 app 参数", c.Name())
 			continue
 		}
-		if !containsAll(app.Enum, "claudecode", "codex", "opencode", "pi", "omp") {
-			t.Errorf("%s: app 枚举缺少五引擎: %v", c.Name(), app.Enum)
+		want := expected[c.Name()]
+		if want == nil {
+			want = []string{"claudecode", "codex", "opencode", "pi", "omp"}
+		}
+		if len(app.Enum) != len(want) || !containsAll(app.Enum, want...) {
+			t.Errorf("%s: app 枚举 %v, want %v", c.Name(), app.Enum, want)
 		}
 	}
 }
@@ -67,6 +83,7 @@ func TestPluginCommands_ConfirmValues(t *testing.T) {
 		"plugin.disable":   "",
 		"plugin.install":   "INSTALL",
 		"plugin.uninstall": "UNINSTALL",
+		"plugin.update":    "UPDATE",
 	}
 	for name, confirm := range expect {
 		c, ok := Find(pluginCommands(), name)

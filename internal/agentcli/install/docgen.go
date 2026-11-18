@@ -97,7 +97,7 @@ type commandGroup struct {
 // domainOrder 已知领域的呈现顺序；domainTitles 为标题。firstWordDomain 把
 // 命令首词映射到领域——这是 docgen 的呈现层知识（仅影响分组与顺序），
 // 未知首词各自成组、排在已知领域之后（保持首现顺序），不假定命令表内容。
-var domainOrder = []string{"general", "system", "config", "session", "usage", "plugin", "git"}
+var domainOrder = []string{"general", "system", "config", "session", "usage", "plugin", "shared", "wsl", "proxy", "git"}
 
 var domainTitles = map[string]string{
 	"general": "通用",
@@ -106,6 +106,9 @@ var domainTitles = map[string]string{
 	"session": "会话",
 	"usage":   "用量与日志",
 	"plugin":  "插件",
+	"shared":  "共用扩展",
+	"wsl":     "WSL 配置与资源",
+	"proxy":   "AI 代理分流",
 	"git":     "Git",
 }
 
@@ -116,7 +119,8 @@ var firstWordDomain = map[string]string{
 	"session": "session",
 	"usage":   "usage", "logs": "usage",
 	"plugin": "plugin",
-	"git":    "git",
+	"shared": "shared", "wsl": "wsl", "proxy": "proxy",
+	"git": "git",
 }
 
 func groupCommands(table []spec.Command) []commandGroup {

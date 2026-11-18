@@ -1,8 +1,7 @@
 package main
 
 // agentcli_h_plugin.go — agent-CLI 插件域 Handler（命令表见 internal/agentcli/cmds/plugin.go）。
-// 五引擎统一抽象：list 返回统一 DTO；enable/disable 仅支持有启停面的引擎
-// （claudecode/codex/omp；opencode 与 pi 引擎无启停面，返回 bad_args）。
+// 五引擎统一抽象；各引擎操作复用桌面插件服务。
 
 import (
 	"context"
@@ -18,13 +17,21 @@ import (
 )
 
 func (h *agentCLIHost) pluginHandlers() map[string]spec.Handler {
-	return map[string]spec.Handler{
+	handlers := map[string]spec.Handler{
 		"plugin.list":      h.pluginList,
 		"plugin.enable":    h.pluginEnable,
 		"plugin.disable":   h.pluginDisable,
 		"plugin.install":   h.pluginInstall,
 		"plugin.uninstall": h.pluginUninstall,
+		"plugin.update":    h.pluginUpdate,
 	}
+	for name, handler := range agentLocalHandlers(map[string]agentLocalOperation{
+		"plugin.markets": h.pluginMarkets, "plugin.catalog": h.pluginCatalog,
+		"plugin.subitems": h.pluginSubitems, "plugin.set-subitem": h.pluginSetSubitem,
+	}) {
+		handlers[name] = handler
+	}
+	return handlers
 }
 
 // agentPluginAppOrder 聚合列出时的引擎顺序。
@@ -200,7 +207,11 @@ func (h *agentCLIHost) pluginSetEnabled(args spec.Args, enabled bool) (any, erro
 	case "opencode":
 		return nil, spec.Errorf(spec.ErrBadArgs, "opencode 引擎不支持插件启用/禁用（无启停面，安装/卸载即开关；卸载用 plugin uninstall）")
 	case "pi":
-		return nil, spec.Errorf(spec.ErrBadArgs, "pi 引擎不支持启用/禁用（packages[] 中存在即启用，移除用 plugin uninstall）")
+		if h.app.PiPlugins == nil {
+			return nil, spec.Errorf(spec.ErrNotReady, "Pi 插件服务未初始化")
+		}
+		res, callErr := h.app.PiPlugins.SetPackageEnabled(id, enabled)
+		return agentPluginCommandOutcome(app, piPluginResult(res, callErr))
 	}
 	return nil, spec.Errorf(spec.ErrBadArgs, "未知插件引擎 %q", app)
 }
@@ -211,7 +222,7 @@ func (h *agentCLIHost) pluginInstall(ctx context.Context, args spec.Args) (any, 
 	if err := ctx.Err(); err != nil {
 		return nil, agentCLICtxErr(err)
 	}
-	app, name, err := agentPluginAppIDArgs(args)
+	app, name, err := agentPluginArgs(args, "name")
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +230,9 @@ func (h *agentCLIHost) pluginInstall(ctx context.Context, args spec.Args) (any, 
 	// 触达引擎（D-06）。
 	if err := ctx.Err(); err != nil {
 		return nil, agentCLICtxErr(err)
+	}
+	if target := args.String("target"); target != "" {
+		return h.pluginPiTargeted(app, name, target, "install")
 	}
 	switch app {
 	case "claudecode":
@@ -251,6 +265,9 @@ func (h *agentCLIHost) pluginUninstall(ctx context.Context, args spec.Args) (any
 	if err != nil {
 		return nil, err
 	}
+	if target := args.String("target"); target != "" {
+		return h.pluginPiTargeted(app, id, target, "remove")
+	}
 	switch app {
 	case "claudecode":
 		res, callErr := h.app.Plugins.UninstallPlugin(id)
@@ -278,8 +295,12 @@ func (h *agentCLIHost) pluginUninstall(ctx context.Context, args spec.Args) (any
 
 // agentPluginAppIDArgs 提取并校验 (app, id/name) 两个位置参数。
 func agentPluginAppIDArgs(args spec.Args) (string, string, error) {
+	return agentPluginArgs(args, "id")
+}
+
+func agentPluginArgs(args spec.Args, param string) (string, string, error) {
 	app := strings.TrimSpace(args.String("app"))
-	id := strings.TrimSpace(args.String("id"))
+	id := strings.TrimSpace(args.String(param))
 	if app == "" {
 		return "", "", spec.Errorf(spec.ErrBadArgs, "app 不能为空（claudecode|codex|opencode|pi|omp）")
 	}
@@ -356,14 +377,14 @@ func agentPluginCommandOutcome(app string, o pluginOutcome) (any, error) {
 		if msg != "" {
 			msg += ": "
 		}
-		return nil, spec.Errorf(spec.ErrInternal, "%s 插件操作失败: %s%v", app, msg, o.err)
+		return nil, spec.Errorf(spec.ErrInternal, "%s 插件操作失败: %s", app, agentSafeDiagnostic(msg+o.err.Error()))
 	}
 	if !o.success {
 		msg := strings.TrimSpace(o.output)
 		if msg == "" {
 			msg = "引擎未返回失败原因"
 		}
-		return nil, spec.Errorf(spec.ErrInternal, "%s 插件操作失败: %s", app, msg)
+		return nil, spec.Errorf(spec.ErrInternal, "%s 插件操作失败: %s", app, agentSafeDiagnostic(msg))
 	}
-	return map[string]any{"app": app, "success": true, "output": strings.TrimSpace(o.output)}, nil
+	return map[string]any{"app": app, "success": true, "output": agentSafeDiagnostic(strings.TrimSpace(o.output))}, nil
 }

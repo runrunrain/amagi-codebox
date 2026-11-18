@@ -1,11 +1,11 @@
 ---
 name: amagi-codebox
-description: 通过本机 CLI 管理 Amagi CodeBox 桌面应用——查看/修改提供商与预设、密钥状态、设置、环境变量、插件，查询会话与模型用量，体检 CLI 环境，并代用户启动、观察、驱动 AI-CLI（Claude Code / OpenCode / Codex / Pi / omp）终端会话。用户要求查看或调整 CodeBox 配置、检测 CLI 环境、启动/操控/停止会话、查询用量统计时使用。不要用于 Git 提交推送、应用自更新、远程控制与设备配对、导出明文密钥——这些面 CLI 不提供，需用户在桌面应用操作。
+description: 通过 codebox-agent 查询和管理运行中的 Amagi CodeBox 桌面应用。适用于提供商与预设、共用技能与 MCP、插件市场、WSL 配置同步、AI 代理分流、环境检测、会话操作和用量查询。设备配对、应用自更新和 Git 提交推送使用桌面应用。
 ---
 
 # Amagi CodeBox CLI（codebox-agent）
 
-执行任何命令前先看帮助：`codebox-agent --help` 列出全部命令与全局旗标；`codebox-agent <命令> --help` 确认该命令的参数、风险级与确认值，然后才执行。本文件只讲工作流与纪律；完整命令清单见同目录 `references/commands.md`。
+首次使用一个命令时，通过 `codebox-agent <命令> --help` 核对本机版本的参数与确认要求。完整命令参考见 [references/commands.md](references/commands.md)。
 
 若 PATH 中没有该命令，用完整路径调用。下面是本机 shim 路径的 JSON 字符串，按你的 shell 引用规则展开（PowerShell 用 `&` 调用操作符）：
 
@@ -25,10 +25,20 @@ description: 通过本机 CLI 管理 Amagi CodeBox 桌面应用——查看/修�
 
 ## 常用工作流
 
-- 体检：`status --json` 应用总览（版本、能力、会话计数、环境摘要）→ `env status` 各 CLI 环境检测结果 → 有疑问时 `env check <tool>` 实时复测。
+- 体检：`status --json` 查看总览，`env status` 查看缓存，`env check --tool <tool>` 实时复测。Claude Code 建议配置先用 `env claude-config` 查看具体键和值，再用 `env apply-claude-config <key> --yes` 应用用户选中的缺失项。
 - 提供商与预设：`provider list` / `provider get <name>` 查看（输出脱敏）；改动用 `provider save --json` / `preset save --json` 传完整 JSON 对象，参数细节看命令 `--help`。改动前先向用户确认意图，不凭猜测改配置。
 - 会话闭环：`session launch`（exec，获用户授权后加 `--yes`；appType/provider 等参数见 `--help`）→ 返回 sessionId → 轮询 `session output <id> --since-seq <上次seq>` 读取输出（首次不传 `--since-seq`，从返回取当前 seq）→ 需要输入时 `session send <id> "<文本>" --yes`（`--enter` 追加回车；长文本用 stdin）→ 不再需要时 `session stop <id> --yes`。注意：`--since-seq` 不是字节增量——seq 未前进时返回空文本，前进时返回整份快照（可用 `--tail-bytes` 截尾），每次都应整体重算你要的内容；输出默认已剥离 ANSI 转义；会话可能长时间无新输出，轮询间隔自行把握；启动前向用户确认工作目录与提供商符合用户意图，传 `--shell` 覆盖 shell 或指定 `--work-dir` 时必须一并确认。
 - 用量查询：`usage summary --json` 总览；`usage daily / models / providers` 分维度查询（时间范围等参数看 `--help`）。
+
+## 扩展和 WSL
+
+- 共用市场先执行 `shared market list`，区分市场名和其中的插件名。`shared market update-plugin <market> <plugin> --yes` 同时更新该插件有来源记录的已部署技能，沿用原启停状态。读结果的 `updatedSkills` 和 `retainedSkills`。新技能可通过 `shared market deploy <market> <plugin>` 部署。
+- `shared skill list` 可查看技能及其来源，导入使用桌面主机上的绝对路径。对于共用市场部署的技能，从原市场执行 `shared market uninstall`。手动导入的技能可单独启停和删除。
+- `shared mcp preview --config -` 和 `shared mcp import --config -` 从 stdin 读取 JSON。导入后先用 `shared mcp list` 核对登记，再对指定引擎执行 `shared mcp distribute`。分发状态表示配置落地情况。目标端出现外部修改冲突时，把冲突告诉用户，由用户决定是否使用 `--force` 重试。
+- 引擎私有插件用 `plugin markets`、`plugin catalog` 和 `plugin list` 确认引擎及标识。`plugin update` 更新单插件，`plugin subitems` 和 `plugin set-subitem` 读取与调整 Claude Code 或 Pi 支持的子项。Pi 安装、更新和卸载可显式指定 `--target windows|wsl|both`，逐项核对 `results`，因为两侧结果可能不同。
+- WSL 用 `wsl status` 确认目标发行版，再用 `wsl config preview <cli>` 取单元和可选键。`wsl config select` 的 `--key` 可重复传入，省略表示撤回该单元的全部选项。接管现有内容前，使用该目标最新预览的 `targetHash`。若结果为部分成功、冻结或阻止，先复核状态再决定下一步。
+- WSL 会话可用 `session target <id>` 和 `session directories <id>` 区分实际目录上下文。`session web-status <id> --probe` 可复查 Web 视图就绪状态。启动 WSL 嵌入式会话可以使用 `--shell wsl.exe` 和发行版内的 `--work-dir`。
+- AI 代理先用 `proxy status` 查看规则和运行状态，再用 `proxy traffic` 查询连接明细与分组。连接日志反映代理内核观测到的连接和出口。用 `proxy save --settings -` 从 stdin 传入完整设置，应用已保存规则用 `proxy start --yes`。
 
 ## 其它
 

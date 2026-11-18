@@ -20,6 +20,12 @@ type pluginSnapshot struct {
 	Entry catalogPlugin `json:"entry"`
 }
 
+type PluginUpdateReport struct {
+	Plugin         Plugin   `json:"plugin"`
+	UpdatedSkills  []string `json:"updatedSkills"`
+	RetainedSkills []string `json:"retainedSkills"` // 已部署但新版中找不到同名技能
+}
+
 func (s *Service) pluginSnapshotPath(snapshot pluginSnapshot) string {
 	suffix, found := strings.CutPrefix(snapshot.Dir, pluginSnapshotPrefix)
 	if !found || suffix == "" || strings.Trim(suffix, "0123456789") != "" {
@@ -50,55 +56,56 @@ func (s *Service) pluginContent(market stateEntry, entry catalogPlugin) (catalog
 	return entry, pluginDir(root, entry), root
 }
 
-// UpdatePlugin refreshes a single catalog entry and its files from the registered source.
-// Keep the market checkout as the baseline so other entries keep their current versions.
-func (s *Service) UpdatePlugin(name, pluginName string) (Plugin, error) {
+// UpdatePlugin refreshes a catalog entry and replaces its matching deployed skills in place.
+func (s *Service) UpdatePlugin(name, pluginName string) (PluginUpdateReport, error) {
 	if !validName(name) || !validName(pluginName) {
-		return Plugin{}, fmt.Errorf("无效的市场或插件名称 %q / %q", name, pluginName)
+		return PluginUpdateReport{}, fmt.Errorf("无效的市场或插件名称 %q / %q", name, pluginName)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	state, err := s.readState()
 	if err != nil {
-		return Plugin{}, err
+		return PluginUpdateReport{}, err
 	}
 	idx := state.marketIndex(name)
 	if idx < 0 {
-		return Plugin{}, fmt.Errorf("共用市场 %q 不存在", name)
+		return PluginUpdateReport{}, fmt.Errorf("共用市场 %q 不存在", name)
 	}
 	market := &state.Marketplaces[idx]
 	catalog, err := readCatalog(s.clonePath(name))
 	if err != nil {
-		return Plugin{}, fmt.Errorf("请先更新市场 %q：%w", name, err)
+		return PluginUpdateReport{}, fmt.Errorf("请先更新市场 %q：%w", name, err)
 	}
 	entry, found := catalog.findPlugin(pluginName)
 	if !found || entry.sourcePath() == "" {
-		return Plugin{}, fmt.Errorf("市场 %q 中的插件 %q 没有可更新的本地来源", name, pluginName)
+		return PluginUpdateReport{}, fmt.Errorf("市场 %q 中的插件 %q 没有可更新的本地来源", name, pluginName)
 	}
 
 	snapshot, err := s.fetchPluginSnapshot(market.Source, pluginName)
 	if err != nil {
-		return Plugin{}, err
+		return PluginUpdateReport{}, err
 	}
 	previous := market.PluginSnapshots[pluginName]
 	if market.PluginSnapshots == nil {
 		market.PluginSnapshots = make(map[string]pluginSnapshot)
 	}
 	market.PluginSnapshots[pluginName] = snapshot
-	if err := s.writeState(state); err != nil {
+	snapshotPath := s.pluginSnapshotPath(snapshot)
+	skills := skillDirs(pluginName, filepath.Join(snapshotPath, "plugin"), snapshotPath)
+	updated, retained, err := s.refreshDeployedSkills(name, pluginName, skills, func() error {
+		return s.writeState(state)
+	})
+	if err != nil {
 		s.removePluginSnapshot(snapshot)
-		return Plugin{}, err
+		return PluginUpdateReport{}, err
 	}
 	s.removePluginSnapshot(previous)
 
-	var deployed []string
-	for _, origin := range s.scanSkillOrigins() {
-		if origin.Marketplace == name && origin.Plugin == pluginName {
-			deployed = append(deployed, origin.Skill)
-		}
-	}
-	return s.scanPlugin(*market, entry, deployed), nil
+	deployed := append(append([]string{}, updated...), retained...)
+	return PluginUpdateReport{
+		Plugin: s.scanPlugin(*market, entry, deployed), UpdatedSkills: updated, RetainedSkills: retained,
+	}, nil
 }
 
 func (s *Service) fetchPluginSnapshot(source, pluginName string) (pluginSnapshot, error) {
