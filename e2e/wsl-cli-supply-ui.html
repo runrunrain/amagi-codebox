@@ -13,7 +13,7 @@
 // - 所有绑定调用记录到 window.__wslCalls（名称 + 实参），供交互断言：
 //   1. 预览 → 勾选 → 导入所选：ImportWSLCliConfigKeys 收到的键必须是预览
 //      全路径键原样（SA-03）；
-//   2. 全不勾选时按钮变「撤回全部导入」，点击提交空选择（显式撤回入口）；
+//   2. layout 场景带已选配置，取消全部勾选后可提交空选择撤回；
 //   3. 离开页面后轮询链停止（GetWSLCliSupplyStatus 计数收敛，SA-17）。
 import { createApp, h, KeepAlive } from 'vue';
 import { createRouter, createWebHashHistory, RouterView, RouterLink } from 'vue-router';
@@ -23,53 +23,89 @@ import '/frontend/src/styles/tokens.css';
 
 const calls = [];
 let unified = false;
+let skillsLinked = false;
+let visionConsented = false;
+let ocOverrides = [];
 const scenario = new URLSearchParams(location.search).get('scenario') || 'default';
+const showLayout = scenario === 'layout';
 const rec = (name, impl) => (...args) => {
   calls.push({ name, args, t: Date.now() });
   return Promise.resolve(impl(...args));
 };
 
-const cliUnits = (cli) => [{
+const primaryUnit = (cli) => ({
   unit: cli === 'claude' ? 'claude/mcp' : 'codex/config',
   relPath: cli === 'claude' ? '~/.claude.json' : '~/.codex/config.toml',
-  policy: 'tracked-projection', state: 'unchecked', detail: '尚未检查', actions: ['preview'],
-}];
+  policy: 'tracked-projection',
+  state: showLayout ? 'frozen' : 'unchecked',
+  detail: showLayout ? 'WSL 侧已有同名文件，等待确认接管。' : '尚未检查',
+  actions: showLayout ? ['preview', 'keep-local', 'takeover'] : ['preview'],
+});
+const settingsUnit = {
+  unit: 'claude/settings', relPath: '~/.claude/settings.json',
+  state: 'synced', detail: '所选条目跟随 Windows 侧。', actions: ['preview', 'apply'],
+};
+const cliUnits = (cli) => showLayout && cli === 'claude' ? [primaryUnit(cli), settingsUnit] : [primaryUnit(cli)];
 const resStatus = { distro: 'Ubuntu', available: true, rootMissing: false, scanStarted: true, scanRunning: false, scanScanned: 0, scanTotal: 0, scanIncomplete: false, skills: [] };
+const fixtureResources = [
+  { name: 'skills/example', state: 'importable', files: 2, selectable: true, actions: ['preview'] },
+  { name: 'CLAUDE.md', state: 'frozen', files: 1, detail: 'WSL 侧文件已有本地修改。', actions: ['preview', 'keep-local', 'takeover'] },
+  { name: 'commands/windows-only.md', state: 'incompatible', detail: '含不兼容内容。', incompatible: ['setup.ps1：仅支持 Windows'], actions: ['preview'] },
+];
+const layoutFaces = () => [
+  { key: 'skills', label: '共享技能', state: skillsLinked ? 'synced' : 'unchecked', detail: skillsLinked ? 'WSL ~/.agents/skills → Windows 技能根（符号链接）' : '可手动核验 WSL 中的符号链接。' },
+  { key: 'vision-export', label: '视觉清单共享', state: visionConsented ? 'consented' : 'awaiting-consent', detail: visionConsented ? '已授权，待发布到 WSL' : '等待授权。' },
+  { key: 'modality-kb', label: '多模态学习层', state: 'synced', detail: '已同步' },
+  { key: 'opencode-layer', label: 'OpenCode 附加层', state: 'unchecked', detail: '本进程内尚未写入' },
+];
 const impls = {
   GetWSLCLIStatus: () => ({ available: true, distro: 'Ubuntu', distroWSLVersion: 2, nodeVersion: 'v22.19.0', tools: [{ tool: 'claude', installed: true, version: '2.0.0' }, { tool: 'omp', installed: false, version: '' }] }),
   InstallCLIToWSL: tool => ({ success: true, tool, distro: 'Ubuntu', version: '1.0.0', alreadyOK: false }),
   UpdateCLIInWSL: tool => ({ success: scenario !== 'upgrade-failure', tool, distro: 'Ubuntu', version: '2.0.1', error: scenario === 'upgrade-failure' ? 'TEST_ONLY_UPGRADE_FAILURE' : '' }),
-  GetWSLConfigSupplyStatus: () => ({ distro: 'Ubuntu', unified, pendingPush: false, faces: [], units: [] }),
+  GetWSLConfigSupplyStatus: () => ({ distro: 'Ubuntu', available: true, unified, pendingPush: false, faces: showLayout ? layoutFaces() : [] }),
   EnableWSLUnifiedSupply: () => {
     if (scenario === 'enable-failure') throw new Error('TEST_ONLY_CONSENT_FAILURE');
     unified = true;
     return [{ unit: 'claude/mcp', outcome: 'applied', detail: 'TEST_ONLY_CONSENT' }];
   },
   DisableWSLUnifiedSupply: () => { unified = false; },
-  GrantWSLVisionConsent: () => null,
-  EnsureWSLSharedSkillsRoot: () => ({ distro: 'Ubuntu', state: 'linked', target: '/mnt/c/Users/u/.agents/skills', backup: '', detail: 'TEST_ONLY_LINKED', checked: true }),
-  GetWSLCliSupplyStatus: (cli) => ({ distro: 'Ubuntu', available: true, units: cliUnits(cli), resources: { ...resStatus, scanRunning: cli === 'claude' } }),
-  PreviewWSLCliConfigSupply: (cli) => [{
-    unit: cli === 'claude' ? 'claude/mcp' : 'codex/config',
-    relPath: cli === 'claude' ? '~/.claude.json' : '~/.codex/config.toml',
+  GrantWSLVisionConsent: () => { visionConsented = true; },
+  EnsureWSLSharedSkillsRoot: () => {
+    skillsLinked = true;
+    return { distro: 'Ubuntu', state: 'linked', target: '/mnt/c/Users/u/.agents/skills', backup: '', detail: 'TEST_ONLY_LINKED', checked: true };
+  },
+  GetWSLCliSupplyStatus: (cli) => ({
+    distro: 'Ubuntu', available: true, units: cliUnits(cli), resources: {
+      ...resStatus,
+      scanRunning: !showLayout && cli === 'claude',
+      skills: showLayout && cli === 'claude' ? fixtureResources : [],
+    },
+  }),
+  PreviewWSLCliConfigSupply: (cli) => cliUnits(cli).map(unit => ({
+    unit: unit.unit,
+    relPath: unit.relPath,
     policy: 'tracked-projection', action: 'blocked', blockedReason: 'awaiting-consent',
     frozen: false, targetHash: 'tok-' + cli, notes: [],
     keys: [
-      { key: 'mcpServers/demo', action: 'add', reason: '未选择导入；勾选后随导入写入', before: '远程 https://example.invalid/mcp', after: '远程 https://example.invalid/mcp', selected: false, importable: true },
+      { key: 'mcpServers/demo', action: 'add', reason: '勾选后随导入写入', before: '远程 https://example.invalid/mcp', after: '远程 https://example.invalid/mcp', selected: showLayout, importable: true },
       { key: 'mcpServers/other', action: 'add', reason: '未选择导入；勾选后随导入写入', before: '远程 https://other.invalid/mcp', after: '远程 https://other.invalid/mcp', selected: false, importable: true },
     ],
-  }],
+  })),
   ImportWSLCliConfigKeys: (_cli, unit, keys) => [{ unit, outcome: keys.length ? 'applied' : 'fresh', detail: keys.length ? 'written' : 'no-change' }],
   ApplyWSLCliConfigSupply: () => [],
   KeepWSLCliConfigUnitLocal: () => null,
   TakeOverWSLCliConfigUnit: () => null,
   CheckWSLCliResourcesSupply: (cli) => ({ ...resStatus, distro: 'Ubuntu' }),
-  PreviewWSLCliResourcesSupply: () => [],
-  ApplyWSLCliResourcesSupply: () => [],
+  PreviewWSLCliResourcesSupply: () => showLayout
+    ? [{ name: 'CLAUDE.md', targetHash: 'tok-resource', action: 'blocked', notes: ['文件已有本地修改。'] }]
+    : [],
+  ApplyWSLCliResourcesSupply: (_cli, paths) => paths.map(path => ({ unit: path, outcome: 'applied' })),
   KeepWSLCliResourceLocal: () => null,
   TakeOverWSLCliResource: () => null,
-  GetWSLOpenCodeMCPPreview: () => [],
-  SetWSLOpenCodeMCPSelection: () => null,
+  GetWSLOpenCodeMCPPreview: () => showLayout
+    ? [{ name: 'docs', remote: true, globalConflict: true, overrideGlobal: ocOverrides.includes('docs') }]
+    : [],
+  SetWSLOpenCodeMCPSelection: (overrides) => { ocOverrides = overrides; },
 };
 const app = {};
 for (const name of Object.keys(impls)) app[name] = rec(name, impls[name]);

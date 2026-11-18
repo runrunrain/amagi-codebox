@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import type {
   SharedMarketplace,
+  SharedMarketPlugin,
   ClaudeMarketplaceForImport,
   SharedMarketDeployReport,
   SharedMarketUninstallReport,
@@ -28,6 +29,7 @@ const apiMocks = vi.hoisted(() => ({
   listClaudeMarketplacesForImport: vi.fn(async (): Promise<ClaudeMarketplaceForImport[]> => []),
   importSharedMarketplacesFromClaude: vi.fn(async (): Promise<SharedMarketplace[]> => []),
   updateSharedMarketplace: vi.fn(async (): Promise<SharedMarketplace[]> => []),
+  updateSharedMarketplacePlugin: vi.fn<() => Promise<SharedMarketPlugin>>(),
   removeSharedMarketplace: vi.fn(async (): Promise<SharedMarketplace[]> => []),
   deploySharedMarketplacePlugin: vi.fn(async (): Promise<SharedMarketDeployReport> => ({
     marketplace: 'mk',
@@ -81,9 +83,10 @@ function marketFixture(overrides: Partial<SharedMarketplace> = {}): SharedMarket
         description: '写作方法论技能集',
         author: 'Vexel',
         skills: ['planner-doc-style', 'resume-writing'],
+        updatable: true,
       },
-      { name: 'external-one', description: '外部引用', skills: [], externalSource: true },
-      { name: 'no-skill-one', description: '无技能插件', skills: [] },
+      { name: 'external-one', description: '外部引用', skills: [], externalSource: true, updatable: false },
+      { name: 'no-skill-one', description: '无技能插件', skills: [], updatable: true },
     ],
     ...overrides,
   };
@@ -158,6 +161,29 @@ describe('二级：市场内插件列表', () => {
     expect(html).toContain('部署技能');
   });
 
+  it('只更新所选插件的版本和技能列表', async () => {
+    const store = useSharedMarketStore();
+    const market = marketFixture();
+    store.marketplaces = [market];
+    const [plugin, external, sibling] = market.plugins;
+    const updated = { ...plugin, version: '1.3.0', skills: ['resume-writing'] };
+    apiMocks.updateSharedMarketplacePlugin.mockResolvedValueOnce(updated);
+
+    const { instances } = await renderWithCapture(SharedMarketPanel);
+    const panel = instanceOf(instances, SharedMarketPanel);
+    panel.exposed?.selectMarket(market);
+    expect(await renderInstanceAgain(panel)).toContain('更新插件');
+
+    await panel.exposed?.handleUpdatePlugin(external);
+    expect(apiMocks.updateSharedMarketplacePlugin).not.toHaveBeenCalled();
+    await panel.exposed?.handleUpdatePlugin(plugin);
+
+    expect(apiMocks.updateSharedMarketplacePlugin).toHaveBeenCalledWith(market.name, plugin.name);
+    expect(apiMocks.updateSharedMarketplace).not.toHaveBeenCalled();
+    expect(store.marketplaces[0].plugins).toEqual([updated, external, sibling]);
+    expect(await renderInstanceAgain(panel)).toContain('v1.3.0');
+  });
+
   it('handleDeploy → deploySharedMarketplacePlugin 桩命中（市场名+插件名），并刷新共用技能缓存（F06）', async () => {
     const store = useSharedMarketStore();
     store.marketplaces = [marketFixture()];
@@ -184,8 +210,9 @@ describe('二级：市场内插件列表', () => {
             description: '写作方法论技能集',
             skills: ['planner-doc-style', 'resume-writing'],
             deployedSkills: ['planner-doc-style'],
+            updatable: true,
           },
-          { name: 'no-credential', description: '无凭据插件', skills: ['ghost-skill'] },
+          { name: 'no-credential', description: '无凭据插件', skills: ['ghost-skill'], updatable: true },
         ],
       }),
     ];
@@ -209,6 +236,7 @@ describe('二级：市场内插件列表', () => {
           description: '写作方法论技能集',
           skills: ['planner-doc-style', 'resume-writing'],
           deployedSkills: ['planner-doc-style'],
+          updatable: true,
         },
       ],
     });

@@ -136,10 +136,13 @@ func TestGetWSLConfigSupplyStatusFaces(t *testing.T) {
 	for _, f := range st.Faces {
 		faceKeys[f.Key] = true
 	}
-	for _, key := range []string{"vision-export", "modality-kb", "opencode-layer"} {
+	for _, key := range []string{"vision-export", "modality-kb", "opencode-layer", "skills"} {
 		if !faceKeys[key] {
 			t.Fatalf("face %s missing: %+v", key, st.Faces)
 		}
+	}
+	if faceKeys["pi-plugins"] {
+		t.Fatal("plugin replay status belongs in the extension manager")
 	}
 }
 

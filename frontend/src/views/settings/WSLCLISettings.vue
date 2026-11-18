@@ -41,197 +41,254 @@
         正在 WSL 内{{ toolInstalled(busyTool) ? '升级' : '安装' }} {{ displayName(busyTool) }}，首次可能需要安装 Node 运行时，请稍候…
       </p>
 
-      <!-- P3-S1 最小「配置状态」区：托管面同步状态 + 视觉清单共享同意入口 -->
-      <div v-if="supply" class="supply-section">
-        <h3>配置状态</h3>
-        <p class="set-sub">
-          Windows 面板保存后，托管配置按需同步到 WSL（{{ supply.distro }}）；
-          已安装不等于已同步，安装成功也不改写 WSL 内的用户自有文件。
-        </p>
-        <!-- P2-B：统一配置管理（一次启用 → 启动/保存/对账自动同步） -->
-        <div class="unified-row">
-          <template v-if="!supply.unified">
-            <span class="supply-detail">
-              统一管理：一次启用后，Windows 侧配置自动同步到 WSL，无需重复预览/勾选——
-              Claude MCP 服务器与设置白名单、Codex MCP/profile、共享技能与
-              CLAUDE.md/commands/agents/AGENTS.md、视觉清单；新条目随下次对账自动纳入。
-              MCP env 与视觉清单含密钥副本，按 0600 写入；WSL 手改与已有同名项不会被覆盖。
-            </span>
-            <AppButton variant="primary" size="small" :disabled="unifiedBusy" @click="enableUnified">
-              {{ unifiedBusy ? '启用中…' : '启用统一管理' }}
-            </AppButton>
-          </template>
-          <template v-else>
-            <span class="badge badge-ok">已由 Windows 统一管理（{{ supply.distro }}）</span>
-            <AppButton variant="ghost" size="small" :disabled="unifiedBusy" @click="disableUnified">
-              {{ unifiedBusy ? '处理中…' : '停止自动纳入新项' }}
-            </AppButton>
-            <span class="supply-detail">停止后已授权单元与副本保持现状；撤回单个单元用各面板的「保留本地」。</span>
-          </template>
-        </div>
-        <div class="supply-list">
-          <div v-for="f in supply.faces" :key="f.key" class="supply-row">
-            <label>{{ f.label }}</label>
-            <div class="row-value">
-              <span class="badge" :class="faceBadgeClass(f.state)">{{ faceStateText(f.state) }}</span>
-              <span class="supply-detail">{{ f.detail }}</span>
-              <span v-if="f.lastCheck" class="supply-time">检查于 {{ formatTime(f.lastCheck) }}</span>
+      <section v-if="supply" class="supply-section" aria-labelledby="wsl-sync-heading">
+        <h3 id="wsl-sync-heading">WSL 配置同步</h3>
+        <div class="sync-mode" :class="{ 'sync-mode-active': supply.unified }">
+          <div class="sync-copy">
+            <div class="item-title">
+              <strong>Windows → {{ supply.distro }}</strong>
+              <span class="badge" :class="{ 'badge-ok': supply.unified }">
+                {{ supply.unified ? '自动纳入已启用' : '需手动选择新项目' }}
+              </span>
             </div>
+            <p v-if="supply.unified" class="item-note">
+              新项目会自动纳入同步。停止纳入后，已授权的项目和现有副本会保留。要停止跟随单个项目，请选择「保留本地」。
+            </p>
+            <p v-else class="item-note">
+              统一管理会自动纳入 Claude Code、Codex 的受支持配置与资源，以及视觉清单。MCP 环境变量和视觉清单可能包含密钥，副本以 0600 权限写入 WSL。
+            </p>
           </div>
-        </div>
-        <div v-if="visionAwaitingConsent && !supply.unified" class="consent-row">
-          <span class="supply-detail">
-            视觉清单含 API 密钥副本；向 WSL 共享前需要你的明确同意（文件将以 0600 权限写入，
-            仅在 distro 内可读）。
-          </span>
-          <AppButton
-            variant="primary"
-            size="small"
-            :disabled="consentBusy"
-            @click="grantConsent"
-          >
-            {{ consentBusy ? '授权中…' : '同意共享到 WSL' }}
+          <AppButton v-if="supply.unified" variant="outline" size="small" :disabled="unifiedBusy" @click="disableUnified">
+            {{ unifiedBusy ? '处理中…' : '停止自动纳入新项' }}
+          </AppButton>
+          <AppButton v-else variant="primary" size="small" :disabled="unifiedBusy" @click="enableUnified">
+            {{ unifiedBusy ? '启用中…' : '启用统一管理' }}
           </AppButton>
         </div>
-        <!-- 共享技能根（1.3.130：受管符号链接直连 Windows ~/.agents/skills） -->
-        <div class="pi-units skills-section">
-          <h4>共享技能（Windows ~/.agents/skills → WSL）</h4>
-          <p class="set-sub">
-            WSL 内 ~/.agents/skills 以受管符号链接直连 Windows 技能根（与 pi 共享 agent 根同一
-            机制）：无需逐项导入，WSL 侧始终读到 Windows 最新内容；既有 WSL 目录会在链接前自动
-            备份为 skills.pre-shared.*。会话启动时自动核验，也可在此手动检查/修复。
-          </p>
-          <div class="skills-toolbar">
-            <span class="badge" :class="faceBadgeClass(skillsFace?.state || 'unchecked')">{{ faceStateText(skillsFace?.state || 'unchecked') }}</span>
-            <span class="supply-detail">{{ skillsFace?.detail || '尚未核验（启动 WSL pi 会话或点检查）' }}</span>
-            <AppButton variant="ghost" size="small" :disabled="sharedRootBusy" @click="ensureSharedRoot">
-              {{ sharedRootBusy ? '核验中…' : '检查/修复' }}
-            </AppButton>
-          </div>
-          <p v-if="sharedRoot?.backup" class="set-hint">旧目录已备份迁移：<span class="mono">{{ sharedRoot.backup }}</span></p>
-        </div>
-        <!-- P3-S4：Claude / Codex 用户配置导入（键级选择导入 + 资源目录单元） -->
-        <div v-if="cliStatus['claude'] || cliStatus['codex']" class="pi-units s4-section">
-          <h4>用户配置导入（Claude / Codex → WSL）</h4>
-          <p class="set-sub">
-            仅导入你勾选的条目：MCP 服务器（远程保留 URL；npx.cmd 等仅目标实测到原生命令才映射，
-            Windows 专属形态保持 WSL 现状并逐项报告）、设置白名单字段与 Codex profile（TOML 节，
-            非目标节与注释逐字节保留）。信任/凭据/历史/未知字段永不跨界；WSL 手改条目冻结保留。
-          </p>
-          <div v-for="cli in ['claude', 'codex']" :key="cli" class="s4-cli-block">
-            <h5>{{ cli === 'claude' ? 'Claude Code' : 'Codex' }}</h5>
-            <div v-if="!cliStatus[cli]?.available" class="supply-detail">{{ cliStatus[cli]?.reason || '未启用' }}</div>
-            <template v-else>
-              <div v-for="u in cliStatus[cli]?.units ?? []" :key="u.unit" class="pi-unit-row">
-                <label class="mono">{{ u.relPath }}</label>
-                <span class="badge" :class="unitBadgeClass(u.state)">{{ unitStateText(u.state) }}</span>
-                <span class="supply-detail">{{ u.detail }}</span>
-                <div class="unit-actions">
-                  <AppButton v-if="u.actions.includes('preview')" variant="ghost" size="small" :disabled="cliBusy" @click="previewCliUnit(cli, u.unit)">预览</AppButton>
-                  <AppButton v-if="u.actions.includes('apply')" variant="ghost" size="small" :disabled="cliBusy" @click="applyCli(cli)">应用安全更新</AppButton>
-                  <AppButton v-if="u.actions.includes('keep-local')" variant="ghost" size="small" :disabled="cliBusy" @click="keepCliUnit(cli, u.unit)">保留本地</AppButton>
-                  <AppButton
-                    v-if="u.actions.includes('takeover') && cliPreviewHash(cli, u.unit)"
-                    variant="primary" size="small" :disabled="cliBusy"
-                    @click="takeOverCliUnit(cli, u.unit)"
-                  >确认接管</AppButton>
-                </div>
-                <!-- 预览：逐键选择面（转换前→转换后对照；脱敏） -->
-                <div v-if="cliPreviewFor(cli, u.unit)" class="unit-preview">
-                  <div v-for="k in cliPreviewFor(cli, u.unit)?.keys ?? []" :key="k.key" class="key-row">
-                    <label class="mono" v-if="k.importable">
-                      <input
-                        type="checkbox"
-                        :checked="k.selected || cliKeySelected(cli, u.unit, k.key)"
-                        :disabled="cliBusy"
-                        @change="toggleCliKey(cli, u.unit, k.key)"
-                      />
-                      {{ k.key }}
-                    </label>
-                    <span v-else class="mono">{{ k.key }}</span>
-                    <span class="badge" :class="keyBadgeClass(k.action)">{{ k.action }}</span>
-                    <span v-if="k.before || k.after" class="supply-detail">{{ k.before || '—' }} → {{ k.after || '—' }}</span>
-                    <span class="supply-detail">{{ k.reason }}</span>
-                  </div>
-                  <div v-if="cliPreviewFor(cli, u.unit)">
-                    <AppButton variant="primary" size="small" :disabled="cliBusy" @click="importCliKeys(cli, u.unit)">
-                      {{
-                        anyCliKeySelected(cli, u.unit)
-                          ? `导入所选（${cliKeySelection[cli + '|' + u.unit]?.length ?? 0}）`
-                          : '撤回全部导入（空选择移除托管条目）'
-                      }}
+        <p v-if="supply.pendingPush" class="sync-pending" role="status">
+          有变更待同步，将在 WSL 空闲时或下次启动会话时推送。
+        </p>
+
+        <div class="sync-list">
+          <details class="sync-group">
+            <summary>
+              <span class="group-name">共享技能</span>
+              <span class="badge" :class="faceBadgeClass(skillsFace?.state || 'unchecked')">
+                {{ skillsFace?.state === 'synced' ? '已链接' : faceStateText(skillsFace?.state || 'unchecked') }}
+              </span>
+            </summary>
+            <div class="group-content group-action">
+              <div>
+                <p v-if="skillsFace?.state === 'synced'" class="item-note">{{ skillsFace.detail }}</p>
+                <p v-else class="item-note">
+                  WSL 的 <code>~/.agents/skills</code> 通过符号链接读取 Windows 技能目录。首次建立链接时会备份 WSL 原有目录。
+                </p>
+                <p v-if="skillsFace?.detail && skillsFace.state !== 'synced'" class="item-note">{{ skillsFace.detail }}</p>
+                <p v-if="sharedRoot?.backup" class="item-note">旧目录已备份至 <code>{{ sharedRoot.backup }}</code></p>
+                <p v-if="skillsFace?.lastCheck" class="item-note">检查于 {{ formatTime(skillsFace.lastCheck) }}</p>
+              </div>
+              <AppButton variant="outline" size="small" :disabled="sharedRootBusy" @click="ensureSharedRoot">
+                {{ sharedRootBusy ? '核验中…' : '检查并修复' }}
+              </AppButton>
+            </div>
+          </details>
+
+          <template v-for="(st, cli) in cliStatus" :key="cli">
+            <details v-if="st" class="sync-group">
+              <summary>
+                <span class="group-name">{{ displayName(cli) }}</span>
+                <span v-if="!st.available" class="badge">不可用</span>
+                <span v-else-if="cliIssueCounts[cli]" class="badge badge-warn">{{ cliIssueCounts[cli] }} 项需查看</span>
+                <span v-else class="group-meta">配置文件与资源</span>
+              </summary>
+              <div v-if="!st.available" class="group-content">
+                <p class="item-note">{{ st.reason || '配置导入不可用' }}</p>
+              </div>
+              <div v-else class="group-content cli-content">
+                <section class="cli-settings">
+                  <div class="section-heading">
+                    <h4>配置文件</h4>
+                    <AppButton v-if="st.units.some(u => u.actions.includes('apply'))" variant="outline" size="small" :disabled="cliBusy" @click="applyCli(cli)">
+                      应用安全更新
                     </AppButton>
                   </div>
-                  <div v-if="(cliPreviewFor(cli, u.unit)?.notes ?? []).length" class="supply-detail">
-                    {{ (cliPreviewFor(cli, u.unit)?.notes ?? []).join('；') }}
+                  <div v-for="u in st.units" :key="u.unit" class="sync-item">
+                    <div class="item-main">
+                      <div class="item-title">
+                        <code>{{ u.relPath }}</code>
+                        <span class="badge" :class="unitBadgeClass(u.state)">{{ unitStateText(u.state) }}</span>
+                      </div>
+                      <p class="item-note">{{ u.detail }}</p>
+                    </div>
+                    <div class="item-actions">
+                      <AppButton v-if="u.actions.includes('preview')" size="small" :disabled="cliBusy" :aria-expanded="cliPreviews[cli]?.unit === u.unit" @click="previewCliUnit(cli, u.unit)">
+                        {{ cliPreviews[cli]?.unit === u.unit ? '收起预览' : '预览' }}
+                      </AppButton>
+                      <AppButton v-if="u.actions.includes('keep-local')" variant="outline" size="small" :disabled="cliBusy" @click="keepCliUnit(cli, u.unit)">
+                        保留本地
+                      </AppButton>
+                    </div>
+
+                    <div v-if="cliPreviews[cli]?.unit === u.unit" class="item-preview">
+                      <p v-if="!cliPreviews[cli].keys?.length" class="item-note">
+                        {{ previewBlockNotes[cliPreviews[cli].blockedReason || ''] || '没有可预览的配置项。' }}
+                      </p>
+                      <ul v-else class="key-list">
+                        <li v-for="k in cliPreviews[cli].keys" :key="k.key">
+                          <div class="item-title">
+                          <label v-if="k.importable || k.selected">
+                            <input type="checkbox" :checked="cliKeySelection[cli]?.includes(k.key)" :disabled="cliBusy || !k.importable" @change="toggleCliKey(cli, k.key)" />
+                              <code>{{ k.key }}</code>
+                            </label>
+                            <code v-else>{{ k.key }}</code>
+                            <span class="badge" :class="keyBadgeClass(k.action)">{{ previewActionText(k.action) }}</span>
+                          </div>
+                        <p v-if="k.before || k.after" class="item-note">
+                          {{ k.before === k.after ? k.before : `${k.before || '—'} → ${k.after || '—'}` }}
+                        </p>
+                          <p v-if="k.reason" class="item-note">{{ k.reason }}</p>
+                        </li>
+                      </ul>
+                      <p v-for="note in cliPreviews[cli].notes" :key="note" class="item-note">{{ note }}</p>
+                      <div class="item-actions preview-actions">
+                        <AppButton v-if="u.actions.includes('takeover') && cliPreviews[cli].targetHash" variant="outline" size="small" :disabled="cliBusy" @click="takeOverCliUnit(cli, u.unit, cliPreviews[cli].targetHash)">
+                          确认接管
+                        </AppButton>
+                        <AppButton v-if="cliKeySelection[cli]?.length || cliPreviews[cli].keys?.some(key => key.selected)" :variant="cliKeySelection[cli]?.length ? 'primary' : 'outline'" size="small" :disabled="cliBusy" @click="importCliKeys(cli, u.unit)">
+                          {{ cliKeySelection[cli]?.length ? `导入所选（${cliKeySelection[cli].length}）` : '撤回全部导入' }}
+                        </AppButton>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                </section>
+
+                <details class="resource-group">
+                  <summary>
+                    <span class="group-name">用户资源</span>
+                    <span v-if="st.resources.scanRunning" class="badge badge-warn" role="status">
+                      扫描中 {{ st.resources.scanScanned }}/{{ st.resources.scanTotal }}
+                    </span>
+                    <span v-else-if="st.resources.scanIncomplete" class="badge badge-warn">扫描未完成</span>
+                    <span v-else class="group-meta">{{ st.resources.skills?.length ?? 0 }} 项</span>
+                  </summary>
+                  <div class="resource-content">
+                    <div class="section-heading resource-toolbar">
+                      <p class="item-note">选择要同步到 WSL 的资源。导入前会做兼容性检查。</p>
+                      <div class="item-actions">
+                        <AppButton variant="outline" size="small" :disabled="cliBusy || st.resources.scanRunning" @click="checkCliResources(cli)">检查资源</AppButton>
+                        <AppButton v-if="selectedResources(cli).length" variant="primary" size="small" :disabled="cliBusy" @click="applyCliResources(cli)">
+                          导入所选资源（{{ selectedResources(cli).length }}）
+                        </AppButton>
+                      </div>
+                    </div>
+                    <p v-if="!st.resources.skills?.length && !st.resources.scanRunning" class="item-note">
+                      {{ st.resources.reason || '暂无可显示的资源。' }}
+                    </p>
+                    <div v-for="s in st.resources.skills" :key="s.name" class="sync-item">
+                      <div class="item-main">
+                        <div class="item-title">
+                          <label v-if="s.selectable">
+                            <input type="checkbox" :checked="cliResSelection[cli]?.includes(s.name)" :disabled="cliBusy" @change="toggleCliRes(cli, s.name)" />
+                            <code>{{ s.name }}</code>
+                          </label>
+                          <code v-else>{{ s.name }}</code>
+                          <span class="badge" :class="skillBadgeClass(s.state)">{{ skillStateText(s.state) }}</span>
+                        </div>
+                        <p class="item-note">{{ resourceDetail(s.state, s.detail) }}<template v-if="s.files"> · {{ s.files }} 个文件</template></p>
+                        <details v-if="s.incompatible?.length" class="compat-details">
+                          <summary>查看 {{ s.incompatible.length }} 项不兼容内容</summary>
+                          <ul>
+                            <li v-for="it in s.incompatible" :key="it">{{ it }}</li>
+                          </ul>
+                        </details>
+                      </div>
+                      <div class="item-actions">
+                        <AppButton v-if="s.actions.includes('preview')" size="small" :disabled="cliBusy" :aria-expanded="cliResPreviews[cli]?.name === s.name" @click="previewCliResource(cli, s.name)">
+                          {{ cliResPreviews[cli]?.name === s.name ? '收起预览' : '预览' }}
+                        </AppButton>
+                        <AppButton v-if="s.actions.includes('apply')" variant="outline" size="small" :disabled="cliBusy" @click="applyCliResources(cli, [s.name])">应用安全更新</AppButton>
+                        <AppButton v-if="s.actions.includes('keep-local')" variant="outline" size="small" :disabled="cliBusy" @click="keepCliResource(cli, s.name)">保留本地</AppButton>
+                      </div>
+                      <div v-if="cliResPreviews[cli]?.name === s.name" class="item-preview">
+                        <p class="item-note">{{ previewActionText(cliResPreviews[cli].action) }}<template v-if="cliResPreviews[cli].excluded"> · 排除 {{ cliResPreviews[cli].excluded }} 项</template></p>
+                        <p v-for="note in cliResPreviews[cli].notes" :key="note" class="item-note">{{ note }}</p>
+                        <div v-if="s.actions.includes('takeover') && cliResPreviews[cli].targetHash" class="item-actions preview-actions">
+                          <AppButton variant="outline" size="small" :disabled="cliBusy" @click="takeOverCliResource(cli, s.name, cliResPreviews[cli].targetHash)">确认接管</AppButton>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </details>
               </div>
-              <!-- 资源目录单元（CLAUDE.md/commands/agents/skills、AGENTS.md/skills） -->
-              <div class="skills-toolbar">
-                <span v-if="cliStatus[cli]?.resources.scanRunning" class="badge badge-warn">扫描中 {{ cliStatus[cli]?.resources.scanScanned }}/{{ cliStatus[cli]?.resources.scanTotal }}</span>
-                <AppButton variant="ghost" size="small" :disabled="cliBusy" @click="checkCliResources(cli)">检查资源</AppButton>
-                <AppButton variant="ghost" size="small" :disabled="cliBusy" @click="previewCliResources(cli)">预览资源</AppButton>
-                <AppButton variant="primary" size="small" :disabled="cliBusy || !cliResSelection[cli]?.length" @click="importCliResources(cli)">
-                  导入所选资源（{{ cliResSelection[cli]?.length ?? 0 }}）
+            </details>
+          </template>
+
+          <details v-if="ocLayerFace || ocMcp.length" class="sync-group">
+            <summary>
+              <span class="group-name">OpenCode</span>
+              <span v-if="ocMcp.some(e => e.globalConflict)" class="badge badge-warn">有同名 MCP</span>
+              <span v-if="ocLayerFace" class="badge" :class="faceBadgeClass(ocLayerFace.state)">
+                {{ ocLayerFace.state === 'unchecked' ? '未写入' : faceStateText(ocLayerFace.state) }}
+              </span>
+            </summary>
+            <div class="group-content">
+              <p v-if="ocLayerFace" class="item-note">
+                附加配置{{ ocLayerFace.state === 'unchecked' ? '将在启动 OpenCode 的 WSL 会话时写入。' : `：${ocLayerFace.detail || faceStateText(ocLayerFace.state)}` }}
+              </p>
+              <template v-if="ocMcp.length">
+                <div class="section-heading open-code-heading">
+                  <h4>预设 MCP</h4>
+                  <AppButton v-if="ocOverrideOptions" variant="primary" size="small" :disabled="cliBusy || !ocOverrideChanged" @click="saveOcSelection">保存选择</AppButton>
+                </div>
+                <p v-if="ocOverrideOptions" class="item-note">同名项默认使用 WSL 全局配置。勾选覆盖后，下次启动使用预设版本。</p>
+                <div v-for="entry in ocMcp" :key="entry.name" class="sync-item">
+                  <div class="item-main">
+                    <div class="item-title">
+                      <code>{{ entry.name }}</code>
+                      <span v-if="entry.remote" class="badge">远程</span>
+                      <span v-else-if="entry.needsAdapt" class="badge badge-warn">需手动适配</span>
+                      <span v-else class="badge">stdio {{ entry.nativeCommand }}</span>
+                      <span v-if="entry.globalConflict" class="badge badge-warn">与 WSL 全局同名</span>
+                    </div>
+                    <p v-if="entry.reason" class="item-note">{{ entry.reason }}</p>
+                  </div>
+                  <label v-if="entry.globalConflict && !entry.needsAdapt" class="item-note override-option">
+                    <input type="checkbox" :checked="ocOverride.includes(entry.name)" :disabled="cliBusy" @change="toggleOcOverride(entry.name)" />
+                    使用预设覆盖
+                  </label>
+                </div>
+              </template>
+              <p v-else class="item-note">暂无预设 MCP。</p>
+            </div>
+          </details>
+
+          <details v-if="sharedFaces.length" class="sync-group">
+            <summary>
+              <span class="group-name">视觉与多模态</span>
+              <span v-if="visionAwaitingConsent" class="badge badge-warn">视觉清单待授权</span>
+              <span v-if="sharedFaceIssue" class="badge" :class="faceBadgeClass(sharedFaceIssue.state)">{{ faceStateText(sharedFaceIssue.state) }}</span>
+            </summary>
+            <div class="group-content">
+              <div v-for="face in sharedFaces" :key="face.key" class="sync-item">
+                <div class="item-main">
+                  <div class="item-title">
+                    <strong>{{ face.label }}</strong>
+                    <span class="badge" :class="faceBadgeClass(face.state)">{{ faceStateText(face.state) }}</span>
+                  </div>
+                  <p v-if="face.key === 'vision-export' && visionAwaitingConsent" class="item-note">
+                    视觉清单含 API 密钥副本。授权后，副本将以 0600 权限写入 WSL。
+                  </p>
+                  <p v-else-if="face.detail !== faceStateText(face.state)" class="item-note">{{ face.detail }}</p>
+                  <p v-if="face.lastCheck" class="item-note">检查于 {{ formatTime(face.lastCheck) }}</p>
+                </div>
+                <AppButton v-if="face.key === 'vision-export' && visionAwaitingConsent" variant="primary" size="small" :disabled="consentBusy" @click="grantConsent">
+                  {{ consentBusy ? '授权中…' : '同意共享到 WSL' }}
                 </AppButton>
               </div>
-              <div v-for="s in cliStatus[cli]?.resources.skills ?? []" :key="cli + '/' + s.name" class="pi-unit-row skill-row">
-                <label class="mono">
-                  <input v-if="s.selectable" type="checkbox" :checked="cliResSelection[cli]?.includes(s.name)" :disabled="cliBusy" @change="toggleCliRes(cli, s.name)" />
-                  {{ s.name }}
-                </label>
-                <span class="badge" :class="skillBadgeClass(s.state)">{{ skillStateText(s.state) }}</span>
-                <span class="supply-detail">{{ s.detail }}<template v-if="s.files">（{{ s.files }} 个文件）</template></span>
-                <div class="unit-actions">
-                  <AppButton v-if="s.actions.includes('apply')" variant="ghost" size="small" :disabled="cliBusy" @click="applyCliResources(cli, [s.name])">应用安全更新</AppButton>
-                  <AppButton v-if="s.actions.includes('keep-local')" variant="ghost" size="small" :disabled="cliBusy" @click="keepCliResource(cli, s.name)">保留本地</AppButton>
-                  <AppButton
-                    v-if="s.actions.includes('takeover') && cliResPreviewHash(cli, s.name)"
-                    variant="primary" size="small" :disabled="cliBusy"
-                    @click="takeOverCliResource(cli, s.name)"
-                  >确认接管</AppButton>
-                </div>
-                <div v-if="s.incompatible?.length" class="unit-preview">
-                  <div v-for="it in s.incompatible" :key="it" class="key-row">
-                    <span class="badge badge-missing">不兼容</span>
-                    <span class="supply-detail">{{ it }}</span>
-                  </div>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-        <!-- P3-S4：OpenCode 附加层 MCP 选择（全局同名冲突默认保留本地；勾选覆盖） -->
-        <div v-if="ocMcp.length" class="pi-units s4-section">
-          <h4>OpenCode 附加层 MCP（preset → WSL）</h4>
-          <p class="set-sub">
-            preset 中的 MCP 条目经形态检查后写入附加层（不碰 WSL 全局配置）；与 WSL 全局
-            opencode.json 同名的条目默认保留本地，勾选覆盖后才写入。
-          </p>
-          <div v-for="e in ocMcp" :key="e.name" class="pi-unit-row">
-            <label class="mono">{{ e.name }}</label>
-            <span v-if="e.remote" class="badge badge-ok">远程</span>
-            <span v-else-if="e.needsAdapt" class="badge badge-missing">需手动适配</span>
-            <span v-else class="badge badge-ok">stdio {{ e.nativeCommand }}</span>
-            <span v-if="e.globalConflict" class="badge badge-warn">与 WSL 全局同名</span>
-            <span v-if="e.reason" class="supply-detail">{{ e.reason }}</span>
-            <div class="unit-actions" v-if="e.globalConflict && !e.needsAdapt">
-              <label class="supply-detail">
-                <input type="checkbox" :checked="ocOverride.includes(e.name)" :disabled="cliBusy" @change="toggleOcOverride(e.name)" />
-                覆盖全局
-              </label>
             </div>
-          </div>
-          <div class="consent-row">
-            <AppButton variant="primary" size="small" :disabled="cliBusy" @click="saveOcSelection">保存选择</AppButton>
-            <span class="supply-detail">覆盖选择保存在 Windows 侧（下次启动生效）；未勾选的同名条目继续保留 WSL 全局版本。</span>
-          </div>
+          </details>
         </div>
-        <p v-if="supply.pendingPush" class="set-hint">
-          有保存后的变更待同步：将在 WSL 空闲时自动推送，或于下次启动会话时补齐。
-        </p>
-      </div>
+      </section>
     </template>
   </div>
 </template>
@@ -245,7 +302,25 @@ import {
   enableWSLUnifiedSupply,
   disableWSLUnifiedSupply,
   type WSLConfigSupplyStatus,
+  ensureWSLSharedSkillsRoot,
+  getWSLCliSupplyStatus,
+  previewWSLCliConfigSupply,
+  importWSLCliConfigKeys,
+  applyWSLCliConfigSupply,
+  keepWSLCliConfigUnitLocal,
+  takeOverWSLCliConfigUnit,
+  checkWSLCliResourcesSupply,
+  previewWSLCliResourcesSupply,
+  applyWSLCliResourcesSupply,
+  keepWSLCliResourceLocal,
+  takeOverWSLCliResource,
+  getWSLOpenCodeMCPPreview,
+  setWSLOpenCodeMCPSelection,
   type WSLConfigUnitPreview,
+  type WSLSharedSkillsRootStatus,
+  type WSLSkillPreview,
+  type WSLCliSupplyStatus,
+  type WSLOpenCodeMCPEntry,
 } from '../../api/wslSupply'
 import { useToast } from '../../composables/useToast'
 import AppButton from '../../components/ui/AppButton.vue'
@@ -257,7 +332,11 @@ const { showSuccess, showError, showInfo } = useToast()
 
 // SA-17：卸载后停止扫描轮询链（setTimeout 链不再触发新请求）。
 let alive = true
-onUnmounted(() => { alive = false })
+const scanTimers = new Map<string, ReturnType<typeof setTimeout>>()
+onUnmounted(() => {
+  alive = false
+  for (const timer of scanTimers.values()) clearTimeout(timer)
+})
 
 const status = ref<WSLStatus | null>(null)
 const busyTool = ref<string>('')
@@ -287,18 +366,10 @@ async function load() {
   try {
     const st = await getWSLCLIStatus()
     status.value = st
-    if (st.available) {
-      // 只读状态快照：失败不干扰安装卡片（配置状态区静默缺省）。
-      getWSLConfigSupplyStatus()
-        .then((s) => { supply.value = s; watchFaces() })
-        .catch(() => { supply.value = null })
-      // P3-S4：Claude/Codex 用户配置导入面 + OpenCode 附加层 MCP 选择面。
-      loadAllCliSupply()
-    }
-    // Hide the whole panel on platforms/machines where WSL is unavailable AND
-    // the reason indicates it's simply not a WSL host (keep it visible with the
-    // reason otherwise so the user understands why).
     showPanel.value = st.available || !!st.reason
+    if (st.available) {
+      await Promise.all([refreshStatus(), loadCliSupply('claude'), loadCliSupply('codex'), loadOcMcp()])
+    }
   } catch (err) {
     console.error('load WSL status:', err)
     showPanel.value = false
@@ -334,16 +405,21 @@ async function install(tool: string) {
   }
 }
 
-const visionAwaitingConsent = ref(false)
-function refreshConsentFlag(): void {
-  const face = supply.value?.faces?.find((f) => f.key === 'vision-export')
-  visionAwaitingConsent.value = face?.state === 'awaiting-consent'
-}
+const sharedFaces = computed(() => supply.value?.faces.filter((face) =>
+  face.key === 'vision-export' || face.key === 'modality-kb',
+) ?? [])
+const visionAwaitingConsent = computed(() => !supply.value?.unified &&
+  sharedFaces.value.some((face) => face.key === 'vision-export' && face.state === 'awaiting-consent'),
+)
+const sharedFaceIssue = computed(() => sharedFaces.value.find((face) =>
+  ['failed', 'frozen', 'pending-op'].includes(face.state),
+))
+const ocLayerFace = computed(() => supply.value?.faces.find((face) => face.key === 'opencode-layer'))
 
 function faceStateText(state: string): string {
   switch (state) {
     case 'synced': return '已同步'
-    case 'stale': return '陈旧'
+    case 'stale': return '待更新'
     case 'failed': return '失败'
     case 'frozen': return '冻结'
     case 'awaiting-consent': return '待授权'
@@ -351,15 +427,16 @@ function faceStateText(state: string): string {
     case 'scanning': return '扫描中'
     case 'incompatible': return '有不兼容项'
     case 'pending-op': return '待确认'
-    case 'host-missing': return '宿主根不可达'
+    case 'host-missing': return '技能目录不可访问'
     default: return '未检查'
   }
 }
 function faceBadgeClass(state: string): string {
   switch (state) {
     case 'synced': return 'badge-ok'
-    case 'failed': case 'incompatible': return 'badge-missing'
-    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning': case 'pending-op': case 'host-missing': return 'badge-warn'
+    case 'failed': return 'badge-error'
+    case 'stale': case 'awaiting-consent': case 'consented': case 'scanning':
+    case 'pending-op': case 'host-missing': case 'frozen': case 'incompatible': return 'badge-warn'
     default: return ''
   }
 }
@@ -375,8 +452,7 @@ async function grantConsent(): Promise<void> {
   try {
     await grantWSLVisionConsent()
     showSuccess('已授权向 WSL 共享视觉清单（密钥副本将以 0600 写入）')
-    await load()
-    refreshConsentFlag()
+    await refreshStatus()
   } catch (err: unknown) {
     showError('授权失败: ' + errorMessage(err))
   } finally {
@@ -413,7 +489,7 @@ async function disableUnified(): Promise<void> {
   unifiedBusy.value = true
   try {
     await disableWSLUnifiedSupply()
-    showInfo('已停止自动纳入新项（已授权单元与副本保持现状；撤回单个单元用「保留本地」）')
+    showInfo('已停止自动纳入新项目')
     await refreshStatus()
   } catch (err: unknown) {
     showError('停止失败: ' + errorMessage(err))
@@ -422,15 +498,10 @@ async function disableUnified(): Promise<void> {
   }
 }
 
-// faces 变化时同步同意标记（load 完成后调用）。
-function watchFaces(): void {
-  refreshConsentFlag()
-}
-
 function unitStateText(state: string): string {
   switch (state) {
     case 'synced': return '已同步'
-    case 'stale': return '陈旧'
+    case 'stale': return '待更新'
     case 'frozen': return '冻结'
     case 'partial': return '部分保留'
     case 'detached': return '保留本地'
@@ -442,7 +513,7 @@ function unitStateText(state: string): string {
 function unitBadgeClass(state: string): string {
   switch (state) {
     case 'synced': return 'badge-ok'
-    case 'failed': return 'badge-missing'
+    case 'failed': return 'badge-error'
     case 'stale': case 'partial': return 'badge-warn'
     case 'frozen': case 'detached': case 'awaiting-consent': return 'badge-warn'
     default: return ''
@@ -452,23 +523,43 @@ function keyBadgeClass(action: string): string {
   switch (action) {
     case 'add': case 'update': case 'remove': return 'badge-warn'
     case 'no-change': return 'badge-ok'
-    default: return 'badge-missing'
+    case 'conflict': case 'keep-frozen': case 'blocked': return 'badge-warn'
+    default: return ''
   }
 }
+
+function previewActionText(action: string): string {
+  switch (action) {
+    case 'add': return '新增'
+    case 'update': return '更新'
+    case 'remove': return '移除'
+    case 'write': return '写入 WSL'
+    case 'none': case 'no-change': return '无变更'
+    case 'keep-frozen': return '保留本地修改'
+    case 'conflict': return '有冲突'
+    case 'unmanaged-existing': return 'WSL 已有同名项'
+    case 'blocked': return '暂不可写入'
+    default: return '操作待确认'
+  }
+}
+
+const previewBlockNotes: Record<string, string> = {
+  'source-unavailable': 'Windows 侧配置暂不可用。',
+  'unmanaged-existing': 'WSL 侧已有同名文件，请确认是否接管。',
+  'local-deletion-frozen': '该配置已在 WSL 本地删除。',
+  'local-modification-frozen': '该配置在 WSL 有本地修改。',
+  'both-changed-frozen': 'Windows 与 WSL 两侧的配置均有修改。',
+  'conversion-blocked': '部分 Windows 配置无法安全转换。',
+  'detached': '此配置已选择保留本地。',
+}
+
 async function refreshStatus(): Promise<void> {
   try {
     supply.value = await getWSLConfigSupplyStatus()
-    refreshConsentFlag()
   } catch {
     // 只读快照失败：保持现状（下次加载重试）
   }
 }
-
-// ---------------------------------------------------------------------------
-// 共享技能根（1.3.130：受管符号链接直连 Windows ~/.agents/skills；原 P3-S3
-// 同意制投影退役——状态面来自配置状态 faces，显式检查走 ensureWSLSharedSkillsRoot）
-// ---------------------------------------------------------------------------
-import { ensureWSLSharedSkillsRoot, type WSLSharedSkillsRootStatus, type WSLSkillPreview } from '../../api/wslSupply'
 
 const sharedRoot = ref<WSLSharedSkillsRootStatus | null>(null)
 const sharedRootBusy = ref(false)
@@ -484,8 +575,7 @@ async function ensureSharedRoot(): Promise<void> {
     } else if (sharedRoot.value.backup) {
       showSuccess('符号链接已就绪；旧目录备份至 ' + sharedRoot.value.backup)
     }
-    // 配置状态 faces 同步刷新（skills face 读进程内缓存）。
-    getWSLConfigSupplyStatus().then((s) => { supply.value = s; watchFaces() }).catch(() => {})
+    await refreshStatus()
   } catch (err: unknown) {
     showError('检查失败: ' + errorMessage(err))
   } finally {
@@ -496,8 +586,8 @@ async function ensureSharedRoot(): Promise<void> {
 function skillStateText(state: string): string {
   switch (state) {
     case 'importable': return '可导入'
-    case 'supplied': return '已供给'
-    case 'stale': return '陈旧'
+    case 'supplied': return '已同步'
+    case 'stale': return '待更新'
     case 'frozen': return '冻结'
     case 'incompatible': return '不兼容'
     case 'scan-incomplete': return '扫描未完成'
@@ -512,108 +602,83 @@ function skillStateText(state: string): string {
 function skillBadgeClass(state: string): string {
   switch (state) {
     case 'supplied': return 'badge-ok'
-    case 'incompatible': case 'failed': case 'source-deleted': return 'badge-missing'
-    case 'stale': case 'frozen': case 'scan-incomplete': case 'empty': case 'awaiting-consent': return 'badge-warn'
+    case 'failed': return 'badge-error'
+    case 'stale': case 'frozen': case 'scan-incomplete':
+    case 'incompatible': case 'source-deleted': case 'awaiting-consent': return 'badge-warn'
     case 'importable': return 'badge-wsl2'
     default: return ''
   }
 }
 
-// ---------------------------------------------------------------------------
-// P3-S4：Claude / Codex 用户配置导入 + OpenCode 附加层 MCP 选择面
-// ---------------------------------------------------------------------------
-import {
-  getWSLCliSupplyStatus,
-  previewWSLCliConfigSupply,
-  importWSLCliConfigKeys,
-  applyWSLCliConfigSupply,
-  keepWSLCliConfigUnitLocal,
-  takeOverWSLCliConfigUnit,
-  checkWSLCliResourcesSupply,
-  previewWSLCliResourcesSupply,
-  applyWSLCliResourcesSupply,
-  keepWSLCliResourceLocal,
-  takeOverWSLCliResource,
-  getWSLOpenCodeMCPPreview,
-  setWSLOpenCodeMCPSelection,
-  type WSLCliSupplyStatus,
-  type WSLOpenCodeMCPEntry,
-} from '../../api/wslSupply'
+function resourceDetail(state: string, detail: string): string {
+  if (state === 'supplied') return '已通过静态检查'
+  if (state === 'importable') return '通过兼容性检查'
+  if (state === 'source-deleted') return 'Windows 来源已移除，WSL 副本仍保留。'
+  return detail
+}
 
 const cliBusy = ref(false)
 const cliStatus = ref<Record<string, WSLCliSupplyStatus | null>>({ claude: null, codex: null })
-const cliPreviews = ref<Record<string, Record<string, WSLConfigUnitPreview>>>({})
+const cliIssueCounts = computed(() => Object.fromEntries(Object.entries(cliStatus.value).map(([cli, st]) => {
+  const units = st?.units.filter((unit) => ['failed', 'frozen', 'partial'].includes(unit.state)).length ?? 0
+  const resources = st?.resources.skills?.filter((resource) =>
+    ['failed', 'frozen', 'incompatible'].includes(resource.state),
+  ).length ?? 0
+  return [cli, units + resources]
+})))
+const cliPreviews = ref<Record<string, WSLConfigUnitPreview | undefined>>({})
 const cliKeySelection = ref<Record<string, string[]>>({})
 const cliResSelection = ref<Record<string, string[]>>({})
-const cliResPreviews = ref<Record<string, Record<string, WSLSkillPreview>>>({})
+const cliResPreviews = ref<Record<string, WSLSkillPreview | undefined>>({})
 const ocMcp = ref<WSLOpenCodeMCPEntry[]>([])
 const ocOverride = ref<string[]>([])
+const ocOverrideOptions = computed(() => ocMcp.value.some((entry) => entry.globalConflict && !entry.needsAdapt))
+const ocOverrideChanged = computed(() =>
+  ocMcp.value.some((entry) => entry.overrideGlobal !== ocOverride.value.includes(entry.name)),
+)
 
 async function loadCliSupply(cli: string): Promise<void> {
   if (!alive) return
   try {
     const st = await getWSLCliSupplyStatus(cli)
-    cliStatus.value = { ...cliStatus.value, [cli]: st }
-    if (alive && st.resources.scanRunning) {
-      setTimeout(() => loadCliSupply(cli), 800)
+    if (!alive) return
+    cliStatus.value[cli] = st
+    clearTimeout(scanTimers.get(cli))
+    scanTimers.delete(cli)
+    if (st.resources.scanRunning) {
+      scanTimers.set(cli, setTimeout(() => {
+        scanTimers.delete(cli)
+        void loadCliSupply(cli)
+      }, 800))
     }
   } catch {
-    // 保持现状（未启用面静默缺省）
+    // 保留上次成功读取的状态。
   }
 }
 
-function loadAllCliSupply(): void {
-  loadCliSupply('claude')
-  loadCliSupply('codex')
-  loadOcMcp()
-}
-
-async function refreshCli(cli: string): Promise<void> {
-  await loadCliSupply(cli)
-}
-
-function cliPreviewFor(cli: string, unit: string): WSLConfigUnitPreview | undefined {
-  return cliPreviews.value[cli]?.[unit]
-}
-
-function cliPreviewHash(cli: string, unit: string): string {
-  return cliPreviewFor(cli, unit)?.targetHash ?? ''
-}
-
-function cliKeySelected(cli: string, unit: string, key: string): boolean {
-  return (cliKeySelection.value[cli + '|' + unit] ?? []).includes(key)
-}
-
-function anyCliKeySelected(cli: string, unit: string): boolean {
-  return (cliKeySelection.value[cli + '|' + unit] ?? []).length > 0
-}
-
-function toggleCliKey(cli: string, unit: string, key: string): void {
-  const id = cli + '|' + unit
-  const cur = cliKeySelection.value[id] ?? []
-  cliKeySelection.value = {
-    ...cliKeySelection.value,
-    [id]: cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
-  }
+function toggleCliKey(cli: string, key: string): void {
+  const selected = cliKeySelection.value[cli] ?? []
+  cliKeySelection.value[cli] = selected.includes(key) ? selected.filter((item) => item !== key) : [...selected, key]
 }
 
 async function previewCliUnit(cli: string, unit: string): Promise<void> {
   if (cliBusy.value) return
+  if (cliPreviews.value[cli]?.unit === unit) {
+    delete cliPreviews.value[cli]
+    return
+  }
   cliBusy.value = true
   try {
     const rows = await previewWSLCliConfigSupply(cli)
-    const next: Record<string, WSLConfigUnitPreview> = {}
-    for (const row of rows) next[row.unit] = row
-    cliPreviews.value = { ...cliPreviews.value, [cli]: next }
-    // 初始化选择集：当前已选键 + 预览中标记 selected 的键。
-    const row = next[unit]
-    if (row) {
-      const selected = (row.keys ?? []).filter((k) => k.selected).map((k) => k.key)
-      cliKeySelection.value = { ...cliKeySelection.value, [cli + '|' + unit]: selected }
+    const row = rows.find((item) => item.unit === unit)
+    if (!row) {
+      showError('暂时无法预览此配置文件')
+      return
     }
-    showInfo(`预览完成：${row?.blockedReason || row?.action || ''}`)
+    cliPreviews.value[cli] = row
+    cliKeySelection.value[cli] = (row.keys ?? []).filter((key) => key.selected).map((key) => key.key)
   } catch (err: unknown) {
-    showError('预览失败: ' + errorMessage(err))
+    showError('预览失败：' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
@@ -622,18 +687,19 @@ async function previewCliUnit(cli: string, unit: string): Promise<void> {
 async function importCliKeys(cli: string, unit: string): Promise<void> {
   // SA-03：空选择是合法的显式撤回入口（后端按来源删除语义移除托管条目）；
   // 零写入不报导入成功（提示逻辑见 wslSupplyMessages，单测覆盖）。
-  const keys = cliKeySelection.value[cli + '|' + unit] ?? []
+  const keys = cliKeySelection.value[cli] ?? []
   if (cliBusy.value) return
   cliBusy.value = true
   try {
     const outcomes = await importWSLCliConfigKeys(cli, unit, keys)
+    if (outcomes.some((outcome) => outcome.outcome === 'applied')) delete cliPreviews.value[cli]
     const msg = cliImportOutcomeMessage(keys.length, outcomes)
     if (msg.kind === 'success') {
       showSuccess(msg.text)
     } else {
       showInfo(msg.text)
     }
-    await refreshCli(cli)
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('导入失败: ' + errorMessage(err))
   } finally {
@@ -646,13 +712,14 @@ async function applyCli(cli: string): Promise<void> {
   cliBusy.value = true
   try {
     const outcomes = await applyWSLCliConfigSupply(cli)
+    delete cliPreviews.value[cli]
     const failed = outcomes.filter((o) => o.outcome === 'failed' || o.outcome === 'blocked')
     if (failed.length) {
       showInfo(`安全更新完成：${failed.length} 个单元保持现状（详见预览）`)
     } else {
       showSuccess('安全更新完成（冻结/未托管条目保持 WSL 现状）')
     }
-    await refreshCli(cli)
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('应用失败: ' + errorMessage(err))
   } finally {
@@ -665,8 +732,9 @@ async function keepCliUnit(cli: string, unit: string): Promise<void> {
   cliBusy.value = true
   try {
     await keepWSLCliConfigUnitLocal(cli, unit)
+    if (cliPreviews.value[cli]?.unit === unit) delete cliPreviews.value[cli]
     showInfo('已保留 WSL 本地配置（停跟随）')
-    await refreshCli(cli)
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('停跟随失败: ' + errorMessage(err))
   } finally {
@@ -674,18 +742,14 @@ async function keepCliUnit(cli: string, unit: string): Promise<void> {
   }
 }
 
-async function takeOverCliUnit(cli: string, unit: string): Promise<void> {
-  const token = cliPreviewHash(cli, unit)
-  if (!token && token !== '') {
-    showError('请先预览该单元再确认接管')
-    return
-  }
+async function takeOverCliUnit(cli: string, unit: string, token: string): Promise<void> {
   if (cliBusy.value) return
   cliBusy.value = true
   try {
     await takeOverWSLCliConfigUnit(cli, unit, token)
+    delete cliPreviews.value[cli]
     showSuccess('已按预览确认接管（托管域已按 Windows 当前内容重建基准）')
-    await refreshCli(cli)
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('接管失败: ' + errorMessage(err))
   } finally {
@@ -698,6 +762,7 @@ async function checkCliResources(cli: string): Promise<void> {
   cliBusy.value = true
   try {
     await checkWSLCliResourcesSupply(cli)
+    delete cliResPreviews.value[cli]
     // 重拉完整状态（后台扫描分批推进，轮询至收敛）。
     await loadCliSupply(cli)
   } catch (err: unknown) {
@@ -707,40 +772,42 @@ async function checkCliResources(cli: string): Promise<void> {
   }
 }
 
-async function previewCliResources(cli: string): Promise<void> {
+async function previewCliResource(cli: string, name: string): Promise<void> {
   if (cliBusy.value) return
+  if (cliResPreviews.value[cli]?.name === name) {
+    delete cliResPreviews.value[cli]
+    return
+  }
   cliBusy.value = true
   try {
     const rows = await previewWSLCliResourcesSupply(cli)
-    const next: Record<string, WSLSkillPreview> = {}
-    for (const row of rows) next[row.name] = row
-    cliResPreviews.value = { ...cliResPreviews.value, [cli]: next }
-    showInfo(`资源预览完成：${rows.length} 项（不兼容项已逐项列出）`)
+    const row = rows.find((item) => item.name === name)
+    if (!row) {
+      showError('暂时无法预览此资源')
+      return
+    }
+    cliResPreviews.value[cli] = row
   } catch (err: unknown) {
-    showError('预览失败: ' + errorMessage(err))
+    showError('预览失败：' + errorMessage(err))
   } finally {
     cliBusy.value = false
   }
 }
 
-function cliResPreviewHash(cli: string, name: string): string {
-  return cliResPreviews.value[cli]?.[name]?.targetHash ?? ''
+function selectedResources(cli: string): string[] {
+  const selected = cliResSelection.value[cli]
+  if (!selected?.length) return []
+  const resources = cliStatus.value[cli]?.resources.skills ?? []
+  return resources.filter((resource) => resource.selectable && selected.includes(resource.name)).map((resource) => resource.name)
 }
 
 function toggleCliRes(cli: string, name: string): void {
-  const cur = cliResSelection.value[cli] ?? []
-  cliResSelection.value = {
-    ...cliResSelection.value,
-    [cli]: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name],
-  }
-}
-
-async function importCliResources(cli: string): Promise<void> {
-  await applyCliResources(cli)
+  const selected = cliResSelection.value[cli] ?? []
+  cliResSelection.value[cli] = selected.includes(name) ? selected.filter((item) => item !== name) : [...selected, name]
 }
 
 async function applyCliResources(cli: string, only?: string[]): Promise<void> {
-  const rels = only ?? cliResSelection.value[cli] ?? []
+  const rels = only ?? selectedResources(cli)
   if (!rels.length) {
     showInfo('请先勾选要导入的资源')
     return
@@ -755,8 +822,9 @@ async function applyCliResources(cli: string, only?: string[]): Promise<void> {
     } else {
       showSuccess(`已导入 ${rels.length} 项资源（静态检查通过；未执行内容）`)
     }
-    cliResSelection.value = { ...cliResSelection.value, [cli]: [] }
-    await refreshCli(cli)
+    if (rels.includes(cliResPreviews.value[cli]?.name ?? '')) delete cliResPreviews.value[cli]
+    if (!only) delete cliResSelection.value[cli]
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('导入失败: ' + errorMessage(err))
   } finally {
@@ -769,8 +837,9 @@ async function keepCliResource(cli: string, rel: string): Promise<void> {
   cliBusy.value = true
   try {
     await keepWSLCliResourceLocal(cli, rel)
+    if (cliResPreviews.value[cli]?.name === rel) delete cliResPreviews.value[cli]
     showInfo(`已保留 WSL 本地资源（停跟随）：${rel}`)
-    await refreshCli(cli)
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('停跟随失败: ' + errorMessage(err))
   } finally {
@@ -778,18 +847,14 @@ async function keepCliResource(cli: string, rel: string): Promise<void> {
   }
 }
 
-async function takeOverCliResource(cli: string, rel: string): Promise<void> {
-  const token = cliResPreviewHash(cli, rel)
-  if (!token && token !== '') {
-    showError('请先预览该资源再确认接管')
-    return
-  }
+async function takeOverCliResource(cli: string, rel: string, token: string): Promise<void> {
   if (cliBusy.value) return
   cliBusy.value = true
   try {
     await takeOverWSLCliResource(cli, rel, token)
+    delete cliResPreviews.value[cli]
     showSuccess(`已按预览确认接管资源：${rel}`)
-    await refreshCli(cli)
+    await loadCliSupply(cli)
   } catch (err: unknown) {
     showError('接管失败: ' + errorMessage(err))
   } finally {
@@ -832,70 +897,6 @@ onMounted(load)
 </script>
 
 <style scoped>
-.supply-section {
-  margin-top: 18px;
-  padding-top: 12px;
-  border-top: 1px solid var(--separator);
-}
-.supply-section h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--label);
-  margin-bottom: 6px;
-}
-.supply-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.supply-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-}
-.supply-row label {
-  color: var(--label);
-  min-width: 140px;
-}
-.supply-row .row-value {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.supply-detail {
-  color: var(--tertiary);
-  font-size: 12px;
-}
-.supply-time {
-  color: var(--tertiary);
-  font-size: 11px;
-}
-.badge-warn {
-  background: color-mix(in srgb, #d08770 22%, transparent);
-  color: #d08770;
-}
-.consent-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 8px 0 4px;
-}
-.unified-row {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 10px;
-  background: var(--control);
-  border-radius: 8px;
-  margin-bottom: 8px;
-}
-
 .set-card {
   background: var(--card);
   border: 1px solid var(--separator);
@@ -980,8 +981,8 @@ onMounted(load)
 }
 
 .badge-ok {
-  color: var(--success, #2ea043);
-  background: color-mix(in srgb, var(--success, #2ea043) 14%, transparent);
+  color: var(--success-strong);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
 }
 
 .badge-wsl2 {
@@ -995,81 +996,329 @@ onMounted(load)
   background: var(--control);
 }
 
-.pi-units {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--separator);
+.supply-section {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--separator);
 }
-.pi-units h4 {
+
+.supply-section h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--label);
+}
+
+.sync-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--window);
+}
+
+.sync-mode-active {
+  border-color: color-mix(in srgb, var(--success) 24%, var(--separator));
+  background: color-mix(in srgb, var(--success) 5%, var(--card));
+}
+
+.sync-copy {
+  flex: 1 1 24rem;
+  min-width: 0;
+}
+
+.sync-copy strong {
+  font-size: 14px;
+}
+
+.sync-pending {
+  margin: 10px 0 0;
+  padding-inline: 12px;
+  border-inline-start: 2px solid var(--warning);
+  color: var(--warning-strong);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sync-list {
+  margin-top: 12px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+}
+
+.sync-group + .sync-group {
+  border-top: 1px solid var(--separator);
+}
+
+.sync-group > summary,
+.resource-group > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: 46px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  list-style: none;
+  cursor: pointer;
+  transition: background 150ms;
+}
+
+.sync-group > summary::-webkit-details-marker,
+.resource-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sync-group > summary::after,
+.resource-group > summary::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin: -3px 2px 0 3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--secondary);
+  transform: rotate(45deg);
+}
+
+.sync-group[open] > summary::after,
+.resource-group[open] > summary::after {
+  margin-top: 3px;
+  transform: rotate(225deg);
+}
+
+.sync-group > summary:hover,
+.resource-group > summary:hover {
+  background: var(--control);
+}
+
+.supply-section summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.group-name {
+  margin-right: auto;
+  color: var(--label);
   font-size: 13px;
   font-weight: 600;
-  color: var(--label);
-  margin-bottom: 6px;
 }
-.pi-unit-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 6px 0;
-  font-size: 13px;
-}
-.pi-unit-row > label {
-  min-width: 110px;
+
+.group-meta {
   color: var(--secondary);
-}
-.unit-actions {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.unit-preview {
-  width: 100%;
-  padding: 6px 10px;
-  background: var(--control);
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.key-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
   font-size: 12px;
 }
-.key-row .mono {
-  min-width: 180px;
+
+.group-content {
+  padding: 0 16px 14px;
 }
-.skills-toolbar {
+
+.group-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.group-action > div {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.cli-content {
+  display: grid;
+  gap: 12px;
+}
+
+.cli-settings,
+.resource-group {
+  min-width: 0;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--window);
+}
+
+.cli-settings,
+.resource-content {
+  padding: 0 12px;
+}
+
+.resource-group > summary {
+  min-height: 38px;
+  padding: 8px 12px;
+}
+
+.section-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  gap: 8px 12px;
+  min-height: 42px;
+  padding: 6px 0;
 }
-.skill-row {
-  border-top: 1px dashed var(--separator);
-  padding-top: 6px;
-}
-.skill-row input[type='checkbox'] {
-  margin-right: 6px;
-}
-.s4-cli-block {
-  border-top: 1px dashed var(--separator);
-  padding-top: 8px;
-  margin-top: 8px;
-}
-.s4-cli-block h5 {
+
+.section-heading h4 {
+  margin: 0;
+  color: var(--label);
   font-size: 13px;
   font-weight: 600;
-  color: var(--label);
-  margin: 4px 0;
 }
-.s4-section {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--separator);
+
+.open-code-heading {
+  margin-top: 6px;
+}
+
+.sync-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--separator);
+}
+
+.group-content > .sync-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.item-main {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.item-title,
+.item-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.item-title {
+  color: var(--label);
+  font-size: 13px;
+}
+
+.item-title label,
+.override-option {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.item-title input,
+.override-option input {
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.item-note {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.item-title + .item-note,
+.item-note + .item-note {
+  margin-top: 4px;
+}
+
+.supply-section code {
+  color: var(--label);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.supply-section .badge {
+  color: var(--secondary);
+  background: var(--control);
+  font-size: 11px;
+}
+
+.supply-section .badge-ok {
+  color: var(--success-strong);
+  background: color-mix(in srgb, var(--success) 14%, var(--card));
+}
+
+.supply-section .badge-warn {
+  color: var(--warning-strong);
+  background: var(--warning-tint);
+}
+
+.supply-section .badge-error {
+  color: var(--danger-strong);
+  background: color-mix(in srgb, var(--danger) 10%, var(--card));
+}
+
+.supply-section .badge-wsl2 {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+}
+
+.item-preview {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-inline-start: 2px solid var(--separator);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+
+.key-list,
+.compat-details ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key-list li + li {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--separator);
+}
+
+.preview-actions {
+  margin-top: 4px;
+}
+
+.preview-actions:empty {
+  display: none;
+}
+
+.compat-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+
+.compat-details > summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+
+.compat-details li {
+  margin: 4px 0 0 12px;
+}
+
+.resource-toolbar > .item-note {
+  flex: 1 1 12rem;
+}
+
+.resource-content > .item-note {
+  padding-bottom: 10px;
 }
 </style>

@@ -1,7 +1,6 @@
 /**
  * Shared Market Store（共用插件市场）
- * 数据流向单一：API → store → 组件。增删改成功后以响应列表整体替换
- * marketplaces（门面返回最新列表，免二次请求）。范式对齐 sharedSkills store。
+ * API → store → 组件。市场操作返回最新列表，插件更新替换对应条目。
  */
 
 import { defineStore } from 'pinia';
@@ -46,6 +45,14 @@ export const useSharedMarketStore = defineStore('sharedMarket', () => {
     marketplaces.value = await sharedMarketApi.updateSharedMarketplace(name);
   }
 
+  async function updatePlugin(marketName: string, pluginName: string) {
+    const updated = await sharedMarketApi.updateSharedMarketplacePlugin(marketName, pluginName);
+    const market = marketplaces.value.find((market) => market.name === marketName);
+    if (!market) return;
+    const index = market.plugins.findIndex((plugin) => plugin.name === pluginName);
+    if (index >= 0) market.plugins[index] = updated;
+  }
+
   /** 删除市场（danger 确认在面板层） */
   async function remove(name: string) {
     marketplaces.value = await sharedMarketApi.removeSharedMarketplace(name);
@@ -61,6 +68,7 @@ export const useSharedMarketStore = defineStore('sharedMarket', () => {
     load,
     add,
     update,
+    updatePlugin,
     remove,
   };
 });

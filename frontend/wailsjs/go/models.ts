@@ -5429,6 +5429,7 @@ export namespace sharedmarket {
 	    skills: string[];
 	    deployedSkills: string[];
 	    externalSource?: boolean;
+	    updatable: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Plugin(source);
@@ -5443,6 +5444,7 @@ export namespace sharedmarket {
 	        this.skills = source["skills"];
 	        this.deployedSkills = source["deployedSkills"];
 	        this.externalSource = source["externalSource"];
+	        this.updatable = source["updatable"];
 	    }
 	}
 	export class Marketplace {

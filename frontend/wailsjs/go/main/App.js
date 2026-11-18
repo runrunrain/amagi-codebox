@@ -986,6 +986,10 @@ export function UpdateSharedMarketplace(arg1) {
   return window['go']['main']['App']['UpdateSharedMarketplace'](arg1);
 }
 
+export function UpdateSharedMarketplacePlugin(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSharedMarketplacePlugin'](arg1, arg2);
+}
+
 export function UpdateSharedMcpEntry(arg1, arg2) {
   return window['go']['main']['App']['UpdateSharedMcpEntry'](arg1, arg2);
 }

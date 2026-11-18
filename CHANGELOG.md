@@ -4,6 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.147] - 2026-11-18
+
+### Added
+
+- 共用市场支持单独更新插件。更新后的目录信息和待部署技能来自该插件的最新快照，其他插件与已部署的技能保留原版本。
+
+### Changed
+
+- 环境检测的 WSL 配置区改为可展开的同步概览。共享技能、Claude Code、Codex、OpenCode 和视觉同步各有入口，配置差异与资源操作按需展示。Pi 插件重放统一在扩展管理中查看和操作。
+
+### Fixed
+
+- WSL 配置预览中的已选条目可以取消勾选，取消全部已选项后可撤回托管导入。
+
 ## [1.3.146] - 2026-11-18
 
 ### Fixed

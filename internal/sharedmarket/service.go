@@ -68,6 +68,7 @@ type Plugin struct {
 	// ExternalSource 为 true 时插件内容不在市场 clone 内（如官方市场的
 	// git-subdir 外部引用），无法本地枚举技能/部署。
 	ExternalSource bool `json:"externalSource,omitempty"`
+	Updatable      bool `json:"updatable"` // 市场目录中有可单独更新的本地来源条目
 }
 
 // DeployReport 是一次插件部署的结果（部署到 ~/.agents/skills）。
@@ -133,10 +134,20 @@ type stateFile struct {
 }
 
 type stateEntry struct {
-	Name        string `json:"name"`
-	Source      string `json:"source"`
-	AddedAt     string `json:"addedAt"`
-	LastUpdated string `json:"lastUpdated"`
+	Name            string                    `json:"name"`
+	Source          string                    `json:"source"`
+	AddedAt         string                    `json:"addedAt"`
+	LastUpdated     string                    `json:"lastUpdated"`
+	PluginSnapshots map[string]pluginSnapshot `json:"pluginSnapshots,omitempty"`
+}
+
+func (s stateFile) marketIndex(name string) int {
+	for i, entry := range s.Marketplaces {
+		if entry.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // readState 原子读状态文件；不存在 → 空态（首次使用即空态，不报错）。
@@ -225,6 +236,15 @@ type catalogPlugin struct {
 	Author      map[string]string `json:"author"`
 }
 
+func (c catalogFile) findPlugin(name string) (catalogPlugin, bool) {
+	for _, plugin := range c.Plugins {
+		if plugin.Name == name {
+			return plugin, true
+		}
+	}
+	return catalogPlugin{}, false
+}
+
 // sourcePath 提取条目 source 的本地相对路径：字符串 source（"./plugins/x"）
 // 返回净化后的相对路径；对象 source（git-subdir 外部引用）返回空（外部仓库，
 // 本地 clone 内不存在）。
@@ -250,7 +270,7 @@ func (p catalogPlugin) sourcePath() string {
 
 // readCatalog 解析 clone 根下的 .claude-plugin/marketplace.json。
 func readCatalog(cloneDir string) (catalogFile, error) {
-	b, err := os.ReadFile(filepath.Join(cloneDir, ".claude-plugin", "marketplace.json"))
+	b, err := os.ReadFile(filepath.Join(cloneDir, catalogPath))
 	if err != nil {
 		return catalogFile{}, err
 	}
@@ -371,30 +391,8 @@ func (s *Service) scanPlugins(entry stateEntry, origins map[string]SkillOrigin) 
 		if strings.TrimSpace(cp.Name) == "" {
 			continue
 		}
-		plugin := Plugin{
-			Name:        cp.Name,
-			Version:     cp.Version,
-			Description: cp.Description,
-			Skills:      []string{},
-		}
-		if cp.Author != nil {
-			plugin.Author = strings.TrimSpace(cp.Author["name"])
-		}
-		dir := pluginDir(market.ClonePath, cp)
-		if dir == "" {
-			plugin.ExternalSource = true
-		} else {
-			for _, skill := range skillDirs(cp.Name, dir, market.ClonePath) {
-				plugin.Skills = append(plugin.Skills, skill.Name)
-			}
-			sort.Strings(plugin.Skills)
-		}
-		// 已部署判定（凭据制）：来源凭据指向「本市场 + 本插件」的技能目录，
-		// 与 clone 内当前枚举无关（市场更新后技能从 clone 消失，已部署目录
-		// 仍凭标记计入）。
-		plugin.DeployedSkills = append([]string{}, deployed[cp.Name]...)
+		plugin := s.scanPlugin(entry, cp, deployed[cp.Name])
 		delete(deployed, cp.Name)
-		sort.Strings(plugin.DeployedSkills)
 		market.Plugins = append(market.Plugins, plugin)
 	}
 	// A catalog refresh can remove a plugin; retain an uninstall entry for its deployments.
@@ -412,10 +410,33 @@ func (s *Service) scanPlugins(entry stateEntry, origins map[string]SkillOrigin) 
 	return market
 }
 
+func (s *Service) scanPlugin(market stateEntry, entry catalogPlugin, deployed []string) Plugin {
+	entry, dir, root := s.pluginContent(market, entry)
+	plugin := Plugin{
+		Name:           entry.Name,
+		Version:        entry.Version,
+		Description:    entry.Description,
+		Author:         strings.TrimSpace(entry.Author["name"]),
+		Skills:         []string{},
+		DeployedSkills: append([]string{}, deployed...),
+		ExternalSource: dir == "",
+		Updatable:      dir != "" && validName(entry.Name),
+	}
+	for _, skill := range skillDirs(entry.Name, dir, root) {
+		plugin.Skills = append(plugin.Skills, skill.Name)
+	}
+	sort.Strings(plugin.Skills)
+	sort.Strings(plugin.DeployedSkills)
+	return plugin
+}
+
 // ---- 对外方法 ----
 
 // List 返回全部共用市场（状态 + 实时目录扫描，按名称排序）。
 func (s *Service) List() ([]Marketplace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	state, err := s.readState()
 	if err != nil {
 		return nil, err
@@ -526,13 +547,7 @@ func (s *Service) Update(name string) (Marketplace, error) {
 	if err != nil {
 		return Marketplace{}, err
 	}
-	idx := -1
-	for i, entry := range state.Marketplaces {
-		if entry.Name == name {
-			idx = i
-			break
-		}
-	}
+	idx := state.marketIndex(name)
 	if idx < 0 {
 		return Marketplace{}, fmt.Errorf("共用市场 %q 不存在", name)
 	}
@@ -569,9 +584,14 @@ func (s *Service) Update(name string) (Marketplace, error) {
 	}
 
 	entry.LastUpdated = time.Now().Format(time.RFC3339)
+	previousSnapshots := entry.PluginSnapshots
+	entry.PluginSnapshots = nil
 	state.Marketplaces[idx] = entry
 	if err := s.writeState(state); err != nil {
 		return Marketplace{}, err
+	}
+	for _, snapshot := range previousSnapshots {
+		s.removePluginSnapshot(snapshot)
 	}
 	// 注：Update（git pull）不重写已部署技能的凭据——重新部署对已存在目标
 	// 保持跳过语义，凭据仍是最初部署时刻的证据（deployedAt 不代表技能内容
@@ -593,13 +613,7 @@ func (s *Service) Remove(name string) error {
 	if err != nil {
 		return err
 	}
-	idx := -1
-	for i, entry := range state.Marketplaces {
-		if entry.Name == name {
-			idx = i
-			break
-		}
-	}
+	idx := state.marketIndex(name)
 	if idx < 0 {
 		return fmt.Errorf("共用市场 %q 不存在", name)
 	}
@@ -628,9 +642,13 @@ func (s *Service) Remove(name string) error {
 	if err := os.RemoveAll(s.clonePath(name)); err != nil {
 		return fmt.Errorf("删除市场目录失败：%s（%v）", s.clonePath(name), err)
 	}
+	previousSnapshots := state.Marketplaces[idx].PluginSnapshots
 	state.Marketplaces = append(state.Marketplaces[:idx], state.Marketplaces[idx+1:]...)
 	if err := s.writeState(state); err != nil {
 		return err
+	}
+	for _, snapshot := range previousSnapshots {
+		s.removePluginSnapshot(snapshot)
 	}
 	if s.log != nil {
 		s.log.Info("sharedmarket", "移除共用市场", name)
@@ -671,14 +689,8 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	found := false
-	for _, entry := range state.Marketplaces {
-		if entry.Name == name {
-			found = true
-			break
-		}
-	}
-	if !found {
+	idx := state.marketIndex(name)
+	if idx < 0 {
 		return nil, fmt.Errorf("共用市场 %q 不存在", name)
 	}
 
@@ -687,21 +699,15 @@ func (s *Service) DeployPlugin(name, pluginName string) (*DeployReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("市场 %q 不可读（%v）；请先「更新」恢复", name, err)
 	}
-	var entry *catalogPlugin
-	for i := range catalog.Plugins {
-		if catalog.Plugins[i].Name == pluginName {
-			entry = &catalog.Plugins[i]
-			break
-		}
-	}
-	if entry == nil {
+	entry, found := catalog.findPlugin(pluginName)
+	if !found {
 		return nil, fmt.Errorf("市场 %q 中不存在插件 %q", name, pluginName)
 	}
-	dir := pluginDir(cloneDir, *entry)
+	_, dir, root := s.pluginContent(state.Marketplaces[idx], entry)
 	if dir == "" {
 		return nil, fmt.Errorf("插件 %q 的内容不在市场仓库内（外部 git 引用），暂不支持部署为共用技能", pluginName)
 	}
-	skills := skillDirs(pluginName, dir, cloneDir)
+	skills := skillDirs(pluginName, dir, root)
 	if len(skills) == 0 {
 		return nil, fmt.Errorf("插件 %q 没有可部署的技能（未发现 SKILL.md，或名称/路径未通过安全校验）", pluginName)
 	}

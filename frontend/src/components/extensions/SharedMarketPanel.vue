@@ -4,7 +4,7 @@
      描述/来源完整多行；行尾 更新/删除）。
      二级＝市场内插件列表：← 返回 + 面包屑（共用市场 › 市场名）+ DetailHeader
      （N 个插件 + 更新/打开目录）+ 插件行（技能数/已部署徽章 + 行尾
-     「部署技能」/「卸载」）。「已部署」与卸载范围均以来源凭据（provenance
+     「更新插件」/「部署技能」/「卸载」）。「已部署」与卸载范围均以来源凭据（provenance
      标记）为准：仅凭据匹配的目录可卸载，同名手动/无凭据条目保留，市场 clone
      不受影响。initialMarket prop 提供无依赖窄定位（外部导航配合）。
      添加/导入/删除均带 Dialog；部署为增量复制（已存在跳过，不覆盖用户改动），
@@ -54,12 +54,17 @@
                 <AppButton
                   variant="ghost"
                   size="small"
-                  :disabled="isUpdating(market.name)"
+                  :disabled="marketUpdateBusy(market.name)"
                   @click.stop="handleUpdate(market)"
                 >
                   {{ isUpdating(market.name) ? '更新中…' : '更新' }}
                 </AppButton>
-                <AppButton variant="danger" size="small" @click.stop="requestRemove(market)">
+                <AppButton
+                  variant="danger"
+                  size="small"
+                  :disabled="marketUpdateBusy(market.name)"
+                  @click.stop="requestRemove(market)"
+                >
                   删除
                 </AppButton>
               </div>
@@ -85,7 +90,7 @@
             <AppButton
               variant="ghost"
               size="small"
-              :disabled="isUpdating(activeMarket.name)"
+              :disabled="marketUpdateBusy(activeMarket.name)"
               @click="handleUpdate(activeMarket)"
             >
               {{ isUpdating(activeMarket.name) ? '更新中…' : '更新' }}
@@ -119,9 +124,19 @@
               <template #trailing>
                 <div class="row-actions">
                   <AppButton
+                    v-if="plugin.updatable"
+                    variant="ghost"
+                    size="small"
+                    :disabled="pluginUpdateBusy(activeMarket.name, plugin.name)"
+                    title="从市场源更新此插件"
+                    @click="handleUpdatePlugin(plugin)"
+                  >
+                    {{ isUpdatingPlugin(plugin.name) ? '更新中…' : '更新插件' }}
+                  </AppButton>
+                  <AppButton
                     variant="primary"
                     size="small"
-                    :disabled="plugin.externalSource || plugin.skills.length === 0 || isDeploying(plugin.name)"
+                    :disabled="plugin.externalSource || plugin.skills.length === 0 || isDeploying(plugin.name) || isUpdatingPlugin(plugin.name)"
                     :title="deployButtonTitle(plugin)"
                     @click="handleDeploy(plugin)"
                   >
@@ -131,7 +146,7 @@
                     v-if="deployedCount(plugin) > 0"
                     variant="danger"
                     size="small"
-                    :disabled="isUninstalling(plugin.name)"
+                    :disabled="isUninstalling(plugin.name) || isUpdatingPlugin(plugin.name)"
                     :title="uninstallButtonTitle(plugin)"
                     @click="requestUninstall(plugin)"
                   >
@@ -263,7 +278,7 @@ const {
   error,
   loaded,
 } = storeToRefs(store);
-const { load, add, update, remove } = store;
+const { load, add, update, updatePlugin, remove } = store;
 const { showSuccess, showError, showWarn } = useToast();
 
 // --- 无依赖窄定位：initialMarket prop ---
@@ -295,6 +310,7 @@ watch(
 
 // --- 行级操作中态 ---
 const updatingNames = ref<Set<string>>(new Set());
+const updatingPlugins = ref(new Map<string, string>());
 const deployingKeys = ref<Record<string, boolean>>({});
 
 // --- 添加市场 Dialog ---
@@ -385,8 +401,21 @@ function isUpdating(name: string): boolean {
   return updatingNames.value.has(name);
 }
 
+function marketUpdateBusy(name: string): boolean {
+  return isUpdating(name) || updatingPlugins.value.has(name);
+}
+
+function isUpdatingPlugin(name: string): boolean {
+  const marketName = activeMarketName.value;
+  return marketName !== null && updatingPlugins.value.get(marketName) === name;
+}
+
+function pluginUpdateBusy(marketName: string, pluginName: string): boolean {
+  return marketUpdateBusy(marketName) || isDeploying(pluginName) || isUninstalling(pluginName);
+}
+
 async function handleUpdate(market: SharedMarketplace) {
-  if (isUpdating(market.name)) return;
+  if (marketUpdateBusy(market.name)) return;
   updatingNames.value = new Set(updatingNames.value).add(market.name);
   try {
     await update(market.name);
@@ -398,6 +427,22 @@ async function handleUpdate(market: SharedMarketplace) {
     const next = new Set(updatingNames.value);
     next.delete(market.name);
     updatingNames.value = next;
+  }
+}
+
+async function handleUpdatePlugin(plugin: SharedMarketPlugin) {
+  const market = activeMarket.value;
+  if (!market || !plugin.updatable || pluginUpdateBusy(market.name, plugin.name)) return;
+
+  updatingPlugins.value.set(market.name, plugin.name);
+  try {
+    await updatePlugin(market.name, plugin.name);
+    showSuccess(`已更新插件「${plugin.name}」`);
+  } catch (err) {
+    console.error('[SharedMarketPanel] Plugin update failed:', err);
+    showError(`更新插件失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    updatingPlugins.value.delete(market.name);
   }
 }
 
@@ -634,6 +679,7 @@ defineExpose({
   selectMarket,
   backToMarkets,
   handleUpdate,
+  handleUpdatePlugin,
   handleDeploy,
   handleOpenFolder,
   requestUninstall,

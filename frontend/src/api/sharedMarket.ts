@@ -14,6 +14,7 @@ import {
   ListClaudeMarketplacesForImport,
   ImportSharedMarketplacesFromClaude,
   UpdateSharedMarketplace,
+  UpdateSharedMarketplacePlugin,
   RemoveSharedMarketplace,
   DeploySharedMarketplacePlugin,
   OpenSharedMarketplaceFolder,
@@ -37,6 +38,7 @@ export interface SharedMarketPlugin {
   deployedSkills?: string[];
   /** true = 插件内容不在市场仓库内（git-subdir 外部引用），无法本地部署 */
   externalSource?: boolean;
+  updatable: boolean;
 }
 
 /** 一个共用市场的视图（List 附带完整目录扫描） */
@@ -133,6 +135,12 @@ export function importSharedMarketplacesFromClaude(names: string[]): Promise<Sha
 /** 拉取市场最新内容（缺失时重新 clone），返回最新列表 */
 export function updateSharedMarketplace(name: string): Promise<SharedMarketplace[]> {
   return callApi('[api.sharedMarket.updateSharedMarketplace]', () => UpdateSharedMarketplace(name));
+}
+
+export function updateSharedMarketplacePlugin(marketName: string, pluginName: string): Promise<SharedMarketPlugin> {
+  return callApi('[api.sharedMarket.updateSharedMarketplacePlugin]', () =>
+    UpdateSharedMarketplacePlugin(marketName, pluginName),
+  );
 }
 
 /** 删除共用市场（clone 目录 + 状态；已部署技能不受影响），返回最新列表 */

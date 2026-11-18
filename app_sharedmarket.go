@@ -5,8 +5,7 @@ package main
 //   - 持有 Service（userHome=用户主目录，构造模式照抄 buildSharedSkillsService）；
 //   - Claude Code 注册表 → 可 clone 源的转换（github repo / git url / 本地
 //     installLocation 路径；sharedmarket 包对来源引擎无感知）；
-//   - Wails 门面方法（List/Refresh/Add/Import/Update/Remove/Deploy/Open 共 8 个），
-//     全部不含令牌。
+//   - 共用市场、插件和部署来源的 Wails 门面方法。
 //
 // SharedMarkets.Service 不进 bind_list.go：与 SharedSkills/SharedMcp 同模式，
 // 经 App 门面暴露。
@@ -189,6 +188,11 @@ func (a *App) UpdateSharedMarketplace(name string) ([]sharedmarket.Marketplace, 
 		return nil, err
 	}
 	return a.sharedMarketService().List()
+}
+
+// UpdateSharedMarketplacePlugin 从市场源更新指定插件并返回该插件的最新视图。
+func (a *App) UpdateSharedMarketplacePlugin(marketName, pluginName string) (sharedmarket.Plugin, error) {
+	return a.sharedMarketService().UpdatePlugin(marketName, pluginName)
 }
 
 // RemoveSharedMarketplace 删除共用市场（clone 目录 + 状态条目；已部署技能
