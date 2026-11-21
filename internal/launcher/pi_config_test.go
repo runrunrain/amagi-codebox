@@ -39,6 +39,44 @@ func TestPiAPITypeWireAPIMapping(t *testing.T) {
 			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, WireAPI: "grpc"}},
 			want:     "openai-completions",
 		},
+		// 自动档智能化：官方 OpenAI 端点（api.openai.com）未显式设置 wire_api 时
+		// 自动升级 responses（gpt-6.x 起 Chat Completions 不允许 function tools 与
+		// reasoning_effort 共存，coding agent 必带工具调用）。
+		{
+			name:     "official openai auto wire_api upgrades to openai-responses",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com/v1"}},
+			want:     "openai-responses",
+		},
+		{
+			name:     "official openai base url without scheme still upgrades",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "api.openai.com/v1"}},
+			want:     "openai-responses",
+		},
+		{
+			name:     "official openai explicit chat stays openai-completions",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com/v1", WireAPI: "chat"}},
+			want:     "openai-completions",
+		},
+		{
+			name:     "official openai fqdn trailing dot upgrades",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com./v1"}},
+			want:     "openai-responses",
+		},
+		{
+			name:     "lookalike host is not official and stays openai-completions",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com.evil.example/v1"}},
+			want:     "openai-completions",
+		},
+		{
+			name:     "third-party relay auto wire_api stays openai-completions",
+			provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "http://router.example.net/v1"}},
+			want:     "openai-completions",
+		},
+		{
+			name:     "legacy top-level official base url upgrades via fallback",
+			provider: config.Provider{Type: "openai", BaseURL: "https://api.openai.com/v1"},
+			want:     "openai-responses",
+		},
 		{
 			name:     "legacy openai provider (nil sub-block) maps to openai-completions",
 			provider: config.Provider{Type: "openai", AuthKey: "OPENAI_API_KEY"},
@@ -84,6 +122,60 @@ func TestBuildPiModelsConfigWireAPIResponses(t *testing.T) {
 	entry := cfg["providers"].(map[string]map[string]any)["amagi-custom"]
 	if entry["api"] != "openai-responses" {
 		t.Fatalf("api = %#v, want openai-responses", entry["api"])
+	}
+}
+
+// TestBuildPiModelsConfigOfficialOpenAIAutoUpgrades 验证自动档智能化全链路：
+// 官方 OpenAI 端点 + wire_api 未设置时 BuildPiModelsConfig 产出
+// openai-responses（pi/omp 启动写入即生效，无需用户显式配置）。
+func TestBuildPiModelsConfigOfficialOpenAIAutoUpgrades(t *testing.T) {
+	provider := config.Provider{
+		OpenAI: &config.OpenAIFormat{
+			Enabled: true,
+			BaseURL: "https://api.openai.com/v1",
+		},
+	}
+	cfg, err := BuildPiModelsConfig("custom", provider, "m", "k", config.Parameters{}, nil)
+	if err != nil {
+		t.Fatalf("BuildPiModelsConfig: %v", err)
+	}
+	entry := cfg["providers"].(map[string]map[string]any)["amagi-custom"]
+	if entry["api"] != "openai-responses" {
+		t.Fatalf("api = %#v, want openai-responses", entry["api"])
+	}
+}
+
+// TestOfficialOpenAIChatReasoningWarning 表驱动覆盖启动防呆检测：仅「官方
+// OpenAI + 显式 chat + 推理开启」命中，其余组合（自动档已升级、第三方端点、
+// 无推理参数）不误报。
+func TestOfficialOpenAIChatReasoningWarning(t *testing.T) {
+	official := config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com/v1", WireAPI: "chat"}}
+	relay := config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "http://router.example.net/v1"}}
+	withEffort := config.Parameters{ReasoningEffort: "high"}
+	withThinking := config.Parameters{Thinking: &config.ThinkingConfig{Type: "enabled"}}
+	tests := []struct {
+		name     string
+		provider config.Provider
+		params   config.Parameters
+		wantHit  bool
+	}{
+		{name: "official chat + reasoning_effort hits", provider: official, params: withEffort, wantHit: true},
+		{name: "official chat + thinking enabled hits", provider: official, params: withThinking, wantHit: true},
+		{name: "official chat without reasoning params misses", provider: official, params: config.Parameters{}},
+		{name: "official auto + reasoning never reaches chat (misses)", provider: config.Provider{OpenAI: &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.openai.com/v1"}}, params: withEffort},
+		{name: "relay chat + reasoning misses (no false positive)", provider: relay, params: withEffort},
+		{name: "anthropic provider misses", provider: config.Provider{Anthropic: &config.AnthropicFormat{Enabled: true}}, params: withEffort},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := OfficialOpenAIChatReasoningWarning(tt.provider, tt.params)
+			if tt.wantHit && got == "" {
+			t.Fatalf("expect warning hit, got empty")
+			}
+			if !tt.wantHit && got != "" {
+			t.Fatalf("expect no warning, got %q", got)
+			}
+		})
 	}
 }
 

@@ -285,11 +285,29 @@ const anthropicBaseUrl = computed(() => entry.value?.provider?.anthropic?.base_u
 const openaiBaseUrl = computed(() => entry.value?.provider?.openai?.base_url || '');
 const openaiOrg = computed(() => entry.value?.provider?.openai?.organization || '');
 
-/** OpenAI 接口协议展示：未设置/非法值显示「自动」，与后端 EffectiveWireAPI 归一化语义一致 */
+/** 判断 OpenAI Base URL 是否指向官方 OpenAI 端点（host 精确等于 api.openai.com）
+ * 与后端 config.IsOfficialOpenAIBaseURL / AddProviderDialog 的前端判定同构 */
+function isOfficialOpenAIBaseURL(url: string): boolean {
+  const s = url.trim();
+  if (!s) return false;
+  const target = s.includes('://') ? s : `https://${s}`;
+  try {
+    const host = new URL(target).hostname.replace(/\.$/, '');
+    return host.toLowerCase() === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
+/** OpenAI 接口协议展示：未设置/非法值显示「自动」，与后端 EffectiveWireAPI 归一化
+ * 语义一致；官方 OpenAI 端点的自动档实际走 Responses（后端 piAPIType 智能化），
+ * 展示同步标注避免误导。 */
 const openaiWireApiLabel = computed(() => {
   const wa = (entry.value?.provider?.openai?.wire_api || '').toLowerCase();
   if (wa === 'chat') return 'Chat Completions (/chat/completions)';
   if (wa === 'responses') return 'Responses (/responses)';
+  const baseUrl = entry.value?.provider?.openai?.base_url || entry.value?.provider?.base_url || '';
+  if (isOfficialOpenAIBaseURL(baseUrl)) return '自动（官方端点 → Responses）';
   return '自动';
 });
 

@@ -355,7 +355,10 @@ type OpenAIFormat struct {
 	AuthKey      string `json:"auth_key,omitempty"`
 	// WireAPI 选择该 OpenAI 兼容端点的接口协议（可选，snake_case）。
 	// 合法值见 WireAPIChat / WireAPIResponses；未设置（""）表示默认/自动，
-	// 各 CLI 维持现状：Codex→responses、pi/omp→openai-completions。
+	// 各 CLI 维持现状：Codex→responses、pi/omp→openai-completions；唯一例外：
+	// pi/omp 在生效 baseURL 指向官方 OpenAI（api.openai.com，见
+	// IsOfficialOpenAIBaseURL）时自动档升级为 responses（gpt-6.x 起 Chat
+	// Completions 不允许 function tools 与 reasoning_effort 共见）。
 	// 读取一律经 EffectiveWireAPI 归一化（trim+小写，非法值 → ""），
 	// 保证未设置时现有行为零变化。OpenCode v1 不支持 responses 协议，
 	// 生成 opencode 配置时忽略该字段（仍走 chat）。

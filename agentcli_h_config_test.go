@@ -131,6 +131,44 @@ func TestAgentCLIProviderKeySetMasksKey(t *testing.T) {
 	}
 }
 
+// TestOverlayAgentCLIOpenAIWireAPIAlias 验证 openai 子块 overlay 同时接受
+// camelCase wireApi 与 snake_case wire_api（与 models.json 存储键一致，自动化
+// 集成方按存储键传参不再被静默忽略）；两键同传时 camelCase 优先，非法值拒绝。
+func TestOverlayAgentCLIOpenAIWireAPIAlias(t *testing.T) {
+	base := &config.OpenAIFormat{Enabled: true, BaseURL: "https://api.acme.test/v1"}
+
+	f, err := overlayAgentCLIOpenAI(base, map[string]any{"wire_api": "responses"})
+	if err != nil {
+		t.Fatalf("snake_case 别名: %v", err)
+	}
+	if f.WireAPI != config.WireAPIResponses {
+		t.Fatalf("wire_api 别名未生效: %q", f.WireAPI)
+	}
+
+	f2, err := overlayAgentCLIOpenAI(base, map[string]any{"wireApi": "chat"})
+	if err != nil || f2.WireAPI != config.WireAPIChat {
+		t.Fatalf("camelCase 原链路应不受影响: %v %q", err, f2.WireAPI)
+	}
+
+	// 两键同传：camelCase 优先。
+	f3, err := overlayAgentCLIOpenAI(base, map[string]any{"wireApi": "chat", "wire_api": "responses"})
+	if err != nil || f3.WireAPI != config.WireAPIChat {
+		t.Fatalf("同传时 camelCase 应优先: %v %q", err, f3.WireAPI)
+	}
+
+	// 别名同样接受非法值拒绝（与 camelCase 一致）。
+	if _, err := overlayAgentCLIOpenAI(base, map[string]any{"wire_api": "grpc"}); err == nil {
+		t.Fatalf("snake_case 非法值应拒绝")
+	}
+
+	// 均未提供：保持 base 原值。
+	keep := &config.OpenAIFormat{Enabled: true, WireAPI: config.WireAPIResponses}
+	f5, err := overlayAgentCLIOpenAI(keep, map[string]any{"baseUrl": "https://other.test/v1"})
+	if err != nil || f5.WireAPI != config.WireAPIResponses {
+		t.Fatalf("未提供 wire 键应保留原值: %v %q", err, f5.WireAPI)
+	}
+}
+
 func TestAgentCLIProviderDelete(t *testing.T) {
 	h, app, _ := newAgentCLIHostFixture(t)
 	ctx := context.Background()

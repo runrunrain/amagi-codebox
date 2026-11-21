@@ -249,6 +249,12 @@ func (a *App) writePiProviderModelsAtLaunch(providerID string, settings piLaunch
 	// 条目的整体替换语义，漏注会把统一同步写入的同 provider 其他预设模型挤掉。
 	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 	if piCfg, cfgErr := launcher.BuildPiModelsConfig(providerID, *provider, settings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
+		// 启动防呆：官方 OpenAI + 显式 chat + 推理预设的组合会在首个请求 400
+		//（gpt-6.x 起函数工具与 reasoning_effort 在 Chat Completions 互斥），
+		// 仅告警不阻断（用户显式选择 chat，保持尊重）。
+		if warn := launcher.OfficialOpenAIChatReasoningWarning(*provider, presetParams); warn != "" {
+			a.Log.Warn("pi", "接口协议与推理预设冲突", warn)
+		}
 		// WSL 内 pi 与 Windows 共享 agent 根（PI_CODING_AGENT_DIR 经 /p 翻译），
 		// 故 WSL/原生统一写 Windows 侧 models.json。
 		wroteProvider := false
@@ -309,6 +315,11 @@ func (a *App) writeOmpProviderModelsAtLaunch(providerID string, launchSettings o
 	// 漏注会把统一同步写入的同 provider 其他预设模型挤掉）。
 	presetModels := launcher.ManagedPresetModels(providerID, *provider, a.Config.GetAllTerminalPresets(), a.Config.GetModalityProbeCache(), config.TerminalPresetOpenAI)
 	if ompCfg, cfgErr := launcher.BuildOmpModelsConfig(providerID, *provider, launchSettings.Model, apiKey, presetParams, presetModels); cfgErr == nil {
+		// 启动防呆：与 writePiProviderModelsAtLaunch 同构（官方 OpenAI + 显式
+		// chat + 推理预设 → 首个请求 400），仅告警不阻断。
+		if warn := launcher.OfficialOpenAIChatReasoningWarning(*provider, presetParams); warn != "" {
+			a.Log.Warn("omp", "接口协议与推理预设冲突", warn)
+		}
 		// WSL 模式：omp 在 distro 内运行，配置必须落到 WSL 侧 agent root
 		//（提交走与 WriteWSLOmpAgentConfig 同族的 SA-06 staging 原语）；非 WSL 路径不变。
 		wroteProvider := false

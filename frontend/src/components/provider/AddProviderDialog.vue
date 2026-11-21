@@ -71,7 +71,10 @@
           <option value="responses">Responses (/responses)</option>
         </select>
         <p class="form-hint">
-          自动：Codex 走 Responses，pi/omp/OpenCode 走 Chat Completions；OpenCode 暂不支持 Responses，选择后仍走 Chat Completions
+          自动：Codex 走 Responses；pi/omp 走 Chat Completions（OpenAI 官方端点除外，自动走 Responses）；OpenCode 暂不支持 Responses，选择后仍走 Chat Completions
+        </p>
+        <p v-if="openaiWireApiHint" class="form-hint" :class="form.openaiWireApi === 'chat' ? 'form-hint-warning' : undefined">
+          {{ openaiWireApiHint }}
         </p>
       </div>
 
@@ -189,6 +192,31 @@ const editExportCache = ref<ProviderExportPayload | null>(null);
 // ---- 模式与动态文案 ----
 
 const isEditing = computed(() => !!props.editTarget);
+
+/** 判断 OpenAI Base URL 是否指向官方 OpenAI 端点（host 精确等于 api.openai.com） */
+function isOfficialOpenAIBaseURL(url: string): boolean {
+  const s = url.trim();
+  if (!s) return false;
+  const target = s.includes('://') ? s : `https://${s}`;
+  try {
+    const host = new URL(target).hostname.replace(/\.$/, '');
+    return host.toLowerCase() === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
+/** 官方 OpenAI 端点提示：协议选 chat 时给出冲突警告，auto/responses 时说明自动行为 */
+const openaiWireApiHint = computed(() => {
+  if (!form.supportsOpenAI || !isOfficialOpenAIBaseURL(form.openaiBaseUrl)) return '';
+  if (form.openaiWireApi === 'chat') {
+    return '检测到 OpenAI 官方端点：gpt-6.x 系列在 Chat Completions 上不允许函数工具与推理档位共存，coding agent 会话将报 400；建议改为「自动」或「Responses」';
+  }
+  if (!form.openaiWireApi) {
+    return '检测到 OpenAI 官方端点：自动档下 pi/omp 已自动走 Responses 协议（Codex 同样默认 Responses）';
+  }
+  return '';
+});
 
 const title = computed(() => (isEditing.value ? '编辑提供商' : '添加提供商'));
 
@@ -475,6 +503,10 @@ async function handleSave() {
   margin: 0;
   font-size: 12px;
   color: var(--tertiary);
+}
+
+.form-hint-warning {
+  color: var(--warning, #e6a700);
 }
 
 .format-selector {

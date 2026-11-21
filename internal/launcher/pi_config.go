@@ -30,7 +30,12 @@ func PiProviderID(providerName string) string {
 //   - OpenAI 兼容   -> 默认 "openai-completions"（最通用）；
 //     OpenAI 格式 wire_api 为 "responses" 时改用 "openai-responses"
 //     （经 config.OpenAIFormat.EffectiveWireAPI 归一化，未设置/非法值维持
-//     默认，既有行为零变化）
+//     默认，既有行为零变化）；wire_api 未显式设置且生效 baseURL 指向官方
+//     OpenAI（api.openai.com）时自动档升级为 "openai-responses"——gpt-6.x
+//     起 OpenAI 在 Chat Completions 上不允许 function tools 与
+//     reasoning_effort 共存（400 invalid_request_error），coding agent 必带
+//     工具调用，官方端点的推理档位预设只有 Responses 协议可用。显式 "chat"
+//     仍尊重用户选择，第三方中转站（host 不匹配）不受影响仍走 completions。
 //   - Anthropic 兼容 -> "anthropic-messages"
 //
 // omp 的 api 判定与 pi 同构，复用同一函数（见 omp_config.go），改一处两引擎
@@ -40,9 +45,40 @@ func piAPIType(provider config.Provider) string {
 		if provider.OpenAI.EffectiveWireAPI() == config.WireAPIResponses {
 			return "openai-responses"
 		}
+		if provider.OpenAI.EffectiveWireAPI() == "" &&
+			config.IsOfficialOpenAIBaseURL(provider.EffectiveBaseURL("openai")) {
+			return "openai-responses"
+		}
 		return "openai-completions"
 	}
 	return "anthropic-messages"
+}
+
+// OfficialOpenAIChatReasoningWarning 报告「官方 OpenAI 端点 + 显式 chat 协议 +
+// 推理档位开启」的运行时冲突组合（pi/omp 启动防呆，见 piAPIType 的自动档
+// 智能化背景：gpt-6.x 起 Chat Completions 不允许 function tools 与
+// reasoning_effort 共存，coding agent 必带工具调用，命中时首个请求即 400）。
+//
+// 自动档（wire_api 未设置）在官方端点已由 piAPIType 自动升级 responses，
+// 本检测只覆盖用户显式选择 chat 的场景：命中返回非空提示（含解除方式），
+// 供启动路径 Log.Warn；不命中返回空串。推理判定与 buildManagedModelEntry
+// 写入 pi/omp 配置的条件同构（ReasoningEffort 非空或 Thinking.Type=enabled）。
+func OfficialOpenAIChatReasoningWarning(provider config.Provider, params config.Parameters) string {
+	if !provider.IsOpenAICompatible() {
+		return ""
+	}
+	if piAPIType(provider) != "openai-completions" {
+		return ""
+	}
+	if !config.IsOfficialOpenAIBaseURL(provider.EffectiveBaseURL("openai")) {
+		return ""
+	}
+	hasEffort := strings.TrimSpace(params.ReasoningEffort) != ""
+	thinking := params.Thinking != nil && params.Thinking.Type == "enabled"
+	if !hasEffort && !thinking {
+		return ""
+	}
+	return "官方 OpenAI 端点 + 接口协议显式 chat + 预设开启推理档位：gpt-6.x 在 Chat Completions 上不允许 function tools 与 reasoning_effort 共存，会话首个请求将 400；建议把接口协议改为自动或 Responses"
 }
 
 // BuildPiModelsConfig 依据 amagi Provider + Preset 参数生成 pi models.json 配置（map 形式）。

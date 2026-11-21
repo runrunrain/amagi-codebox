@@ -4,6 +4,18 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.149] - 2026-11-22
+
+### Added
+
+- OpenAI 官方端点接口协议自动适配：服务提供商指向 `api.openai.com` 且未显式设置接口协议时，Pi/OMP 会话自动走 Responses 协议——gpt-6.x 起 OpenAI 在 Chat Completions 上不允许函数工具与推理档位共存，coding agent 会话（必带工具调用）配推理预设会直接 400。显式选择 Chat Completions 仍受尊重，第三方中转站不受影响。
+- Pi/OMP 启动防呆：检测「官方 OpenAI 端点 + 显式 Chat Completions + 预设开启推理档位」组合并记录告警日志，提示改为自动或 Responses。
+- 提供商表单识别 OpenAI 官方端点：接口协议选 Chat Completions 时提示冲突风险，自动档说明实际走 Responses；详情页接口协议同步标注「自动（官方端点 → Responses）」。
+
+### Fixed
+
+- `codebox-agent provider save` 的 openai 子块兼容 `wire_api` 蛇形键名（与 models.json 存储键一致），自动化集成按存储键传参不再被静默忽略；`wireApi` 与 `wire_api` 同传时驼峰优先，非法值同样拒绝。
+
 ## [1.3.148] - 2026-11-18
 
 ### Added

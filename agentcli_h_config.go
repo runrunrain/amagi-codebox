@@ -383,13 +383,22 @@ func overlayAgentCLIOpenAI(base *config.OpenAIFormat, sub map[string]any) (*conf
 	if v, ok := sub["organization"].(string); ok {
 		f.Organization = v
 	}
-	if v, ok := sub["wireApi"].(string); ok {
-		norm := strings.ToLower(strings.TrimSpace(v))
-		switch norm {
-		case "", config.WireAPIChat, config.WireAPIResponses:
-			f.WireAPI = norm
-		default:
-			return nil, agentCLIArgErrf("wireApi 只支持 chat/responses，收到 %q", v)
+	// wireApi（camelCase，与 provider get 视图同构）优先；兼容 snake_case 别名
+	// wire_api（与 models.json 存储键一致，自动化集成方常按存储键传参）；两键
+	// 同传时 camelCase 优先。非字符串值与既有行为一致静默忽略。
+	wireRaw, hasWire := sub["wireApi"]
+	if !hasWire {
+		wireRaw, hasWire = sub["wire_api"]
+	}
+	if hasWire {
+		if v, ok := wireRaw.(string); ok {
+			norm := strings.ToLower(strings.TrimSpace(v))
+			switch norm {
+			case "", config.WireAPIChat, config.WireAPIResponses:
+				f.WireAPI = norm
+			default:
+				return nil, agentCLIArgErrf("wireApi 只支持 chat/responses，收到 %q", v)
+			}
 		}
 	}
 	if headers, ok := sub["headers"].(map[string]any); ok {
