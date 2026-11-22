@@ -23,8 +23,11 @@
     </template>
 
     <template v-else>
+      <div v-if="piLaunchMessage" class="term-empty-wrap" role="status">
+        <PageHead title="Pi 会话" :description="piLaunchMessage" />
+      </div>
       <!-- 无选中会话：空态 -->
-      <div v-if="!activeSession" class="term-empty-wrap">
+      <div v-else-if="!activeSession" class="term-empty-wrap">
         <PageHead title="终端" description="" />
         <EmptyState
           icon="▢"
@@ -37,10 +40,10 @@
            buffer，避免用截断的 ANSI 历史流反复重建正在运行的 TUI。 -->
       <TerminalView
         v-for="sessionId in mountedSessionIds"
-        v-show="activeSession?.id === sessionId"
+        v-show="!piLaunchMessage && activeSession?.id === sessionId"
         :key="sessionId"
         :session-id="sessionId"
-        :active="activeSession?.id === sessionId"
+        :active="!piLaunchMessage && activeSession?.id === sessionId"
       />
     </template>
   </section>
@@ -48,6 +51,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import PageHead from '../components/ui/PageHead.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import TerminalView from '../components/terminal/TerminalView.vue'
@@ -57,8 +61,10 @@ import { useRemoteClientStore } from '../stores/remoteClient'
 
 const sessionStore = useSessionStore()
 const remoteClientStore = useRemoteClientStore()
+const route = useRoute()
 
 const activeSession = computed(() => sessionStore.activeSession)
+const piLaunchMessage = computed(() => route.query.starting === 'pi' ? sessionStore.piLaunchMessage : null)
 const mountedSessionIds = ref<string[]>([])
 
 watch(

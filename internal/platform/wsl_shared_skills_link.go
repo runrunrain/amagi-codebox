@@ -68,11 +68,9 @@ type WSLSharedSkillsLinkResult struct {
 //     注：-T 为 GNU coreutils 语义（WSL/Ubuntu 生产环境）；BSD 宿主的测试
 //     由 mv 适配接缝等价模拟（见 wsl_shared_skills_race_test.go）。
 //   - 终验 readlink——任何路径下未确认指向目标一律 FAIL-*，不冒充成功。
-func wslSharedSkillsScript(linuxTarget string) string {
-	t := wslShQuote(linuxTarget)
-	return strings.Join([]string{
+func wslSharedSkillsScript(targetSetup string) string {
+	return targetSetup + "\n" + strings.Join([]string{
 		`L="$HOME/.agents/skills"`,
-		`T=` + t,
 		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
 		`mkdir -p "$HOME/.agents" 2>/dev/null || { printf 'FAIL-MKDIR\n'; exit 1; }`,
 		`if [ -e "$L" ] && [ ! -L "$L" ]; then`,
@@ -126,28 +124,39 @@ func WSLEnsureSharedAgentsSkillsLink(distro, hostSkillsDir string) WSLSharedSkil
 		res.Detail = "非 Windows 宿主不适用"
 		return res
 	}
-	// 目标路径须经 distro 内 wslpath 实测翻译；执行失败（distro 不可达等）与
-	//「确认目标不存在」分开报告（R1-F07：不把运行故障冒充宿主缺失）。
-	mapped, terr := wslTranslatePathsCore(distro, hostSkillsDir)
-	linuxTarget := mapped[normalizeWindowsPathKey(hostSkillsDir)]
-	if terr != nil {
-		res.State = WSLSkillsFailed
-		res.Detail = fmt.Sprintf("路径翻译探测失败：%v", terr)
-		return res
-	}
-	if linuxTarget == "" {
-		res.State = WSLSkillsHostMissing
-		res.Detail = "Windows 技能根在 distro 内不可达（不存在或未挂载）"
-		return res
-	}
-	res.Target = linuxTarget
-	out, err := wslScriptRunner(distro, wslSharedSkillsScript(linuxTarget))
+	// Translate, check and repair in one WSL process. Keep the real distro
+	// mount mapping and the same atomic link/backup semantics.
+	out, err := wslScriptRunner(distro, wslSharedSkillsHostScript(hostSkillsDir))
 	if err != nil {
 		res.State = WSLSkillsFailed
 		res.Detail = fmt.Sprintf("distro 内执行失败：%v", err)
 		return res
 	}
-	return parseWSLSharedSkillsLinkResult(decodeWSLListOutput(out), linuxTarget)
+	return parseWSLSharedSkillsHostResult(decodeWSLListOutput(out))
+}
+
+const wslSkillsTargetMarker = "__CODEBOX_SKILLS_TARGET__:"
+
+func wslSharedSkillsHostScript(hostSkillsDir string) string {
+	return wslSharedSkillsScript(`T=$(wslpath -u ` + wslShQuote(hostSkillsDir) + ` 2>/dev/null) || T=''
+case "$T" in /*) ;; *) T='' ;; esac
+if [ ! -e "$T" ]; then T=''; fi
+printf '%s%s\n' '` + wslSkillsTargetMarker + `' "$T"
+[ -n "$T" ] || exit 0`)
+}
+
+func parseWSLSharedSkillsHostResult(out string) WSLSharedSkillsLinkResult {
+	if _, marked, found := strings.Cut("\n"+out, "\n"+wslSkillsTargetMarker); found {
+		target, result, _ := strings.Cut(marked, "\n")
+		target = strings.TrimSuffix(target, "\r")
+		if target == "" && strings.TrimSpace(result) == "" {
+			return WSLSharedSkillsLinkResult{Link: "~/.agents/skills", State: WSLSkillsHostMissing, Detail: "Windows 技能根在 distro 内不可达（不存在或未挂载）"}
+		}
+		if strings.HasPrefix(target, "/") {
+			return parseWSLSharedSkillsLinkResult(result, target)
+		}
+	}
+	return WSLSharedSkillsLinkResult{Link: "~/.agents/skills", State: WSLSkillsFailed, Detail: "共享技能根探测未返回有效的目标路径标记"}
 }
 
 // parseWSLSharedSkillsLinkResult 解析 distro 内脚本的终态行（纯函数，跨平台

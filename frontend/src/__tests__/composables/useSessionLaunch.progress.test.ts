@@ -40,8 +40,9 @@ function makeOpts(): LaunchOptions {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((r) => { resolve = r })
-  return { promise, resolve }
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((r, fail) => { resolve = r; reject = fail })
+  return { promise, resolve, reject }
 }
 
 /** 取第 n 次 EventsOn 订阅的 (回调, dispose) */
@@ -135,5 +136,67 @@ describe('launchFromSettings 进度订阅生命周期', () => {
 
     expect(opts.showError).not.toHaveBeenCalled()
     expect(launchStageText.value).toBeNull()
+  })
+})
+
+describe('embedded Pi launch route', () => {
+  function setupPi() {
+    const { launchFromSettings } = useSessionLaunch()
+    const launch = deferred<string>()
+    vi.mocked(sessionApi.launchPiSession).mockReturnValueOnce(launch.promise)
+    const route = ref({ path: '/', fullPath: '/', query: {} as Record<string, string> })
+    const opts = makeOpts()
+    Object.assign(opts.sessionStore, { piLaunchMessage: null })
+    Object.assign(opts.router, {
+      currentRoute: route,
+      push: vi.fn(async () => { route.value = { path: '/terminal', fullPath: '/terminal?starting=pi', query: { starting: 'pi' } } }),
+      replace: vi.fn(async (path: string) => { route.value = { path, fullPath: path, query: {} } }),
+    })
+    const state = makeState({ engine: 'pi', piProvider: 'provider', piModel: 'model', piMode: 'embedded' })
+    return { launch, route, opts, start: () => launchFromSettings(state, opts) }
+  }
+
+  it('shows progress before backend activation and does not wait for preference persistence', async () => {
+    const { launch, route, opts, start } = setupPi()
+    const save = deferred<void>()
+    vi.mocked(opts.persistDefaults).mockReturnValueOnce(save.promise)
+    const pending = start()
+    expect(route.value.query.starting).toBe('pi')
+    expect(opts.sessionStore.piLaunchMessage).toBeTruthy()
+    expect(opts.sessionStore.setActiveSession).not.toHaveBeenCalled()
+    const [onProgress] = nthSubscription(0)
+    onProgress({ appType: 'pi', stage: 'preflight' })
+    expect(opts.sessionStore.piLaunchMessage).toBe(LAUNCH_STAGE_TEXT.preflight)
+
+    launch.resolve('real-pi-session')
+    await pending
+    expect(opts.sessionStore.setActiveSession).toHaveBeenCalledWith('real-pi-session')
+    expect(opts.persistDefaults).toHaveBeenCalled()
+    expect(route.value.fullPath).toBe('/terminal')
+    expect(opts.sessionStore.piLaunchMessage).toBeNull()
+    save.resolve()
+  })
+
+  it('restores the previous route on failed launch without selecting a session', async () => {
+    const { launch, route, opts, start } = setupPi()
+    const pending = start()
+    launch.reject(new Error('WSL preflight failed'))
+    await pending
+    expect(opts.sessionStore.setActiveSession).not.toHaveBeenCalled()
+    expect(opts.showSuccess).not.toHaveBeenCalled()
+    expect(opts.showError).toHaveBeenCalledWith(expect.stringContaining('WSL preflight failed'))
+    expect(route.value.fullPath).toBe('/')
+    expect(opts.sessionStore.piLaunchMessage).toBeNull()
+  })
+
+  it('does not steal selection if the user leaves the progress route', async () => {
+    const { launch, route, opts, start } = setupPi()
+    const pending = start()
+    route.value = { fullPath: '/terminal', path: '/terminal', query: {} }
+    launch.resolve('real-pi-session')
+    await pending
+    expect(opts.sessionStore.setActiveSession).not.toHaveBeenCalled()
+    expect(opts.router.replace).not.toHaveBeenCalled()
+    expect(opts.sessionStore.piLaunchMessage).toBeNull()
   })
 })

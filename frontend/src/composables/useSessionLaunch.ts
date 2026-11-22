@@ -11,10 +11,10 @@
  *
  * 行为契约：
  *   1. 启动成功后按 mode 决定跳转：
- *      - embedded 模式 → router.push('/terminal')（内嵌终端显示该会话）
+ *      - embedded 模式 → /terminal；Pi 先显示启动进度，再挂载真实会话
  *      - external/webui/newWindow 等外部模式 → 不跳转，留在当前页（外部窗口/web 已开，
  *        跳 /terminal 会显示空终端，造成 UX 困惑）
- *   2. 启动失败仅 showError，不跳转
+ *   2. 启动失败 showError；Pi 已进入进度页且用户未离开时退回原页
  *   3. OpenCode 必须有 workDir；preset 为空表示用全局 opencode.json 配置，给予友好提示
  *   4. 启动锁（launching）可选：调用方通过 opts.launchingRef 传入响应式 ref 即启用防重入
  *   5. canLaunchFromSettings 是"宽松校验"——仅检查字段非空，不校验 preset 是否在列表中
@@ -100,14 +100,18 @@ export function useSessionLaunch() {
    * 不可用时降级为不订阅（文案恒为 null），不影响启动流程。
    * 返回注销函数（EventsOn 的 dispose fn）。
    */
-  function subscribeLaunchProgress(): () => void {
+  function subscribeLaunchProgress(sessionStore: SessionStore, showPiProgress: boolean): () => void {
     launchStageText.value = null
     try {
       return EventsOn('launch:progress', (payload: unknown) => {
         const p = payload as LaunchProgressPayload | null
         if (!p || typeof p.stage !== 'string') return
+        if (showPiProgress && p.appType !== 'pi') return
         const text = LAUNCH_STAGE_TEXT[p.stage as LaunchProgressStage]
-        if (text) launchStageText.value = text
+        if (text) {
+          launchStageText.value = text
+          if (showPiProgress) sessionStore.piLaunchMessage = text
+        }
       })
     } catch (err) {
       // 非 Wails 环境（单测）：进度桥不可用，维持现状文案。
@@ -178,10 +182,10 @@ export function useSessionLaunch() {
    *   1. 启动锁检查（如传入 launchingRef 且占用中则 return）
    *   2. OpenCode workDir 必填校验
    *   3. 按 engine 调对应 sessionApi.launch*Session，embedded mode 传 shellPath
-   *   4. persistDefaults + refresh + setActiveSession
+   *   4. 更新真实会话列表并选中；Pi 保存默认值不阻塞页面
    *   5. showSuccess（OpenCode 用全局配置时额外提示；外部 mode 额外提示会话已在外部启动）
    *   6. 按 mode 决定跳转：embedded 跳 /terminal；外部模式（external/webui/newWindow 等）留在当前页
-   *   7. 异常仅 showError 不跳转；finally 释放锁
+   *   7. 异常 showError；finally 释放锁
    */
   async function launchFromSettings(
     dashState: DashState,
@@ -201,6 +205,9 @@ export function useSessionLaunch() {
     if (!canLaunchFromSettings(dashState)) return
     // 启动锁防重入（可选）
     if (launchingRef && launchingRef.value) return
+    const embeddedPi = dashState.engine === 'pi' && dashState.piMode === 'embedded'
+    // Switching host can remount the sidebar while the original RPC is pending.
+    if (embeddedPi && sessionStore.piLaunchMessage) return
 
     // OpenCode 必须有工作目录
     if (dashState.engine === 'opencode' && !dashState.workDir) {
@@ -209,8 +216,12 @@ export function useSessionLaunch() {
     }
 
     if (launchingRef) launchingRef.value = true
+    const previousRoute = embeddedPi ? router.currentRoute.value.fullPath : ''
+    const onPiProgressRoute = () => router.currentRoute.value.path === '/terminal' &&
+      router.currentRoute.value.query.starting === 'pi'
+    let piNavigation: Promise<unknown> | undefined
     // launching 期间订阅启动进度事件；finally 所有路径（成功/失败/异常）注销，不泄漏。
-    const unsubscribeLaunchProgress = subscribeLaunchProgress()
+    const unsubscribeLaunchProgress = subscribeLaunchProgress(sessionStore, embeddedPi)
     try {
       let sessionId = ''
       if (dashState.engine === 'claudecode') {
@@ -247,6 +258,14 @@ export function useSessionLaunch() {
           showError('所选 Pi 登录认证已失效，请刷新登录状态或显式选择其它服务提供商')
           return
         }
+        if (embeddedPi) {
+          sessionStore.piLaunchMessage = '正在启动 Pi 会话…'
+          // Load the lazy terminal route alongside backend preparation. The
+          // progress page is not a running session and has no PTY identity.
+          piNavigation = router.push({ path: '/terminal', query: { starting: 'pi' } }).catch((err) => {
+            console.error('[useSessionLaunch] terminal navigation failed:', err)
+          })
+        }
         sessionId = await sessionApi.launchPiSession({
           modelName: dashState.piModel,
           providerID: dashState.piProvider,
@@ -262,6 +281,23 @@ export function useSessionLaunch() {
           workDir: dashState.workDir,
           shellPath: dashState.ompMode === 'embedded' ? resolveShellPath(dashState, platformCaps) : '',
         })
+      }
+
+      if (embeddedPi) {
+        // Saving preferences is independent of the already-committed run.
+        const refreshed = refresh()
+        void Promise.resolve().then(persistDefaults).catch((err) => {
+          console.error('[useSessionLaunch] persist defaults failed:', err)
+        })
+        await refreshed
+        await piNavigation
+        // A switch to another session or route during cold startup wins.
+        if (onPiProgressRoute()) {
+          sessionStore.setActiveSession(sessionId)
+          await router.replace('/terminal')
+        }
+        showSuccess('Pi 终端已启动')
+        return
       }
 
       await persistDefaults()
@@ -294,8 +330,17 @@ export function useSessionLaunch() {
     } catch (err) {
       console.error('Launch failed:', err)
       showError('启动失败: ' + err)
+      if (embeddedPi) {
+        await piNavigation
+        if (onPiProgressRoute()) {
+          await router.replace(previousRoute).catch((navErr) => {
+            console.error('[useSessionLaunch] restore route failed:', navErr)
+          })
+        }
+      }
     } finally {
       unsubscribeLaunchProgress()
+      if (embeddedPi) sessionStore.piLaunchMessage = null
       launchStageText.value = null
       if (launchingRef) launchingRef.value = false
     }

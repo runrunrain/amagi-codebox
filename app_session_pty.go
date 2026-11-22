@@ -102,6 +102,7 @@ func (a *App) resolveEmbeddedLaunchSpec(appType session.AppType, mode string, sh
 			env, req.EnvPathFlagKeys = launcher.ApplyWSLSharedPiAgentRoot(env, defaultPiAgentDir(), req.EnvPathFlagKeys)
 			req.Env = env
 			a.Log.Info("session", "WSL 内 pi 共享 Windows agent 根", defaultPiAgentDir())
+			a.emitLaunchProgress(launchProgressStagePreflight, "WSL 共享技能根核验", string(appType))
 			a.wslEnsureSharedAgentsSkillsFunnel(wslDefaultDistroFn(nil))
 		}
 		kept, stripped, allowedPath := launcher.StripWSLHostPathEnvWithAllow(env, req.EnvForwardKeys, req.EnvPathFlagKeys)

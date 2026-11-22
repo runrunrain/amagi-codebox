@@ -32,6 +32,9 @@ export const useSessionStore = defineStore('session', () => {
   // Active session ID
   const activeSessionId = ref<string | null>(null);
 
+  // Local Pi launch UI only. No session ID or process authority exists here.
+  const piLaunchMessage = ref<string | null>(null);
+
   // Polling state
   const isPolling = ref(false);
 
@@ -169,6 +172,7 @@ export const useSessionStore = defineStore('session', () => {
     // State
     sessions,
     activeSessionId,
+    piLaunchMessage,
     isPolling,
     webuiStatus,
 

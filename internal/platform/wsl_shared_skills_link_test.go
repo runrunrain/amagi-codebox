@@ -9,7 +9,7 @@ import (
 // 目录先备份、既有链接替换、失败各有专属标记（越界改脚本会破坏 distro 内
 // 行为契约）。
 func TestWSLSharedSkillsScriptShape(t *testing.T) {
-	script := wslSharedSkillsScript("/mnt/c/Users/demo/.agents/skills")
+	script := wslSharedSkillsHostScript(`C:\Users\demo\.agents\skills`)
 	for _, want := range []string{
 		`L="$HOME/.agents/skills"`,
 		`if [ -L "$L" ] && [ "$(readlink "$L")" = "$T" ]; then printf 'OK-LINKED\n'; exit 0; fi`,
@@ -39,7 +39,7 @@ func TestWSLSharedSkillsScriptShape(t *testing.T) {
 		t.Fatalf("script must NOT publish directly onto $L (symlink traversal), got:\n%s", script)
 	}
 	// 目标路径单引号包裹（含空格/中文用户名安全）。
-	if !strings.Contains(script, `T='/mnt/c/Users/demo/.agents/skills'`) {
+	if !strings.Contains(script, `T=$(wslpath -u 'C:\Users\demo\.agents\skills'`) {
 		t.Fatalf("script must quote target path, got:\n%s", script)
 	}
 }
@@ -114,5 +114,25 @@ func TestWSLEnsureSharedAgentsSkillsLinkInputGates(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("input gates must not reach the runner, got %d calls", calls)
+	}
+}
+
+func TestParseWSLSharedSkillsHostResult(t *testing.T) {
+	const target = "/custom/c/Users/中文 名/.agents/skills"
+	const marker = wslSkillsTargetMarker
+	for _, tt := range []struct {
+		output string
+		state  WSLSharedSkillsLinkState
+		target string
+	}{
+		{"profile output\n" + marker + target + "\nOK-LINKED\n", WSLSkillsAlreadyLinked, target},
+		{marker + "\n", WSLSkillsHostMissing, ""},
+		{"OK-LINKED\n", WSLSkillsFailed, ""},
+		{marker + "relative\nOK-LINKED\n", WSLSkillsFailed, ""},
+		{marker + target + "\n", WSLSkillsFailed, target},
+	} {
+		if res := parseWSLSharedSkillsHostResult(tt.output); res.State != tt.state || res.Target != tt.target {
+			t.Errorf("parse %q = %+v; want %q targeting %q", tt.output, res, tt.state, tt.target)
+		}
 	}
 }

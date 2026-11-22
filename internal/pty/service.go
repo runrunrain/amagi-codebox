@@ -5,11 +5,13 @@ package pty
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"amagi-codebox/internal/logging"
 	"amagi-codebox/internal/platform"
@@ -31,6 +33,7 @@ type PtySession struct {
 	exited         chan struct{}
 	shellReady     chan struct{}
 	shellReadyOnce sync.Once
+	piSpawnAt      time.Time
 	bootstrapMode  platform.LaunchBootstrapMode
 	wslDistro      string     // immutable actual target captured at process start
 	outputHistory  []byte     // 最近输出的环形缓冲区，供后加入的 WebSocket 客户端重放
@@ -372,6 +375,7 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 		opts = append(opts, conpty.ConPtyEnv(spec.Env.Variables))
 	}
 
+	spawnAt := time.Now()
 	cpty, err := conpty.Start(commandLine, opts...)
 	if err != nil {
 		if s.log != nil {
@@ -408,6 +412,9 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 		currentRows:   rows,
 		runHandle:     runHandle,
 		bindingID:     bindingID,
+	}
+	if strings.EqualFold(spec.AppType, "pi") {
+		ps.piSpawnAt = spawnAt
 	}
 	s.bindingGeneration = bindingGeneration
 	s.sessions[sessionID] = ps
@@ -448,6 +455,9 @@ func (s *Service) StartResolvedWithRunEvidence(sessionID string, spec platform.R
 // "" when no delayed command is needed (the command is either embedded in the
 // shell invocation or absent).
 func (s *Service) StartupAutoCommand(spec platform.ResolvedLaunchSpec) string {
+	if spec.BootstrapMode == platform.BootstrapWSL {
+		return "" // already part of the WSL command line; no distro lookup or rebuild
+	}
 	_, sendAutoCommand := buildResolvedStartupPlan(spec, s.log)
 	return sendAutoCommand
 }
@@ -458,6 +468,18 @@ func buildResolvedStartupPlan(spec platform.ResolvedLaunchSpec, log *logging.Ser
 	// through the pwsh/cmd/exe fallback logic below.
 	if spec.BootstrapMode == platform.BootstrapWSL {
 		return buildWSLCommandLine(spec, log), ""
+	}
+	if spec.BootstrapMode == platform.BootstrapShellInline && strings.EqualFold(spec.AppType, "pi") &&
+		spec.Shell != nil && (spec.Shell.Key == "pwsh" || spec.Shell.Key == "powershell") {
+		// Encode the already PowerShell-quoted command as UTF-16LE so the
+		// Windows CreateProcess argument parser cannot alter it. NoProfile
+		// avoids shell startup hooks/PSReadLine gating the Pi command.
+		units := utf16.Encode([]rune(spec.StartupCommand))
+		payload := make([]byte, len(units)*2)
+		for i, v := range units {
+			binary.LittleEndian.PutUint16(payload[i*2:], v)
+		}
+		return windowsQuoteArg(spec.Shell.Path) + " -NoLogo -NoProfile -NoExit -EncodedCommand " + base64.StdEncoding.EncodeToString(payload), ""
 	}
 
 	shellPath := ""
@@ -504,7 +526,13 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 		}
 		n, err := ps.cpty.Read(buf)
 		if n > 0 {
-			ps.shellReadyOnce.Do(func() { close(ps.shellReady) })
+			var firstPiOutputAt time.Time
+			ps.shellReadyOnce.Do(func() {
+				close(ps.shellReady)
+				if s.log != nil && !ps.piSpawnAt.IsZero() {
+					firstPiOutputAt = time.Now()
+				}
+			})
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 
@@ -528,6 +556,10 @@ func (s *Service) readLoop(sessionID string, ps *PtySession, ctx context.Context
 			// 远程 WebSocket 回调
 			for _, cb := range s.snapshotOutputCallbacks(sessionID) {
 				cb(chunk)
+			}
+			if !firstPiOutputAt.IsZero() {
+				s.log.Info("pty", "Pi 首次 PTY 输出（不代表 Pi 就绪）",
+					fmt.Sprintf("id=%s bootstrap=%s 耗时=%dms", sessionID, ps.bootstrapMode, firstPiOutputAt.Sub(ps.piSpawnAt).Milliseconds()))
 			}
 		}
 		if err != nil {

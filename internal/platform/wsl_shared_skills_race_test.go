@@ -39,7 +39,7 @@ func runSharedSkillsScriptInShell(t *testing.T, homeSetup func(home string), pre
 		homeSetup(home)
 	}
 	target := t.TempDir() // Windows 技能根的 distro 侧形态（存在即可）
-	script := wslSharedSkillsScript(target)
+	script := wslSharedSkillsScript("T=" + wslShQuote(target))
 	parts := append([]string{mvGNU}, preambles...)
 	cmd := exec.Command("sh", "-c", strings.Join(parts, "\n")+";\n"+script)
 	cmd.Env = append(os.Environ(), "HOME="+home)

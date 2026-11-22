@@ -211,6 +211,35 @@ func (r *defaultCLIResolver) Resolve(request ResolveRequest) (ResolvedLaunchSpec
 		Diagnostics:   diagnostics,
 	}
 
+	// Pi works as a startup command inside PowerShell's ConPTY. Start it as
+	// part of shell initialization instead of typing it into PSReadLine after
+	// a fixed delay. Keep the interactive shell on exit, as with shell attach.
+	if r.capabilities.OS == "windows" && strings.EqualFold(strings.TrimSpace(request.AppType), "pi") &&
+		isAttachEligible(request.LaunchMode, request.AppType, cli.Path) {
+		shell := resolvedShell
+		if shell == nil {
+			def := defaultShellForCapabilities(resolvedEnv, r.capabilities)
+			shell = &def
+		}
+		if shell.Key == "pwsh" || shell.Key == "powershell" {
+			// Keep PowerShell's native command resolution (e.g. the npm pi.ps1
+			// shim rather than re-parsing arguments through a .cmd wrapper).
+			command, err := buildAttachPowerShell(cli.Name, cli.Args)
+			if err != nil {
+				return ResolvedLaunchSpec{}, err
+			}
+			spec.Shell = shell
+			spec.BootstrapMode = BootstrapShellInline
+			spec.StartupCommand = command
+			if resolvedShell == nil {
+				shellSource = "default"
+			}
+			spec.Diagnostics.ShellSource = shellSource
+			spec.Diagnostics.Warnings = append(spec.Diagnostics.Warnings, shellWarnings...)
+			return spec, nil
+		}
+	}
+
 	// Windows embedded shell attach is used for CLIs that misbehave when launched
 	// as an inline shell command. For Claude Code this is limited to npm/script
 	// shims (.cmd/.bat/.ps1 or the extensionless POSIX shim); official claude.exe
@@ -569,7 +598,8 @@ func quoteCommandPart(value string) string {
 }
 
 // isAttachEligible returns true when the launch should use BootstrapShellAttach.
-// OpenCode, Codex and Pi always use attach in Windows embedded mode. Claude Code
+// OpenCode, Codex and Pi (outside its PowerShell inline fast path) use attach
+// in Windows embedded mode. Claude Code
 // uses attach only for script wrappers (for example npm's claude.cmd) so the
 // wrapper is typed into an interactive shell inside ConPTY instead of being
 // launched as an inline .cmd command that may open an external terminal.
@@ -735,7 +765,8 @@ func buildAttachPowerShell(cliName string, args []string) (string, error) {
 }
 
 func escapePowerShellSingleQuote(value string) string {
-	return strings.ReplaceAll(value, "'", "''")
+	// PowerShell also treats typographic single quotes as string delimiters.
+	return strings.NewReplacer("'", "''", "‘", "‘‘", "’", "’’").Replace(value)
 }
 
 // buildAttachCmd produces a command safe for interactive cmd.exe input.
