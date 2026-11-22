@@ -4,6 +4,19 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.150] - 2026-11-22
+
+### Changed
+
+- 内嵌 Pi 会话在 Windows PowerShell 中改为 shell 初始化内联启动：实参以 `-NoProfile -NoExit -EncodedCommand`（UTF-16LE）随进程创建提交，去掉原先固定 1 秒的命令注入等待，不再被 profile 与 PSReadLine 提示符阻塞；Pi 退出后保留 shell。PowerShell 单引号转义补齐排版引号（‘ ’），中文、引号与元字符实参完整送达（本机 ConPTY 实测约 350 ms 收到完整实参）。
+- WSL 共享技能根的路径翻译、链接检查与按需修复合并为单次 `wsl.exe` 调用（本机温启动实测约 150 ms，原为多次往返）；备份、原子发布与终验语义不变。
+- Pi 启动时终端页与后端准备并行：先显示启动进度，仅在后端返回真实会话后才挂载对应终端；默认值落盘与 WebUI 探测不再阻塞页面。启动失败且用户仍停留在进度页时退回原页面，不虚构会话；等待期间切走会话不抢回页面。
+
+### Added
+
+- 系统日志新增「Pi 首次 PTY 输出（不代表 Pi 就绪）」里程碑，与「PTY 进程已启动」分开口径；WSL 共享技能根核验阶段发出 preflight 进度事件，Pi 启动进度页同步展示阶段文案。
+- 新增 `docs/developer/pi-startup-performance.md`：区分「启动进度可见 / 真实终端挂载 / Pi 就绪」三条时间线，收录本机证据与 WSL 数十秒等待的归因（Pi 跨 DrvFS 加载扩展），并给出回归与采样方法。
+
 ## [1.3.149] - 2026-11-22
 
 ### Added
