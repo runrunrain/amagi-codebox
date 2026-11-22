@@ -205,7 +205,6 @@ func (s *Service) mutatePackageEntry(source string, mutate func(entry map[string
 	}
 	entry := map[string]any{}
 	// 保留既有对象键（含未知自定义键）；字符串条目从 {source} 起步。
-	entry = map[string]any{}
 	if items[index].IsObject() {
 		if err := json.Unmarshal([]byte(items[index].Raw), &entry); err != nil {
 			return fmt.Errorf("解析 packages[%d] 失败: %w", index, err)

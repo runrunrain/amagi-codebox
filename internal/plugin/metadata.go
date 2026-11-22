@@ -258,12 +258,3 @@ func relativePluginPath(installPath, filePath string) string {
 	}
 	return filepath.ToSlash(relPath)
 }
-
-func (d *PluginDetail) hasSubItem(ref SubItemRef) bool {
-	for _, item := range d.SubItems {
-		if item.Type == ref.Type && item.Name == ref.Name {
-			return true
-		}
-	}
-	return false
-}

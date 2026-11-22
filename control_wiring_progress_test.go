@@ -136,6 +136,7 @@ func TestLaunchProgressNotEmittedForNativeLaunch(t *testing.T) {
 // 进程）——测试进程存活通过即证明守卫生效。同时固定 stage 枚举字符串（与前端
 // LAUNCH_STAGE_TEXT 键的跨语言契约）。
 func TestLaunchProgressEmitGuardedWithoutWailsContext(t *testing.T) {
+	//nolint:staticcheck // SA1012：故意传 nil ctx，验证发射守卫静默跳过而非 log.Fatalf
 	emitLaunchProgressEvent(nil, launchProgressEvent, map[string]any{"stage": launchProgressStagePTY})
 	emitLaunchProgressEvent(context.Background(), launchProgressEvent, map[string]any{"stage": launchProgressStagePTY})
 
