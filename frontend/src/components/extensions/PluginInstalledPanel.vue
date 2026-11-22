@@ -818,8 +818,8 @@ async function handleUpdate() {
     if (props.engine === 'codex') {
       // P4：Codex 单插件更新（市场刷新 + 卸载重装 + 恢复启用状态，后端 UpdatePlugin）。
       // 缺少市场来源时提示（重装需要 plugin@marketplace 定位）。
-      const marketplace = (plugin as any).marketplace;
-      const pid = (plugin as any).pluginId || plugin.id;
+      const marketplace = plugin.marketplace;
+      const pid = plugin.pluginId || plugin.id;
       if (!marketplace) {
         showError('该插件缺少市场来源信息，无法更新');
         return;
