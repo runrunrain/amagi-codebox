@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.151] - 2026-11-22
+
+### Fixed
+
+- 清理扩展批次遗留的 golangci 告警：移除未使用的 `PluginDetail.hasSubItem` 辅助方法，Pi 插件过滤器去掉重复的条目重赋值，nil-context 防御测试补 SA1012 nolint 注记说明保留意图。
+- 插件更新处理器移除冗余的 as-any 断言：`InstalledPluginView` 已声明 `marketplace` 与 `pluginId` 字段，CI 的 `@typescript-eslint/no-explicit-any` 不再报错。
+
 ## [1.3.150] - 2026-11-22
 
 ### Changed
