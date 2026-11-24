@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"amagi-codebox/internal/aiproxy/v2rayn"
 	"amagi-codebox/internal/platform"
 )
 
@@ -24,18 +25,13 @@ func FindCore(explicit string) string {
 	if p, err := exec.LookPath("sing-box"); err == nil {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	paths := []string{filepath.Join(home, "Library/Application Support/v2rayN/bin/sing_box/sing-box"), "/Applications/v2rayN.app/Contents/Resources/bin/sing_box/sing-box", filepath.Join(home, ".local/share/v2rayN/bin/sing_box/sing-box")}
-	for _, base := range []string{os.Getenv("APPDATA"), os.Getenv("LOCALAPPDATA")} {
-		if base != "" {
-			paths = append(paths, filepath.Join(base, "v2rayN/bin/sing_box/sing-box.exe"))
-		}
+	if p := v2rayn.FindBundledCore(); p != "" {
+		return p
 	}
+	// Also accept a standalone Windows core shipped alongside CodeBox.
 	if exe, err := os.Executable(); err == nil {
-		paths = append(paths, filepath.Join(filepath.Dir(exe), "sing-box.exe"), filepath.Join(filepath.Dir(exe), "bin/sing_box/sing-box.exe"))
-	}
-	for _, p := range paths {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		p := filepath.Join(filepath.Dir(exe), "sing-box.exe")
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
 			return p
 		}
 	}

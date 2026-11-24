@@ -24,7 +24,7 @@ CodeBox 左侧「AI 代理分流」是独立页面，路由为 `#/ai-proxy`。�
 
 独立 DNS 可填写 DNS 服务器 IP，使用绑定网卡的 UDP 53 解析；留空沿用系统解析，仍可能经过 TUN / FakeIP。本地 API 和本地代理上游使用回环地址绑定，localhost 使用内置 hosts 解析，不依赖独立 DNS 是否可用。若所选节点本身指向 v2rayN 的 localhost / 127.0.0.1 入口，后续路径仍由 v2rayN 决定。强制网络过滤器、其他 VPN 策略和实际节点连通性仍需按环境验证。本功能不修改 v2rayN、系统路由或系统代理设置。
 
-高级设置允许指定 sing-box 路径、v2rayN 数据库路径、代理端口、订阅下载代理和未匹配域名的上游。自动发现失败时，可以手动指定 `guiNDB.db` 和 sing-box 可执行文件。软件调用已有内核，不随工程分发 sing-box。
+Windows 便携版 v2rayN 可以放在任意盘符。先在当前 Windows 用户下启动 v2rayN，再点「同步 v2rayN」；CodeBox 会检查运行中的 v2rayN 目录下的 `guiConfigs/guiNDB.db`，并可在同一安装布局中找到自带的 sing-box。未运行时仍会检查标准安装路径。高级设置可手动指定数据库和 sing-box 可执行文件；手动设置优先，不会被自动发现覆盖。软件不随工程分发 sing-box。
 
 ## 与 CodeBox 的接合
 
@@ -60,6 +60,8 @@ V2RAYN_TEST_DATABASE='/path/to/guiNDB.db' SING_BOX_TEST_BINARY='/path/to/sing-bo
 npm --prefix frontend run build
 npm --prefix frontend run test
 ```
+
+在 Windows 上，CI 使用临时进程验证便携版发现，并验证带盘符的 SQLite 路径能以只读方式打开。复核本机安装时，可先启动 v2rayN，再设置 `V2RAYN_TEST_AUTO=1` 与 `V2RAYN_TEST_DATABASE`（预期发现的完整路径），运行 `go test ./internal/aiproxy/v2rayn -run TestLocalV2rayN -v`。
 
 `app_ai_proxy_browser_test.go` 提供隔离的真实 Go/Wails 门面桥接，配合 `e2e/ai-proxy.html` 和 `e2e/ai-proxy.vite.config.mjs` 验证 Vue 页面。该夹具只使用合成数据库、临时应用目录和测试节点，不读取真实模型凭据。
 

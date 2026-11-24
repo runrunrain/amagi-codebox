@@ -51,6 +51,10 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: go test ./... -run '^$' -count=1
 
+      - name: Windows v2rayN discovery and read-only DB regressions
+        if: matrix.os == 'windows-latest'
+        run: go test ./internal/aiproxy/v2rayn -count=1
+
       # Execute deterministic WSL regressions on Windows as well as compiling.
       # These use isolated fixtures; real distro/credential probes remain opt-in.
       - name: Windows WSL supply regressions

@@ -16,7 +16,7 @@ import (
 
 func fixture(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "v2rayN data #1.db")
+	path := filepath.Join(t.TempDir(), "v2rayN 数据 #1 100%.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)

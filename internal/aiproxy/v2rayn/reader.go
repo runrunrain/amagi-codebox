@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"amagi-codebox/internal/aiproxy/subscription"
 	_ "modernc.org/sqlite"
@@ -23,41 +23,18 @@ type Group struct {
 	Warnings []string
 }
 
-func Locate(explicit string) (string, error) {
-	if explicit != "" {
-		p, err := filepath.Abs(explicit)
-		if err != nil {
-			return "", errors.New("v2rayN 数据库路径无效")
-		}
-		if st, err := os.Stat(p); err != nil || st.IsDir() {
-			return "", errors.New("找不到指定的 v2rayN 数据库")
-		}
-		return p, nil
-	}
-	home, _ := os.UserHomeDir()
-	paths := []string{
-		filepath.Join(home, "Library/Application Support/v2rayN/guiConfigs/guiNDB.db"),
-		filepath.Join(home, ".local/share/v2rayN/guiConfigs/guiNDB.db"),
-		filepath.Join(home, ".config/v2rayN/guiConfigs/guiNDB.db"),
-	}
-	for _, base := range []string{os.Getenv("APPDATA"), os.Getenv("LOCALAPPDATA"), os.Getenv("XDG_DATA_HOME"), os.Getenv("XDG_CONFIG_HOME")} {
-		if base != "" {
-			paths = append(paths, filepath.Join(base, "v2rayN/guiConfigs/guiNDB.db"))
-		}
-	}
-	if exe, err := os.Executable(); err == nil {
-		paths = append(paths, filepath.Join(filepath.Dir(exe), "guiConfigs/guiNDB.db"))
-	}
-	for _, p := range paths {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p, nil
-		}
-	}
-	return "", nil
-}
-
 func openReadOnly(path string) (*sql.DB, error) {
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(abs)
+	// A Windows drive letter belongs in the URI path (file:///C:/...), not
+	// in the authority (file://C:/...), which SQLite rejects.
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := url.URL{Scheme: "file", Path: uriPath}
 	u.RawQuery = url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(1000)"}}.Encode()
 	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
@@ -68,8 +45,8 @@ func openReadOnly(path string) (*sql.DB, error) {
 }
 
 func Read(ctx context.Context, path string) ([]Group, error) {
-	if st, err := os.Stat(path); err != nil || st.IsDir() {
-		return nil, errors.New("找不到 v2rayN 数据库；可通过 --v2rayn-db 指定 guiNDB.db")
+	if !isRegularFile(path) {
+		return nil, errors.New("找不到 v2rayN 数据库；可在高级设置中指定 guiNDB.db")
 	}
 	db, err := openReadOnly(path)
 	if err != nil {

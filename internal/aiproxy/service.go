@@ -363,7 +363,7 @@ func (s *Service) SyncV2rayN(ctx context.Context) (SourceStatus, error) {
 	path, err := v2rayn.Locate(s.data.Settings.V2rayNDatabase)
 	s.source = SourceStatus{Available: path != "", Database: path}
 	if err == nil && path == "" {
-		err = errors.New("未找到本机 v2rayN，可设置数据库路径或手动导入订阅")
+		err = errors.New("未找到 v2rayN 数据库。请先启动 v2rayN 后重试，或在高级设置中指定 guiNDB.db。")
 	}
 	if err != nil {
 		s.source.Error = err.Error()
