@@ -528,17 +528,8 @@ func NewApp(mobileAssets embed.FS) *App {
 	// 多模态实弹探测（契约 v1.2）：预设/服务商保存与配置加载后，对静态知识库
 	// 未知的模型自动实弹探测能力并落缓存，供视觉导出与 pi/omp input 声明。
 	app.wireModalityProber()
-	// 登录预设 contextWindow 同步（pi 登录模型窗口覆写）：预设保存/删除后把
-	// providers.<provider>.modelOverrides.<model>.contextWindow 深合并进 canonical
-	// root（~/.pi/agent）的 models.json——Leader 与 amagi 子 agent（PI_CODING_AGENT_DIR
-	// =canonical root 透传）读同一份生效。**reconcile 语义（非事件值直写）**：事件
-	// 只作触发信号，落盘值以 ConfigService 当前权威状态为准——重读该 provider+model
-	// 的存活预设，无预设 → 清除覆写（恢复内置窗口），有 → 写其窗口（Save 的
-	// 全组对齐保证同模型多预设窗口一致，取首个即权威值）。锁外回调乱序落盘时自然收敛到 config 终值，
-	// 不依赖事件接序。写入与后台 provider sync 共享 providerSyncMu（同一 models.json
-	// 读改写）。失败仅告警不阻断配置保存；启动链（LaunchPiSession 登录分支）另有
-	// 兑底。锁序：回调由 ConfigService 在写锁释放后触发，内部 providerSyncMu →
-	// Config 读锁（GetPiLoginPresets）——与后台 sync 路径同序，不构成环。
+	// 保存/删除后，将共享覆写对账到 Pi 标准 models.json。回调只提供受影响的模型，
+	// 不使用事件携带的旧值；桌面启动另有兜底。
 	app.Config.SetPiLoginPresetChangeListener(func(saved, removed *config.PiLoginPreset) {
 		trigger := saved
 		if trigger == nil {
@@ -547,28 +538,13 @@ func NewApp(mobileAssets embed.FS) *App {
 		if trigger == nil {
 			return
 		}
-		app.providerSyncMu.Lock()
-		defer app.providerSyncMu.Unlock()
-		// 重读权威状态（不信任事件携带的旧值）：该 provider+model 当前存活预设。
-		presets, err := app.Config.GetPiLoginPresets()
-		if err != nil {
-			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（配置不可读）", err.Error())
-			return
-		}
-		cw, maxTokens := 0, 0 // 无存活预设 → 清除窗口与输出覆写
-		for _, p := range presets {
-			if p.Provider == trigger.Provider && p.Model == trigger.Model {
-				cw, maxTokens = p.ContextWindow, p.MaxTokens
-				break // 全组对齐保证一致，取首个即权威值
-			}
-		}
 		agentDir, dirErr := piconfig.StandardAgentDir()
 		if dirErr != nil {
-			app.Log.Warn("pi", "登录预设 contextWindow 同步跳过（canonical root 不可用）", dirErr.Error())
+			app.Log.Warn("pi", "登录预设模型覆写同步跳过（Pi 标准目录不可用）", dirErr.Error())
 			return
 		}
-		if err := launcher.UpsertPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model, cw, maxTokens); err != nil {
-			app.Log.Warn("pi", "登录预设 contextWindow 覆写同步失败", fmt.Sprintf("provider=%s model=%s cw=%d: %v", trigger.Provider, trigger.Model, cw, err))
+		if err := app.syncPiLoginModelOverride(agentDir, trigger.Provider, trigger.Model); err != nil {
+			app.Log.Warn("pi", "登录预设模型覆写同步失败", err.Error())
 		}
 	})
 	// AI 辅助 Git 提交/推送（gitassist）：与视觉导出同样的 keychain 适配模式，

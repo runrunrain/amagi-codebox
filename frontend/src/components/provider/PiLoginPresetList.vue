@@ -40,6 +40,7 @@
           <div class="preset-badges">
             <span class="param model">{{ preset.model }}</span>
             <span class="param key">思考 · {{ preset.thinking || 'Pi 默认' }}</span>
+            <span v-if="preset.vision" class="param vision">识图</span>
             <span v-if="preset.context_window" class="param">窗口 {{ preset.context_window.toLocaleString() }}</span>
             <span v-if="preset.max_tokens" class="param">输出 {{ preset.max_tokens.toLocaleString() }}</span>
           </div>

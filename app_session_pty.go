@@ -1239,20 +1239,9 @@ func (a *App) LaunchPiSession(modelName string, providerID string, mode string, 
 		for key, value := range piLoginEnvOverrides(login.AgentDir, claudeLoginManagedExtraKeys(claudeCredentials)...) {
 			envOverrides[key] = value
 		}
-		// 登录预设 contextWindow 覆写：Pi 登录模型没有预设参数面，窗口只能经
-		// models.json 的 modelOverrides 注入（providers.<provider>.modelOverrides
-		// .<model>.contextWindow，深合并保留兄弟配置）。写 canonical root 后，
-		// Leader 与 amagi 子 agent（PI_CODING_AGENT_DIR 透传）读同一份生效。
-		// 与后台 provider sync 互斥（同一 models.json 读改写）；失败仅告警不阻断
-		//（回退 Pi 内置目录窗口，启动语义不受影响）。
-		a.providerSyncMu.Lock()
-		overrideErr := launcher.UpsertPiLoginModelOverride(login.AgentDir, loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, loginPreset.MaxTokens)
-		a.providerSyncMu.Unlock()
-		if overrideErr != nil {
-			a.Log.Warn("pi", "写入登录预设 contextWindow 覆写失败（回退 Pi 内置窗口）", overrideErr.Error())
-		} else if loginPreset.ContextWindow > 0 || loginPreset.MaxTokens > 0 {
-			a.Log.Info("pi", "登录预设模型额度覆写已写入", fmt.Sprintf("provider=%s model=%s contextWindow=%d maxTokens=%d -> %s/models.json",
-				loginPreset.Provider, loginPreset.Model, loginPreset.ContextWindow, loginPreset.MaxTokens, login.AgentDir))
+		// Pi 与子 agent 共享标准 models.json，启动前对账一次。写入失败时仍可按 Pi 当前配置启动。
+		if err := a.syncPiLoginModelOverride(login.AgentDir, loginPreset.Provider, loginPreset.Model); err != nil {
+			a.Log.Warn("pi", "写入 Pi 登录预设模型覆写失败（使用 Pi 当前配置启动）", err.Error())
 		}
 	}
 	// WSL 内 pi 共享 Windows agent 根：models.json 直接写 Windows 侧，不向 distro 分发。

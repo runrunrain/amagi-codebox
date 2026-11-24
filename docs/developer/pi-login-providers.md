@@ -4,7 +4,7 @@
 
 1. 在 Pi 内完成 OAuth 登录，登录项位于标准 `~/.pi/agent/auth.json`。
 2. 打开 **Provider Center → 预设 → Pi 登录认证**。也可在 **服务提供商** 的登录卡片上点「管理预设」，直达按该来源筛选的列表。
-3. 点击「添加预设」，填写名称、登录来源、Pi 原生模型 ID 和思考等级，可选填上下文窗口与输出上限。没有模型提示时可手动输入。点击已有预设行进入编辑，删除需确认。
+3. 点击「添加预设」，填写名称、登录来源、Pi 原生模型 ID 和思考等级，可选填上下文窗口与输出上限；支持图片的模型可开启「视觉能力 → 识图」。没有模型提示时可手动输入。点击已有预设行进入编辑，删除需确认。
 4. 用「刷新登录状态」重新发现登录。退出登录后，原来保存的预设仍可编辑或删除，但只有检测到来源登录后，才可在 **会话设置 → Pi** 中选用。名称与登录来源创建后不可改，以保留已有会话的预设引用。
 
 登录类型不能用于 Claude Code、Codex、OpenCode 或 OMP。它不会出现在这些 CLI 的提供商/预设选择中，后端也拒绝将登录引用用于其它 CLI。普通同名 API 服务商仍独立存在。
@@ -41,13 +41,13 @@
 
 - `piconfig.Service.GetPiLoginProviders()`：只读动态 DTO，字段为 `id/provider/cli/source/models`。扫描认证项只解码 `type`，只有 `oauth` 会显示；`api_key` 不算登录。
 - 扫描始终使用标准用户 Home 的 `.pi/agent`，不跟随 `PI_CODING_AGENT_DIR`（与启动钉定值同源）。其它 Pi 配置编辑器原有覆盖目录行为不变。
-- `config.ConfigService.GetPiLoginPresets/SavePiLoginPreset/DeletePiLoginPreset`：专用 CRUD，写入 CodeBox `models.json` 的 `pi_login_presets`。字段为 `name/provider/model/thinking/context_window/max_tokens`，不存端点、API 密钥、token、同步或媒体标记。窗口与输出上限按登录来源与模型共享。
+- `config.ConfigService.GetPiLoginPresets/SavePiLoginPreset/DeletePiLoginPreset`：专用 CRUD，写入 CodeBox `models.json` 的 `pi_login_presets`。字段为 `name/provider/model/thinking/context_window/max_tokens/vision`，不存端点、API 密钥、token 或导出设置。窗口、输出上限和识图声明按登录来源与模型共享。
 - `config.ConfigService.ResolvePiLoginLaunch`（desktop/v1/restart 共用分类器）与 `RejectPiLoginLaunchRefs`（非 Pi 入口隔离拒绝）实现上述命名空间规则。
 - 登录元数据不写入 `models` 或公共 `terminal_presets`。专用预设不参与 harness provider 同步、媒体导出或公共 API 预设导出。当前完整配置导出不携带 `pi_login_presets`；这是本机持久化功能，不迁移登录凭据。
 
 ## 启动与失败边界
 
-桌面 `LaunchPiSession` 与 v1/restart `buildPiPlan` 共享登录解析/再检查。登录预设使用 Pi 原生 `--provider <native-id> --model <model-id>`，可选 `--thinking <level>`。不创建 `amagi-*` provider，不调用 API 密钥库、不改写认证或模型配置。
+桌面 `LaunchPiSession` 与 v1/restart `buildPiPlan` 共享登录解析/再检查。登录预设使用 Pi 原生 `--provider <native-id> --model <model-id>`，可选 `--thinking <level>`。不创建 `amagi-*` provider，也不调用 API 密钥库或改写认证。模型覆写在保存、删除时合并到 Pi 标准目录的 `models.json`；桌面启动前也会对账一次，远程计划构建保持只读。开启识图会写入 `modelOverrides.<model>.input: ["text", "image"]`；关闭或删除最后一个预设时恢复原值，不移除用户原有的图片支持。Pi 原生输入不接受视频，本地声明不参与 API 实弹探测或视觉清单导出。
 
 桌面 stable recipe 保留登录预设 key；重启重新解析预设和认证，不能静默回退到普通 API 提供商或默认账号。登录项被移除、预设不存在/损坏、来源不匹配会拒绝启动。WSL 会话与原生会话一样直接校验并消费 Windows canonical 的 `auth.json`（共享 agent 根）；Windows 侧未登录按登录失效关闭，绝不回退普通 API 路径。
 

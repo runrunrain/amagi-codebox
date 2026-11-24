@@ -3,10 +3,13 @@ package launcher
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
+
+	"amagi-codebox/internal/config"
 )
 
-// Pi 登录预设的 contextWindow / maxTokens 覆写（保存回调与登录启动分支消费）。
+// Pi 登录预设的额度和图片输入覆写（保存回调与登录启动分支消费）。
 //
 // 背景：Pi 登录模型（原生 /login 认证的内置 provider）没有 amagi 预设参数面，
 // 上下文窗口此前只能用 Pi 内置目录的固定值。Pi 的 models.json 支持对内置
@@ -28,6 +31,7 @@ import (
 //     （恢复 Pi 内置目录值）；键被删空则连带清理，provider 条目被清空则删除
 //     该 provider 键（pi 对空 provider overlay 报 composition error，不留空壳）；
 //   - maxTokens>0 写入输出额度，显式 0 移除；省略则保留已有 maxTokens。
+//   - 登录预设开启识图时声明 text/image；关闭时只撤回 CodeBox 的改动。
 //   - 幂等：目标态与现状一致不落盘。
 //
 // 损坏保护（两级）：JSON 语法损坏经 readStrictJSONObject 报错不覆写；目标
@@ -40,6 +44,16 @@ import (
 // contextWindow>0 写入；<=0 移除该键的 contextWindow 字段（幂等恢复内置值）。
 // maxTokens 缺省时保留现有输出覆写（兼容窗口专用调用）；显式 0 清除输出覆写。
 func UpsertPiLoginModelOverride(agentDir, provider, model string, contextWindow int, maxTokens ...int) error {
+	return upsertPiLoginModelOverride(agentDir, provider, model, contextWindow, nil, maxTokens...)
+}
+
+// ApplyPiLoginPresetModelOverride applies the shared limits and image input.
+// A zero-valued preset for the given provider/model removes CodeBox's overrides.
+func ApplyPiLoginPresetModelOverride(agentDir string, preset config.PiLoginPreset) error {
+	return upsertPiLoginModelOverride(agentDir, preset.Provider, preset.Model, preset.ContextWindow, &preset.Vision, preset.MaxTokens)
+}
+
+func upsertPiLoginModelOverride(agentDir, provider, model string, contextWindow int, vision *bool, maxTokens ...int) error {
 	if strings.TrimSpace(agentDir) == "" {
 		return fmt.Errorf("agentDir is required")
 	}
@@ -55,7 +69,10 @@ func UpsertPiLoginModelOverride(agentDir, provider, model string, contextWindow 
 		return fmt.Errorf("read existing pi models.json: %w", err)
 	}
 
-	providers := piProviderEntries(existing["providers"])
+	providers, err := overrideMapAt(existing, "providers")
+	if err != nil {
+		return fmt.Errorf("pi models.json: %w", err)
+	}
 	rawEntry, hasEntry := providers[provider]
 	var entry map[string]any
 	if hasEntry {
@@ -93,6 +110,13 @@ func UpsertPiLoginModelOverride(agentDir, provider, model string, contextWindow 
 			changed = true
 		}
 	}
+	if vision != nil {
+		modified, err := reconcilePiLoginVision(existing, modelKey, provider, model, *vision)
+		if err != nil {
+			return err
+		}
+		changed = changed || modified
+	}
 	if !changed {
 		return nil
 	}
@@ -114,6 +138,74 @@ func UpsertPiLoginModelOverride(agentDir, provider, model string, contextWindow 
 	}
 	existing["providers"] = providers
 	return WritePiAgentConfig(agentDir, existing)
+}
+
+// Pi ignores this top-level key. Recording the previous input in the same
+// file makes the write and its ownership metadata atomic. A nil backup means
+// there was no previous override. Never claim an existing identical input.
+const piLoginInputOwnershipKey = "_amagiCodeboxPiLoginInput"
+
+func reconcilePiLoginVision(root, modelKey map[string]any, provider, model string, enabled bool) (bool, error) {
+	inputs, err := overrideMapAt(root, piLoginInputOwnershipKey)
+	if err != nil {
+		return false, err
+	}
+	previous, err := overrideMapAt(inputs, provider)
+	if err != nil {
+		return false, err
+	}
+	backup, managed := previous[model]
+	if managed && backup != nil && !validPiLoginInput(backup) {
+		return false, fmt.Errorf("invalid Pi login input backup for %s/%s; refusing to overwrite", provider, model)
+	}
+	want := []any{"text", "image"}
+	current, hasInput := modelKey["input"]
+	if enabled {
+		if reflect.DeepEqual(current, want) {
+			return false, nil
+		}
+		if hasInput && !validPiLoginInput(current) {
+			return false, fmt.Errorf("invalid Pi model input for %s/%s; refusing to overwrite", provider, model)
+		}
+		// If the user edited the input after our last write, take the new
+		// value as the baseline so disabling never discards that edit.
+		previous[model] = current
+		inputs[provider] = previous
+		root[piLoginInputOwnershipKey] = inputs
+		modelKey["input"] = want
+		return true, nil
+	}
+	if !managed {
+		return false, nil
+	}
+	if reflect.DeepEqual(current, want) {
+		if backup == nil {
+			delete(modelKey, "input")
+		} else {
+			modelKey["input"] = backup
+		}
+	}
+	delete(previous, model)
+	if len(previous) == 0 {
+		delete(inputs, provider)
+	}
+	if len(inputs) == 0 {
+		delete(root, piLoginInputOwnershipKey)
+	}
+	return true, nil
+}
+
+func validPiLoginInput(value any) bool {
+	modalities, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, modality := range modalities {
+		if name, ok := modality.(string); !ok || (name != "text" && name != "image") {
+			return false
+		}
+	}
+	return true
 }
 
 // overrideMapAt 取 parent[key] 为对象 map；key 不存在时新建空 map 返回（调用方

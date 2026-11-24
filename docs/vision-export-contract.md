@@ -105,5 +105,6 @@ skills/amagi-media-understanding/references/config-format.md  # 上述 JSON Sche
 ## 5. 边界（v1 不做）
 
 - anthropic 格式 provider 的视觉导出（/v1/messages 协议）。
+- Pi 原生登录预设的视觉清单导出。其「识图」只声明 Pi 会话的图片输入能力，不读取或导出 OAuth 凭据。
 - 视频抽帧、音频抽取、字幕转写。
 - 远程/移动端 API 暴露标记字段。

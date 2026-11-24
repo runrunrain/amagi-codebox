@@ -23,13 +23,17 @@ describe('Pi login preset editor', () => {
     expect(html).toContain('添加 Pi 登录预设');
     expect(html).toMatch(/<option value="second-source"[^>]* selected>/);
     expect(html).toContain('暂无本地模型目录，可手动填写');
+    expect(html).toContain('识图（允许图片输入）');
+    const checkbox = html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0];
+    expect(checkbox).toBeDefined();
+    expect(checkbox).not.toContain(' checked');
     expect(html).not.toMatch(/Base URL|Temperature|导出到识图/);
   });
 
   it('still exposes the saved model and shared limits for editing without a login source', async () => {
     const preset = new config.PiLoginPreset({
       name: '日常', provider: 'first-source', model: 'native-model', thinking: 'max',
-      context_window: 256001, max_tokens: 32768,
+      context_window: 256001, max_tokens: 32768, vision: true,
     });
     const html = await renderDialog({ preset });
     expect(html).toContain('编辑 Pi 登录预设');
@@ -39,6 +43,7 @@ describe('Pi login preset editor', () => {
     expect(html).toContain('value="256001"');
     expect(html).toContain('value="32768"');
     expect(html).toMatch(/<option value="max"[^>]* selected>/);
+    expect(html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0]).toContain(' checked');
     expect(html).not.toMatch(/<button[^>]*type="submit"[^>]*disabled/);
   });
 });

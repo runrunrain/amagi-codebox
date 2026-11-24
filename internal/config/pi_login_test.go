@@ -20,7 +20,7 @@ func TestPiLoginPresetPersistenceAndIsolation(t *testing.T) {
 	if err := svc.SaveProvider("openai-codex", Provider{OpenAI: &OpenAIFormat{Enabled: true}, DefaultModel: "api-model"}); err != nil {
 		t.Fatal(err)
 	}
-	p := PiLoginPreset{Name: "Daily / 日常", Provider: "openai-codex", Model: "native-model", Thinking: "xhigh"}
+	p := PiLoginPreset{Name: "Daily / 日常", Provider: "openai-codex", Model: "native-model", Thinking: "xhigh", Vision: true}
 	if err := svc.SavePiLoginPreset(p); err != nil {
 		t.Fatal(err)
 	}

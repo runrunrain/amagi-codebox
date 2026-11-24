@@ -66,7 +66,7 @@ func decodeLoginSegment(seg string) (string, bool) {
 	return string(decoded), true
 }
 
-// PiLoginPreset contains only native Pi launch arguments, never API configuration.
+// PiLoginPreset contains native Pi launch settings and model overrides, never API credentials.
 type PiLoginPreset struct {
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
@@ -81,6 +81,8 @@ type PiLoginPreset struct {
 	ContextWindow int `json:"context_window,omitempty"`
 	// MaxTokens 覆写模型最大输出额度；0 恢复目录默认值，与窗口一样按模型共享。
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// Vision 声明原生 Pi 支持图片输入。未开启时保留模型本身的输入能力。
+	Vision bool `json:"vision,omitempty"`
 }
 
 func (p PiLoginPreset) Validate() error {
@@ -130,21 +132,17 @@ func (s *ConfigService) SavePiLoginPreset(p PiLoginPreset) error {
 	return s.changePiLoginPreset(key, &p)
 }
 
-// alignPiLoginContextWindowLocked 把同 provider+model 的其它登录预设的
-// ContextWindow 对齐到 cw（写锁内调用，next 已含自身写入）。语义：pi 的
-// modelOverrides 按 provider/model 寻址，无预设维度——窗口是模型级共享值，
-// 任一预设保存即全组生效；配置面同步对齐，保证展示与 models.json 实际生效
-// 值一致（不出现「B 显示 256000 实际共享 400000」的静默串值，diting F02）。
-func (s *ConfigService) alignPiLoginContextWindowLocked(next *AppConfig, selfKey, provider, model string, cw, maxTokens int) {
+// alignPiLoginModelOverridesLocked 对齐同 provider+model 的其它登录预设。
+// Pi 的 modelOverrides 没有预设维度，同模型的窗口、上限与图片输入声明必须一致。
+func alignPiLoginModelOverridesLocked(next *AppConfig, selfKey string, saved PiLoginPreset) {
 	for k, other := range next.PiLoginPresets {
-		if k == selfKey || other.Provider != provider || other.Model != model {
+		if k == selfKey || other.Provider != saved.Provider || other.Model != saved.Model {
 			continue
 		}
-		if other.ContextWindow != cw || other.MaxTokens != maxTokens {
-			other.ContextWindow = cw
-			other.MaxTokens = maxTokens
-			next.PiLoginPresets[k] = other
-		}
+		other.ContextWindow = saved.ContextWindow
+		other.MaxTokens = saved.MaxTokens
+		other.Vision = saved.Vision
+		next.PiLoginPresets[k] = other
 	}
 }
 
@@ -182,12 +180,10 @@ func (s *ConfigService) changePiLoginPreset(key string, preset *PiLoginPreset) e
 		} else {
 			if old, exists := next.PiLoginPresets[key]; exists && (old.Provider != preset.Provider || old.Model != preset.Model) {
 				copyOf := old
-				removed = &copyOf // 模型切换后也要对账旧模型，清除不再引用的额度。
+				removed = &copyOf // 模型切换后也要对账旧模型，清除不再使用的覆写。
 			}
 			next.PiLoginPresets[key] = *preset
-			// 窗口是模型级共享值：保存时同步对齐同 provider+model 的兄弟预设
-			//（锁内原子，展示与生效面一致；见 alignPiLoginContextWindowLocked）。
-			s.alignPiLoginContextWindowLocked(&next, key, preset.Provider, preset.Model, preset.ContextWindow, preset.MaxTokens)
+			alignPiLoginModelOverridesLocked(&next, key, *preset)
 		}
 		if saveErr := s.saveLockedConfig(&next); saveErr != nil {
 			err = saveErr

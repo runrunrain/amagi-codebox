@@ -43,6 +43,13 @@
         <AppButton variant="ghost" size="small" type="button" :disabled="saving" @click="form.maxTokens = outputMaximum">填入模型最大值</AppButton>
       </div>
       <p class="form-hint">同一登录来源下，同模型的预设共享上下文窗口和输出上限。留空或填 0 使用 Pi 目录默认值。已有会话需重新加载模型或重启。</p>
+      <section class="vision-section" aria-labelledby="pi-login-vision-title">
+        <h4 id="pi-login-vision-title">视觉能力</h4>
+        <label class="vision-option">
+          <input v-model="form.vision" type="checkbox" :disabled="saving" /> 识图（允许图片输入）
+        </label>
+        <p class="form-hint">只为确实支持图片的模型开启。同一登录来源的同一模型共享此设置；关闭后沿用 Pi 原有配置。Pi 登录不支持视频输入，也不会导出到 API 视觉清单。</p>
+      </section>
       <p v-if="!preset && !canAdd" class="form-error" role="status">当前未发现可用的 Pi 登录，请刷新登录状态后重试。</p>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     </form>
@@ -81,6 +88,7 @@ const saving = ref(false);
 const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const form = reactive({
   name: '', provider: '', model: '', thinking: '',
+  vision: false,
   contextWindow: '' as string | number,
   maxTokens: '' as string | number,
 });
@@ -98,6 +106,7 @@ watch(() => props.open, open => {
     provider: preset?.provider ?? preferred?.provider ?? (props.providers.length === 1 ? props.providers[0].provider : ''),
     model: preset?.model ?? '',
     thinking: preset?.thinking ?? '',
+    vision: !!preset?.vision,
     contextWindow: preset?.context_window || '',
     maxTokens: preset?.max_tokens || '',
   });
@@ -106,22 +115,23 @@ watch(() => props.open, open => {
 
 function changeProvider() {
   form.model = '';
-  loadSharedLimits();
+  loadSharedOverrides();
 }
 
 function changeModel(event: Event) {
   const model = (event.target as HTMLInputElement).value;
   const changed = model.trim() !== form.model.trim();
   form.model = model;
-  if (changed) loadSharedLimits();
+  if (changed) loadSharedOverrides();
 }
 
-function loadSharedLimits() {
+function loadSharedOverrides() {
   // Pi stores overrides by provider/model. Starting from existing values avoids
-  // clearing the shared limits when creating another preset for the same model.
+  // resetting the shared overrides when creating another preset for the same model.
   const shared = Object.values(props.presets).find(p => p.provider === form.provider && p.model === form.model.trim());
   form.contextWindow = shared?.context_window || '';
   form.maxTokens = shared?.max_tokens || '';
+  form.vision = !!shared?.vision;
 }
 
 function close() {
@@ -143,6 +153,7 @@ async function save() {
       name, provider: form.provider, model: form.model.trim(), thinking: form.thinking,
       context_window: normalizeContextWindowInput(form.contextWindow),
       max_tokens: normalizeOutputLimitInput(form.maxTokens),
+      vision: form.vision,
     });
     await savePiLoginPreset(preset);
     emit('update:open', false);
@@ -168,4 +179,8 @@ async function save() {
 .form-hint, .form-error { margin: 0; color: var(--secondary); font-size: 12px; line-height: 1.5; }
 .form-error { color: var(--danger-strong); }
 .output-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vision-section { display: grid; gap: 8px; padding: 12px; background: var(--sidebar); border-radius: 10px; }
+.vision-section h4 { margin: 0; font-size: 13px; }
+.vision-option { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.vision-option input { accent-color: var(--accent); }
 </style>

@@ -28,6 +28,23 @@ type piLoginLaunch struct {
 	AgentDir string
 }
 
+// Read the authoritative preset state under the same lock as other Pi
+// models.json writers. A queued save/delete or launch must not replay old values.
+func (a *App) syncPiLoginModelOverride(agentDir, provider, model string) error {
+	a.providerSyncMu.Lock()
+	defer a.providerSyncMu.Unlock()
+	presets, err := a.Config.GetPiLoginPresets()
+	if err != nil {
+		return err
+	}
+	for _, preset := range presets {
+		if preset.Provider == provider && preset.Model == model {
+			return launcher.ApplyPiLoginPresetModelOverride(agentDir, preset)
+		}
+	}
+	return launcher.ApplyPiLoginPresetModelOverride(agentDir, config.PiLoginPreset{Provider: provider, Model: model})
+}
+
 // resolvePiLoginLaunch never lets a login selection fall through to
 // API-provider/default-model resolution; a stale login selection fails closed.
 //
@@ -217,7 +234,7 @@ func (p *appLaunchPlanner) buildPiLoginPlan(recipe launchplan.StableRecipe, req 
 	// WSL 内 pi 共享 Windows agent 根（主上裁定 2026-10）：WSL spec 与原生同样
 	// 消费 Windows canonical root 的 auth.json（PI_CODING_AGENT_DIR 由解析漏斗经
 	// /p 翻译钉定），不再携带 distro 供给 effect，也不再拒绝受管 Claude 订阅。
-	// 登录预设 contextWindow 覆写不在 BuildPlan 写盘（BuildPlan 纯读零副作用）：
+	// 登录预设模型覆写不在 BuildPlan 写盘（BuildPlan 纯读零副作用）：
 	// 统一在预设保存/删除时同步写入 canonical root 的 models.json
 	// （ConfigService.SetPiLoginPresetChangeListener + app 装配注入），桌面
 	// LaunchPiSession 另有启动兜底；本路径（remote/restart）读已落盘的目标态。

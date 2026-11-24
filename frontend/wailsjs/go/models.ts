@@ -1121,6 +1121,7 @@ export namespace config {
 	    thinking?: string;
 	    context_window?: number;
 	    max_tokens?: number;
+	    vision?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PiLoginPreset(source);
@@ -1134,6 +1135,7 @@ export namespace config {
 	        this.thinking = source["thinking"];
 	        this.context_window = source["context_window"];
 	        this.max_tokens = source["max_tokens"];
+	        this.vision = source["vision"];
 	    }
 	}
 	export class AppConfig {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"amagi-codebox/internal/config"
@@ -12,7 +13,7 @@ import (
 )
 
 // Exercise the production Config listener wiring, with no Startup/keychain access.
-func TestPiLoginOutputSavedAndRemovedFromCanonicalRoot(t *testing.T) {
+func TestPiLoginOverridesSavedAndRemovedFromCanonicalRoot(t *testing.T) {
 	isolatedHome(t)
 	app := NewApp(embed.FS{})
 	t.Cleanup(app.Log.Close)
@@ -35,14 +36,14 @@ func TestPiLoginOutputSavedAndRemovedFromCanonicalRoot(t *testing.T) {
 		}
 		return root["providers"].(map[string]any)
 	}
-	p := config.PiLoginPreset{Name: "A", Provider: "p", Model: "m", MaxTokens: 65536}
+	p := config.PiLoginPreset{Name: "A", Provider: "p", Model: "m", MaxTokens: 65536, Vision: true}
 	if err := app.Config.SavePiLoginPreset(p); err != nil {
 		t.Fatal(err)
 	}
 	providers := read()
-	field := providers["p"].(map[string]any)["modelOverrides"].(map[string]any)["m"].(map[string]any)["maxTokens"]
-	if field != float64(65536) {
-		t.Fatalf("production listener output: %v", field)
+	entry := providers["p"].(map[string]any)["modelOverrides"].(map[string]any)["m"].(map[string]any)
+	if entry["maxTokens"] != float64(65536) || !reflect.DeepEqual(entry["input"], []any{"text", "image"}) {
+		t.Fatalf("production listener did not apply output and vision: %v", entry)
 	}
 	p.Model = "new"
 	if err := app.Config.SavePiLoginPreset(p); err != nil {
@@ -52,8 +53,9 @@ func TestPiLoginOutputSavedAndRemovedFromCanonicalRoot(t *testing.T) {
 	if _, ok := overrides["m"]; ok {
 		t.Fatal("model switch left stale override")
 	}
-	if overrides["new"].(map[string]any)["maxTokens"] != float64(65536) {
-		t.Fatal("new model output not written")
+	newEntry := overrides["new"].(map[string]any)
+	if newEntry["maxTokens"] != float64(65536) || !reflect.DeepEqual(newEntry["input"], []any{"text", "image"}) {
+		t.Fatal("new model output or vision not written")
 	}
 	if err := app.Config.DeletePiLoginPreset(config.PiLoginPresetKey("p", "A")); err != nil {
 		t.Fatal(err)
