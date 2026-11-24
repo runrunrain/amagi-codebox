@@ -3,9 +3,9 @@
 ## 使用
 
 1. 在 Pi 内完成 OAuth 登录，登录项位于标准 `~/.pi/agent/auth.json`。
-2. 打开 **服务提供商**，登录项会以「登录认证 · Pi」卡片显示。可用「刷新登录状态」重新发现登录/退出。
-3. 点击卡片，保存预设名称、Pi 原生模型 ID、思考等级。没有本地模型目录时可以手动输入模型 ID。
-4. 打开 **会话设置 → Pi**，选择「提供商名 · 登录认证 (Pi)」与已保存预设，通过现有新建会话入口启动终端。
+2. 打开 **Provider Center → 预设 → Pi 登录认证**。也可在 **服务提供商** 的登录卡片上点「管理预设」，直达按该来源筛选的列表。
+3. 点击「添加预设」，填写名称、登录来源、Pi 原生模型 ID 和思考等级，可选填上下文窗口与输出上限。没有模型提示时可手动输入。点击已有预设行进入编辑，删除需确认。
+4. 用「刷新登录状态」重新发现登录。退出登录后，原来保存的预设仍可编辑或删除，但只有检测到来源登录后，才可在 **会话设置 → Pi** 中选用。名称与登录来源创建后不可改，以保留已有会话的预设引用。
 
 登录类型不能用于 Claude Code、Codex、OpenCode 或 OMP。它不会出现在这些 CLI 的提供商/预设选择中，后端也拒绝将登录引用用于其它 CLI。普通同名 API 服务商仍独立存在。
 
@@ -41,7 +41,7 @@
 
 - `piconfig.Service.GetPiLoginProviders()`：只读动态 DTO，字段为 `id/provider/cli/source/models`。扫描认证项只解码 `type`，只有 `oauth` 会显示；`api_key` 不算登录。
 - 扫描始终使用标准用户 Home 的 `.pi/agent`，不跟随 `PI_CODING_AGENT_DIR`（与启动钉定值同源）。其它 Pi 配置编辑器原有覆盖目录行为不变。
-- `config.ConfigService.GetPiLoginPresets/SavePiLoginPreset/DeletePiLoginPreset`：专用 CRUD，写入 CodeBox `models.json` 的 `pi_login_presets`。字段仅有 `name/provider/model/thinking`，不存端点、API 密钥、token、同步或媒体标记。
+- `config.ConfigService.GetPiLoginPresets/SavePiLoginPreset/DeletePiLoginPreset`：专用 CRUD，写入 CodeBox `models.json` 的 `pi_login_presets`。字段为 `name/provider/model/thinking/context_window/max_tokens`，不存端点、API 密钥、token、同步或媒体标记。窗口与输出上限按登录来源与模型共享。
 - `config.ConfigService.ResolvePiLoginLaunch`（desktop/v1/restart 共用分类器）与 `RejectPiLoginLaunchRefs`（非 Pi 入口隔离拒绝）实现上述命名空间规则。
 - 登录元数据不写入 `models` 或公共 `terminal_presets`。专用预设不参与 harness provider 同步、媒体导出或公共 API 预设导出。当前完整配置导出不携带 `pi_login_presets`；这是本机持久化功能，不迁移登录凭据。
 
@@ -67,6 +67,6 @@ PI_LOGIN_BROWSER_BRIDGE=1 go test . -run '^TestPiLoginBrowserBridge$' -v -count=
 frontend/node_modules/.bin/vite --config e2e/pi-login.vite.config.mjs
 ```
 
-第一个命令输出 `PI_LOGIN_BROWSER_URL`。打开 `http://127.0.0.1:5187/e2e/pi-login.html?bridge=<该URL>`，执行「登录卡片 → 保存预设 → 会话页 → Pi 登录选项 → 直接启动 Shell → 启动」；`GET <bridge>/trace` 可读到实际 CLI fixture 的 argv 与钉定的 agent root。`POST <bridge>/logout` 清空临时认证，再在 UI 刷新：登录卡片消失、当前选择转为失效告警且启动被禁用——必须显式改选后才能再次启动（R4 预期）。最后 `POST <bridge>/finish` 结束测试，清理 PTY 与临时文件；Vite 进程单独退出。
+第一个命令输出 `PI_LOGIN_BROWSER_URL`。打开 `http://127.0.0.1:5187/e2e/pi-login.html?bridge=<该URL>`，执行「服务提供商 → 登录卡片的管理预设 → 添加预设 → 保存 → 会话页 → Pi 登录选项 → 直接启动 Shell → 启动」；`GET <bridge>/trace` 可读到实际 CLI fixture 的 argv 与钉定的 agent root。`POST <bridge>/logout` 清空临时认证，再在 UI 刷新：登录卡片消失，但「预设 → Pi 登录认证」仍列出原预设并标记为未发现登录；会话页当前选择转为失效告警且启动被禁用——必须显式改选后才能再次启动（R4 预期）。最后 `POST <bridge>/finish` 结束测试，清理 PTY 与临时文件；Vite 进程单独退出。
 
 该 harness 是测试专用 Wails transport adapter。核心功能 RPC 委托真实 Go 服务；认证和 CLI 可执行文件是明确的隔离 fixture。不属于生产远程接口，也不证明真实订阅网络推理或 Wails WebView 的完整外壳行为。

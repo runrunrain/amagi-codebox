@@ -44,11 +44,17 @@
       <template v-else>当前筛选条件下无匹配的服务提供商</template>
     </div>
     <div v-else class="prov-grid">
-      <article v-for="login in visibleLogins" :key="login.id" class="prov-card" @click="onCardClick(login.id)">
+      <article v-for="login in visibleLogins" :key="login.id" class="prov-card" @click="emit('manageLoginPresets', login.provider)">
         <header class="prov-card-head"><h3 class="prov-name">{{ login.provider }}</h3><span>登录认证 · Pi</span></header>
         <div class="prov-row"><span class="prov-row-label">来源</span><span class="prov-row-value mono">{{ login.source }}</span></div>
         <div class="prov-row"><span class="prov-row-label">认证</span><span class="prov-row-value">原生 OAuth（仅 Pi）</span></div>
-        <div class="prov-row"><span class="prov-row-value">点击配置模型与思考等级预设</span></div>
+        <div class="prov-row">
+          <AppButton
+            variant="ghost" size="small" type="button"
+            :aria-label="`管理 ${login.provider} 的登录预设`"
+            @click.stop="emit('manageLoginPresets', login.provider)"
+          >管理预设</AppButton>
+        </div>
       </article>
       <article
         v-for="entry in filteredProviders"
@@ -140,6 +146,7 @@ import { useToast } from '../../composables/useToast';
 
 type Provider = config.Provider;
 
+const emit = defineEmits<{ manageLoginPresets: [provider: string] }>();
 const store = useProviderStore();
 const { showSuccess, showError } = useToast();
 const showAddDialog = ref(false);

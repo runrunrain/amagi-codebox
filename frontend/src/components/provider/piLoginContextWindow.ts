@@ -1,4 +1,4 @@
-// Pi 登录预设「上下文窗口」输入的归一化（组件 PiLoginProviderDetail 消费）。
+// Pi 登录预设「上下文窗口」输入的归一化（组件 PiLoginPresetDialog 消费）。
 //
 // number input 的 v-model 会被 Vue 隐式转换为 number（type="number" 自带
 // castToNumber，无需 .number 修饰符），表单状态可能是 string 或 number——

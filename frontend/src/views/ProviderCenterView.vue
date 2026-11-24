@@ -27,13 +27,8 @@
     </template>
 
     <!-- 详情模式：仅本机模式（远程详情由 RemoteProviderPanel 自管） -->
-    <PiLoginProviderDetail
-      v-if="!rcStore.isRemoteMode && store.activeLoginProvider"
-      :provider="store.activeLoginProvider"
-      @back="store.closeProvider"
-    />
     <ProviderDetailView
-      v-else-if="!rcStore.isRemoteMode && store.activeProviderId && store.activeProvider"
+      v-if="!rcStore.isRemoteMode && store.activeProviderId && store.activeProvider"
       @back="store.closeProvider"
       @saved="store.loadProviders"
     />
@@ -71,20 +66,21 @@
         <ProviderGrid
           v-else
           @add="handleAdd"
+          @manage-login-presets="manageLoginPresets"
         />
       </div>
 
       <div v-else class="pc-panel">
         <!--
           CLI 父子导航上下紧贴：二级 underline Tab 在上，所属 CLI 与三级 pill 在下。
-          预设页仍为格式页签与紧邻的「用于 …」说明。
+          预设页使用分类页签与紧邻的适用范围说明。
           三级留在容器里而不下放进编辑器：异步编辑器加载中 / 加载失败时用户仍可切换。
           有内部分区的编辑器自带分区导航（左栏），页面级没有任何左栏。
         -->
         <div class="pc-subnav" :class="mainTab === 'presets' ? 'pc-subnav--presets' : 'pc-subnav--cli'">
           <template v-if="mainTab === 'presets'">
-            <Segmented v-model="formatModel" :options="FORMAT_TABS" variant="underline" class="pc-subnav-tabs" />
-            <span class="pc-subnav-caption">{{ formatConsumers }}</span>
+            <Segmented v-model="presetModel" :options="PRESET_TABS" variant="underline" class="pc-subnav-tabs" />
+            <span class="pc-subnav-caption">{{ presetConsumers }}</span>
           </template>
           <template v-else>
             <Segmented v-model="cliModel" :options="CLI_TABS" variant="underline" class="pc-subnav-tabs" />
@@ -98,8 +94,8 @@
         </div>
         <div class="pc-detail-content" :key="activePageId">
           <template v-if="mainTab === 'presets'">
-            <PresetList v-if="store.presetEngine === 'anthropic'" format="anthropic" />
-            <PresetList v-else-if="store.presetEngine === 'openai'" format="openai" />
+            <PiLoginPresetList v-if="presetModel === 'pi-login'" v-model:provider-filter="piLoginFilter" />
+            <PresetList v-else :format="presetModel" />
           </template>
           <template v-else-if="store.presetEngine === 'pi'">
             <PiAmagiConfig v-if="piMode === 'agents'" :key="presetLoadKey" />
@@ -150,7 +146,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, defineAsyncComponent, defineComponent, h, type Component } from 'vue';
 import PageHead from '../components/ui/PageHead.vue';
-import { CONFIG_PAGES, FORMAT_ITEMS, type ConfigPageId } from '../components/provider/configNavigation';
+import { CONFIG_PAGES, PRESET_ITEMS, type ConfigPageId, type PresetPage } from '../components/provider/configNavigation';
 import RemoteScopeBanner from '../components/remote/RemoteScopeBanner.vue';
 import StatusBanner from '../components/ui/StatusBanner.vue';
 import ConfigCard from '../components/ui/ConfigCard.vue';
@@ -163,7 +159,7 @@ import ProviderGrid from '../components/provider/ProviderGrid.vue';
 import PresetList from '../components/provider/PresetList.vue';
 import AgentProfileQuickSwitch from '../components/provider/AgentProfileQuickSwitch.vue';
 import ProviderDetailView from './ProviderDetailView.vue';
-import PiLoginProviderDetail from '../components/provider/PiLoginProviderDetail.vue';
+import PiLoginPresetList from '../components/provider/PiLoginPresetList.vue';
 import RemoteProviderPanel from '../components/remote/RemoteProviderPanel.vue';
 import LegacyTokenDialog from '../components/remote/LegacyTokenDialog.vue';
 import { useProviderStore, type PresetEngine } from '../stores/provider';
@@ -181,10 +177,10 @@ const MAIN_TABS = [
   { value: 'cliconfigs', label: 'CLI 独立配置' },
 ];
 
-// 顶侧页签选项（二级：格式 / CLI；三级：各 CLI 内的配置文件模式）。
+// 顶侧页签选项（二级：预设分类 / CLI；三级：各 CLI 内的配置文件模式）。
 // 只从纯导航表（configNavigation.ts）派生，文案单一来源，不在此复制；
 // 值与 PresetEngine 以及 piMode / ompMode / openCodeMode 的联合类型字面一致。
-const FORMAT_TABS = FORMAT_ITEMS.map(i => ({ value: i.id.slice('format:'.length), label: i.label }));
+const PRESET_TABS = PRESET_ITEMS.map(({ value, label }) => ({ value, label }));
 const CLI_TABS = [...new Map(CONFIG_PAGES.map((p): [string, string] => [p.id.split(':')[0], p.cli])).entries()]
   .map(([value, label]) => ({ value, label }));
 const modeTabs = (engine: string) => CONFIG_PAGES.filter(p => p.id.startsWith(`${engine}:`))
@@ -194,6 +190,7 @@ const OMP_MODES = modeTabs('omp');
 const OPENCODE_MODES = modeTabs('opencode');
 
 const mainTab = ref<'providers' | 'presets' | 'cliconfigs'>('providers');
+const piLoginFilter = ref('');
 const openCodeMode = ref<'presets' | 'global'>('global');
 const piMode = ref<'agents' | 'registry' | 'auth'>('agents');
 const ompMode = ref<'agents' | 'registry'>('agents');
@@ -224,13 +221,13 @@ function onTokenChanged() {
 }
 
 // 二级 engine 双向绑定（写入 store + 触发按需加载）。
-const FORMAT_ENGINES: readonly PresetEngine[] = ['anthropic', 'openai'];
+const isPresetPage = (value: string): value is PresetPage => PRESET_ITEMS.some(tab => tab.value === value);
 const CLI_ENGINES: readonly PresetEngine[] = ['pi', 'omp', 'opencode'];
 
-const formatModel = computed<string>({
-  get: () => (FORMAT_ENGINES.includes(store.presetEngine) ? store.presetEngine : 'anthropic'),
+const presetModel = computed<PresetPage>({
+  get: () => (isPresetPage(store.presetEngine) ? store.presetEngine : 'anthropic'),
   set: (v: string) => {
-    if (v) store.setPresetEngine(v as PresetEngine);
+    if (isPresetPage(v)) store.setPresetEngine(v);
   },
 });
 
@@ -243,18 +240,21 @@ const cliModel = computed<string>({
 
 const currentCliLabel = computed(() => CLI_TABS.find(tab => tab.value === cliModel.value)?.label || '');
 
-// 预设页 subnav 右侧说明：对谁有用（Claude Code 消费 Anthropic 格式；Codex / Pi / OMP 消费 OpenAI 格式）
-const formatConsumers = computed(() =>
-  store.presetEngine === 'openai' ? '用于 Codex · Pi · OMP' : '用于 Claude Code',
-);
+const presetConsumers = computed(() => PRESET_ITEMS.find(tab => tab.value === presetModel.value)?.consumers);
+
+function manageLoginPresets(provider: string) {
+  piLoginFilter.value = provider;
+  presetModel.value = 'pi-login';
+  mainTab.value = 'presets';
+}
 
 // CLI 独立配置组件懒加载（AppShell.vue:37-43 模式）：合计约 4,100 行且非默认视图，
 // 异步加载使其退出入口 chunk；delay 避免快速切换时 loading 闪烁。
 // 更换 presetLoadKey 会重新挂载异步组件并重新执行 loader（动态 import 可重试）。
 const presetLoadKey = ref(0);
-const isWorkspace = computed(() => mainTab.value !== 'providers' && !store.activeLoginProvider && !store.activeProviderId);
-const activePageId = computed<ConfigPageId | 'format:anthropic' | 'format:openai'>(() => {
-  if (mainTab.value === 'presets') return `format:${formatModel.value}` as 'format:anthropic' | 'format:openai';
+const isWorkspace = computed(() => mainTab.value !== 'providers' && !store.activeProviderId);
+const activePageId = computed<ConfigPageId | `preset:${PresetPage}`>(() => {
+  if (mainTab.value === 'presets') return `preset:${presetModel.value}`;
   if (cliModel.value === 'omp') return `omp:${ompMode.value}`;
   if (cliModel.value === 'opencode') return `opencode:${openCodeMode.value}`;
   return `pi:${piMode.value}`;
@@ -312,7 +312,7 @@ onMounted(() => {
 // 首次进入 presets / cliconfigs tab 时加载相应 engine 数据
 watch(mainTab, (tab) => {
   if (tab === 'presets') {
-    if (!FORMAT_ENGINES.includes(store.presetEngine)) {
+    if (!isPresetPage(store.presetEngine)) {
       store.setPresetEngine('anthropic');
     }
     void store.loadPresets(store.presetEngine);

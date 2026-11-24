@@ -31,8 +31,8 @@ type MergedTerminalPreset = config.MergedTerminalPreset;
 
 export type ProviderFilter = 'all' | 'anthropic' | 'openai' | 'login';
 
-/** 预设域：两类公共协议格式 + OpenCode 独立完整配置 + Pi/OMP 结构化配置。 */
-export type PresetEngine = 'anthropic' | 'openai' | 'opencode' | 'pi' | 'omp';
+/** 预设域：公共协议格式、Pi 登录预设与各 CLI 独立配置。 */
+export type PresetEngine = 'anthropic' | 'openai' | 'pi-login' | 'opencode' | 'pi' | 'omp';
 
 /** engine -> wailsjs terminalType 映射（opencode/pi/omp 走各自配置文件，不调 merged） */
 const ENGINE_TO_TERMINAL_TYPE: Partial<Record<PresetEngine, string>> = {
@@ -63,7 +63,7 @@ export const useProviderStore = defineStore('provider', () => {
   const keyStatus = ref<Record<string, boolean>>({});
   const loginProviders = ref<PiLoginProvider[]>([]);
   const loginLoadError = ref('');
-  const activeLoginProvider = computed(() => loginProviders.value.find(p => p.id === activeProviderId.value) || null);
+  let pendingLoginLoad: Promise<void> | undefined;
 
   // P3-A 新增：筛选 + 详情模式
   const filter = ref<ProviderFilter>('all');
@@ -93,6 +93,7 @@ export const useProviderStore = defineStore('provider', () => {
   const presetLoaded = ref<Record<PresetEngine, boolean>>({
     anthropic: false,
     openai: false,
+    'pi-login': false,
     opencode: false,
     pi: false,
     omp: false,
@@ -174,10 +175,14 @@ export const useProviderStore = defineStore('provider', () => {
     }
   }
 
-  async function loadLoginProviders() {
+  function loadLoginProviders() {
+    if (pendingLoginLoad) return pendingLoginLoad;
     loginLoadError.value = '';
-    try { loginProviders.value = await getPiLoginProviders() || []; }
-    catch (err) { loginProviders.value = []; loginLoadError.value = String(err); }
+    pendingLoginLoad = (async () => {
+      try { loginProviders.value = await getPiLoginProviders() || []; }
+      catch (err) { loginProviders.value = []; loginLoadError.value = String(err); }
+    })().finally(() => { pendingLoginLoad = undefined; });
+    return pendingLoginLoad;
   }
 
   /**
@@ -247,9 +252,8 @@ export const useProviderStore = defineStore('provider', () => {
    */
   async function loadPresets(engine: PresetEngine, force = false) {
     if (!force && presetLoaded.value[engine]) return;
-    // pi/omp 的配置内容由 PiAmagiConfig/OmpGlobalConfig 组件自加载（含模型目录），
-    // 这里仅标记已加载，避免触发 merged presets 请求。
-    if (engine === 'pi' || engine === 'omp') {
+    // Pi/OMP 独立配置与 Pi 登录预设由各自面板加载，不走公共 merged presets。
+    if (engine === 'pi' || engine === 'omp' || engine === 'pi-login') {
       presetLoaded.value = { ...presetLoaded.value, [engine]: true };
       return;
     }
@@ -287,7 +291,7 @@ export const useProviderStore = defineStore('provider', () => {
    * 因此调用方必须先在前端按 source='user' 过滤，禁止对内置项调用此 action。
    */
   async function deletePreset(engine: PresetEngine, key: string) {
-    if (engine === 'opencode' || engine === 'pi' || engine === 'omp') {
+    if (engine !== 'anthropic' && engine !== 'openai') {
       throw new Error(`${engine} presets are managed via dedicated configuration, not deletable here`);
     }
     const terminalType = ENGINE_TO_TERMINAL_TYPE[engine]!;
@@ -361,7 +365,6 @@ export const useProviderStore = defineStore('provider', () => {
     // State
     loginProviders,
     loginLoadError,
-    activeLoginProvider,
     loadLoginProviders,
     providers,
     keyStatus,

@@ -13,9 +13,12 @@ export interface SectionNavItem extends ConfigSectionItem {
   ariaLabel?: string; disabled?: boolean; children?: SectionNavItem[]; scrollChildren?: boolean;
 }
 export interface SectionNavGroup { id: string; label?: string; items: SectionNavItem[] }
-export const FORMAT_ITEMS = [
-  { id: 'format:anthropic', label: 'Anthropic 格式' }, { id: 'format:openai', label: 'OpenAI 格式' },
-];
+export const PRESET_ITEMS = [
+  { value: 'anthropic', label: 'Anthropic 格式', consumers: '用于 Claude Code' },
+  { value: 'openai', label: 'OpenAI 格式', consumers: '用于 Codex · Pi · OMP' },
+  { value: 'pi-login', label: 'Pi 登录认证', consumers: '仅用于 Pi · 使用原生登录' },
+] as const;
+export type PresetPage = (typeof PRESET_ITEMS)[number]['value'];
 export const CONFIG_PAGES: { id: ConfigPageId; cli: string; label: string; defaultId: string; dynamic?: boolean }[] = [
   { id: 'pi:agents', cli: 'Pi', label: 'Agent 配置', defaultId: 'agents' },
   { id: 'pi:registry', cli: 'Pi', label: '模型提供商', defaultId: '', dynamic: true },
