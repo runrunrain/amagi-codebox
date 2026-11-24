@@ -4,6 +4,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.152] - 2026-11-25
+
+### Changed
+
+- Pi 登录模型纳入 Provider Center「预设 → Pi 登录认证」，支持按登录来源筛选、新建、编辑和确认删除。退出登录后仍可维护已保存的预设；重新登录后才能用于会话。认证凭据继续由 Pi 管理。
+
+### Fixed
+
+- Windows 可从当前用户运行的便携版 v2rayN 自动找到数据库和自带的 sing-box，不再漏掉其他盘符上的安装。修复带盘符的 SQLite 路径无法只读打开的问题，手动指定路径仍优先。
+
 ## [1.3.151] - 2026-11-22
 
 ### Fixed
