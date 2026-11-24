@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本章节沿用仓库现有 Git 标签。
 
+## [1.3.153] - 2026-11-25
+
+### Added
+
+- Pi 登录预设可勾选「识图」。同一登录来源和模型共享该设置；开启后 Pi 会按支持图片输入加载，关闭后恢复原有声明并保留手动修改。认证仍由 Pi 管理，登录预设不导出至委托识图模型清单。
+
 ## [1.3.152] - 2026-11-25
 
 ### Changed
